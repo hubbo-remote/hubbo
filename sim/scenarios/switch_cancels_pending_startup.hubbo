@@ -1,0 +1,14 @@
+# A switch during Play Xbox's 2 s wait cancels the rest of its startup:
+# the Xbox inputs are never selected after we've moved on.
+activate act_play_xbox
+advance 500
+drain
+activate act_watch_apple_tv
+expect_event startup act_play_xbox cancelled cancelled@4
+advance 5000
+expect ha_main dev_lg_tv media_player.turn_on
+expect ha_main dev_denon media_player.turn_on
+expect system - wait duration_ms=1000
+expect ha_main dev_lg_tv media_player.select_source source="HDMI 1"
+expect ha_main dev_denon media_player.select_source source="Media Player"
+expect_none

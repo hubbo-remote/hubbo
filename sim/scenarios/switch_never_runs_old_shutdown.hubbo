@@ -1,0 +1,24 @@
+# Switching from Play Xbox to Watch Apple TV runs only Watch Apple TV's
+# startup. The Xbox is left on (it self-sleeps); nothing is turned off.
+tap music
+expect system - activate activity_id=act_play_xbox
+expect ha_main dev_xbox media_player.turn_on
+expect ha_main dev_lg_tv media_player.turn_on
+expect ha_main dev_denon media_player.turn_on
+expect system - wait duration_ms=2000
+advance 2000
+expect ha_main dev_lg_tv media_player.select_source source="HDMI 2"
+expect ha_main dev_denon media_player.select_source source=Game
+expect_event startup act_play_xbox completed
+
+tap tv
+expect system - activate activity_id=act_watch_apple_tv
+expect ha_main dev_lg_tv media_player.turn_on
+expect ha_main dev_denon media_player.turn_on
+expect system - wait duration_ms=1000
+advance 1000
+expect ha_main dev_lg_tv media_player.select_source source="HDMI 1"
+expect ha_main dev_denon media_player.select_source source="Media Player"
+expect_none
+expect_no_event shutdown act_play_xbox completed
+expect_active act_watch_apple_tv

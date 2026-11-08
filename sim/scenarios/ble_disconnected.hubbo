@@ -1,0 +1,11 @@
+# No Apple TV connection: key actions fail honestly, nothing is faked.
+activate act_watch_apple_tv
+advance 1000
+drain
+ble disconnected
+tap select
+expect ble dev_apple_tv key_down key=SELECT -> failed adapter_unavailable
+expect ble dev_apple_tv key_up key=SELECT -> failed adapter_unavailable
+ble connected
+tap select
+expect ble dev_apple_tv key_down key=SELECT -> accepted

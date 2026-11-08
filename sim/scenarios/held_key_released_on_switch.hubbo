@@ -1,0 +1,13 @@
+# A d-pad key held on the Apple TV is released when the activity changes,
+# even though the remote button is still down.
+activate act_watch_apple_tv
+advance 1000
+drain
+press up
+expect ble dev_apple_tv key_down key=ARROW_UP
+expect_hid consumer 0x0042
+advance 300
+activate act_play_xbox
+expect_hid consumer 0x0000
+release up
+expect_event unbound up:up

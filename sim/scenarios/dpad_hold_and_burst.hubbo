@@ -1,0 +1,18 @@
+# Held arrow = held key for exactly as long as the button; fast bursts keep
+# down/up strictly paired.
+activate act_watch_apple_tv
+advance 1000
+drain
+hold down 1500
+expect ble dev_apple_tv key_down key=ARROW_DOWN
+expect ble dev_apple_tv key_up key=ARROW_DOWN
+tap down 20
+tap down 20
+tap select 20
+expect ble dev_apple_tv key_down key=ARROW_DOWN
+expect ble dev_apple_tv key_up key=ARROW_DOWN
+expect ble dev_apple_tv key_down key=ARROW_DOWN
+expect ble dev_apple_tv key_up key=ARROW_DOWN
+expect ble dev_apple_tv key_down key=SELECT
+expect ble dev_apple_tv key_up key=SELECT
+expect_none

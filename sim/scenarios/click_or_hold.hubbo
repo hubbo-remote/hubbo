@@ -1,0 +1,12 @@
+# Info clicked does nothing here; Info held past 800 ms sends "i" once.
+activate act_watch_apple_tv
+advance 1000
+drain
+hold info 300
+expect_none
+expect_event unbound info:tap
+hold info 2000
+expect ble dev_apple_tv key_tap key=KEY_I
+expect_none
+expect_hid keyboard 00 00 0c 00 00 00 00 00
+expect_hid keyboard 00 00 00 00 00 00 00 00

@@ -1,0 +1,11 @@
+# Lights work whatever is active (global bindings), including nothing.
+tap light_1
+expect ha_main dev_lights light.turn_on
+activate act_play_xbox
+drain
+tap light_2
+expect ha_main dev_lights light.turn_off
+# Unbound buttons are no-ops.
+tap number_5
+expect_none
+expect_event unbound number_5:tap

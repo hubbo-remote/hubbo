@@ -1,0 +1,44 @@
+#pragma once
+
+// Sample configuration shared by hub-sim and the tests: the family-room
+// setup with two activities, "Watch Apple TV" and "Play Xbox", plus small
+// builders for writing configs in C++ until the JSON config service exists.
+
+#include <initializer_list>
+#include <string>
+#include <vector>
+
+#include "hubbo/domain/config.h"
+#include "hubbo/ha/capabilities.h"
+
+namespace hubbo::sim {
+
+ParamInput param(std::string name, ParamLiteral value);
+ParamInput param(std::string name, const char *value);
+ParamInput param(std::string name, int64_t value);
+ParamInput param(std::string name, int value);
+ParamInput param(std::string name, double value);
+ParamInput param(std::string name, bool value);
+
+ActionSpec action(std::string integration, std::string device, std::string command,
+                  std::vector<ParamInput> params = {});
+ActionSpec bleKey(const char *command, const char *key, const char *device = "dev_apple_tv");
+ActionSpec haAction(const char *device, const char *command, std::vector<ParamInput> params = {});
+ActionSpec waitMs(int64_t ms);
+ActionSpec activateAction(const char *activityId);
+ActionSpec offAction();
+BindingSpec bind(std::string trigger, std::vector<ActionSpec> actions);
+
+// Devices: dev_apple_tv (ble), dev_lg_tv, dev_denon, dev_xbox, dev_lights
+// (ha_main), dev_projector (ir). Activities: act_watch_apple_tv, act_play_xbox.
+// Global bindings (as in api/fixtures): off:tap -> system.off, tv:tap and
+// movie:tap -> act_watch_apple_tv, music:tap -> act_play_xbox,
+// light_1:tap / light_2:tap -> lights on/off.
+ConfigSpec fixtureConfig();
+
+// The Home Assistant entities behind the fixture's ha_main devices, as HA
+// would describe them (feature bits, source lists). FakeHomeAssistant builds
+// their command catalogs with the real ha::EntityCapabilities.
+std::vector<ha::EntityInfo> fixtureEntities();
+
+}  // namespace hubbo::sim

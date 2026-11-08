@@ -1,0 +1,19 @@
+# Off runs only the current activity's shutdown, then the hub is inactive.
+activate act_play_xbox
+advance 3000
+activate act_watch_apple_tv
+advance 3000
+drain
+tap off
+expect system - off
+expect ha_main dev_lg_tv media_player.turn_off
+expect ha_main dev_denon media_player.turn_off
+expect_none
+expect_event shutdown act_watch_apple_tv completed
+expect_active none
+
+# Off again does nothing.
+tap off
+expect system - off
+expect_none
+expect_event transition_rejected no_active_activity

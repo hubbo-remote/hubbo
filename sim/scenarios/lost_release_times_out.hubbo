@@ -1,0 +1,13 @@
+# The release packet never arrives: after 500 ms of radio silence the input
+# layer synthesizes the release and the key goes up.
+activate act_watch_apple_tv
+advance 1000
+drain
+press right
+expect ble dev_apple_tv key_down key=ARROW_RIGHT
+advance 200
+silence 600
+expect ble dev_apple_tv key_up key=ARROW_RIGHT
+expect_hid consumer 0x0045
+expect_hid consumer 0x0000
+expect_none

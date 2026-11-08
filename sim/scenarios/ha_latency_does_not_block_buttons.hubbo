@@ -1,0 +1,21 @@
+# Home Assistant answers slowly (Pending). Startup waits for each result,
+# but Apple TV keys still go out immediately.
+ha latency 300
+activate act_watch_apple_tv
+expect ha_main dev_lg_tv media_player.turn_on -> pending
+press select
+expect ble dev_apple_tv key_down key=SELECT -> accepted
+release select
+expect ble dev_apple_tv key_up key=SELECT
+advance 300
+expect ha_main dev_denon media_player.turn_on -> pending
+advance 1300
+expect system - wait duration_ms=1000
+expect ha_main dev_lg_tv media_player.select_source source="HDMI 1" -> pending
+# volume during startup: a single action, so it doesn't wait for its result
+tap volume_up
+expect ha_main dev_denon media_player.volume_up -> pending
+advance 1000
+expect ha_main dev_denon media_player.select_source source="Media Player" -> pending
+advance 400
+expect_event startup act_watch_apple_tv completed
