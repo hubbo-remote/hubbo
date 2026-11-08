@@ -1,0 +1,16 @@
+{
+  "paired": true,
+  "channel": 74,
+  "last_packet_age_ms": 5230,
+  "held": [],
+  "last_event": {
+    "button": "volume_up",
+    "kind": "up",
+    "age_ms": 5230,
+    "timed_out": false
+  },
+  "counters": {
+    "bad_checksum": 2,
+    "unknown_code": 0
+  }
+}

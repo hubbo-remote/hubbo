@@ -1,0 +1,13 @@
+{
+  "dry_run": false,
+  "devices": 6,
+  "activities": 2,
+  "integrations": 3,
+  "migrated_from": null,
+  "requires": [
+    "home_assistant_token",
+    "ble_pairing",
+    "api_tokens"
+  ],
+  "warnings": []
+}

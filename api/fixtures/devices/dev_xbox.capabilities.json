@@ -1,0 +1,63 @@
+{
+  "device_id": "dev_xbox",
+  "integration_id": "ha_main",
+  "commands": [
+    {
+      "command_id": "media_player.turn_on",
+      "label": "Power on",
+      "params": []
+    },
+    {
+      "command_id": "media_player.turn_off",
+      "label": "Power off",
+      "params": []
+    },
+    {
+      "command_id": "media_player.volume_up",
+      "label": "Volume up",
+      "params": []
+    },
+    {
+      "command_id": "media_player.volume_down",
+      "label": "Volume down",
+      "params": []
+    },
+    {
+      "command_id": "media_player.volume_mute",
+      "label": "Mute",
+      "params": [
+        {
+          "name": "muted",
+          "type": "bool",
+          "required": true,
+          "label": "Muted"
+        }
+      ]
+    },
+    {
+      "command_id": "media_player.media_play_pause",
+      "label": "Play/pause",
+      "params": []
+    },
+    {
+      "command_id": "media_player.media_play",
+      "label": "Play",
+      "params": []
+    },
+    {
+      "command_id": "media_player.media_pause",
+      "label": "Pause",
+      "params": []
+    },
+    {
+      "command_id": "media_player.media_next_track",
+      "label": "Next track",
+      "params": []
+    },
+    {
+      "command_id": "media_player.media_previous_track",
+      "label": "Previous track",
+      "params": []
+    }
+  ]
+}

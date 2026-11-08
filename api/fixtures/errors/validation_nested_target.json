@@ -1,0 +1,23 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "Activity is invalid",
+    "details": [
+      {
+        "path": "/startup/0/params/entity_id",
+        "code": "forbidden_param",
+        "message": "entity_id is never accepted; target the registered device"
+      },
+      {
+        "path": "/bindings/volume_up:down/0/params/level",
+        "code": "invalid_param_type",
+        "message": "level must be a number"
+      },
+      {
+        "path": "/bindings/light_1:tap/0/params/target",
+        "code": "forbidden_param",
+        "message": "target is never accepted"
+      }
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "id": "dev_lg_tv",
+  "name": "Family Room LG TV",
+  "integration_id": "ha_main",
+  "kind": "tv",
+  "provider": {
+    "type": "home_assistant",
+    "entity_id": "media_player.family_room_lg_tv",
+    "unique_id": "1b2e6c3a-9f4d-4a7e-b1c2-d3e4f5a6b7c8"
+  },
+  "availability": "available",
+  "schema_version": 1,
+  "revision": 1
+}

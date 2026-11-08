@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "payload_too_large",
+    "message": "Body exceeds 32768 bytes"
+  }
+}

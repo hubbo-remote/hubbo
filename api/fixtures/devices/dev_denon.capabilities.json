@@ -1,0 +1,95 @@
+{
+  "device_id": "dev_denon",
+  "integration_id": "ha_main",
+  "commands": [
+    {
+      "command_id": "media_player.turn_on",
+      "label": "Power on",
+      "params": []
+    },
+    {
+      "command_id": "media_player.turn_off",
+      "label": "Power off",
+      "params": []
+    },
+    {
+      "command_id": "media_player.volume_up",
+      "label": "Volume up",
+      "params": []
+    },
+    {
+      "command_id": "media_player.volume_down",
+      "label": "Volume down",
+      "params": []
+    },
+    {
+      "command_id": "media_player.volume_set",
+      "label": "Set volume",
+      "params": [
+        {
+          "name": "level",
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 1,
+          "step": 0.01,
+          "label": "Level"
+        }
+      ]
+    },
+    {
+      "command_id": "media_player.volume_mute",
+      "label": "Mute",
+      "params": [
+        {
+          "name": "muted",
+          "type": "bool",
+          "required": true,
+          "label": "Muted"
+        }
+      ]
+    },
+    {
+      "command_id": "media_player.select_source",
+      "label": "Select source",
+      "params": [
+        {
+          "name": "source",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "Blu-ray",
+            "CBL/SAT",
+            "DVD",
+            "Game",
+            "Media Player",
+            "TV Audio",
+            "Tuner",
+            "Bluetooth"
+          ],
+          "label": "Source"
+        }
+      ]
+    },
+    {
+      "command_id": "media_player.select_sound_mode",
+      "label": "Sound mode",
+      "params": [
+        {
+          "name": "sound_mode",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "MUSIC",
+            "MOVIE",
+            "GAME",
+            "AUTO",
+            "STEREO",
+            "DIRECT"
+          ],
+          "label": "Sound mode"
+        }
+      ]
+    }
+  ]
+}

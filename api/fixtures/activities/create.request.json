@@ -1,0 +1,173 @@
+{
+  "name": "Play Xbox (copy)",
+  "startup": [
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_xbox",
+      "command_id": "media_player.turn_on",
+      "params": {}
+    },
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_lg_tv",
+      "command_id": "media_player.turn_on",
+      "params": {}
+    },
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_denon",
+      "command_id": "media_player.turn_on",
+      "params": {}
+    },
+    {
+      "integration_id": "system",
+      "device_id": null,
+      "command_id": "wait",
+      "params": {
+        "duration_ms": 2000
+      }
+    },
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_lg_tv",
+      "command_id": "media_player.select_source",
+      "params": {
+        "source": "HDMI 2"
+      }
+    },
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_denon",
+      "command_id": "media_player.select_source",
+      "params": {
+        "source": "Game"
+      }
+    },
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_denon",
+      "command_id": "media_player.select_sound_mode",
+      "params": {
+        "sound_mode": "GAME"
+      }
+    }
+  ],
+  "shutdown": [
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_xbox",
+      "command_id": "media_player.turn_off",
+      "params": {}
+    },
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_lg_tv",
+      "command_id": "media_player.turn_off",
+      "params": {}
+    },
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_denon",
+      "command_id": "media_player.turn_off",
+      "params": {}
+    }
+  ],
+  "bindings": {
+    "volume_up:down": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_denon",
+        "command_id": "media_player.volume_up",
+        "params": {}
+      }
+    ],
+    "volume_down:down": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_denon",
+        "command_id": "media_player.volume_down",
+        "params": {}
+      }
+    ],
+    "mute:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_denon",
+        "command_id": "media_player.volume_mute",
+        "params": {
+          "muted": true
+        }
+      }
+    ],
+    "mute:hold": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_denon",
+        "command_id": "media_player.volume_mute",
+        "params": {
+          "muted": false
+        }
+      }
+    ],
+    "play:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_xbox",
+        "command_id": "media_player.media_play_pause",
+        "params": {}
+      }
+    ],
+    "pause:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_xbox",
+        "command_id": "media_player.media_play_pause",
+        "params": {}
+      }
+    ],
+    "skip_forward:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_xbox",
+        "command_id": "media_player.media_next_track",
+        "params": {}
+      }
+    ],
+    "skip_backward:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_xbox",
+        "command_id": "media_player.media_previous_track",
+        "params": {}
+      }
+    ],
+    "light_1:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_family_room_lights",
+        "command_id": "light.turn_on",
+        "params": {
+          "brightness": 255
+        }
+      }
+    ],
+    "light_2:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_family_room_lights",
+        "command_id": "light.turn_off",
+        "params": {}
+      }
+    ],
+    "red:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_denon",
+        "command_id": "media_player.volume_set",
+        "params": {
+          "level": 0.35
+        }
+      }
+    ]
+  }
+}

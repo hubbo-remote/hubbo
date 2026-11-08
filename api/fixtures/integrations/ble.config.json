@@ -1,0 +1,13 @@
+{
+  "id": "ble",
+  "type": "ble_hid",
+  "name": "Bluetooth keyboard",
+  "enabled": true,
+  "settings": {
+    "type": "ble_hid",
+    "device_name": "Family Room Hubbo",
+    "bonded": true,
+    "peer_name": "Family Room"
+  },
+  "revision": 1
+}

@@ -1,0 +1,7 @@
+{
+  "status": "failed",
+  "device_id": "dev_apple_tv",
+  "command_id": "key_tap",
+  "elapsed_ms": 1,
+  "message": "Bluetooth host not connected"
+}

@@ -1,0 +1,6 @@
+{
+  "authenticated": true,
+  "role": "token",
+  "setup_required": false,
+  "auth_mode": "enforced"
+}

@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "setup_required",
+    "message": "Create the admin account first"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "error": {
+    "code": "device_in_use",
+    "message": "dev_sonos is used by 2 activities",
+    "details": [
+      {
+        "path": "/activities/act_watch_apple_tv/startup/1",
+        "code": "referenced",
+        "message": "Watch Apple TV startup step 2"
+      },
+      {
+        "path": "/activities/act_watch_apple_tv/bindings/volume_up:down/0",
+        "code": "referenced",
+        "message": "Watch Apple TV volume_up:down"
+      }
+    ]
+  }
+}

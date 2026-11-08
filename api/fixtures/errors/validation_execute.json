@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "Invalid params for media_player.select_source",
+    "details": [
+      {
+        "path": "/params/source",
+        "code": "invalid_enum_value",
+        "message": "source must be one of the device's sources"
+      }
+    ]
+  }
+}

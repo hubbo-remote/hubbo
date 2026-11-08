@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""Lint api/openapi.yaml and validate api/fixtures against it.
+
+Run via api/lint.sh (Docker). Checks:
+  1. The spec is valid OpenAPI 3.1.
+  2. Every operation has an operationId and x-hubbo-role; public/setup
+     operations declare `security: []`, the rest don't.
+  3. The spec agrees with the C++ it mirrors: the policy table in
+     core/src/auth/policy.cpp (role, method, CSRF exemption), the button and
+     event names (core/src/remote/), and the forbidden param names
+     (core/src/ha/capabilities.cpp).
+  4. Every fixture in fixtures/index.json validates against its operation's
+     request or response schema; malicious fixtures must fail.
+  5. Cross-references: actions in fixtures name fixture devices of the right
+     integration, existing command IDs, and params that satisfy the command's
+     ParamSpec list.
+  6. Secrets: secret-named properties are writeOnly in the spec, and no
+     response fixture contains one.
+"""
+import json
+import math
+import os
+import re
+import sys
+
+import yaml
+from jsonschema import Draft202012Validator
+from openapi_spec_validator import validate as validate_spec
+from referencing import Registry
+from referencing.jsonschema import DRAFT202012
+
+ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+SPEC_PATH = os.path.join(ROOT, "api", "openapi.yaml")
+FIXTURES = os.path.join(ROOT, "api", "fixtures")
+CORE_SRC = os.path.join(ROOT, "core", "src")
+SPEC_URI = "urn:hubbo:openapi"
+
+SECRET_KEYS = {"password", "current_password", "new_password", "access_token"}
+METHODS = ("get", "put", "post", "delete", "patch")
+ROLES = {"public", "setup", "token", "admin"}
+TRANSITIONS = {"activate", "off"}
+
+# Which fixtures carry activities, by operation (kind is ignored).
+ACTIVITY_OPS = {"getActivity", "createActivity", "replaceActivity", "validateActivity"}
+ACTIVITY_LIST_OPS = {"listActivities", "downloadBackup", "restoreBackup"}
+
+errors = []
+
+
+def fail(msg):
+    errors.append(msg)
+
+
+def read(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def resolve(spec, ref):
+    node = spec
+    for part in ref.lstrip("#/").split("/"):
+        node = node[part.replace("~1", "/").replace("~0", "~")]
+    return node
+
+
+def operations(spec):
+    for path, item in spec["paths"].items():
+        for method in METHODS:
+            if method in item:
+                yield path, method, item[method]
+
+
+# ---------------------------------------------------------------- spec
+
+def check_roles(spec):
+    """Returns {operationId: operation}."""
+    ops = {}
+    for path, method, op in operations(spec):
+        where = f"{method.upper()} {path}"
+        op_id = op.get("operationId")
+        role = op.get("x-hubbo-role")
+        if not op_id:
+            fail(f"{where}: missing operationId")
+            continue
+        if role not in ROLES:
+            fail(f"{where}: x-hubbo-role must be one of {sorted(ROLES)}")
+        anonymous = op.get("security") == []
+        if role in ("public", "setup") and not anonymous:
+            fail(f"{where}: role {role} needs `security: []`")
+        if role in ("token", "admin") and anonymous:
+            fail(f"{where}: role {role} must not set `security: []`")
+        if path.startswith("/admin/") and role != "admin":
+            fail(f"{where}: /admin paths must be admin-only")
+        ops[op_id] = dict(op, _method=method)
+    return ops
+
+
+def check_policy_table(ops):
+    rows = re.findall(
+        r'\{\s*Operation::\w+\s*,\s*"(\w+)"\s*,\s*Method::(\w+)\s*,\s*Requirement::(\w+)\s*,'
+        r'\s*Csrf::(\w+)\s*\}', read(os.path.join(CORE_SRC, "auth", "policy.cpp")))
+    table = {op_id: (method.lower(), req, csrf) for op_id, method, req, csrf in rows}
+    req_to_role = {"Public": "public", "SetupOnly": "setup", "TokenOrAdmin": "token", "AdminOnly": "admin"}
+    for op_id, op in ops.items():
+        if op_id not in table:
+            fail(f"policy.cpp: no entry for {op_id}")
+            continue
+        method, req, csrf = table[op_id]
+        if req_to_role.get(req) != op["x-hubbo-role"]:
+            fail(f"policy.cpp: {op_id} is {req}, spec says {op['x-hubbo-role']}")
+        if method != op["_method"]:
+            fail(f"policy.cpp: {op_id} method {method}, spec says {op['_method']}")
+        if (csrf == "Exempt") != bool(op.get("x-hubbo-csrf-exempt")):
+            fail(f"policy.cpp: {op_id} Csrf::{csrf} disagrees with x-hubbo-csrf-exempt")
+    for op_id in table:
+        if op_id not in ops:
+            fail(f"policy.cpp: {op_id} is not an operation in the spec")
+
+
+def check_core_names(spec):
+    schemas = spec["components"]["schemas"]
+    buttons = re.findall(r'\{Button::\w+, kGroup\w+, 0x[0-9A-Fa-f]+, "(\w+)"\}',
+                         read(os.path.join(CORE_SRC, "remote", "button.cpp")))
+    events = re.findall(r'"(\w+)"', re.search(r'kEventKindNames\[\] = \{([^}]*)\}',
+                                              read(os.path.join(CORE_SRC, "remote", "input.cpp"))).group(1))
+    if schemas["Button"]["enum"] != buttons:
+        fail("Button enum differs from core/src/remote/button.cpp")
+    if schemas["EventKind"]["enum"] != events:
+        fail("EventKind enum differs from core/src/remote/input.cpp")
+    trigger = f"^({'|'.join(buttons)}):({'|'.join(events)})$"
+    if schemas["Trigger"]["pattern"] != trigger:
+        fail(f"Trigger pattern should be {trigger}")
+    forbidden = re.findall(r'"(\w+)"', re.search(r'kForbiddenNames\[\] = \{([^}]*)\}',
+                                                 read(os.path.join(CORE_SRC, "ha", "capabilities.cpp"))).group(1))
+    if sorted(schemas["ParamName"]["not"]["enum"]) != sorted(forbidden):
+        fail("ParamName.not.enum differs from kForbiddenNames in core/src/ha/capabilities.cpp")
+
+
+def check_secret_props(spec, node, path="#"):
+    if isinstance(node, dict):
+        for key, sub in (node.get("properties") or {}).items():
+            target = resolve(spec, sub["$ref"]) if "$ref" in sub else sub
+            if key in SECRET_KEYS and not target.get("writeOnly"):
+                fail(f"{path}/properties/{key}: secret property must be writeOnly")
+        for k, v in node.items():
+            check_secret_props(spec, v, f"{path}/{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            check_secret_props(spec, v, f"{path}/{i}")
+
+
+# ---------------------------------------------------------------- fixtures
+
+def schema_ref(spec, op, kind):
+    if kind.startswith("request"):
+        content = op["requestBody"]["content"]
+    else:
+        resp = op["responses"][kind]
+        if "$ref" in resp:
+            resp = resolve(spec, resp["$ref"])
+        content = resp["content"]
+    return content["application/json"]["schema"]["$ref"]
+
+
+def find_secrets(value, path=""):
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if k in SECRET_KEYS:
+                yield f"{path}/{k}"
+            yield from find_secrets(v, f"{path}/{k}")
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            yield from find_secrets(v, f"{path}/{i}")
+
+
+def validate_fixtures(spec, ops, index):
+    """Schema-checks every fixture. Returns [(entry, data)]."""
+    registry = Registry().with_resource(SPEC_URI, DRAFT202012.create_resource(spec))
+    validators = {}
+    loaded = []
+    for entry in index:
+        name, op_id, kind = entry["file"], entry["operation"], entry["kind"]
+        data = json.loads(read(os.path.join(FIXTURES, name)))
+        loaded.append((entry, data))
+        op = ops.get(op_id)
+        if op is None:
+            fail(f"{name}: unknown operation {op_id}")
+            continue
+        try:
+            ref = schema_ref(spec, op, kind)
+        except KeyError:
+            fail(f"{name}: {op_id} has no JSON schema $ref for {kind}")
+            continue
+        if ref not in validators:
+            validators[ref] = Draft202012Validator(
+                {"$ref": SPEC_URI + ref}, registry=registry,
+                format_checker=Draft202012Validator.FORMAT_CHECKER)
+        problems = sorted(validators[ref].iter_errors(data), key=lambda e: list(e.absolute_path))
+        if kind == "request-invalid":
+            if not problems:
+                fail(f"{name}: malicious request unexpectedly passes the {op_id} schema")
+            continue
+        for p in problems[:5]:
+            fail(f"{name}: /{'/'.join(map(str, p.absolute_path))}: {p.message}")
+        if not kind.startswith("request"):
+            for path in find_secrets(data):
+                fail(f"{name}: response contains secret field {path}")
+    return loaded
+
+
+def check_params(where, params, spec_params, activity_ids):
+    by_name = {p["name"]: p for p in spec_params}
+    for name, value in params.items():
+        p = by_name.get(name)
+        if p is None:
+            fail(f"{where}: unknown param {name}")
+            continue
+        t = p["type"]
+        if t == "activity_ref":
+            if value not in activity_ids:
+                fail(f"{where}: {name}={value!r} is not a fixture activity")
+        elif t == "bool" and not isinstance(value, bool):
+            fail(f"{where}: {name} must be boolean")
+        elif t in ("number", "int"):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                fail(f"{where}: {name} must be a number")
+                continue
+            if t == "int" and value != int(value):
+                fail(f"{where}: {name} must be an integer")
+            if not p["minimum"] <= value <= p["maximum"]:
+                fail(f"{where}: {name}={value} outside {p['minimum']}..{p['maximum']}")
+        elif t == "enum" and value not in p["options"]:
+            fail(f"{where}: {name}={value!r} not in options")
+    for p in spec_params:
+        if p["required"] and p["name"] not in params:
+            fail(f"{where}: missing required param {p['name']}")
+
+
+class CrossRefs:
+    """Fixture devices, their commands and activities, for action checks."""
+
+    def __init__(self, files):
+        self.devices = {d["id"]: d for d in files["devices/list.json"]["devices"]}
+        self.commands = {}  # device id (None = system) -> {command_id: command}
+        for name, data in files.items():
+            if name.endswith(".capabilities.json"):
+                self.commands[data["device_id"]] = {c["command_id"]: c for c in data["commands"]}
+        system = next(i for i in files["integrations/list.json"]["integrations"] if i["id"] == "system")
+        self.commands[None] = {c["command_id"]: c for c in system.get("commands", [])}
+        self.activity_ids = {a["id"] for a in files["activities/list.json"]["activities"]}
+        for dev_id in self.devices:
+            if dev_id not in self.commands:
+                fail(f"no capabilities fixture for {dev_id}")
+
+    def check_action(self, where, action):
+        dev_id = action["device_id"]
+        expected = "system" if dev_id is None else self.devices.get(dev_id, {}).get("integration_id")
+        if expected is None:
+            fail(f"{where}: unknown device {dev_id}")
+            return
+        if expected != action["integration_id"]:
+            fail(f"{where}: {dev_id} belongs to {expected}, not {action['integration_id']}")
+        command = self.commands.get(dev_id, {}).get(action["command_id"])
+        if command is None:
+            fail(f"{where}: unknown command {action['command_id']}")
+            return
+        check_params(where, action["params"], command["params"], self.activity_ids)
+
+    def check_activity(self, name, act):
+        """Startup/shutdown never switch activity; a binding may only as its last action."""
+        steps = [(f"/{seq}/{i}", a, False) for seq in ("startup", "shutdown")
+                 for i, a in enumerate(act.get(seq, []))]
+        steps += [(f"/bindings/{t}/{i}", a, i == len(actions) - 1)
+                  for t, actions in act.get("bindings", {}).items() for i, a in enumerate(actions)]
+        for path, action, may_switch in steps:
+            where = f"{name}[{act.get('id', 'new')}] {path}"
+            self.check_action(where, action)
+            if action["device_id"] is None and action["command_id"] in TRANSITIONS and not may_switch:
+                fail(f"{where}: activate/off only as the last action of a binding")
+
+
+def activities_in(entry, data):
+    op = entry["operation"]
+    if entry["kind"] == "request-invalid":
+        return []
+    if op in ACTIVITY_OPS:
+        return [data]
+    if op == "getGlobalBindings" or op == "replaceGlobalBindings":
+        return [dict(data, id="global")]
+    if op in ACTIVITY_LIST_OPS and isinstance(data.get("activities"), list):
+        acts = list(data["activities"])
+        if "global_bindings" in data:
+            acts.append(dict(data["global_bindings"], id="global"))
+        return acts
+    return []
+
+
+def main():
+    spec = yaml.safe_load(read(SPEC_PATH))
+    try:
+        validate_spec(spec)
+    except Exception as e:  # noqa: BLE001
+        fail(f"openapi.yaml is not valid OpenAPI 3.1: {e}")
+    ops = check_roles(spec)
+    check_policy_table(ops)
+    check_core_names(spec)
+    check_secret_props(spec, spec["components"])
+
+    index = json.loads(read(os.path.join(FIXTURES, "index.json")))["fixtures"]
+    loaded = validate_fixtures(spec, ops, index)
+    refs = CrossRefs({entry["file"]: data for entry, data in loaded})
+    for entry, data in loaded:
+        for act in activities_in(entry, data):
+            refs.check_activity(entry["file"], act)
+
+    if errors:
+        print(f"FAILED ({len(errors)} problems):")
+        for e in errors:
+            print("  " + e)
+        return 1
+    print(f"OK: spec valid and matches core, {len(ops)} operations, {len(loaded)} fixtures validated")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

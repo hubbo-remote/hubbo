@@ -1,0 +1,10 @@
+{
+  "name": "TV Backlight",
+  "integration_id": "ha_main",
+  "kind": "switch",
+  "provider": {
+    "type": "home_assistant",
+    "entity_id": "switch.tv_backlight",
+    "unique_id": "0x00158d0001a2b3c4-switch"
+  }
+}

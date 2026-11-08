@@ -1,0 +1,147 @@
+{
+  "device_id": "dev_apple_tv",
+  "integration_id": "ble",
+  "commands": [
+    {
+      "command_id": "key_down",
+      "label": "Key down",
+      "params": [
+        {
+          "name": "key",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "ARROW_UP",
+            "ARROW_DOWN",
+            "ARROW_LEFT",
+            "ARROW_RIGHT",
+            "SELECT",
+            "MENU",
+            "AC_HOME",
+            "PLAY_PAUSE",
+            "SCAN_NEXT",
+            "SCAN_PREVIOUS",
+            "VOLUME_UP",
+            "VOLUME_DOWN",
+            "MUTE",
+            "RECORD",
+            "PAGE_UP",
+            "PAGE_DOWN",
+            "ENTER",
+            "KEY_0",
+            "KEY_1",
+            "KEY_2",
+            "KEY_3",
+            "KEY_4",
+            "KEY_5",
+            "KEY_6",
+            "KEY_7",
+            "KEY_8",
+            "KEY_9",
+            "KEY_I",
+            "F1",
+            "F2",
+            "F3",
+            "F4"
+          ],
+          "label": "Key"
+        }
+      ],
+      "description": "Press and hold a key until key_up."
+    },
+    {
+      "command_id": "key_up",
+      "label": "Key up",
+      "params": [
+        {
+          "name": "key",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "ARROW_UP",
+            "ARROW_DOWN",
+            "ARROW_LEFT",
+            "ARROW_RIGHT",
+            "SELECT",
+            "MENU",
+            "AC_HOME",
+            "PLAY_PAUSE",
+            "SCAN_NEXT",
+            "SCAN_PREVIOUS",
+            "VOLUME_UP",
+            "VOLUME_DOWN",
+            "MUTE",
+            "RECORD",
+            "PAGE_UP",
+            "PAGE_DOWN",
+            "ENTER",
+            "KEY_0",
+            "KEY_1",
+            "KEY_2",
+            "KEY_3",
+            "KEY_4",
+            "KEY_5",
+            "KEY_6",
+            "KEY_7",
+            "KEY_8",
+            "KEY_9",
+            "KEY_I",
+            "F1",
+            "F2",
+            "F3",
+            "F4"
+          ],
+          "label": "Key"
+        }
+      ],
+      "description": "Release a key."
+    },
+    {
+      "command_id": "key_tap",
+      "label": "Key tap",
+      "params": [
+        {
+          "name": "key",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "ARROW_UP",
+            "ARROW_DOWN",
+            "ARROW_LEFT",
+            "ARROW_RIGHT",
+            "SELECT",
+            "MENU",
+            "AC_HOME",
+            "PLAY_PAUSE",
+            "SCAN_NEXT",
+            "SCAN_PREVIOUS",
+            "VOLUME_UP",
+            "VOLUME_DOWN",
+            "MUTE",
+            "RECORD",
+            "PAGE_UP",
+            "PAGE_DOWN",
+            "ENTER",
+            "KEY_0",
+            "KEY_1",
+            "KEY_2",
+            "KEY_3",
+            "KEY_4",
+            "KEY_5",
+            "KEY_6",
+            "KEY_7",
+            "KEY_8",
+            "KEY_9",
+            "KEY_I",
+            "F1",
+            "F2",
+            "F3",
+            "F4"
+          ],
+          "label": "Key"
+        }
+      ],
+      "description": "Press and release a key."
+    }
+  ]
+}

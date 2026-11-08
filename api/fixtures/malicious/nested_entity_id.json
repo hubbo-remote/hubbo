@@ -1,0 +1,336 @@
+{
+  "name": "Watch Apple TV",
+  "startup": [
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_lg_tv",
+      "command_id": "media_player.turn_on",
+      "params": {
+        "entity_id": "all"
+      }
+    }
+  ],
+  "shutdown": [
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_lg_tv",
+      "command_id": "media_player.turn_off",
+      "params": {}
+    },
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_sonos",
+      "command_id": "media_player.media_pause",
+      "params": {}
+    }
+  ],
+  "bindings": {
+    "up:down": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_down",
+        "params": {
+          "key": "ARROW_UP"
+        }
+      }
+    ],
+    "up:up": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_up",
+        "params": {
+          "key": "ARROW_UP"
+        }
+      }
+    ],
+    "down:down": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_down",
+        "params": {
+          "key": "ARROW_DOWN"
+        }
+      }
+    ],
+    "down:up": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_up",
+        "params": {
+          "key": "ARROW_DOWN"
+        }
+      }
+    ],
+    "left:down": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_down",
+        "params": {
+          "key": "ARROW_LEFT"
+        }
+      }
+    ],
+    "left:up": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_up",
+        "params": {
+          "key": "ARROW_LEFT"
+        }
+      }
+    ],
+    "right:down": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_down",
+        "params": {
+          "key": "ARROW_RIGHT"
+        }
+      }
+    ],
+    "right:up": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_up",
+        "params": {
+          "key": "ARROW_RIGHT"
+        }
+      }
+    ],
+    "select:down": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_down",
+        "params": {
+          "key": "SELECT"
+        }
+      }
+    ],
+    "select:up": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_up",
+        "params": {
+          "key": "SELECT"
+        }
+      }
+    ],
+    "menu:down": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_down",
+        "params": {
+          "key": "MENU"
+        }
+      }
+    ],
+    "menu:up": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_up",
+        "params": {
+          "key": "MENU"
+        }
+      }
+    ],
+    "back:down": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_down",
+        "params": {
+          "key": "AC_HOME"
+        }
+      }
+    ],
+    "back:up": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_up",
+        "params": {
+          "key": "AC_HOME"
+        }
+      }
+    ],
+    "exit:down": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_down",
+        "params": {
+          "key": "AC_HOME"
+        }
+      }
+    ],
+    "exit:up": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_up",
+        "params": {
+          "key": "AC_HOME"
+        }
+      }
+    ],
+    "skip_forward:down": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_down",
+        "params": {
+          "key": "SCAN_NEXT"
+        }
+      }
+    ],
+    "skip_forward:up": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_up",
+        "params": {
+          "key": "SCAN_NEXT"
+        }
+      }
+    ],
+    "skip_backward:down": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_down",
+        "params": {
+          "key": "SCAN_PREVIOUS"
+        }
+      }
+    ],
+    "skip_backward:up": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_up",
+        "params": {
+          "key": "SCAN_PREVIOUS"
+        }
+      }
+    ],
+    "play:tap": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_tap",
+        "params": {
+          "key": "PLAY_PAUSE"
+        }
+      }
+    ],
+    "pause:tap": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_tap",
+        "params": {
+          "key": "PLAY_PAUSE"
+        }
+      }
+    ],
+    "info:hold": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_tap",
+        "params": {
+          "key": "KEY_I"
+        }
+      }
+    ],
+    "volume_up:down": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_sonos",
+        "command_id": "media_player.volume_up",
+        "params": {}
+      }
+    ],
+    "volume_down:down": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_sonos",
+        "command_id": "media_player.volume_down",
+        "params": {}
+      }
+    ],
+    "mute:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_sonos",
+        "command_id": "media_player.volume_mute",
+        "params": {
+          "muted": true
+        }
+      }
+    ],
+    "plus:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_family_room_lights",
+        "command_id": "light.brightness_step",
+        "params": {
+          "step": 32
+        }
+      }
+    ],
+    "minus:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_family_room_lights",
+        "command_id": "light.brightness_step",
+        "params": {
+          "step": -32
+        }
+      }
+    ],
+    "light_1:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_family_room_lights",
+        "command_id": "light.turn_on",
+        "params": {
+          "brightness": 255,
+          "transition": 1
+        }
+      }
+    ],
+    "light_2:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_family_room_lights",
+        "command_id": "light.turn_off",
+        "params": {
+          "transition": 1
+        }
+      }
+    ],
+    "blue:tap": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "key_tap",
+        "params": {
+          "key": "F1"
+        }
+      }
+    ]
+  }
+}

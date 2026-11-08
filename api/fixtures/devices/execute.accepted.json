@@ -1,0 +1,6 @@
+{
+  "status": "accepted",
+  "device_id": "dev_denon",
+  "command_id": "media_player.volume_set",
+  "elapsed_ms": 84
+}

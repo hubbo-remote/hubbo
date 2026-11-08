@@ -1,0 +1,75 @@
+{
+  "name": "Watch Apple TV",
+  "startup": [
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_lg_tv",
+      "command_id": "media_player.turn_on",
+      "params": {}
+    },
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_sonos",
+      "command_id": "media_player.select_source",
+      "params": {
+        "source": "TV"
+      }
+    },
+    {
+      "integration_id": "system",
+      "device_id": null,
+      "command_id": "wait",
+      "params": {
+        "duration_ms": 1500
+      }
+    },
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_lg_tv",
+      "command_id": "media_player.select_source",
+      "params": {
+        "source": "HDMI 1"
+      }
+    },
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_family_room_lights",
+      "command_id": "light.turn_on",
+      "params": {
+        "brightness": 64,
+        "color_temp_kelvin": 2700,
+        "transition": 2
+      }
+    }
+  ],
+  "shutdown": [
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_lg_tv",
+      "command_id": "media_player.turn_off",
+      "params": {}
+    },
+    {
+      "integration_id": "ha_main",
+      "device_id": "dev_sonos",
+      "command_id": "media_player.media_pause",
+      "params": {}
+    }
+  ],
+  "bindings": {
+    "light_1:tap": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_family_room_lights",
+        "command_id": "light.turn_on",
+        "params": {
+          "brightness": {
+            "target": {
+              "area_id": "house"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,149 @@
+{
+  "candidates": [
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "media_player.family_room_denon",
+        "unique_id": "c5a1e0b2f3d44c1aa1b2c3d4e5f60718"
+      },
+      "name": "Family Room Denon",
+      "domain": "media_player",
+      "state": "off",
+      "supported": true,
+      "command_ids": [
+        "media_player.turn_on",
+        "media_player.turn_off",
+        "media_player.volume_up",
+        "media_player.volume_down",
+        "media_player.volume_set",
+        "media_player.volume_mute",
+        "media_player.select_source",
+        "media_player.select_sound_mode"
+      ],
+      "registered_device_id": "dev_denon"
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "media_player.family_room_sonos",
+        "unique_id": "RINCON_48A6B8000000001400"
+      },
+      "name": "Family Room Sonos",
+      "domain": "media_player",
+      "state": "idle",
+      "supported": true,
+      "command_ids": [
+        "media_player.volume_up",
+        "media_player.volume_down",
+        "media_player.volume_set",
+        "media_player.volume_mute",
+        "media_player.media_play_pause",
+        "media_player.media_play",
+        "media_player.media_pause",
+        "media_player.media_stop",
+        "media_player.media_next_track",
+        "media_player.media_previous_track",
+        "media_player.select_source",
+        "media_player.shuffle_set",
+        "media_player.repeat_set"
+      ],
+      "registered_device_id": "dev_sonos"
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "media_player.family_room_lg_tv",
+        "unique_id": "1b2e6c3a-9f4d-4a7e-b1c2-d3e4f5a6b7c8"
+      },
+      "name": "Family Room LG TV",
+      "domain": "media_player",
+      "state": "off",
+      "supported": true,
+      "command_ids": [
+        "media_player.turn_on",
+        "media_player.turn_off",
+        "media_player.volume_up",
+        "media_player.volume_down",
+        "media_player.volume_mute",
+        "media_player.media_play_pause",
+        "media_player.media_play",
+        "media_player.media_pause",
+        "media_player.media_stop",
+        "media_player.media_next_track",
+        "media_player.media_previous_track",
+        "media_player.select_source"
+      ],
+      "registered_device_id": "dev_lg_tv"
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "media_player.xbox",
+        "unique_id": "FD00112233445566"
+      },
+      "name": "Xbox",
+      "domain": "media_player",
+      "state": "off",
+      "supported": true,
+      "command_ids": [
+        "media_player.turn_on",
+        "media_player.turn_off",
+        "media_player.volume_up",
+        "media_player.volume_down",
+        "media_player.volume_mute",
+        "media_player.media_play_pause",
+        "media_player.media_play",
+        "media_player.media_pause",
+        "media_player.media_next_track",
+        "media_player.media_previous_track"
+      ],
+      "registered_device_id": "dev_xbox"
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "light.family_room",
+        "unique_id": "7d3e2a1b-4c5d-4e6f-8a9b-0c1d2e3f4a5b"
+      },
+      "name": "Family Room Lights",
+      "domain": "light",
+      "state": "on",
+      "supported": true,
+      "command_ids": [
+        "light.turn_on",
+        "light.turn_off",
+        "light.brightness_step"
+      ],
+      "registered_device_id": "dev_family_room_lights"
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "switch.tv_backlight",
+        "unique_id": "0x00158d0001a2b3c4-switch"
+      },
+      "name": "TV Backlight",
+      "domain": "switch",
+      "state": "off",
+      "supported": true,
+      "command_ids": [
+        "switch.turn_on",
+        "switch.turn_off"
+      ],
+      "registered_device_id": null
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "media_player.kitchen_display"
+      },
+      "name": "Kitchen Display",
+      "domain": "media_player",
+      "state": "unavailable",
+      "supported": false,
+      "command_ids": [],
+      "registered_device_id": null
+    }
+  ],
+  "next_cursor": null
+}

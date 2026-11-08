@@ -1,0 +1,13 @@
+{
+  "id": "dev_apple_tv",
+  "name": "Family Room Apple TV",
+  "integration_id": "ble",
+  "kind": "streamer",
+  "provider": {
+    "type": "ble_hid",
+    "peer_name": "Family Room"
+  },
+  "availability": "available",
+  "schema_version": 1,
+  "revision": 1
+}

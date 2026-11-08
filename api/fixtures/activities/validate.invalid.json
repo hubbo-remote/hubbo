@@ -1,0 +1,20 @@
+{
+  "valid": false,
+  "errors": [
+    {
+      "path": "/bindings/volume_up:down/0/params/level",
+      "code": "param_out_of_range",
+      "message": "level must be between 0 and 1"
+    },
+    {
+      "path": "/startup/2/device_id",
+      "code": "unknown_device",
+      "message": "dev_projector is not registered"
+    },
+    {
+      "path": "/bindings/play:tap/0/integration_id",
+      "code": "integration_mismatch",
+      "message": "dev_apple_tv belongs to integration ble, not ha_main"
+    }
+  ]
+}

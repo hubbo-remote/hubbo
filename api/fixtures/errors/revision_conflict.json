@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "revision_conflict",
+    "message": "Activity changed since revision 3",
+    "current_revision": 4
+  }
+}

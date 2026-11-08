@@ -1,0 +1,68 @@
+{
+  "integrations": [
+    {
+      "id": "system",
+      "type": "system",
+      "name": "System",
+      "enabled": true,
+      "state": "connected",
+      "device_count": 0,
+      "commands": [
+        {
+          "command_id": "wait",
+          "label": "Wait",
+          "params": [
+            {
+              "name": "duration_ms",
+              "type": "int",
+              "required": true,
+              "minimum": 0,
+              "maximum": 60000,
+              "step": 1,
+              "unit": "ms",
+              "label": "Duration"
+            }
+          ],
+          "description": "Pause the sequence. Does not block the remote."
+        },
+        {
+          "command_id": "activate",
+          "label": "Switch activity",
+          "params": [
+            {
+              "name": "activity_id",
+              "type": "activity_ref",
+              "required": true,
+              "label": "Activity"
+            }
+          ],
+          "description": "Switch to another activity. Only as the last action of a binding."
+        },
+        {
+          "command_id": "off",
+          "label": "Off",
+          "params": [],
+          "description": "Run the active activity's shutdown. Only as the last action of a binding."
+        }
+      ]
+    },
+    {
+      "id": "ble",
+      "type": "ble_hid",
+      "name": "Bluetooth keyboard",
+      "enabled": true,
+      "state": "connected",
+      "detail": "Bonded to Family Room",
+      "device_count": 1
+    },
+    {
+      "id": "ha_main",
+      "type": "home_assistant",
+      "name": "Home Assistant",
+      "enabled": true,
+      "state": "connected",
+      "detail": "Home Assistant 2026.11.1",
+      "device_count": 5
+    }
+  ]
+}

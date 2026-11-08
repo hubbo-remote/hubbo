@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "unauthenticated",
+    "message": "Log in or send an API token"
+  }
+}

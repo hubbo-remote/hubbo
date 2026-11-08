@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "integration_unavailable",
+    "message": "Home Assistant is not connected"
+  }
+}

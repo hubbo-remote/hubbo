@@ -1,0 +1,14 @@
+{
+  "id": "ha_main",
+  "type": "home_assistant",
+  "name": "Home Assistant",
+  "enabled": true,
+  "settings": {
+    "type": "home_assistant",
+    "url": "https://homeassistant.local:8123",
+    "verify_tls": true,
+    "ca_cert_pem": null,
+    "has_access_token": true
+  },
+  "revision": 2
+}

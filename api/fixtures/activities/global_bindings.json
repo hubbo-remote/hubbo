@@ -1,0 +1,51 @@
+{
+  "bindings": {
+    "tv:tap": [
+      {
+        "integration_id": "system",
+        "device_id": null,
+        "command_id": "activate",
+        "params": {
+          "activity_id": "act_watch_apple_tv"
+        }
+      }
+    ],
+    "movie:tap": [
+      {
+        "integration_id": "system",
+        "device_id": null,
+        "command_id": "activate",
+        "params": {
+          "activity_id": "act_watch_apple_tv"
+        }
+      }
+    ],
+    "music:tap": [
+      {
+        "integration_id": "system",
+        "device_id": null,
+        "command_id": "activate",
+        "params": {
+          "activity_id": "act_play_xbox"
+        }
+      }
+    ],
+    "off:tap": [
+      {
+        "integration_id": "system",
+        "device_id": null,
+        "command_id": "off",
+        "params": {}
+      }
+    ],
+    "light_1:hold": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_family_room_lights",
+        "command_id": "light.turn_off",
+        "params": {}
+      }
+    ]
+  },
+  "revision": 6
+}

@@ -1,0 +1,7 @@
+{
+  "authenticated": true,
+  "role": "admin",
+  "username": "simulator",
+  "setup_required": false,
+  "auth_mode": "simulator_no_auth"
+}

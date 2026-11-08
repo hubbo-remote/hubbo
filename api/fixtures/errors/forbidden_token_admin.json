@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "forbidden",
+    "message": "API tokens cannot register devices"
+  }
+}

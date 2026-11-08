@@ -1,0 +1,251 @@
+{
+  "buttons": [
+    {
+      "name": "up",
+      "group": "keypad",
+      "label": "Up"
+    },
+    {
+      "name": "down",
+      "group": "keypad",
+      "label": "Down"
+    },
+    {
+      "name": "left",
+      "group": "keypad",
+      "label": "Left"
+    },
+    {
+      "name": "right",
+      "group": "keypad",
+      "label": "Right"
+    },
+    {
+      "name": "select",
+      "group": "keypad",
+      "label": "OK"
+    },
+    {
+      "name": "menu",
+      "group": "keypad",
+      "label": "Menu"
+    },
+    {
+      "name": "number_1",
+      "group": "keypad",
+      "label": "1"
+    },
+    {
+      "name": "number_2",
+      "group": "keypad",
+      "label": "2"
+    },
+    {
+      "name": "number_3",
+      "group": "keypad",
+      "label": "3"
+    },
+    {
+      "name": "number_4",
+      "group": "keypad",
+      "label": "4"
+    },
+    {
+      "name": "number_5",
+      "group": "keypad",
+      "label": "5"
+    },
+    {
+      "name": "number_6",
+      "group": "keypad",
+      "label": "6"
+    },
+    {
+      "name": "number_7",
+      "group": "keypad",
+      "label": "7"
+    },
+    {
+      "name": "number_8",
+      "group": "keypad",
+      "label": "8"
+    },
+    {
+      "name": "number_9",
+      "group": "keypad",
+      "label": "9"
+    },
+    {
+      "name": "number_0",
+      "group": "keypad",
+      "label": "0"
+    },
+    {
+      "name": "number_dot_dash",
+      "group": "keypad",
+      "label": "-/."
+    },
+    {
+      "name": "number_enter",
+      "group": "keypad",
+      "label": "Enter"
+    },
+    {
+      "name": "off",
+      "group": "media_home",
+      "label": "Off"
+    },
+    {
+      "name": "music",
+      "group": "media_home",
+      "label": "Music"
+    },
+    {
+      "name": "tv",
+      "group": "media_home",
+      "label": "TV"
+    },
+    {
+      "name": "movie",
+      "group": "media_home",
+      "label": "Movie"
+    },
+    {
+      "name": "light_1",
+      "group": "media_home",
+      "label": "Light 1"
+    },
+    {
+      "name": "light_2",
+      "group": "media_home",
+      "label": "Light 2"
+    },
+    {
+      "name": "plus",
+      "group": "media_home",
+      "label": "+"
+    },
+    {
+      "name": "minus",
+      "group": "media_home",
+      "label": "−"
+    },
+    {
+      "name": "switch_1",
+      "group": "media_home",
+      "label": "Switch 1"
+    },
+    {
+      "name": "switch_2",
+      "group": "media_home",
+      "label": "Switch 2"
+    },
+    {
+      "name": "red",
+      "group": "media_home",
+      "label": "Red"
+    },
+    {
+      "name": "green",
+      "group": "media_home",
+      "label": "Green"
+    },
+    {
+      "name": "yellow",
+      "group": "media_home",
+      "label": "Yellow"
+    },
+    {
+      "name": "blue",
+      "group": "media_home",
+      "label": "Blue"
+    },
+    {
+      "name": "dvr",
+      "group": "media_home",
+      "label": "DVR"
+    },
+    {
+      "name": "guide",
+      "group": "media_home",
+      "label": "Guide"
+    },
+    {
+      "name": "info",
+      "group": "media_home",
+      "label": "Info"
+    },
+    {
+      "name": "back",
+      "group": "media_home",
+      "label": "Back"
+    },
+    {
+      "name": "exit",
+      "group": "media_home",
+      "label": "Exit"
+    },
+    {
+      "name": "volume_up",
+      "group": "media_home",
+      "label": "Vol +"
+    },
+    {
+      "name": "volume_down",
+      "group": "media_home",
+      "label": "Vol −"
+    },
+    {
+      "name": "mute",
+      "group": "media_home",
+      "label": "Mute"
+    },
+    {
+      "name": "channel_up",
+      "group": "media_home",
+      "label": "Ch +"
+    },
+    {
+      "name": "channel_down",
+      "group": "media_home",
+      "label": "Ch −"
+    },
+    {
+      "name": "skip_backward",
+      "group": "media_home",
+      "label": "Skip back"
+    },
+    {
+      "name": "skip_forward",
+      "group": "media_home",
+      "label": "Skip fwd"
+    },
+    {
+      "name": "play",
+      "group": "media_home",
+      "label": "Play"
+    },
+    {
+      "name": "pause",
+      "group": "media_home",
+      "label": "Pause"
+    },
+    {
+      "name": "record",
+      "group": "media_home",
+      "label": "Record"
+    },
+    {
+      "name": "stop",
+      "group": "media_home",
+      "label": "Stop"
+    }
+  ],
+  "event_kinds": [
+    "down",
+    "up",
+    "tap",
+    "hold"
+  ],
+  "hold_ms": 800
+}

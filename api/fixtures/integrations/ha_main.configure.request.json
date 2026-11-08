@@ -1,0 +1,9 @@
+{
+  "settings": {
+    "type": "home_assistant",
+    "url": "https://homeassistant.local:8123",
+    "verify_tls": true,
+    "access_token": "eyJhbGciOiJIUzI1NiJ9.example-not-a-real-token"
+  },
+  "revision": 2
+}

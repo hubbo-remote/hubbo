@@ -1,0 +1,1965 @@
+openapi: 3.1.0
+info:
+  title: Hubbo API
+  version: 0.1.0
+  license:
+    name: AGPL-3.0-or-later
+    identifier: AGPL-3.0-or-later
+  summary: Local REST API of a Hubbo hub (Harmony Hub replacement).
+  description: |
+    Source of truth for `/api/v1`. The web UI, LLM agents, the TypeScript mock
+    server and the native simulator all implement or consume this contract.
+
+    ## Conventions
+
+    * **Roles.** Every operation carries `x-hubbo-role`:
+      * `public`: no credentials.
+      * `setup`: no credentials, and only while no admin account exists.
+      * `token`: an API token **or** the admin session.
+      * `admin`: the admin session only. API tokens get `403 forbidden`.
+      The table is mirrored in `core/src/auth/policy.cpp`; `api/lint.sh` fails if
+      the two disagree. Cookie-authenticated POST/PUT/DELETE need the CSRF
+      header except where `x-hubbo-csrf-exempt: true` (login, setup).
+    * **Credentials.** Browser: `hubbo_session` cookie from `POST /auth/login`
+      plus the `X-Hubbo-CSRF` header on every unsafe request (POST/PUT/DELETE).
+      Agents: `Authorization: Bearer hbt_...`. Bearer requests need no CSRF header.
+    * **Bodies.** Requests with a body must be `Content-Type: application/json`
+      (except firmware upload), otherwise `415 unsupported_media_type`. Unknown fields
+      are rejected. Default body limit
+      is 16 KiB; activity bodies 32 KiB; restore 256 KiB (`x-hubbo-max-body`).
+      JSON nesting deeper than 8 levels is rejected.
+    * **Errors.** Every non-2xx response has the `Error` body.
+    * **Optimistic concurrency.** Editable documents (activities, devices,
+      integration settings) carry an integer `revision`. Replace/delete must send
+      the revision they were based on; a stale one gets `409 revision_conflict`
+      with `current_revision`. No `ETag`/`If-Match`.
+    * **IDs.** Server-assigned, prefixed (`dev_`, `act_`, `tok_`). Integration
+      IDs are fixed per instance (`system`, `ble`, `ha_main`). IDs are stable;
+      names are for humans and never used to execute anything.
+    * **Triggers** are `"<button>:<event>"`, e.g. `"volume_up:down"`,
+      `"info:hold"`. Buttons come from `GET /remote/buttons`; events are
+      `down`, `up`, `tap`, `hold`.
+    * **Secrets** (passwords, HA access token) are `writeOnly`: accepted, never
+      returned. API token plaintext is returned once, at creation.
+    * **Command execution** returns `200` with `status: accepted|failed|timeout`
+      once the command was handed to an adapter. `accepted` means the
+      integration took it, not that the device physically responded. A `4xx`
+      means nothing was sent.
+  x-hubbo-limits:
+    # Mirrors core/include/hubbo/domain/limits.h where both define a bound.
+    max_devices: 64
+    max_activities: 16
+    max_sequence_actions: 32
+    max_binding_actions: 32
+    max_params_per_action: 4
+    max_param_string_length: 32
+    max_api_tokens: 16
+    max_sessions: 8
+    max_wait_ms: 60000
+    name_max_length: 64
+servers:
+  - url: /api/v1
+security:
+  - sessionCookie: []
+  - bearerToken: []
+tags:
+  - name: status
+  - name: auth
+  - name: remote
+  - name: devices
+  - name: activities
+  - name: integrations
+  - name: admin
+paths:
+  /status:
+    get:
+      tags: [status]
+      operationId: getStatus
+      x-hubbo-role: token
+      summary: Hub status and diagnostics
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Status'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+
+  /remote/status:
+    get:
+      tags: [remote]
+      operationId: getRemoteStatus
+      x-hubbo-role: token
+      summary: Remote pairing and radio status
+      responses:
+        '200':
+          description: Remote status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RemoteStatus'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+
+  /remote/buttons:
+    get:
+      tags: [remote]
+      operationId: listRemoteButtons
+      x-hubbo-role: token
+      summary: Buttons and trigger event kinds of the remote
+      responses:
+        '200':
+          description: Buttons
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RemoteButtons'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+
+  /auth/setup:
+    post:
+      tags: [auth]
+      operationId: setupAdmin
+      x-hubbo-role: setup
+      x-hubbo-csrf-exempt: true
+      x-hubbo-max-body: 1024
+      summary: Create the admin account (first run only)
+      description: |
+        Only succeeds while no admin exists; afterwards `409 setup_already_done`.
+        On success the caller is logged in (same response as login).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetupRequest'}
+      responses:
+        '201':
+          description: Admin created and logged in
+          headers:
+            Set-Cookie: {$ref: '#/components/headers/SessionCookie'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Session'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      x-hubbo-role: public
+      x-hubbo-csrf-exempt: true
+      x-hubbo-max-body: 1024
+      summary: Log in as admin
+      description: |
+        Sets an HttpOnly, SameSite=Strict `hubbo_session` cookie (`Secure` when
+        served over HTTPS). The response carries the CSRF token the client must
+        echo in `X-Hubbo-CSRF`. Failed attempts are rate limited per client and
+        globally (`429` with `Retry-After`). The `Origin` header, when present,
+        must match the hub's host.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginRequest'}
+      responses:
+        '200':
+          description: Logged in
+          headers:
+            Set-Cookie: {$ref: '#/components/headers/SessionCookie'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Session'}
+        '401':
+          description: Wrong username or password (`invalid_credentials`)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '409':
+          description: No admin account yet (`setup_required`)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      x-hubbo-role: public
+      summary: End the current session
+      description: Idempotent. Clears the cookie; deletes the session if it exists.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '204':
+          description: Logged out
+          headers:
+            Set-Cookie: {$ref: '#/components/headers/SessionCookie'}
+
+  /auth/session:
+    get:
+      tags: [auth]
+      operationId: getSession
+      x-hubbo-role: public
+      summary: Who am I
+      description: |
+        Always `200`. Tells the UI whether to show the first-run wizard
+        (`setup_required`), the login page, or the app, and whether the hub runs
+        the simulator auth bypass.
+      security: []
+      responses:
+        '200':
+          description: Session state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Session'}
+
+  /devices:
+    get:
+      tags: [devices]
+      operationId: listDevices
+      x-hubbo-role: token
+      summary: Registered devices
+      responses:
+        '200':
+          description: Devices
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeviceList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+
+  /devices/{device_id}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceIdPath'
+    get:
+      tags: [devices]
+      operationId: getDevice
+      x-hubbo-role: token
+      summary: One registered device
+      responses:
+        '200':
+          description: Device
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Device'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /devices/{device_id}/capabilities:
+    parameters:
+      - $ref: '#/components/parameters/DeviceIdPath'
+    get:
+      tags: [devices]
+      operationId: getDeviceCapabilities
+      x-hubbo-role: token
+      summary: Commands this device accepts, with parameter schemas
+      responses:
+        '200':
+          description: Capabilities
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeviceCapabilities'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /devices/{device_id}/commands/{command_id}/execute:
+    parameters:
+      - $ref: '#/components/parameters/DeviceIdPath'
+      - name: command_id
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/CommandId'}
+    post:
+      tags: [devices]
+      operationId: executeCommand
+      x-hubbo-role: token
+      x-hubbo-max-body: 2048
+      summary: Run one registered command now
+      description: |
+        Uses the same executor as activities. The target is the registered
+        device; the body holds only typed params checked against the command's
+        parameter schema. `200` means the command reached the adapter; read
+        `status`. `4xx` means nothing was sent.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ExecuteRequest'}
+      responses:
+        '200':
+          description: Handed to the adapter
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ExecuteResult'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /activities:
+    get:
+      tags: [activities]
+      operationId: listActivities
+      x-hubbo-role: token
+      summary: All activities and the active one
+      responses:
+        '200':
+          description: Activities
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActivityList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+    post:
+      tags: [activities]
+      operationId: createActivity
+      x-hubbo-role: token
+      x-hubbo-max-body: 32768
+      summary: Create an activity in one request
+      description: Validated exactly like `POST /activities/validate`; nothing is stored unless valid.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ActivityInput'}
+      responses:
+        '201':
+          description: Created
+          headers:
+            Location:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Activity'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /activities/validate:
+    post:
+      tags: [activities]
+      operationId: validateActivity
+      x-hubbo-role: token
+      x-hubbo-max-body: 32768
+      summary: Dry-run validation of an activity
+      description: |
+        Runs every check a create/replace would (schema, registered devices,
+        integration ownership, command IDs, param bounds, triggers) without
+        storing anything. Returns `200` whether or not it is valid. `id` and
+        `revision` may be present (for checking an edited copy) and are ignored.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ActivityReplace'}
+      responses:
+        '200':
+          description: Validation outcome
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ValidationResult'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+
+  /activities/off:
+    post:
+      tags: [activities]
+      operationId: activitiesOff
+      x-hubbo-role: token
+      summary: Run the active activity's shutdown and clear it
+      description: |
+        Same as the remote's Off button. Runs only the current activity's
+        shutdown sequence. With no active activity it does nothing and returns
+        `shutdown_actions: 0`.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '202':
+          description: Shutdown queued
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TransitionResult'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /activities/{activity_id}:
+    parameters:
+      - $ref: '#/components/parameters/ActivityIdPath'
+    get:
+      tags: [activities]
+      operationId: getActivity
+      x-hubbo-role: token
+      summary: One activity
+      responses:
+        '200':
+          description: Activity
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Activity'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      tags: [activities]
+      operationId: replaceActivity
+      x-hubbo-role: token
+      x-hubbo-max-body: 32768
+      summary: Atomically replace an activity
+      description: |
+        Whole-document replace. Send the `revision` you read; `id` and
+        `schema_version` may be echoed back unchanged, so GET → edit → PUT works.
+        If this is the active activity the new mapping takes effect atomically;
+        the startup sequence does not re-run.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ActivityReplace'}
+      responses:
+        '200':
+          description: Replaced
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Activity'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+    delete:
+      tags: [activities]
+      operationId: deleteActivity
+      x-hubbo-role: token
+      summary: Delete an activity
+      description: Deleting the active activity switches the hub to the next activity (the one that takes its list position, wrapping to the first) and runs its startup. No shutdown runs. The hub is inactive only when no activities remain.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+        - $ref: '#/components/parameters/RevisionQuery'
+      responses:
+        '204': {description: Deleted}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /activities/{activity_id}/activate:
+    parameters:
+      - $ref: '#/components/parameters/ActivityIdPath'
+    post:
+      tags: [activities]
+      operationId: activateActivity
+      x-hubbo-role: token
+      summary: Switch to this activity
+      description: |
+        Selects the activity's mapping atomically and queues its startup
+        sequence. Never runs the previous activity's shutdown. Activating the
+        already active activity re-runs its startup.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '202':
+          description: Switched; startup queued
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TransitionResult'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /global-bindings:
+    get:
+      tags: [activities]
+      operationId: getGlobalBindings
+      x-hubbo-role: token
+      summary: Bindings that apply whatever activity is active
+      description: |
+        Used when the active activity (or no activity) does not bind the
+        trigger. This is where activity buttons live, e.g.
+        `"tv:tap": [system/activate {activity_id}]` and `"off:tap": [system/off]`.
+      responses:
+        '200':
+          description: Global bindings
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GlobalBindings'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+    put:
+      tags: [activities]
+      operationId: replaceGlobalBindings
+      x-hubbo-role: token
+      x-hubbo-max-body: 32768
+      summary: Atomically replace the global bindings
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GlobalBindings'}
+      responses:
+        '200':
+          description: Replaced
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GlobalBindings'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /integrations:
+    get:
+      tags: [integrations]
+      operationId: listIntegrations
+      x-hubbo-role: token
+      summary: Integration instances (safe summaries, no settings or secrets)
+      responses:
+        '200':
+          description: Integrations
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IntegrationList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+
+  /admin/integrations/{integration_id}:
+    parameters:
+      - $ref: '#/components/parameters/IntegrationIdPath'
+    get:
+      tags: [admin]
+      operationId: getIntegrationConfig
+      x-hubbo-role: admin
+      summary: Integration settings (secrets reported only as `has_*` flags)
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IntegrationConfig'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      tags: [admin]
+      operationId: configureIntegration
+      x-hubbo-role: admin
+      x-hubbo-max-body: 8192
+      summary: Change integration settings
+      description: |
+        Omit a secret field to keep the stored value; send `null` to clear it.
+        Changing the Home Assistant URL clears the stored token unless a new
+        one is sent in the same request (stops a token being sent to a
+        different host).
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IntegrationConfigUpdate'}
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IntegrationConfig'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /admin/integrations/{integration_id}/discover:
+    parameters:
+      - $ref: '#/components/parameters/IntegrationIdPath'
+    post:
+      tags: [admin]
+      operationId: discoverIntegration
+      x-hubbo-role: admin
+      x-hubbo-max-body: 1024
+      summary: Browse candidate devices of an integration
+      description: |
+        For Home Assistant: entities of the supported domains, with the commands
+        Hubbo would offer. Nothing here is executable until registered with
+        `POST /admin/devices`.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DiscoverRequest'}
+      responses:
+        '200':
+          description: Candidates
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DiscoverResult'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/integrations/{integration_id}/pair:
+    parameters:
+      - $ref: '#/components/parameters/IntegrationIdPath'
+    post:
+      tags: [admin]
+      operationId: startIntegrationPairing
+      x-hubbo-role: admin
+      summary: Open a pairing window (BLE HID)
+      description: Advertises and accepts a new bond for `window_s` seconds; a new bond replaces the old one.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '202':
+          description: Pairing window open
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PairingStatus'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      tags: [admin]
+      operationId: forgetIntegrationPairing
+      x-hubbo-role: admin
+      summary: Forget the bonded host (BLE HID)
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '204': {description: Bond removed}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /admin/devices:
+    post:
+      tags: [admin]
+      operationId: registerDevice
+      x-hubbo-role: admin
+      x-hubbo-max-body: 4096
+      summary: Register a device
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeviceRegister'}
+      responses:
+        '201':
+          description: Registered
+          headers:
+            Location:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Device'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /admin/devices/{device_id}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceIdPath'
+    put:
+      tags: [admin]
+      operationId: updateDevice
+      x-hubbo-role: admin
+      x-hubbo-max-body: 4096
+      summary: Rename a device or re-link its provider reference
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeviceUpdate'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Device'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+    delete:
+      tags: [admin]
+      operationId: deleteDevice
+      x-hubbo-role: admin
+      summary: Remove a device
+      description: Refused with `409 device_in_use` while any activity references it; `details` lists the references.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+        - $ref: '#/components/parameters/RevisionQuery'
+      responses:
+        '204': {description: Removed}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /admin/remote/pair:
+    get:
+      tags: [admin]
+      operationId: getRemotePairing
+      x-hubbo-role: admin
+      summary: Remote pairing state
+      responses:
+        '200':
+          description: State
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RemotePairStatus'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      tags: [admin]
+      operationId: startRemotePairing
+      x-hubbo-role: admin
+      summary: Scan for a Harmony Hub's radio address
+      description: |
+        Start scanning, then press the existing Harmony Hub's pair button. Hubbo
+        learns the Hub's address and channel and listens as that Hub. Poll
+        `GET /admin/remote/pair`.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '202':
+          description: Scanning
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RemotePairStatus'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      tags: [admin]
+      operationId: cancelRemotePairing
+      x-hubbo-role: admin
+      summary: Stop scanning (keeps the current pairing)
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '204': {description: Stopped}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /admin/account/password:
+    put:
+      tags: [admin]
+      operationId: changeAdminPassword
+      x-hubbo-role: admin
+      x-hubbo-max-body: 1024
+      summary: Change the admin password
+      description: Ends every other session. Rate limited like login.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PasswordChange'}
+      responses:
+        '204': {description: Changed}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /admin/tokens:
+    get:
+      tags: [admin]
+      operationId: listTokens
+      x-hubbo-role: admin
+      summary: API tokens (never the secret)
+      responses:
+        '200':
+          description: Tokens
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      tags: [admin]
+      operationId: createToken
+      x-hubbo-role: admin
+      x-hubbo-max-body: 1024
+      summary: Create an API token (secret shown once)
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TokenCreate'}
+      responses:
+        '201':
+          description: Created. Store `token` now; it cannot be read again.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenCreated'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /admin/tokens/{token_id}:
+    parameters:
+      - name: token_id
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/TokenId'}
+    delete:
+      tags: [admin]
+      operationId: revokeToken
+      x-hubbo-role: admin
+      summary: Revoke an API token (effective immediately)
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '204': {description: Revoked}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /admin/backup:
+    get:
+      tags: [admin]
+      operationId: downloadBackup
+      x-hubbo-role: admin
+      summary: Download a backup of non-secret configuration
+      description: Excludes the admin password, API tokens, integration secrets and BLE bonds.
+      responses:
+        '200':
+          description: Backup archive
+          headers:
+            Content-Disposition:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Backup'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /admin/restore:
+    post:
+      tags: [admin]
+      operationId: restoreBackup
+      x-hubbo-role: admin
+      x-hubbo-max-body: 262144
+      summary: Validate and atomically restore a backup
+      description: |
+        Validates and migrates the whole archive, then replaces devices,
+        activities and non-secret integration settings in one commit. On any
+        error nothing changes. `dry_run=true` validates only. The active
+        activity is cleared. Secrets must be entered again afterwards.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+        - name: dry_run
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Backup'}
+      responses:
+        '200':
+          description: Restored (or would restore, for a dry run)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RestoreResult'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /admin/firmware:
+    get:
+      tags: [admin]
+      operationId: getFirmwareStatus
+      x-hubbo-role: admin
+      summary: Firmware version and update state
+      responses:
+        '200':
+          description: Firmware status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FirmwareStatus'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /admin/firmware/update:
+    post:
+      tags: [admin]
+      operationId: updateFirmware
+      x-hubbo-role: admin
+      summary: Upload a signed firmware image
+      description: |
+        Streams the app image into the inactive OTA slot, then verifies
+        signature, board ID and size before marking it bootable. `reboot=true`
+        reboots after a successful verify. A failed first boot rolls back.
+        Body limit is the OTA slot size.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+        - name: reboot
+          in: query
+          required: false
+          schema: {type: boolean, default: true}
+        - name: X-Hubbo-Image-Sha256
+          in: header
+          required: false
+          description: Hex SHA-256 of the image; checked after upload.
+          schema: {type: string, pattern: '^[0-9a-f]{64}$'}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, contentEncoding: binary}
+      responses:
+        '202':
+          description: Verified; rebooting or ready to reboot
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FirmwareStatus'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: hubbo_session
+      description: Admin browser session. Unsafe methods also need `X-Hubbo-CSRF`.
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: hbt_<id>_<secret>
+      description: API token from `POST /admin/tokens`, or (simulator only) nothing at all.
+
+  headers:
+    SessionCookie:
+      description: '`hubbo_session=<opaque>; Path=/; HttpOnly; SameSite=Strict[; Secure]`'
+      schema: {type: string}
+
+  parameters:
+    CsrfHeader:
+      name: X-Hubbo-CSRF
+      in: header
+      required: false
+      description: Required when authenticating with the session cookie; ignored for Bearer tokens.
+      schema: {type: string, maxLength: 64}
+    DeviceIdPath:
+      name: device_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/DeviceId'}
+    ActivityIdPath:
+      name: activity_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/ActivityId'}
+    IntegrationIdPath:
+      name: integration_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/IntegrationId'}
+    RevisionQuery:
+      name: revision
+      in: query
+      required: true
+      description: Revision the caller last read.
+      schema: {$ref: '#/components/schemas/Revision'}
+
+  responses:
+    MalformedJson:
+      description: Body is not valid JSON (`malformed_json`)
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Unauthenticated:
+      description: No or invalid credentials (`unauthenticated`)
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Forbidden:
+      description: Authenticated but not allowed (`forbidden`, `csrf_failed`)
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    NotFound:
+      description: No such resource (`not_found`)
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Conflict:
+      description: '`revision_conflict`, `device_in_use`, `limit_reached`, `busy`, `setup_already_done`'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    PayloadTooLarge:
+      description: Body over the operation's limit (`payload_too_large`)
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    ValidationFailed:
+      description: Well-formed JSON that breaks the contract (`validation_failed`); see `details`
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    RateLimited:
+      description: Too many attempts (`rate_limited`)
+      headers:
+        Retry-After:
+          schema: {type: integer, minimum: 1}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Unavailable:
+      description: Integration not connected or not implemented (`integration_unavailable`, `not_implemented`)
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+
+  schemas:
+    # ---------- identifiers ----------
+    DeviceId:
+      type: string
+      pattern: '^dev_[a-z0-9_]{1,28}$'
+      examples: [dev_apple_tv]
+    ActivityId:
+      type: string
+      pattern: '^act_[a-z0-9_]{1,28}$'
+      examples: [act_watch_apple_tv]
+    NullableActivityId:
+      oneOf:
+        - {$ref: '#/components/schemas/ActivityId'}
+        - {type: 'null'}
+    NullableDeviceId:
+      oneOf:
+        - {$ref: '#/components/schemas/DeviceId'}
+        - {type: 'null'}
+    TokenId:
+      type: string
+      pattern: '^tok_[a-z0-9]{8}$'
+    IntegrationId:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{0,31}$'
+      examples: [ha_main, ble, system]
+    IntegrationType:
+      type: string
+      enum: [system, ble_hid, home_assistant]
+    CommandId:
+      description: |
+        Hubbo command identifier. HA commands are namespaced by entity domain
+        (`media_player.volume_set`); BLE and system commands are bare (`key_tap`, `wait`).
+        It names an allowlisted Hubbo command, not a Home Assistant service.
+      type: string
+      pattern: '^[a-z][a-z0-9_]{0,31}(\.[a-z][a-z0-9_]{0,31})?$'
+      examples: [media_player.volume_set, key_tap, wait]
+    Revision:
+      type: integer
+      minimum: 1
+      maximum: 4294967295
+    Name:
+      type: string
+      minLength: 1
+      maxLength: 64
+    Timestamp:
+      description: RFC 3339 UTC, or null when the hub has no wall-clock time yet.
+      type: [string, 'null']
+      format: date-time
+    Button:
+      type: string
+      enum: [up, down, left, right, select, menu, number_1, number_2, number_3, number_4, number_5, number_6, number_7, number_8, number_9, number_0, number_dot_dash, number_enter, 'off', music, tv, movie, light_1, light_2, plus, minus, switch_1, switch_2, red, green, yellow, blue, dvr, guide, info, back, exit, volume_up, volume_down, mute, channel_up, channel_down, skip_backward, skip_forward, play, pause, record, stop]
+    EventKind:
+      type: string
+      enum: [down, up, tap, hold]
+    Trigger:
+      description: '`<button>:<event>`'
+      type: string
+      pattern: '^(up|down|left|right|select|menu|number_1|number_2|number_3|number_4|number_5|number_6|number_7|number_8|number_9|number_0|number_dot_dash|number_enter|off|music|tv|movie|light_1|light_2|plus|minus|switch_1|switch_2|red|green|yellow|blue|dvr|guide|info|back|exit|volume_up|volume_down|mute|channel_up|channel_down|skip_backward|skip_forward|play|pause|record|stop):(down|up|tap|hold)$'
+      examples: ['volume_up:down', 'info:hold']
+
+    # ---------- errors ----------
+    ErrorCode:
+      type: string
+      enum:
+        - malformed_json
+        - validation_failed
+        - unsupported_media_type
+        - payload_too_large
+        - unauthenticated
+        - invalid_credentials
+        - forbidden
+        - csrf_failed
+        - rate_limited
+        - not_found
+        - revision_conflict
+        - device_in_use
+        - limit_reached
+        - busy
+        - setup_required
+        - setup_already_done
+        - integration_unavailable
+        - not_implemented
+        - internal_error
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [path, code, message]
+      properties:
+        path:
+          description: JSON Pointer into the request body ('' for the whole body).
+          type: string
+          maxLength: 160
+        code:
+          description: |
+            Core validation codes (`errorCodeName()` in core/src/domain/error.cpp)
+            plus request-level codes (`required`, `unknown_field`, `wrong_type`,
+            `too_long`, `pattern`, `forbidden_param`, `referenced`, `id_mismatch`,
+            `weak_password`).
+          type: string
+          enum: [required, unknown_field, wrong_type, too_long, pattern, forbidden_param, referenced, id_mismatch, weak_password, invalid_id, invalid_name, invalid_command_id, duplicate_id, unknown_integration, unknown_device, device_required, device_not_allowed, integration_mismatch, unknown_command, unknown_param, duplicate_param, missing_param, invalid_param_type, param_out_of_range, invalid_enum_value, too_many_params, invalid_trigger, duplicate_trigger, unknown_activity, misplaced_transition, too_many_actions, too_many_activities, too_many_devices, capacity_exceeded]
+        message:
+          type: string
+          maxLength: 200
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: {$ref: '#/components/schemas/ErrorCode'}
+            message:
+              description: Human readable; never contains secrets.
+              type: string
+              maxLength: 200
+            details:
+              type: array
+              maxItems: 32
+              items: {$ref: '#/components/schemas/ErrorDetail'}
+            current_revision:
+              description: Present with `revision_conflict`.
+              $ref: '#/components/schemas/Revision'
+            retry_after_s:
+              description: Present with `rate_limited` (mirrors `Retry-After`).
+              type: integer
+              minimum: 1
+
+    # ---------- status ----------
+    AuthMode:
+      description: '`simulator_no_auth` only ever appears on the native simulator; the UI shows AUTH DISABLED — SIMULATOR.'
+      type: string
+      enum: [enforced, simulator_no_auth]
+    IntegrationState:
+      type: string
+      enum: [not_configured, disabled, connecting, connected, disconnected, error]
+    Status:
+      type: object
+      additionalProperties: false
+      required: [hubbo, uptime_s, auth_mode, active_activity_id, network, remote, integrations, diagnostics]
+      properties:
+        hubbo:
+          type: object
+          additionalProperties: false
+          required: [version, board]
+          properties:
+            version: {type: string, maxLength: 32}
+            build: {type: string, maxLength: 64}
+            board: {type: string, maxLength: 32}
+        uptime_s: {type: integer, minimum: 0}
+        time: {$ref: '#/components/schemas/Timestamp'}
+        auth_mode: {$ref: '#/components/schemas/AuthMode'}
+        active_activity_id:
+          $ref: '#/components/schemas/NullableActivityId'
+        network:
+          type: object
+          additionalProperties: false
+          required: [link]
+          properties:
+            link: {type: string, enum: [up, down]}
+            ip: {type: string, format: ipv4}
+            hostname: {type: string, maxLength: 63}
+        remote: {$ref: '#/components/schemas/RemoteStatus'}
+        integrations:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, type, state]
+            properties:
+              id: {$ref: '#/components/schemas/IntegrationId'}
+              type: {$ref: '#/components/schemas/IntegrationType'}
+              state: {$ref: '#/components/schemas/IntegrationState'}
+        diagnostics: {$ref: '#/components/schemas/Diagnostics'}
+    LatencyStats:
+      type: object
+      additionalProperties: false
+      required: [count, p50_ms, p95_ms, p99_ms]
+      properties:
+        count: {type: integer, minimum: 0}
+        p50_ms: {type: number, minimum: 0}
+        p95_ms: {type: number, minimum: 0}
+        p99_ms: {type: number, minimum: 0}
+    Diagnostics:
+      type: object
+      additionalProperties: false
+      properties:
+        heap_free: {type: integer, minimum: 0}
+        heap_min_free: {type: integer, minimum: 0}
+        psram_free: {type: integer, minimum: 0}
+        queue_overflows: {type: integer, minimum: 0}
+        dispatch_latency:
+          description: RF receive to adapter hand-off.
+          oneOf:
+            - {$ref: '#/components/schemas/LatencyStats'}
+            - {type: 'null'}
+        last_errors:
+          type: array
+          maxItems: 16
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, message]
+            properties:
+              at: {$ref: '#/components/schemas/Timestamp'}
+              source: {type: string, maxLength: 32}
+              code: {type: string, maxLength: 48}
+              message: {type: string, maxLength: 200}
+
+    RemoteStatus:
+      type: object
+      additionalProperties: false
+      required: [paired, last_packet_age_ms]
+      properties:
+        paired: {type: boolean}
+        channel: {type: integer, minimum: 0, maximum: 125}
+        last_packet_age_ms:
+          type: [integer, 'null']
+          minimum: 0
+        held:
+          type: array
+          items: {$ref: '#/components/schemas/Button'}
+        last_event:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [button, kind, age_ms]
+              properties:
+                button: {$ref: '#/components/schemas/Button'}
+                kind: {$ref: '#/components/schemas/EventKind'}
+                age_ms: {type: integer, minimum: 0}
+                timed_out: {type: boolean}
+            - {type: 'null'}
+        counters:
+          type: object
+          additionalProperties: false
+          properties:
+            bad_checksum: {type: integer, minimum: 0}
+            unknown_code: {type: integer, minimum: 0}
+    RemoteButtons:
+      type: object
+      additionalProperties: false
+      required: [buttons, event_kinds, hold_ms]
+      properties:
+        buttons:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, group]
+            properties:
+              name: {$ref: '#/components/schemas/Button'}
+              group: {type: string, enum: [keypad, media_home]}
+              label: {type: string, maxLength: 24}
+        event_kinds:
+          type: array
+          items: {$ref: '#/components/schemas/EventKind'}
+        hold_ms:
+          description: Threshold between `tap` and `hold`.
+          type: integer
+          minimum: 1
+
+    # ---------- auth ----------
+    Username:
+      type: string
+      pattern: '^[A-Za-z0-9_.-]{1,32}$'
+    NewPassword:
+      type: string
+      writeOnly: true
+      minLength: 10
+      maxLength: 128
+    SetupRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username: {$ref: '#/components/schemas/Username'}
+        password: {$ref: '#/components/schemas/NewPassword'}
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username: {type: string, maxLength: 32}
+        password: {type: string, writeOnly: true, maxLength: 128}
+    PasswordChange:
+      type: object
+      additionalProperties: false
+      required: [current_password, new_password]
+      properties:
+        current_password: {type: string, writeOnly: true, maxLength: 128}
+        new_password: {$ref: '#/components/schemas/NewPassword'}
+    Session:
+      type: object
+      additionalProperties: false
+      required: [authenticated, role, setup_required, auth_mode]
+      properties:
+        authenticated: {type: boolean}
+        role:
+          type: [string, 'null']
+          enum: [admin, token, null]
+        username: {type: string, maxLength: 32}
+        csrf_token:
+          description: Echo in `X-Hubbo-CSRF`. Present only for cookie sessions. Keep in memory, not browser storage.
+          type: string
+          maxLength: 64
+        expires_in_s:
+          type: integer
+          minimum: 0
+        setup_required: {type: boolean}
+        auth_mode: {$ref: '#/components/schemas/AuthMode'}
+    TokenCreate:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: {$ref: '#/components/schemas/Name'}
+    TokenFields:
+      description: Shared by TokenSummary and TokenCreated (open; each closes it).
+      type: object
+      required: [id, name, hint, created_at, last_used_at]
+      properties:
+        id: {$ref: '#/components/schemas/TokenId'}
+        name: {$ref: '#/components/schemas/Name'}
+        hint:
+          description: Non-secret prefix for recognising the token (`hbt_<id>_`).
+          type: string
+          maxLength: 20
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        last_used_at: {$ref: '#/components/schemas/Timestamp'}
+    TokenSummary:
+      allOf: [{$ref: '#/components/schemas/TokenFields'}]
+      unevaluatedProperties: false
+    TokenCreated:
+      description: '`TokenSummary` plus the secret.'
+      allOf: [{$ref: '#/components/schemas/TokenFields'}]
+      required: [token]
+      properties:
+        token:
+          description: The only time the secret is returned.
+          type: string
+          pattern: '^hbt_[a-z0-9]{8}_[A-Za-z0-9_-]{43}$'
+      unevaluatedProperties: false
+    TokenList:
+      type: object
+      additionalProperties: false
+      required: [tokens]
+      properties:
+        tokens:
+          type: array
+          maxItems: 16
+          items: {$ref: '#/components/schemas/TokenSummary'}
+
+    # ---------- capabilities ----------
+    ParamSpec:
+      description: |
+        Schema of one command parameter. Scalars only; nested objects and arrays
+        are never accepted as parameter values.
+      type: object
+      additionalProperties: false
+      required: [name, type, required]
+      properties:
+        name: {$ref: '#/components/schemas/ParamName'}
+        label: {type: string, maxLength: 48}
+        type:
+          description: Same names as core `paramTypeName()`. `activity_ref` takes an activity ID.
+          type: string
+          enum: [bool, int, number, enum, activity_ref]
+        required: {type: boolean}
+        minimum: {type: number}
+        maximum: {type: number}
+        step: {type: number, exclusiveMinimum: 0}
+        unit: {type: string, maxLength: 16}
+        options:
+          description: Allowed values for `enum` (exact match).
+          type: array
+          maxItems: 128
+          items: {type: string, maxLength: 32}
+        default: {type: [number, boolean, string]}
+    Command:
+      type: object
+      additionalProperties: false
+      required: [command_id, label, params]
+      properties:
+        command_id: {$ref: '#/components/schemas/CommandId'}
+        label: {type: string, maxLength: 48}
+        description: {type: string, maxLength: 200}
+        params:
+          type: array
+          maxItems: 4
+          items: {$ref: '#/components/schemas/ParamSpec'}
+    DeviceCapabilities:
+      type: object
+      additionalProperties: false
+      required: [device_id, integration_id, commands]
+      properties:
+        device_id: {$ref: '#/components/schemas/DeviceId'}
+        integration_id: {$ref: '#/components/schemas/IntegrationId'}
+        commands:
+          type: array
+          maxItems: 64
+          items: {$ref: '#/components/schemas/Command'}
+
+    # ---------- actions ----------
+    ParamName:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{0,31}$'
+      not:
+        description: Target-like names are refused outright, whatever the command.
+        enum: [entity_id, device_id, area_id, floor_id, label_id, target, data, service, service_data, domain]
+    ActionParams:
+      description: Typed scalar parameters, checked against the command's `ParamSpec` list.
+      type: object
+      maxProperties: 4
+      propertyNames: {$ref: '#/components/schemas/ParamName'}
+      additionalProperties:
+        oneOf:
+          - type: boolean
+          - type: number
+          - type: string
+            maxLength: 32
+    Action:
+      description: |
+        `{integration_id, device_id, command_id, params}`. `device_id` must be a
+        registered device owned by `integration_id`; it is `null` only for the
+        deviceless `system` commands: `wait`, `activate` and `off`. `activate`
+        and `off` may only be the last action of a binding, never in
+        startup/shutdown.
+      type: object
+      additionalProperties: false
+      required: [integration_id, device_id, command_id, params]
+      properties:
+        integration_id: {$ref: '#/components/schemas/IntegrationId'}
+        device_id:
+          $ref: '#/components/schemas/NullableDeviceId'
+        command_id: {$ref: '#/components/schemas/CommandId'}
+        params: {$ref: '#/components/schemas/ActionParams'}
+    ActionSequence:
+      type: array
+      maxItems: 32
+      items: {$ref: '#/components/schemas/Action'}
+    Bindings:
+      description: Trigger → actions. Absent triggers are unbound (no-op).
+      type: object
+      maxProperties: 192
+      propertyNames: {$ref: '#/components/schemas/Trigger'}
+      additionalProperties:
+        type: array
+        minItems: 1
+        maxItems: 32
+        items: {$ref: '#/components/schemas/Action'}
+    ExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [params]
+      properties:
+        params: {$ref: '#/components/schemas/ActionParams'}
+    ExecuteResult:
+      type: object
+      additionalProperties: false
+      required: [status, device_id, command_id, elapsed_ms]
+      properties:
+        status:
+          description: '`accepted`: the integration took the command (not proof of physical effect).'
+          type: string
+          enum: [accepted, failed, timeout]
+        device_id: {$ref: '#/components/schemas/DeviceId'}
+        command_id: {$ref: '#/components/schemas/CommandId'}
+        elapsed_ms: {type: integer, minimum: 0}
+        message: {type: string, maxLength: 200}
+
+    # ---------- activities ----------
+    ActivityFields:
+      description: Shared by the activity schemas (open; each closes it).
+      type: object
+      required: [name, startup, shutdown, bindings]
+      properties:
+        name: {$ref: '#/components/schemas/Name'}
+        startup: {$ref: '#/components/schemas/ActionSequence'}
+        shutdown: {$ref: '#/components/schemas/ActionSequence'}
+        bindings: {$ref: '#/components/schemas/Bindings'}
+    ActivityInput:
+      description: Body for create.
+      allOf: [{$ref: '#/components/schemas/ActivityFields'}]
+      unevaluatedProperties: false
+    ActivityReplace:
+      description: |
+        Body for replace and validate: an activity as read, so GET → edit → PUT
+        works. `revision` is required for replace; validate ignores `id` and
+        `revision`.
+      allOf: [{$ref: '#/components/schemas/ActivityFields'}]
+      properties:
+        id: {$ref: '#/components/schemas/ActivityId'}
+        schema_version: {type: integer, const: 1}
+        revision: {$ref: '#/components/schemas/Revision'}
+      unevaluatedProperties: false
+    Activity:
+      allOf: [{$ref: '#/components/schemas/ActivityFields'}]
+      required: [id, schema_version, revision]
+      properties:
+        id: {$ref: '#/components/schemas/ActivityId'}
+        schema_version: {type: integer, const: 1}
+        revision: {$ref: '#/components/schemas/Revision'}
+      unevaluatedProperties: false
+    ActivityList:
+      type: object
+      additionalProperties: false
+      required: [activities, active_activity_id]
+      properties:
+        activities:
+          type: array
+          maxItems: 16
+          items: {$ref: '#/components/schemas/Activity'}
+        active_activity_id:
+          $ref: '#/components/schemas/NullableActivityId'
+    GlobalBindings:
+      type: object
+      additionalProperties: false
+      required: [bindings, revision]
+      properties:
+        bindings: {$ref: '#/components/schemas/Bindings'}
+        revision: {$ref: '#/components/schemas/Revision'}
+    ValidationResult:
+      type: object
+      additionalProperties: false
+      required: [valid, errors]
+      properties:
+        valid: {type: boolean}
+        errors:
+          type: array
+          maxItems: 32
+          items: {$ref: '#/components/schemas/ErrorDetail'}
+    TransitionResult:
+      type: object
+      additionalProperties: false
+      required: [active_activity_id, previous_activity_id, generation, queued_actions]
+      properties:
+        active_activity_id:
+          $ref: '#/components/schemas/NullableActivityId'
+        previous_activity_id:
+          $ref: '#/components/schemas/NullableActivityId'
+        generation:
+          description: Transition counter; delayed actions from older generations are dropped.
+          type: integer
+          minimum: 0
+        queued_actions:
+          description: Startup actions (activate) or shutdown actions (off) queued.
+          type: integer
+          minimum: 0
+
+    # ---------- devices ----------
+    DeviceKind:
+      description: UI hint only.
+      type: string
+      enum: [tv, receiver, speaker, streamer, console, light, switch, other]
+    HomeAssistantProvider:
+      type: object
+      additionalProperties: false
+      required: [type, entity_id]
+      properties:
+        type: {const: home_assistant}
+        entity_id:
+          description: Display and lookup only; never accepted in an execution request.
+          type: string
+          pattern: '^[a-z0-9_]+\.[a-z0-9_]+$'
+          maxLength: 96
+        unique_id:
+          description: HA entity registry ID, preferred over entity_id because it survives renames.
+          type: string
+          maxLength: 64
+    BleHidProvider:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {const: ble_hid}
+        peer_name:
+          description: Name of the bonded host, if known. Keys are never exposed.
+          type: string
+          maxLength: 48
+    Provider:
+      oneOf:
+        - $ref: '#/components/schemas/HomeAssistantProvider'
+        - $ref: '#/components/schemas/BleHidProvider'
+      discriminator:
+        propertyName: type
+        mapping:
+          home_assistant: '#/components/schemas/HomeAssistantProvider'
+          ble_hid: '#/components/schemas/BleHidProvider'
+    Device:
+      type: object
+      additionalProperties: false
+      required: [id, name, integration_id, kind, provider, availability, schema_version, revision]
+      properties:
+        id: {$ref: '#/components/schemas/DeviceId'}
+        name: {$ref: '#/components/schemas/Name'}
+        integration_id: {$ref: '#/components/schemas/IntegrationId'}
+        kind: {$ref: '#/components/schemas/DeviceKind'}
+        provider: {$ref: '#/components/schemas/Provider'}
+        availability:
+          description: |
+            `stale`: the provider no longer knows this target (HA entity removed
+            or renamed, BLE bond gone). Commands fail until an admin re-links it.
+          type: string
+          enum: [available, unavailable, stale, unknown]
+        schema_version: {type: integer, const: 1}
+        revision: {$ref: '#/components/schemas/Revision'}
+    DeviceList:
+      type: object
+      additionalProperties: false
+      required: [devices]
+      properties:
+        devices:
+          type: array
+          maxItems: 64
+          items: {$ref: '#/components/schemas/Device'}
+    DeviceRegister:
+      type: object
+      additionalProperties: false
+      required: [name, integration_id, provider]
+      properties:
+        name: {$ref: '#/components/schemas/Name'}
+        integration_id: {$ref: '#/components/schemas/IntegrationId'}
+        kind: {$ref: '#/components/schemas/DeviceKind'}
+        provider: {$ref: '#/components/schemas/Provider'}
+    DeviceUpdate:
+      type: object
+      additionalProperties: false
+      required: [revision]
+      properties:
+        name: {$ref: '#/components/schemas/Name'}
+        kind: {$ref: '#/components/schemas/DeviceKind'}
+        provider:
+          description: Re-link (e.g. after an HA entity rename). Must stay in the same integration.
+          $ref: '#/components/schemas/Provider'
+        revision: {$ref: '#/components/schemas/Revision'}
+
+    # ---------- integrations ----------
+    IntegrationSummary:
+      type: object
+      additionalProperties: false
+      required: [id, type, name, enabled, state, device_count]
+      properties:
+        id: {$ref: '#/components/schemas/IntegrationId'}
+        type: {$ref: '#/components/schemas/IntegrationType'}
+        name: {$ref: '#/components/schemas/Name'}
+        enabled: {type: boolean}
+        state: {$ref: '#/components/schemas/IntegrationState'}
+        detail:
+          description: Short human status, never secrets or URLs with credentials.
+          type: string
+          maxLength: 120
+        device_count: {type: integer, minimum: 0}
+        commands:
+          description: Deviceless commands of this integration (only `system` has any). Use with `device_id = null`.
+          type: array
+          items: {$ref: '#/components/schemas/Command'}
+    IntegrationList:
+      type: object
+      additionalProperties: false
+      required: [integrations]
+      properties:
+        integrations:
+          type: array
+          items: {$ref: '#/components/schemas/IntegrationSummary'}
+    HomeAssistantSettings:
+      type: object
+      additionalProperties: false
+      required: [type, url, verify_tls, has_access_token]
+      properties:
+        type: {const: home_assistant}
+        url:
+          description: Base URL, e.g. `https://homeassistant.local:8123`. No credentials or query.
+          type: string
+          format: uri
+          pattern: '^https?://[^/@?#\s]+(:[0-9]{1,5})?/?$'
+          maxLength: 200
+        verify_tls: {type: boolean}
+        ca_cert_pem:
+          description: Optional CA (not secret) for a self-signed HA certificate.
+          type: [string, 'null']
+          maxLength: 4096
+        has_access_token: {type: boolean, readOnly: true}
+    BleHidSettings:
+      type: object
+      additionalProperties: false
+      required: [type, device_name, bonded]
+      properties:
+        type: {const: ble_hid}
+        device_name:
+          description: Advertised Bluetooth name.
+          type: string
+          minLength: 1
+          maxLength: 29
+        bonded: {type: boolean, readOnly: true}
+        peer_name: {type: string, maxLength: 48, readOnly: true}
+    SystemSettings:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {const: system}
+    IntegrationConfig:
+      type: object
+      additionalProperties: false
+      required: [id, type, name, enabled, settings, revision]
+      properties:
+        id: {$ref: '#/components/schemas/IntegrationId'}
+        type: {$ref: '#/components/schemas/IntegrationType'}
+        name: {$ref: '#/components/schemas/Name'}
+        enabled: {type: boolean}
+        settings:
+          oneOf:
+            - $ref: '#/components/schemas/HomeAssistantSettings'
+            - $ref: '#/components/schemas/BleHidSettings'
+            - $ref: '#/components/schemas/SystemSettings'
+          discriminator:
+            propertyName: type
+            mapping:
+              home_assistant: '#/components/schemas/HomeAssistantSettings'
+              ble_hid: '#/components/schemas/BleHidSettings'
+              system: '#/components/schemas/SystemSettings'
+        revision: {$ref: '#/components/schemas/Revision'}
+    IntegrationConfigUpdate:
+      type: object
+      additionalProperties: false
+      required: [revision]
+      properties:
+        name: {$ref: '#/components/schemas/Name'}
+        enabled: {type: boolean}
+        settings:
+          oneOf:
+            - $ref: '#/components/schemas/HomeAssistantSettingsUpdate'
+            - $ref: '#/components/schemas/BleHidSettingsUpdate'
+          discriminator:
+            propertyName: type
+            mapping:
+              home_assistant: '#/components/schemas/HomeAssistantSettingsUpdate'
+              ble_hid: '#/components/schemas/BleHidSettingsUpdate'
+        revision: {$ref: '#/components/schemas/Revision'}
+    HomeAssistantSettingsUpdate:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {const: home_assistant}
+        url: {$ref: '#/components/schemas/HomeAssistantSettings/properties/url'}
+        verify_tls: {type: boolean}
+        ca_cert_pem: {$ref: '#/components/schemas/HomeAssistantSettings/properties/ca_cert_pem'}
+        access_token:
+          description: Long-lived HA access token. Write-only; omit to keep, null to clear.
+          type: [string, 'null']
+          writeOnly: true
+          minLength: 1
+          maxLength: 512
+    BleHidSettingsUpdate:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {const: ble_hid}
+        device_name: {$ref: '#/components/schemas/BleHidSettings/properties/device_name'}
+    DiscoverRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        domains:
+          type: array
+          maxItems: 8
+          items: {type: string, enum: [media_player, light, switch]}
+        query:
+          description: Case-insensitive substring of entity_id or name.
+          type: string
+          maxLength: 48
+        limit: {type: integer, minimum: 1, maximum: 100, default: 50}
+        cursor: {type: string, maxLength: 64}
+    DiscoverCandidate:
+      type: object
+      additionalProperties: false
+      required: [provider, name, domain, supported, registered_device_id]
+      properties:
+        provider: {$ref: '#/components/schemas/HomeAssistantProvider'}
+        name: {type: string, maxLength: 100}
+        domain: {type: string, maxLength: 32}
+        state: {type: string, maxLength: 32}
+        supported:
+          description: False when Hubbo offers no commands for it (unsupported domain or features).
+          type: boolean
+        command_ids:
+          type: array
+          items: {$ref: '#/components/schemas/CommandId'}
+        registered_device_id:
+          $ref: '#/components/schemas/NullableDeviceId'
+    DiscoverResult:
+      type: object
+      additionalProperties: false
+      required: [candidates, next_cursor]
+      properties:
+        candidates:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/DiscoverCandidate'}
+        next_cursor: {type: [string, 'null'], maxLength: 64}
+    PairingStatus:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        state: {type: string, enum: [idle, pairing, paired, failed]}
+        window_s: {type: integer, minimum: 0}
+        peer_name: {type: string, maxLength: 48}
+    RemotePairStatus:
+      type: object
+      additionalProperties: false
+      required: [state, paired]
+      properties:
+        state: {type: string, enum: [idle, scanning, found, failed, timeout]}
+        paired: {type: boolean}
+        remaining_s: {type: integer, minimum: 0}
+        channel: {type: integer, minimum: 0, maximum: 125}
+        message: {type: string, maxLength: 120}
+
+    # ---------- backup / firmware ----------
+    BackupIntegration:
+      type: object
+      additionalProperties: false
+      required: [id, type, name, enabled]
+      properties:
+        id: {$ref: '#/components/schemas/IntegrationId'}
+        type: {$ref: '#/components/schemas/IntegrationType'}
+        name: {$ref: '#/components/schemas/Name'}
+        enabled: {type: boolean}
+        settings:
+          description: Non-secret settings only.
+          type: object
+          additionalProperties: false
+          properties:
+            url: {$ref: '#/components/schemas/HomeAssistantSettings/properties/url'}
+            verify_tls: {type: boolean}
+            ca_cert_pem: {$ref: '#/components/schemas/HomeAssistantSettings/properties/ca_cert_pem'}
+            device_name: {$ref: '#/components/schemas/BleHidSettings/properties/device_name'}
+    Backup:
+      type: object
+      additionalProperties: false
+      required: [format, format_version, created_at, firmware_version, board, integrations, devices, global_bindings, activities, excluded]
+      properties:
+        format: {const: hubbo-backup}
+        format_version: {type: integer, const: 1}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        firmware_version: {type: string, maxLength: 32}
+        board: {type: string, maxLength: 32}
+        remote:
+          description: Pairing (radio address and channel). Not a credential.
+          type: object
+          additionalProperties: false
+          required: [address, channel]
+          properties:
+            address: {type: string, pattern: '^[0-9A-F]{10}$'}
+            channel: {type: integer, minimum: 0, maximum: 125}
+        integrations:
+          type: array
+          maxItems: 8
+          items: {$ref: '#/components/schemas/BackupIntegration'}
+        devices:
+          type: array
+          maxItems: 64
+          items: {$ref: '#/components/schemas/Device'}
+        global_bindings: {$ref: '#/components/schemas/GlobalBindings'}
+        activities:
+          type: array
+          maxItems: 16
+          items: {$ref: '#/components/schemas/Activity'}
+        excluded:
+          description: What a restore will not bring back.
+          type: array
+          items:
+            type: string
+            enum: [admin_password, api_tokens, integration_secrets, ble_bonds]
+    RestoreResult:
+      type: object
+      additionalProperties: false
+      required: [dry_run, devices, activities, integrations, requires]
+      properties:
+        dry_run: {type: boolean}
+        devices: {type: integer, minimum: 0}
+        activities: {type: integer, minimum: 0}
+        integrations: {type: integer, minimum: 0}
+        migrated_from:
+          type: [integer, 'null']
+        requires:
+          description: Follow-up the admin must do.
+          type: array
+          items:
+            type: string
+            enum: [home_assistant_token, ble_pairing, api_tokens]
+        warnings:
+          type: array
+          maxItems: 32
+          items: {$ref: '#/components/schemas/ErrorDetail'}
+    FirmwareStatus:
+      type: object
+      additionalProperties: false
+      required: [version, board, update_state]
+      properties:
+        version: {type: string, maxLength: 32}
+        board: {type: string, maxLength: 32}
+        running_partition: {type: string, maxLength: 16}
+        update_state:
+          type: string
+          enum: [idle, receiving, verifying, ready_to_reboot, rebooting, failed]
+        received_bytes: {type: integer, minimum: 0}
+        rollback_available: {type: boolean}
+        message: {type: string, maxLength: 200}

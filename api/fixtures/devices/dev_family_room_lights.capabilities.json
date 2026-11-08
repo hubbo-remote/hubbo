@@ -1,0 +1,83 @@
+{
+  "device_id": "dev_family_room_lights",
+  "integration_id": "ha_main",
+  "commands": [
+    {
+      "command_id": "light.turn_on",
+      "label": "Turn on",
+      "params": [
+        {
+          "name": "brightness",
+          "type": "int",
+          "required": false,
+          "minimum": 0,
+          "maximum": 255,
+          "step": 1,
+          "label": "Brightness"
+        },
+        {
+          "name": "color_temp_kelvin",
+          "type": "int",
+          "required": false,
+          "minimum": 2000,
+          "maximum": 6535,
+          "step": 1,
+          "unit": "K",
+          "label": "Colour temperature"
+        },
+        {
+          "name": "transition",
+          "type": "number",
+          "required": false,
+          "minimum": 0,
+          "maximum": 300,
+          "step": 0.1,
+          "unit": "s",
+          "label": "Transition"
+        }
+      ]
+    },
+    {
+      "command_id": "light.turn_off",
+      "label": "Turn off",
+      "params": [
+        {
+          "name": "transition",
+          "type": "number",
+          "required": false,
+          "minimum": 0,
+          "maximum": 300,
+          "step": 0.1,
+          "unit": "s",
+          "label": "Transition"
+        }
+      ]
+    },
+    {
+      "command_id": "light.brightness_step",
+      "label": "Change brightness",
+      "params": [
+        {
+          "name": "step",
+          "type": "int",
+          "required": true,
+          "minimum": -255,
+          "maximum": 255,
+          "step": 1,
+          "label": "Step"
+        },
+        {
+          "name": "transition",
+          "type": "number",
+          "required": false,
+          "minimum": 0,
+          "maximum": 300,
+          "step": 0.1,
+          "unit": "s",
+          "label": "Transition"
+        }
+      ],
+      "description": "Relative brightness change; clamps at 0 and 255."
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "dev_sonos",
+  "name": "Family Room Sonos",
+  "integration_id": "ha_main",
+  "kind": "speaker",
+  "provider": {
+    "type": "home_assistant",
+    "entity_id": "media_player.family_room_sonos",
+    "unique_id": "RINCON_48A6B8000000001400"
+  },
+  "availability": "available",
+  "schema_version": 1,
+  "revision": 3
+}

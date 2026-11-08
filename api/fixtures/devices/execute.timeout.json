@@ -1,0 +1,7 @@
+{
+  "status": "timeout",
+  "device_id": "dev_sonos",
+  "command_id": "media_player.volume_up",
+  "elapsed_ms": 2000,
+  "message": "Home Assistant did not answer within 2000 ms"
+}

@@ -1,0 +1,117 @@
+{
+  "device_id": "dev_sonos",
+  "integration_id": "ha_main",
+  "commands": [
+    {
+      "command_id": "media_player.volume_up",
+      "label": "Volume up",
+      "params": []
+    },
+    {
+      "command_id": "media_player.volume_down",
+      "label": "Volume down",
+      "params": []
+    },
+    {
+      "command_id": "media_player.volume_set",
+      "label": "Set volume",
+      "params": [
+        {
+          "name": "level",
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 1,
+          "step": 0.01,
+          "label": "Level"
+        }
+      ]
+    },
+    {
+      "command_id": "media_player.volume_mute",
+      "label": "Mute",
+      "params": [
+        {
+          "name": "muted",
+          "type": "bool",
+          "required": true,
+          "label": "Muted"
+        }
+      ]
+    },
+    {
+      "command_id": "media_player.media_play_pause",
+      "label": "Play/pause",
+      "params": []
+    },
+    {
+      "command_id": "media_player.media_play",
+      "label": "Play",
+      "params": []
+    },
+    {
+      "command_id": "media_player.media_pause",
+      "label": "Pause",
+      "params": []
+    },
+    {
+      "command_id": "media_player.media_stop",
+      "label": "Stop",
+      "params": []
+    },
+    {
+      "command_id": "media_player.media_next_track",
+      "label": "Next track",
+      "params": []
+    },
+    {
+      "command_id": "media_player.media_previous_track",
+      "label": "Previous track",
+      "params": []
+    },
+    {
+      "command_id": "media_player.select_source",
+      "label": "Select source",
+      "params": [
+        {
+          "name": "source",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "TV"
+          ],
+          "label": "Source"
+        }
+      ]
+    },
+    {
+      "command_id": "media_player.shuffle_set",
+      "label": "Shuffle",
+      "params": [
+        {
+          "name": "shuffle",
+          "type": "bool",
+          "required": true,
+          "label": "Shuffle"
+        }
+      ]
+    },
+    {
+      "command_id": "media_player.repeat_set",
+      "label": "Repeat",
+      "params": [
+        {
+          "name": "repeat",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "off",
+            "all",
+            "one"
+          ],
+          "label": "Repeat"
+        }
+      ]
+    }
+  ]
+}
