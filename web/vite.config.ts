@@ -1,0 +1,54 @@
+/// <reference types="vitest/config" />
+import path from 'node:path'
+import { defineConfig, type Plugin } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+import { mockMiddleware, optionsFromEnv } from './mock/node.ts'
+
+// HUBBO_API_TARGET picks where /api goes in dev:
+//   mock (default)            in-process TypeScript mock (mock/)
+//   http://127.0.0.1:8080     hub-sim (the real C++ core)
+//   http://hubbo.local        a board on your LAN
+const target = process.env.HUBBO_API_TARGET || 'mock'
+
+function hubboMock(): Plugin {
+  return {
+    name: 'hubbo-mock-api',
+    configureServer(server) {
+      server.middlewares.use(mockMiddleware(optionsFromEnv()))
+    },
+  }
+}
+
+export default defineConfig({
+  plugins: [react(), tailwindcss(), ...(target === 'mock' ? [hubboMock()] : [])],
+  resolve: { alias: { '@': path.resolve(import.meta.dirname, 'src') } },
+  server: {
+    host: process.env.HUBBO_WEB_HOST || '0.0.0.0',
+    port: Number(process.env.HUBBO_WEB_PORT || 5180),
+    strictPort: true,
+    proxy: target === 'mock' ? undefined : { '/api': { target, changeOrigin: true, secure: false } },
+  },
+  build: {
+    target: 'es2022',
+    cssCodeSplit: true,
+    reportCompressedSize: false,
+    modulePreload: { polyfill: false },
+    rollupOptions: {
+      output: {
+        // Short hashed names: they become LittleFS paths on the board.
+        entryFileNames: 'a/[name]-[hash:8].js',
+        chunkFileNames: 'a/[name]-[hash:8].js',
+        assetFileNames: 'a/[name]-[hash:8][extname]',
+        // Fold tiny chunks (single icons) into their importers: fewer flash files and requests.
+        experimentalMinChunkSize: 4096,
+      },
+    },
+  },
+  test: {
+    // Node by default (mock, lib); component tests opt into jsdom per file.
+    environment: 'node',
+    include: ['src/**/*.test.{ts,tsx}', 'mock/**/*.test.ts'],
+    setupFiles: ['src/test-setup.ts'],
+  },
+})
