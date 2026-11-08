@@ -1,0 +1,13 @@
+{
+  "name": "hubbo-core",
+  "version": "0.0.0",
+  "description": "Hubbo portable core (no Arduino dependencies)",
+  "license": "AGPL-3.0-or-later",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcDir": "src",
+    "includeDir": "include",
+    "flags": ["-std=gnu++17"]
+  }
+}

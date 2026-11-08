@@ -1,0 +1,15 @@
+# Reference spike (its own git repo). Read it, don't commit it.
+/Harmonizer/
+
+# Harmony device code archive (1.6 GB, CC0). Reference data, not source.
+/logitech-harmony-ir-archive-main/
+
+# Build output
+/build/
+firmware/.pio/
+node_modules/
+dist/
+
+# Local settings
+.env
+.DS_Store

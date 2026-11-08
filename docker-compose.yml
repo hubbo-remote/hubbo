@@ -1,0 +1,70 @@
+services:
+  # Native + firmware toolchain. One-off containers via bin/hubbo; the
+  # "tools" profile keeps `docker compose up` from starting it.
+  toolchain:
+    build:
+      context: .
+      dockerfile: docker/toolchain.Dockerfile
+      args:
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
+    image: hubbo-toolchain
+    profiles: ["tools"]
+    init: true
+    # Host networking: espota (network flashing) has the board connect back
+    # to the machine running the upload, and hub-sim's loopback-only listener
+    # should be loopback on the host, not inside a container.
+    network_mode: host
+    volumes:
+      - .:/work
+      - platformio:/platformio
+    environment:
+      # Read at build and upload time by firmware OTA envs. Unset is fine.
+      - HUBBO_OTA_PASSWORD
+
+  # The toolchain set up for ThreadSanitizer (`bin/hubbo tsan`). TSan can't
+  # map its shadow memory under the host kernel's full mmap randomization, so
+  # everything runs with ASLR off (setarch -R). That needs the personality()
+  # syscall, which Docker's default seccomp profile blocks; only this
+  # one-off container gets the looser profile. CXXFLAGS applies when
+  # build/tsan is first configured.
+  tsan:
+    extends: toolchain
+    entrypoint: ["setarch", "-R"]
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      - CXXFLAGS=-fsanitize=thread -fno-omit-frame-pointer
+
+  # Web admin dev server (Vite + HMR) on :5180 (HUBBO_WEB_PORT). The API is served by the
+  # TypeScript mock unless HUBBO_API_TARGET points at hub-sim or a board,
+  # e.g. HUBBO_API_TARGET=http://127.0.0.1:8080. Host networking so the
+  # proxy can reach hub-sim's loopback listener.
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+      args:
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
+    image: hubbo-web
+    init: true
+    # Install (fast when node_modules is current), then run pnpm with the
+    # given args: `docker compose up web` runs `dev`, `bin/hubbo web build` runs `build`.
+    entrypoint: ["sh", "-c", "pnpm install --prefer-offline --reporter=silent && exec pnpm \"$$@\"", "pnpm"]
+    command: ["dev"]
+    network_mode: host
+    volumes:
+      - .:/work
+      - web_node_modules:/work/web/node_modules
+    environment:
+      - HUBBO_API_TARGET
+      - HUBBO_WEB_HOST
+      - HUBBO_WEB_PORT
+      - HUBBO_MOCK_LATENCY
+      - HUBBO_MOCK_FIRST_RUN
+      - HUBBO_MOCK_AUTH
+
+volumes:
+  platformio:
+  web_node_modules:

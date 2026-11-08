@@ -1,0 +1,6 @@
+Harmonizer
+logitech-harmony-ir-archive-main
+build
+firmware/.pio
+node_modules
+.git

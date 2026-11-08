@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Developer entry point. Every command runs inside the hubbo-toolchain
+# container; nothing is installed on the host.
+#
+#   bin/hubbo test            build the native core and run its tests
+#   bin/hubbo fw <pio args>   PlatformIO in firmware/ (e.g. `fw run`)
+#   bin/hubbo sim <args>      build and run hub-sim (`sim serve`, `sim run <script>`)
+#   bin/hubbo tsan            core + sim tests under ThreadSanitizer
+#   bin/hubbo shell           interactive shell in the toolchain
+#   bin/hubbo run <cmd...>    any command in the toolchain
+#   bin/hubbo image           (re)build the toolchain image
+#   bin/hubbo web [pnpm args] web admin (default: `dev`, e.g. `web build`)
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+export HOST_UID="$(id -u)" HOST_GID="$(id -g)"
+
+# Every command gets a fresh container, so it always sees the current
+# environment (e.g. HUBBO_OTA_PASSWORD) and mounts. Start-up is under a second.
+run_in() {  # <service> <command...>
+    local service=$1 tty=(-T)
+    shift
+    [ -t 0 ] && [ -t 1 ] && tty=()
+    docker compose run --rm "${tty[@]}" "$service" "$@"
+}
+
+in_toolchain() {
+    run_in toolchain "$@"
+}
+
+# Build a native tree and run ctest. Configures only on first use; after that
+# ninja re-runs cmake itself when a CMakeLists.txt or globbed source changes.
+native_tests() {  # <service> <build dir> <build type> [ctest args...]
+    local service=$1
+    shift
+    run_in "$service" bash -c '
+        dir=$1 type=$2
+        shift 2
+        { [ -f "$dir/build.ninja" ] ||
+            cmake -S . -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE="$type" >/dev/null; } &&
+        cmake --build "$dir" &&
+        ctest --test-dir "$dir" --output-on-failure "$@"' _ "$@"
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+    test)
+        native_tests toolchain build/native Debug "$@"
+        ;;
+    fw)
+        in_toolchain bash -c 'cd firmware && pio "$@"' _ "$@"
+        ;;
+    sim)
+        in_toolchain bash -c '
+            { [ -f build/native/build.ninja ] ||
+                cmake -S . -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Debug >/dev/null; } &&
+            cmake --build build/native --target hub-sim >/dev/null &&
+            exec build/native/sim/hub-sim "$@"' _ "$@"
+        ;;
+    tsan)
+        native_tests tsan build/tsan RelWithDebInfo "$@"
+        ;;
+    shell)
+        in_toolchain bash
+        ;;
+    run)
+        in_toolchain "$@"
+        ;;
+    image)
+        docker compose build toolchain
+        ;;
+    web)
+        [ $# -eq 0 ] && set -- dev
+        run_in web "$@"
+        ;;
+    *)
+        sed -n 's/^#   \(bin\/hubbo\)/\1/p' "$0"
+        ;;
+esac
