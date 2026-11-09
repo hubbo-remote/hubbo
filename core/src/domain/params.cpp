@@ -15,6 +15,10 @@ const char *paramTypeName(ParamType type) {
     return "int";
 }
 
+const char *commandEffectName(CommandEffect effect) {
+    return effect == CommandEffect::Hold ? "hold" : "momentary";
+}
+
 int CommandCatalog::find(std::string_view id) const {
     for (uint16_t i = 0; i < count; i++) {
         if (id == items[i].id) {
@@ -134,7 +138,7 @@ ErrorCode coerceParam(const ParamSpec &spec, const ParamLiteral &literal, ParamV
 
 ErrorCode resolveParams(const CommandSpec &command, const std::vector<ParamInput> &inputs,
                         ParamValue out[limits::kMaxParams], std::string *badParam,
-                        const RefResolver *refs) {
+                        const RefResolver *refs, uint8_t *present) {
     auto fail = [&](ErrorCode code, const std::string &name) {
         if (badParam != nullptr) {
             *badParam = name;
@@ -171,8 +175,10 @@ ErrorCode resolveParams(const CommandSpec &command, const std::vector<ParamInput
         }
     }
 
+    uint8_t mask = 0;
     for (uint8_t i = 0; i < command.paramCount; i++) {
         if (seen[i]) {
+            mask = static_cast<uint8_t>(mask | (1u << i));
             continue;
         }
         if (command.params[i].required) {
@@ -180,6 +186,7 @@ ErrorCode resolveParams(const CommandSpec &command, const std::vector<ParamInput
         }
         out[i] = command.params[i].defaultValue;
     }
+    if (present != nullptr) *present = mask;
     return ErrorCode::Ok;
 }
 

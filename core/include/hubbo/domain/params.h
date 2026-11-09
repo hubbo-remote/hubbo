@@ -55,6 +55,19 @@ struct ParamSpec {
     const char *const *options;  // Enum only; static storage
     uint16_t optionCount;
     ParamValue defaultValue;     // used when optional and omitted
+    // Display metadata for the API/UI (GET /devices/{id}/capabilities).
+    const char *label = nullptr;  // e.g. "Volume"
+    const char *unit = nullptr;   // e.g. "%", "ms"
+    float step = 0.0f;            // UI increment; 0 = none
+
+    constexpr ParamSpec described(const char *newLabel, const char *newUnit = nullptr,
+                                  float newStep = 0.0f) const {
+        ParamSpec s = *this;
+        s.label = newLabel;
+        s.unit = newUnit;
+        s.step = newStep;
+        return s;
+    }
 
     static constexpr ParamSpec integer(const char *name, int32_t lo, int32_t hi, bool required = true,
                                        int32_t fallback = 0) {
@@ -81,11 +94,23 @@ struct ParamSpec {
     }
 };
 
+// What executing a command leaves behind.
+//   Momentary: nothing (a tap, a volume step, turning something on).
+//   Hold: a state that must be released (key_down holds a key until key_up).
+// Direct execution accepts only Momentary; a binding may use a Hold only in a
+// "<button>:down" binding whose matching ":up" binding releases it.
+enum class CommandEffect : uint8_t { Momentary, Hold };
+const char *commandEffectName(CommandEffect effect);  // "momentary", "hold"
+
 // One command an integration offers for a device.
 struct CommandSpec {
     const char *id;  // e.g. "key_down", "media_player.volume_set"
     const ParamSpec *params;
     uint8_t paramCount;
+    CommandEffect effect = CommandEffect::Momentary;
+    // Hold only: the command id that releases it, taking the same params
+    // (key_down -> "key_up").
+    const char *releasedBy = nullptr;
 };
 
 // The commands offered for one device. Storage belongs to the adapter and
@@ -137,9 +162,11 @@ ErrorCode coerceParam(const ParamSpec &spec, const ParamLiteral &literal, ParamV
 
 // Resolves a whole parameter list against `command` into `out` (spec order,
 // command.paramCount entries). On failure returns the error and sets
-// `*badParam` to the offending parameter name.
+// `*badParam` to the offending parameter name. `present` (optional) gets bit
+// i set when param i was supplied rather than defaulted, so adapters can
+// leave omitted optional fields out instead of using placeholder defaults.
 ErrorCode resolveParams(const CommandSpec &command, const std::vector<ParamInput> &inputs,
                         ParamValue out[limits::kMaxParams], std::string *badParam,
-                        const RefResolver *refs = nullptr);
+                        const RefResolver *refs = nullptr, uint8_t *present = nullptr);
 
 }  // namespace hubbo

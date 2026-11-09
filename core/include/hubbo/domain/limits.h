@@ -14,7 +14,12 @@ constexpr size_t kMaxIdLength = 32;          // integration, device, activity id
 constexpr size_t kMaxCommandIdLength = 65;   // "<32>.<32>", e.g. "media_player.volume_up"
 constexpr size_t kMaxNameLength = 64;        // human display names
 constexpr size_t kMaxProviderRefLength = 96; // e.g. HA entity/registry id
-constexpr size_t kMaxParamStringLength = 32; // enum option strings
+constexpr size_t kMaxParamStringLength = 64; // enum option strings
+constexpr size_t kMaxTypeLength = 32;        // integration/provider type names
+constexpr size_t kMaxUrlLength = 200;        // Home Assistant base URL
+constexpr size_t kMaxUniqueIdLength = 64;    // HA entity registry id
+constexpr size_t kMaxPeerNameLength = 48;    // bonded BLE host name
+constexpr size_t kMaxBleNameLength = 29;     // advertised BLE name (fits the scan response)
 
 // Configuration.
 constexpr size_t kMaxParams = 4;             // per action
@@ -24,6 +29,8 @@ constexpr size_t kMaxDevices = 64;
 constexpr size_t kMaxAdapters = 8;           // integration instances (excl. system)
 constexpr size_t kMaxCompiledActions = 2048; // whole compiled config
 constexpr size_t kMaxValidationIssues = 32;  // further issues are dropped
+constexpr size_t kMaxEnumOptions = 128;      // options of one enum param
+static_assert(kMaxParams <= 8, "the params-present mask is one byte");
 
 // system.wait
 constexpr uint32_t kMaxWaitMs = 60000;

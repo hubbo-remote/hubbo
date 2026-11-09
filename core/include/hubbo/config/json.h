@@ -1,0 +1,138 @@
+#pragma once
+
+#include <ArduinoJson.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+
+#include "hubbo/domain/config.h"
+#include "hubbo/engine/compiler.h"
+
+// JSON <-> config model, shared by persistence (config.json) and the API
+// handlers (request bodies). Shapes follow api/openapi.yaml exactly.
+//
+// Decoders are strict: unknown fields, wrong JSON types, missing required
+// fields and over-long strings/arrays are reported as ValidationIssues with a
+// JSON Pointer path (`required`, `unknown_field`, `wrong_type`, `too_long`).
+// They check *shape* only; semantics (registered devices, commands, params,
+// triggers) are the compiler's job. A decoder returns true when it produced
+// a value worth compiling (no shape issues).
+//
+// Parsing is bounded: callers give a byte limit and a nesting limit, and
+// anything larger or deeper is `malformed_json`.
+namespace hubbo::config {
+
+constexpr int kSchemaVersion = 1;      // of every stored object (Activity, Device: api/openapi.yaml)
+// Of the config document (the payload of the "config" record). History:
+//   1  first version
+//   2  BLE HID keys DIGIT_0..DIGIT_9 renamed KEY_0..KEY_9
+constexpr int kConfigFileVersion = 2;
+constexpr uint8_t kRequestNestingLimit = 8;       // api/openapi.yaml
+constexpr uint8_t kFileNestingLimit = 12;
+constexpr size_t kMaxRequestBytes = 32 * 1024;    // largest API body (activities)
+constexpr size_t kMaxConfigFileBytes = 512 * 1024;
+constexpr size_t kMaxStringLength = 255;          // any free-form string field
+constexpr size_t kMaxCaCertLength = 4096;
+
+// Parses `text` into `doc`. MalformedJson if not JSON, empty, larger than
+// maxBytes or nested deeper than nestingLimit.
+ErrorCode parseJson(std::string_view text, JsonDocument &doc, size_t maxBytes, uint8_t nestingLimit);
+
+// ---- activities --------------------------------------------------------
+enum class ActivityShape : uint8_t {
+    Create,   // ActivityInput: name, startup, shutdown, bindings
+    Replace,  // ActivityReplace: + optional id, schema_version; revision required
+    Validate, // ActivityReplace for dry runs: id and revision optional
+    Stored,   // Activity: + id, schema_version, revision required
+    Backup,   // BackupActivity: id required; schema_version, revision optional (revision >= 0)
+};
+
+bool decodeActivity(JsonVariantConst json, ActivityShape shape, ActivitySpec *out, ValidationReport *report,
+                    const std::string &path = "");
+void encodeActivity(const ActivitySpec &activity, JsonObject out);  // Activity (stored/response)
+
+// {bindings, revision}.
+bool decodeGlobalBindings(JsonVariantConst json, std::vector<BindingSpec> *bindings, uint32_t *revision,
+                          ValidationReport *report, const std::string &path = "");
+void encodeGlobalBindings(const std::vector<BindingSpec> &bindings, uint32_t revision, JsonObject out);
+
+// Action and binding pieces, for the execute endpoint and partial bodies.
+bool decodeParams(JsonVariantConst json, std::vector<ParamInput> *out, ValidationReport *report,
+                  const std::string &path);
+void encodeParams(const std::vector<ParamInput> &params, JsonObject out);
+
+// ---- devices -----------------------------------------------------------
+enum class DeviceShape : uint8_t {
+    Register,  // DeviceRegister: name, integration_id, kind?, provider
+    Stored,    // Device: + id, schema_version, revision (availability ignored)
+    Backup,    // StoredDevice: like Stored, but revision optional (>= 0), no availability
+};
+
+bool decodeDevice(JsonVariantConst json, DeviceShape shape, DeviceSpec *out, ValidationReport *report,
+                  const std::string &path = "");
+// Device without `availability` (runtime state the API adds).
+void encodeDevice(const DeviceSpec &device, JsonObject out);
+
+// DeviceUpdate: partial; revision required.
+struct DeviceUpdate {
+    std::optional<std::string> name;
+    std::optional<std::string> kind;
+    std::optional<ProviderSpec> provider;
+    uint32_t revision = 0;
+};
+bool decodeDeviceUpdate(JsonVariantConst json, DeviceUpdate *out, ValidationReport *report,
+                        const std::string &path = "");
+
+// ---- integrations (non-secret) -------------------------------------------
+// IntegrationConfig as stored. Read-only and secret fields
+// (has_access_token, access_token, bonded, peer_name) are rejected on input
+// and never written here; the API layer adds read-only ones to responses.
+bool decodeIntegration(JsonVariantConst json, IntegrationSpec *out, ValidationReport *report,
+                       const std::string &path = "");
+void encodeIntegration(const IntegrationSpec &integration, JsonObject out);
+
+// ---- whole config file ---------------------------------------------------
+// {"format":"hubbo-config","schema_version":1,"revision":N,
+//  "integrations":[...],"devices":[...],"global_bindings":{...},"activities":[...]}
+std::string serializeConfig(const ConfigSpec &config);
+
+// Migration hook: upgrade `doc` in place from `fromVersion` to
+// kConfigFileVersion. Return Ok, or an error to reject the file.
+using Migration = ErrorCode (*)(JsonDocument &doc, int fromVersion);
+
+// The built-in migrations (every released config version up to now).
+ErrorCode migrateConfig(JsonDocument &doc, int fromVersion);
+
+struct ParseResult {
+    ErrorCode code = ErrorCode::Ok;  // Ok, MalformedJson, UnsupportedSchema, ValidationFailed
+    int schemaVersion = 0;           // as found in the file
+    ValidationReport report;         // shape issues (ValidationFailed)
+};
+
+// Parses a config document. Shape only: compile the result before trusting
+// it. Documents with an older schema_version go through `migrate` (the
+// built-in migrateConfig if null); newer ones are UnsupportedSchema, and a
+// failed migration is MigrationFailed.
+ParseResult parseConfig(std::string_view text, ConfigSpec *out, Migration migrate = nullptr);
+
+// ---- backup archive (GET /admin/backup, POST /admin/restore) -----------
+// The Backup schema: the user-facing config without secrets. Integrations
+// carry no revision there (restored ones start at 1).
+struct BackupInfo {
+    std::string createdAt;        // RFC 3339, or "" (null)
+    std::string firmwareVersion;
+    std::string board;
+    bool hasRemote = false;       // radio pairing (not a credential)
+    std::string remoteAddress;    // ^[0-9A-F]{10}$
+    int remoteChannel = 0;
+};
+
+std::string serializeBackup(const ConfigSpec &config, const BackupInfo &info);
+// Shape only, like parseConfig(); compile before restoring. `info` optional.
+ParseResult parseBackup(std::string_view text, ConfigSpec *out, BackupInfo *info = nullptr,
+                        size_t maxBytes = 256 * 1024);
+
+}  // namespace hubbo::config
