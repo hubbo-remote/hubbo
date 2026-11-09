@@ -99,9 +99,23 @@ TEST(Http, Helpers) {
     EXPECT_TRUE(methodFromName("PUT", &m));
     EXPECT_EQ(m, Method::Put);
     EXPECT_FALSE(methodFromName("BREW", &m));
-    EXPECT_EQ(queryParam("a=1&ms=250&b", "ms"), "250");
-    EXPECT_EQ(queryParam("a=1&b", "b"), "");
-    EXPECT_EQ(queryParam("", "ms"), "");
+    EXPECT_EQ(queryValue("a=1&ms=250&b", "ms"), "250");
+    EXPECT_EQ(queryValue("a=1&b", "b"), "");
+    EXPECT_EQ(queryValue("", "ms"), "");
+}
+
+TEST(QueryValue, DecodesOneParameterAtATime) {
+    EXPECT_EQ(queryValue("q=office%20lights", "q"), "office lights");
+    EXPECT_EQ(queryValue("q=office+lights&limit=5", "q"), "office lights");
+    EXPECT_EQ(queryValue("q=%E2%9C%93", "q"), "\xE2\x9C\x93");  // UTF-8 bytes
+    // %26 is a literal '&' in the value, never a parameter separator.
+    EXPECT_EQ(queryValue("q=a%26limit%3D1&limit=7", "q"), "a&limit=1");
+    EXPECT_EQ(queryValue("q=a%26limit%3D1&limit=7", "limit"), "7");
+    // Malformed escapes stay as they are.
+    EXPECT_EQ(percentDecode("100%"), "100%");
+    EXPECT_EQ(percentDecode("%4"), "%4");
+    EXPECT_EQ(percentDecode("%zz%41"), "%zzA");
+    EXPECT_EQ(queryValue("a=1", "q"), "");
 }
 
 

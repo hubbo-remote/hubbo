@@ -214,9 +214,12 @@ latency on the board before committing (it's in the architecture's verification 
 dispatch must not wait on TLS. The HTTP server runs at lower priority than the RF and engine
 tasks.
 
-Outbound to Home Assistant: verify HA's certificate (`verify_tls: true` by default). For a
-self-signed HA, the admin pastes HA's CA certificate (`ca_cert_pem`) rather than turning
-verification off. `http://` HA URLs work but send the HA token in plaintext. The UI should warn.
+Outbound to Home Assistant: an `https://` URL connects over `wss://`, verified against the
+public CA bundle in the firmware (`verify_tls: true`, the default). `verify_tls: false` keeps
+the connection encrypted but doesn't verify the server, so anyone on the network path could pose
+as HA and get the token: only for a self-signed HA on a trusted LAN. There's no custom CA
+setting (`ca_cert_pem` was removed in Phase 3; old configs and backups that carry it load, and
+it's dropped). `http://` HA URLs work but send the HA token in plaintext. The UI should warn.
 Changing the HA URL clears the stored token unless a new one is sent, so a token can't be
 redirected to another host by editing the URL.
 
@@ -228,6 +231,13 @@ a small key-value interface shaped for NVS (keys up to 15 chars of `[a-z0-9_]`, 
 in one key (`admin`: `<username>|<hash>`, so setup is a single atomic write) and one record per API token (`tok_<id>`: SHA-256, created time,
 name) there. hub-sim and the tests use `MemorySecretStore`; the firmware implements the port on
 NVS. Nothing secret goes into the ConfigService JSON, backups or responses.
+
+The Home Assistant access token is the key `ha_token`. `PUT /admin/integrations/ha_main` is the
+only way in (write-only: omit to keep, `null` to clear); responses show `has_access_token`. A
+new HA URL erases the stored token before the URL is saved, unless the same request sends a
+new token, so a token is never sent to a host it wasn't entered for. The platform reads it only
+to hand it to the HA client (`api::applyHomeAssistantSettings`), which uses it in the auth
+message and nowhere else.
 
 | Secret | Where | In backups | In API responses |
 |---|---|---|---|
@@ -310,10 +320,13 @@ Covered over HTTP against hub-sim by `api/contract.sh` (both modes):
 - [x] Body limits (`413`), JSON depth limit (`400`), `415` for non-JSON.
 - [x] Host-header allowlist (`421`).
 - [x] No secret-named field in any response (except the one-time token creation).
+- [x] The HA token, once sent, appears in no response of any operation or status, the backup
+      included; a new URL clears it; the token is write-only (`has_access_token` only).
 
 Still to do:
 
-- [ ] No secret in any log line or backup (grep the simulator's output for the test secrets).
+- [ ] No secret in any log line (grep the simulator's output for the test secrets). Backups are
+      covered for the HA token (above).
 - [ ] CI proves the ESP32 build cannot define `HUBBO_SIMULATOR_NO_AUTH`.
 - [ ] On hardware: PBKDF2 login time, TLS RAM and handshake time, `esp_fill_random` after BLE
       init.

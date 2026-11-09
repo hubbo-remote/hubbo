@@ -29,6 +29,13 @@ void ensureBuiltinIntegrations(ConfigSpec *config) {
         ble.deviceName = "Hubbo";
         config->integrations.insert(config->integrations.begin() + 1, ble);
     }
+    if (!has(kHomeAssistantIntegrationId)) {
+        IntegrationSpec ha;
+        ha.id = kHomeAssistantIntegrationId;
+        ha.type = kHomeAssistantType;
+        ha.name = "Home Assistant";
+        config->integrations.insert(config->integrations.begin() + 2, ha);
+    }
 }
 
 }  // namespace hubbo

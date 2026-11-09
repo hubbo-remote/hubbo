@@ -2,7 +2,7 @@
 // and reject every malicious one, so UI built against the mock is built
 // against the spec.
 import { describe, expect, it } from 'vitest'
-import type { Activity, ApiErrorBody, Session, Status, TransitionResult } from '../src/api/types.ts'
+import type { Activity, ApiErrorBody, DiscoverStatus, Session, Status, TransitionResult } from '../src/api/types.ts'
 import { fixture } from './fixtures.ts'
 import { CSRF_HEADER } from '../src/api/constants.ts'
 import { createMock, type MockRequest, type MockResponse } from './handler.ts'
@@ -28,13 +28,16 @@ const ROUTES: Record<string, [string, string]> = {
   createToken: ['POST', '/admin/tokens'],
   changeAdminPassword: ['PUT', '/admin/account/password'],
   restoreBackup: ['POST', '/admin/restore?dry_run=true'],
+  setRemoteEndpoint: ['PUT', '/admin/remote/endpoint'],
 }
 
 describe('mock vs api/fixtures', () => {
   for (const f of index.filter((x) => x.kind === 'request' && ROUTES[x.operation])) {
     it(`accepts ${f.file}`, async () => {
       const [method, path] = ROUTES[f.operation]!
-      const r = await createMock({ random: () => 0.99 }).handle(req(method, path, fixture(f.file)))
+      const m = createMock({ random: () => 0.99, discoverDelayMs: 0 })
+      if (f.operation === 'registerDevice') await m.handle(req('POST', '/admin/integrations/ha_main/discover')) // HA devices snapshot the latest discovery
+      const r = await m.handle(req(method, path, fixture(f.file)))
       // The blocked-raw record fixture is from newer firmware (schema_version 2): well-formed, but this
       // firmware refuses it exactly as errors/restore_unsupported_schema.json documents.
       if (f.file === 'admin/restore.blocked-raw.request.json') return expect([r.status, r.body]).toEqual([422, fixture('errors/restore_unsupported_schema.json')])
@@ -201,15 +204,21 @@ describe('mock behaviour', () => {
     expect((await m.handle(req('GET', '/admin/backup'))).headers?.['x-hubbo-backup']).toBe('config')
   })
 
-  it('a damaged blocked config has nothing to back up (409); unavailable storage answers 503', async () => {
+  it('a damaged blocked config has nothing to back up (409); storage down at load answers 503, later failures still back up', async () => {
     const m = createMock()
     await m.handle(req('POST', '/__mock/reset', { configState: 'blocked', configDamaged: true }))
     expect(((await m.handle(req('GET', '/status'))).body as Status).config.reason).toMatch(/damaged/)
     const r = await m.handle(req('GET', '/admin/backup'))
     expect([r.status, r.body]).toEqual([409, fixture('errors/backup_blocked_damaged.json')])
+    // Storage down at load: nothing trustworthy to export.
     await m.handle(req('POST', '/__mock/reset', { configState: 'storage_unavailable' }))
     const u = await m.handle(req('GET', '/admin/backup'))
     expect([u.status, u.body]).toEqual([503, fixture('errors/backup_storage_unavailable.json')])
+    // Storage failing after a good load: the running config is the last acknowledged save, so it's exported.
+    await m.handle(req('POST', '/__mock/reset', {}))
+    await m.handle(req('POST', '/__mock/storage?health=unavailable'))
+    const later = await m.handle(req('GET', '/admin/backup'))
+    expect([later.status, later.headers?.['x-hubbo-backup']]).toEqual([200, 'config'])
   })
 
   it('restore and reset never start an activity: the active one stays only if its id survives', async () => {
@@ -225,6 +234,116 @@ describe('mock behaviour', () => {
     await m.handle(req('POST', '/activities/act_play_xbox_2/activate'))
     await m.handle(req('POST', '/admin/reset'))
     expect(await active()).toBeNull()
+  })
+
+  it('remote: shows the endpoint; sets a valid one; refuses what radio set refuses', async () => {
+    const m = createMock()
+    expect((await m.handle(req('GET', '/admin/remote'))).body).toEqual(fixture('admin/remote.json'))
+    const bad = await m.handle(req('PUT', '/admin/remote/endpoint', { channel: 125, address: 'FC5C975555' }))
+    expect(bad.status).toBe(422)
+    expect(errorOf(bad).details?.map((d) => d.path)).toEqual(['/channel', '/address'])
+    const good = await m.handle(req('PUT', '/admin/remote/endpoint', { channel: 12, address: '0xa1b2c3d4' }))
+    expect(good.body).toMatchObject({ radio: 'listening', endpoint: { channel: 12, address: '00A1B2C3D4' } })
+    expect(((await m.handle(req('GET', '/status'))).body as Status).remote.channel).toBe(12)
+  })
+
+  it('a remote scan runs 120 s; while it runs the endpoint is locked; stopping it keeps the pairing', async () => {
+    const m = createMock()
+    await m.handle(req('POST', '/__mock/reset', { scanNeverFinds: true }))
+    expect((await m.handle(req('POST', '/admin/remote/pair'))).body).toMatchObject({ state: 'scanning', remaining_s: 120 })
+    expect((await m.handle(req('POST', '/admin/remote/pair'))).status).toBe(409)
+    expect((await m.handle(req('GET', '/admin/remote'))).body).toMatchObject({ radio: 'scanning' })
+    expect((await m.handle(req('PUT', '/admin/remote/endpoint', { channel: 1, address: 'A1B2C3D4E5' }))).status).toBe(409)
+    expect((await m.handle(req('DELETE', '/admin/remote/pair'))).status).toBe(204)
+    expect((await m.handle(req('GET', '/admin/remote/pair'))).body).toMatchObject({ state: 'stopped', paired: true, channel: 74 })
+  })
+
+  it('discovery is async: start, poll until done, filter; cancel drops it', async () => {
+    const m = createMock({ discoverDelayMs: 0 })
+    expect((await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body).toEqual({ state: 'idle' })
+    expect((await m.handle(req('POST', '/admin/integrations/ha_main/discover'))).status).toBe(202)
+    const all = (await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body as DiscoverStatus
+    expect(all).toMatchObject({ state: 'done', total: 7, next_cursor: null })
+    const fx = fixture<DiscoverStatus>('integrations/ha_main.discovery.json')
+    expect(all.candidates!.map((c) => [c.provider.entity_id, c.registered_device_id])).toEqual(fx.candidates!.map((c) => [c.provider.entity_id, c.registered_device_id]))
+    const sonos = all.candidates!.find((c) => c.provider.entity_id === 'media_player.family_room_sonos')!
+    expect(sonos).toMatchObject({ platform: 'sonos', dropped_options: 0 })
+    expect(sonos.command_ids).toContain('sonos.set_sleep_timer')
+    expect(sonos.skipped_services).toContain('sonos.snapshot')
+    const lights = (await m.handle(req('GET', '/admin/integrations/ha_main/discover?domain=light'))).body as DiscoverStatus
+    expect(lights.candidates!.map((c) => c.domain)).toEqual(['light'])
+    const page = (await m.handle(req('GET', '/admin/integrations/ha_main/discover?limit=2'))).body as DiscoverStatus
+    expect([page.candidates!.length, page.next_cursor]).toEqual([2, '2'])
+    expect((await m.handle(req('DELETE', '/admin/integrations/ha_main/discover'))).status).toBe(204)
+    expect(((await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body as DiscoverStatus).state).toBe('idle')
+  })
+
+  it('discovery while HA is down is 503 integration_unavailable; a failed run reports why', async () => {
+    const m = createMock({ discoverDelayMs: 0 })
+    await m.handle(req('POST', '/__mock/ha?state=unreachable'))
+    expect(errorOf(await m.handle(req('POST', '/admin/integrations/ha_main/discover'))).code).toBe('integration_unavailable')
+    await m.handle(req('POST', '/__mock/reset', { discoverFails: true }))
+    await m.handle(req('POST', '/admin/integrations/ha_main/discover'))
+    expect((await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body).toMatchObject({ state: 'failed', error: expect.any(String) })
+  })
+
+  it('registering needs the entity in the latest discovery (422 unknown_device), and HA connected (503)', async () => {
+    const m = createMock({ discoverDelayMs: 0 })
+    const backlight = { integration_id: 'ha_main', provider: { type: 'home_assistant', entity_id: 'switch.tv_backlight' }, name: 'Backlight', kind: 'switch' }
+    const before = await m.handle(req('POST', '/admin/devices', backlight))
+    expect([before.status, errorOf(before).details?.[0]]).toEqual([422, expect.objectContaining({ path: '/provider/entity_id', code: 'unknown_device' })])
+    await m.handle(req('POST', '/admin/integrations/ha_main/discover'))
+    const noCommands = await m.handle(req('POST', '/admin/devices', { ...backlight, provider: { type: 'home_assistant', entity_id: 'media_player.kitchen_display' } }))
+    expect(errorOf(noCommands).details?.[0]?.code).toBe('unknown_device')
+    await m.handle(req('POST', '/__mock/ha?state=unreachable'))
+    expect((await m.handle(req('POST', '/admin/devices', backlight))).status).toBe(503)
+  })
+
+  it('a device update takes only DeviceUpdate fields (ha_capabilities is never round-tripped)', async () => {
+    const m = createMock()
+    const d = (await m.handle(req('GET', '/devices/dev_sonos'))).body as { revision: number }
+    const r = await m.handle(req('PUT', '/admin/devices/dev_sonos', { name: 'Sonos', revision: d.revision, ha_capabilities: {} }))
+    expect([r.status, errorOf(r).details?.[0]?.code]).toEqual([422, 'unknown_field'])
+  })
+
+  it('registering stores the entity’s commands, integration services with typed params included', async () => {
+    const m = createMock({ discoverDelayMs: 0 })
+    await m.handle(req('POST', '/admin/integrations/ha_main/discover'))
+    const d = (await m.handle(req('POST', '/admin/devices', { integration_id: 'ha_main', provider: { type: 'home_assistant', entity_id: 'switch.tv_backlight' }, name: 'Backlight', kind: 'switch' }))).body as { id: string }
+    const caps = (await m.handle(req('GET', `/devices/${d.id}/capabilities`))).body as { commands: { command_id: string }[] }
+    expect(caps.commands.map((c) => c.command_id).sort()).toEqual(['switch.turn_off', 'switch.turn_on'])
+    // Re-linking (here: to the same entity) re-reads it, picking up its integration's typed services.
+    const sonos = (await m.handle(req('GET', '/devices/dev_sonos'))).body as { revision: number; provider: object }
+    expect((await m.handle(req('PUT', '/admin/devices/dev_sonos', { provider: sonos.provider, revision: sonos.revision }))).status).toBe(200)
+    const caps2 = (await m.handle(req('GET', '/devices/dev_sonos/capabilities'))).body as { commands: { command_id: string; params: { type: string }[] }[] }
+    expect(caps2.commands.find((c) => c.command_id === 'sonos.set_sleep_timer')?.params).toMatchObject([{ type: 'int', minimum: 0, maximum: 86400 }])
+  })
+
+  it('HA client states: auth_failed sticks until the settings change', async () => {
+    const m = createMock()
+    const ha = async () => ((await m.handle(req('GET', '/status'))).body as Status).integrations.find((i) => i.id === 'ha_main')?.state
+    await m.handle(req('POST', '/__mock/ha?state=auth_failed'))
+    expect(await ha()).toBe('auth_failed')
+    const cfg = (await m.handle(req('GET', '/admin/integrations/ha_main'))).body as { revision: number }
+    await m.handle(req('PUT', '/admin/integrations/ha_main', { revision: cfg.revision, settings: { type: 'home_assistant', access_token: 'new-token' } }))
+    expect(await ha()).toBe('connected')
+  })
+
+  it('a stale device’s commands fail as entity_not_found until it is re-linked', async () => {
+    const m = createMock({ discoverDelayMs: 0 })
+    await m.handle(req('POST', '/__mock/ha?remove=media_player.family_room_lg_tv'))
+    expect(((await m.handle(req('GET', '/devices/dev_lg_tv'))).body as { availability: string }).availability).toBe('available') // not yet noticed
+    await m.handle(req('POST', '/admin/integrations/ha_main/discover'))
+    expect(((await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body as DiscoverStatus).total).toBe(6)
+    expect(((await m.handle(req('GET', '/devices/dev_lg_tv'))).body as { availability: string }).availability).toBe('stale')
+    const exec = await m.handle(req('POST', '/devices/dev_lg_tv/commands/media_player.turn_on/execute', { params: {} }))
+    expect([exec.status, exec.body]).toEqual([200, expect.objectContaining({ status: 'failed', message: 'entity_not_found' })])
+    const d = (await m.handle(req('GET', '/devices/dev_lg_tv'))).body as { revision: number; provider: object }
+    expect(errorOf(await m.handle(req('PUT', '/admin/devices/dev_lg_tv', { provider: d.provider, revision: d.revision }))).details?.[0]?.code).toBe('unknown_device') // it's gone
+    const relinked = await m.handle(req('PUT', '/admin/devices/dev_lg_tv', { provider: { type: 'home_assistant', entity_id: 'switch.tv_backlight' }, revision: d.revision }))
+    expect((relinked.body as { availability: string }).availability).toBe('available')
+    const taken = await m.handle(req('PUT', '/admin/devices/dev_lg_tv', { provider: { type: 'home_assistant', entity_id: 'media_player.xbox' }, revision: (relinked.body as { revision: number }).revision }))
+    expect(errorOf(taken).details?.[0]?.code).toBe('duplicate_id')
   })
 
   it('transitions report each phase; a rejected startup still switched', async () => {

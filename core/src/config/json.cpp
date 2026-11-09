@@ -4,6 +4,8 @@
 #include <limits>
 
 #include "hubbo/domain/limits.h"
+#include "hubbo/api/remote_port.h"
+#include "hubbo/ha/snapshot_json.h"
 #include "hubbo/remote/button.h"
 #include "hubbo/remote/input.h"
 
@@ -317,7 +319,9 @@ bool decodeIntegrationAs(JsonVariantConst json, IntegrationShape shape, Integrat
         if (ha || !stored) {
             s.string("url", &out->url, stored, limits::kMaxUrlLength);
             s.boolean("verify_tls", &out->verifyTls, stored);
-            s.nullableString("ca_cert_pem", &out->caCertPem, false, kMaxCaCertLength);
+            // Retired (never had a UI): a record or backup that has it still
+            // loads, and the next save leaves it out.
+            s.get("ca_cert_pem", false);
         }
         if (out->type == kBleHidType || !stored) {
             s.string("device_name", &out->deviceName, stored, limits::kMaxBleNameLength);
@@ -338,7 +342,6 @@ void encodeIntegrationAs(const IntegrationSpec &integration, IntegrationShape sh
     if (integration.type == kHomeAssistantType) {
         settings["url"] = integration.url;
         settings["verify_tls"] = integration.verifyTls;
-        if (integration.caCertPem) settings["ca_cert_pem"] = *integration.caCertPem;
     } else if (integration.type == kBleHidType) {
         settings["device_name"] = integration.deviceName;
     }
@@ -554,15 +557,26 @@ bool decodeDevice(JsonVariantConst json, DeviceShape shape, DeviceSpec *out, Val
     f.nested("provider", true, [&](JsonVariantConst v, const std::string &p) {
         return decodeProvider(v, &out->provider, report, p);
     });
+    // The hub reads capabilities from HA: only the stored shapes carry them
+    // (a client sending one gets unknown_field).
+    if (stored) {
+        f.nested("ha_capabilities", false, [&](JsonVariantConst v, const std::string &p) {
+            ha::CapabilitySnapshot snapshot;
+            if (!ha::decodeSnapshot(v, &snapshot, report, p)) return false;
+            out->haCapabilities = std::move(snapshot);
+            return true;
+        });
+    }
     return f.finish();
 }
 
-void encodeDevice(const DeviceSpec &device, JsonObject out) {
+void encodeDevice(const DeviceSpec &device, JsonObject out, bool withCapabilities) {
     out["id"] = device.id;
     out["name"] = device.name;
     out["integration_id"] = device.integrationId;
     out["kind"] = device.kind;
     encodeProvider(device.provider, out["provider"].to<JsonObject>());
+    if (withCapabilities && device.haCapabilities) ha::encodeSnapshot(*device.haCapabilities, out["ha_capabilities"].to<JsonObject>());
     out["schema_version"] = kSchemaVersion;
     out["revision"] = device.revision;
 }
@@ -706,11 +720,24 @@ ParseResult parseBackup(std::string_view text, ConfigSpec *out, BackupInfo *info
         Fields rf(v, r, p);
         meta.hasRemote = rf.string("address", &meta.remoteAddress, true, 10);
         JsonVariantConst channel = rf.get("channel", true);
+        bool channelOk = false;
         if (!channel.isUnbound()) {
-            if (!channel.is<int64_t>() || channel.as<int64_t>() < 0 || channel.as<int64_t>() > 125) {
+            if (!channel.is<int64_t>() || channel.as<int64_t>() < 0 ||
+                channel.as<int64_t>() > api::kMaxRemoteChannel) {
                 rf.failAt(ErrorCode::WrongType, "channel");
             } else {
                 meta.remoteChannel = static_cast<int>(channel.as<int64_t>());
+                channelOk = true;
+            }
+        }
+        // One rule for an endpoint: the console's `radio set` (remote_port.h).
+        if (meta.hasRemote && channelOk) {
+            api::RemoteEndpoint endpoint;
+            endpoint.channel = static_cast<uint8_t>(meta.remoteChannel);
+            // Backups write all 10 digits (formatRemoteAddress).
+            if (meta.remoteAddress.size() != 10 || !api::parseRemoteAddress(meta.remoteAddress, &endpoint.address) ||
+                !api::isValidRemoteEndpoint(endpoint)) {
+                rf.failAt(ErrorCode::WrongType, "address");
             }
         }
         return rf.finish();

@@ -4,7 +4,11 @@
 //   /api/v1/...  the shared API handlers (core/include/hubbo/api), exactly as
 //                the firmware serves them, over SimHub (SimRuntime).
 //   /sim/...     simulator controls (remote buttons, time, logs, scripts,
-//                reset). Never exist on the hub; admin only.
+//                reset, the remote radio's pair scan, the fake Home
+//                Assistant). Never exist on the hub; admin only.
+//
+// Phase 3 ports: a SimulatedRemote radio, and the hub's HomeAssistantClient
+// against its in-process FakeHaServer (never a real HA; see hub.h).
 //
 // Auth: SIMULATOR_NO_AUTH by default (every request is the simulator
 // principal); with `authEnabled` the production api::Authenticator over the
@@ -34,12 +38,17 @@ public:
     // `runner` must be pinned (its hub lives as long as this) and boot with
     // `credentials` (they're loaded by the hub's boot, bootHub()), which
     // must outlive this. `storage` (optional) is the medium whose health
-    // POST /sim/storage controls.
+    // POST /sim/storage controls. `secrets` (optional) holds the HA token.
     SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &credentials,
-           SwitchableStorage *storage = nullptr);
+           SwitchableStorage *storage = nullptr, auth::SecretStore *secrets = nullptr);
 
     http::RequestAuthenticator &authenticator();
-    void handle(http::Request &request, http::Response &response) const { router_.dispatch(request, response); }
+    // Gives the integration task a turn after each request, so a discovery
+    // started by a request has run by the next one.
+    void handle(http::Request &request, http::Response &response) {
+        router_.dispatch(request, response);
+        runner_.hub().serviceIntegrations();
+    }
     // The route's body limit (router policy), for the transport.
     size_t bodyLimit(http::Method method, std::string_view path) const { return router_.bodyLimit(method, path); }
 

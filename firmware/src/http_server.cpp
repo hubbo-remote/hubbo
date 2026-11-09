@@ -176,6 +176,7 @@ bool HttpServer::begin(const http::Router &router, http::RequestAuthenticator *a
     config.task_priority = kPriority;
     config.stack_size = kStackBytes;
     config.max_open_sockets = 4;
+    config.max_uri_handlers = 12;  // the API (one per method) and the dev console
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
 

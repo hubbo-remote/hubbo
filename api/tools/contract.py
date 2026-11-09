@@ -35,10 +35,27 @@ import validate as v  # noqa: E402
 
 FIXTURES = v.FIXTURES
 PASSWORD = "correct horse battery"
+# hub-sim's fake Home Assistant accepts this token (sim/src/fake_ha.h). Like
+# every secret-named field the contract sends (remember_secrets), it may then
+# appear in no response (any operation, any status, the backup included).
+HA_TOKEN = "fake-ha-token"
 TRANSPORT_ERRORS = (405, 421)  # any request may get these (api/openapi.yaml conventions)
 
 failures = []
 checked = 0
+sent_secrets = set()  # write-only values sent so far (see HA_TOKEN)
+
+
+def remember_secrets(value):
+    """Adds the values of secret-named request fields (validate.SECRET_KEYS) to sent_secrets."""
+    if isinstance(value, dict):
+        for k, x in value.items():
+            if k in v.SECRET_KEYS and isinstance(x, str) and len(x) >= 8:
+                sent_secrets.add(x)
+            remember_secrets(x)
+    elif isinstance(value, list):
+        for x in value:
+            remember_secrets(x)
 
 
 def fixture(name):
@@ -58,6 +75,7 @@ class Client:
         """One request. Validates the response against op_id's spec; checks the status if given."""
         global checked
         url = self.base + "/api/v1" + path
+        remember_secrets(body)
         data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
         h = {"Host": "127.0.0.1"}
         if data is not None and raw is None:
@@ -77,6 +95,9 @@ class Client:
             status, text, resp_headers = e.code, e.read().decode(), e.headers
         where = f"{label or op_id} {method} {path} -> {status}"
         checked += 1
+        for secret in sent_secrets:
+            if secret in text:
+                failures.append(f"{where}: a write-only secret appears in the response")
         if expect is not None and status != expect:
             failures.append(f"{where}: expected {expect}: {text[:300]}")
         op = self.checker.ops[op_id]
@@ -352,8 +373,9 @@ def activity_flow(c):
     c.call("getActivity", "GET", f"/activities/{act_id}", expect=404)
 
 
-def admin_flow(c, checker):
+def admin_flow(c, checker, candidate=None):
     reg = fixture("admin/register_device.request.json")
+    reg = registration_from(reg, candidate)  # an HA device is registered from the latest discovery
     status, dev, _ = c.call("registerDevice", "POST", "/admin/devices", reg, expect=201)
     if status == 201:
         dev_id = dev["id"]
@@ -401,13 +423,218 @@ def admin_flow(c, checker):
                f"{op_id}: expected 501 not_implemented, got {status}")
 
 
+def until(fn, seconds=5):
+    """Polls fn() until it returns something truthy (hub-sim's loop runs meanwhile)."""
+    deadline = time.monotonic() + seconds
+    while True:
+        result = fn()
+        if result or time.monotonic() > deadline:
+            return result
+        time.sleep(0.05)
+
+
+def ha_state(c):
+    """The HA client's state as /status reports it."""
+    _, status, _ = c.call("getStatus", "GET", "/status", expect=200, label="ha state")
+    return next((i["state"] for i in (status or {}).get("integrations", []) if i["id"] == "ha_main"), None)
+
+
+def ha_flow(c):
+    """HA settings (the token is write-only), async discovery, registration
+    from it. Returns a registrable candidate (or None)."""
+    _, cfg, _ = c.call("getIntegrationConfig", "GET", "/admin/integrations/ha_main", expect=200)
+    if not cfg:
+        return None
+    c.call("getIntegrationConfig", "GET", "/admin/integrations/nope", expect=404)
+    url = cfg["settings"]["url"]
+    _, cfg, _ = c.call("configureIntegration", "PUT", "/admin/integrations/ha_main",
+                       {"settings": {"type": "home_assistant", "url": url, "access_token": HA_TOKEN},
+                        "revision": cfg["revision"]}, expect=200, label="set HA token")
+    expect(cfg and cfg["settings"]["has_access_token"] is True, f"has_access_token after set: {cfg}")
+    if not cfg:
+        return None
+    c.call("configureIntegration", "PUT", "/admin/integrations/ha_main",
+           {"settings": {"type": "home_assistant", "url": "http://user@ha.local"}, "revision": cfg["revision"]},
+           expect=422, label="HA URL with credentials")
+    c.call("configureIntegration", "PUT", "/admin/integrations/ha_main",
+           {"settings": {"type": "ble_hid", "device_name": "x"}, "revision": cfg["revision"]},
+           expect=422, label="other integration's settings")
+    c.call("configureIntegration", "PUT", "/admin/integrations/ha_main", {"name": "x", "revision": 999},
+           expect=409, label="stale integration revision")
+    _, again, _ = c.call("getIntegrationConfig", "GET", "/admin/integrations/ha_main", expect=200)
+    expect(again and again["settings"]["has_access_token"] is True, "token kept")
+    expect(until(lambda: ha_state(c) == "connected"), "fake HA never connected with the stored token")
+
+    # The token is in no backup.
+    c.call("downloadBackup", "GET", "/admin/backup", expect=200, label="backup after HA token")
+
+    c.call("discoverIntegration", "POST", "/admin/integrations/ble/discover", expect=404, label="discover BLE")
+    _, started, _ = c.call("discoverIntegration", "POST", "/admin/integrations/ha_main/discover", expect=202)
+    expect(started and started["state"] in ("running", "done"), f"discover: {started}")
+
+    done = wait_discovery(c)
+    expect(done and done["state"] == "done", f"discovery didn't finish: {done}")
+    if not done or done["state"] != "done":
+        return None
+    total = done["total"]
+    expect(isinstance(done.get("elapsed_ms"), int), f"done carries elapsed_ms: {done}")
+    expect(done.get("truncated") == 0, f"the fake HA's list should be complete: {done.get('truncated')}")
+    expect(total == len(done["candidates"]) or total > 50, "candidates on one page")
+    _, page, _ = c.call("getDiscovery", "GET", "/admin/integrations/ha_main/discover?limit=1", expect=200,
+                        label="discovery page")
+    if page and total > 1:
+        expect(len(page["candidates"]) == 1 and page["next_cursor"], f"page: {page}")
+        _, rest, _ = c.call("getDiscovery", "GET",
+                            f"/admin/integrations/ha_main/discover?limit=100&cursor={page['next_cursor']}",
+                            expect=200, label="discovery next page")
+        expect(rest and len(rest["candidates"]) == min(total, 101) - 1, "second page has the rest")
+    _, lights, _ = c.call("getDiscovery", "GET", "/admin/integrations/ha_main/discover?domain=light&q=FAMILY",
+                          expect=200, label="discovery filter")
+    expect(lights and all(x["domain"] == "light" for x in lights["candidates"]), "domain filter")
+    # Query values are percent-decoded ("%5F" is "_"), per parameter.
+    _, plain, _ = c.call("getDiscovery", "GET", "/admin/integrations/ha_main/discover?q=family_room", expect=200,
+                         label="discovery q")
+    _, coded, _ = c.call("getDiscovery", "GET", "/admin/integrations/ha_main/discover?q=family%5Froom",
+                         expect=200, label="discovery q percent-encoded")
+    expect(plain and coded and plain["candidates"] and coded["candidates"] == plain["candidates"],
+           "a percent-encoded q should match like the plain one")
+    c.call("getDiscovery", "GET", "/admin/integrations/ha_main/discover?limit=0", expect=422, label="bad limit")
+    c.call("getDiscovery", "GET", "/admin/integrations/ha_main/discover?domain=sensor", expect=422,
+           label="bad domain")
+
+    reg = {"name": "Not in HA", "integration_id": "ha_main",
+           "provider": {"type": "home_assistant", "entity_id": "switch.not_in_ha"}}
+    _, e, _ = c.call("registerDevice", "POST", "/admin/devices", reg, expect=422, label="register unknown entity")
+    expect(e and e["error"].get("details", [{}])[0].get("code") == "unknown_device", f"unknown entity: {e}")
+    snap = {"name": "Spoof", "integration_id": "ha_main", "ha_capabilities": {},
+            "provider": {"type": "home_assistant", "entity_id": "light.family_room"}}
+    c.call("registerDevice", "POST", "/admin/devices", snap, expect=422, label="client ha_capabilities")
+    return pick_candidate(done, registered_too=True)
+
+
+def wait_discovery(c):
+    """Polls GET .../discover until it's done or failed; the last body, or {}."""
+    def finished():
+        _, d, _ = c.call("getDiscovery", "GET", "/admin/integrations/ha_main/discover", expect=200,
+                         label="poll discovery")
+        return d if d and d["state"] in ("done", "failed") else None
+    return until(finished) or {}
+
+
+def pick_candidate(done, registered_too=False):
+    """A supported candidate, preferring one not registered yet (or None)."""
+    supported = [x for x in done.get("candidates", []) if x["supported"]]
+    fresh = [x for x in supported if x["registered_device_id"] is None]
+    if fresh:
+        return fresh[0]
+    return supported[0] if registered_too and supported else None
+
+
+def registration_from(reg, candidate):
+    """A register request for this discovery candidate (or `reg` unchanged)."""
+    return dict(reg, name=candidate["name"][:64], provider=candidate["provider"]) if candidate else reg
+
+
+def discover_candidate(c):
+    """Stores the fake HA's token, runs a discovery and returns an
+    unregistered supported candidate (or None)."""
+    _, cfg, _ = c.call("getIntegrationConfig", "GET", "/admin/integrations/ha_main", expect=200)
+    if not cfg:
+        return None
+    c.call("configureIntegration", "PUT", "/admin/integrations/ha_main",
+           {"settings": {"type": "home_assistant", "access_token": HA_TOKEN}, "revision": cfg["revision"]},
+           expect=200, label="token for discovery")
+    expect(until(lambda: ha_state(c) == "connected"), "fake HA never connected")
+    c.call("discoverIntegration", "POST", "/admin/integrations/ha_main/discover", expect=202)
+
+    return pick_candidate(wait_discovery(c))
+
+
+def fresh_ha_setup(c):
+    """A hub with no HA config yet: ha_main is there (not_configured) and the
+    settings PUT is all it takes to connect and discover."""
+    _, listing, _ = c.call("listIntegrations", "GET", "/integrations", expect=200, label="fresh integrations")
+    ids = [i["id"] for i in (listing or {}).get("integrations", [])]
+    expect("ha_main" in ids, f"ha_main should be built in on a fresh hub: {ids}")
+    _, cfg, _ = c.call("getIntegrationConfig", "GET", "/admin/integrations/ha_main", expect=200,
+                       label="fresh ha_main")
+    if not cfg:
+        return
+    expect(cfg["settings"]["url"] == "", f"fresh ha_main has no URL: {cfg}")
+    _, cfg, _ = c.call("configureIntegration", "PUT", "/admin/integrations/ha_main",
+                       {"enabled": True, "settings": {"type": "home_assistant",
+                                                      "url": "https://homeassistant.local:8123",
+                                                      "access_token": HA_TOKEN},
+                        "revision": cfg["revision"]}, expect=200, label="set up HA on a fresh hub")
+    expect(cfg and cfg["settings"]["has_access_token"] is True, f"fresh setup: {cfg}")
+    expect(until(lambda: ha_state(c) == "connected"), "fresh ha_main never connected")
+    c.call("discoverIntegration", "POST", "/admin/integrations/ha_main/discover", expect=202,
+           label="discover on a fresh hub")
+
+    done = wait_discovery(c)
+    expect(done.get("state") == "done" and done.get("total", 0) > 0, f"fresh discovery: {done}")
+
+
+def ha_unlink_flow(c):
+    """Cancel drops the candidates; a new URL clears the token."""
+    c.call("cancelDiscovery", "DELETE", "/admin/integrations/ha_main/discover", expect=204)
+    _, d, _ = c.call("getDiscovery", "GET", "/admin/integrations/ha_main/discover", expect=200,
+                     label="after cancel")
+    expect(d and d["state"] == "idle" and "candidates" not in d, f"after cancel: {d}")
+    _, cfg, _ = c.call("getIntegrationConfig", "GET", "/admin/integrations/ha_main", expect=200)
+    if not cfg:
+        return
+    url = cfg["settings"]["url"]
+    _, moved, _ = c.call("configureIntegration", "PUT", "/admin/integrations/ha_main",
+                         {"settings": {"type": "home_assistant", "url": "http://other.local:8123"},
+                          "revision": cfg["revision"]}, expect=200, label="new HA URL")
+    expect(moved and moved["settings"]["has_access_token"] is False, "a new URL clears the token")
+    if moved:
+        c.call("configureIntegration", "PUT", "/admin/integrations/ha_main",
+               {"settings": {"type": "home_assistant", "url": url}, "revision": moved["revision"]},
+               expect=200, label="HA URL back")
+    expect(until(lambda: ha_state(c) == "not_configured"), "without a token HA is not_configured")
+    c.call("discoverIntegration", "POST", "/admin/integrations/ha_main/discover", expect=503,
+           label="discover without HA")
+
+
+def remote_flow(c):
+    """The remote endpoint (the console's `radio set` rule) and the Hub scan."""
+    c.call("getRemoteConfig", "GET", "/admin/remote", expect=200)
+    for bad in ({"channel": 125, "address": "AB12CD34EF"}, {"channel": 5, "address": "0000000000"},
+                {"channel": 5, "address": "12345678AA"}, {"channel": 5, "address": "nothex"},
+                {"channel": 5}):
+        c.call("setRemoteEndpoint", "PUT", "/admin/remote/endpoint", bad, expect=422, label=f"bad endpoint {bad}")
+    _, cfg, _ = c.call("setRemoteEndpoint", "PUT", "/admin/remote/endpoint",
+                       fixture("admin/remote_endpoint.request.json"), expect=200)
+    expect(cfg and cfg["endpoint"] == {"channel": 74, "address": "FC5C97550F"}, f"endpoint: {cfg}")
+    _, scan, _ = c.call("startRemotePairing", "POST", "/admin/remote/pair", expect=202)
+    expect(scan and scan["state"] == "scanning", f"scan: {scan}")
+    c.call("setRemoteEndpoint", "PUT", "/admin/remote/endpoint", {"channel": 5, "address": "AB12CD34EF"},
+           expect=409, label="endpoint while scanning")
+    status, _ = c.host_call("POST", "/sim/radio/found?channel=40&address=1122334466")
+    expect(status == 200, f"/sim/radio/found: {status}")
+    _, found, _ = c.call("getRemotePairing", "GET", "/admin/remote/pair", expect=200)
+    expect(found and found["state"] == "found" and found["channel"] == 40, f"found: {found}")
+    c.call("startRemotePairing", "POST", "/admin/remote/pair", expect=202, label="scan again")
+    c.call("cancelRemotePairing", "DELETE", "/admin/remote/pair", expect=204)
+    _, stopped, _ = c.call("getRemotePairing", "GET", "/admin/remote/pair", expect=200, label="after cancel")
+    expect(stopped and stopped["state"] == "stopped", f"after cancel: {stopped}")
+    # Leave the endpoint as the fixture's.
+    c.call("setRemoteEndpoint", "PUT", "/admin/remote/endpoint", fixture("admin/remote_endpoint.request.json"),
+           expect=200, label="endpoint back")
+
+
 def noauth(c, checker):
     _, s, _ = c.call("getSession", "GET", "/auth/session", expect=200)
     expect(s and s["auth_mode"] == "simulator_no_auth" and s["role"] == "admin", f"session: {s}")
     registry_flow(c)
     execute_flow(c)
     activity_flow(c)
-    admin_flow(c, checker)
+    remote_flow(c)
+    candidate = ha_flow(c)
+    admin_flow(c, checker, candidate)
+    ha_unlink_flow(c)
 
 
 # ---------------------------------------------------------------- auth mode
@@ -463,6 +690,9 @@ def auth_mode(c, checker):
         _, token, _ = c.call("createToken", "POST", "/admin/tokens", {"name": "contract agent"}, expect=201)
         registry_flow(c)
         activity_flow(c)
+        remote_flow(c)
+        ha_flow(c)
+        ha_unlink_flow(c)
     if not token:
         return
     token_role_matrix(c, checker, token)
@@ -651,6 +881,11 @@ def persistence_flow(c, hub, relogin=None):
     expect(not state["devices"]["devices"] and not state["activities"]["activities"],
            f"empty seed should leave nothing configured: {state['devices']}")
 
+    # Setting up Home Assistant on that fresh hub: ha_main is built in.
+    fresh_ha_setup(c)
+    survives_restart(c, hub, "HA set up on a fresh hub", relogin)
+    expect(until(lambda: ha_state(c) == "connected"), "the stored HA settings didn't reconnect after a restart")
+
     # Default seed.
     restart_with("--reset")
     survives_restart(c, hub, "default seed", relogin)
@@ -669,9 +904,21 @@ def persistence_flow(c, hub, relogin=None):
     c.call("replaceActivity", "PUT", f"/activities/{act}", edited, expect=409, label="stale after restart")
     survives_restart(c, hub, "replace activity", relogin)
 
+    # An HA device is registered from a discovery; its stored capabilities
+    # (never in the API's Device) must survive the restart too.
     reg = fixture("admin/register_device.request.json")
-    _, dev, _ = c.call("registerDevice", "POST", "/admin/devices", reg, expect=201, label="persist register")
+    candidate = discover_candidate(c)
+    reg = registration_from(reg, candidate)
+    status, dev, _ = c.call("registerDevice", "POST", "/admin/devices", reg, expect=201, label="persist register")
+    if status != 201:
+        dev = None
+    caps_before = dev and c.call("getDeviceCapabilities", "GET", f"/devices/{dev['id']}/capabilities",
+                                 expect=200, label="persisted HA capabilities")[1]
     survives_restart(c, hub, "register device", relogin)
+    if dev:
+        _, caps_after, _ = c.call("getDeviceCapabilities", "GET", f"/devices/{dev['id']}/capabilities",
+                                  expect=200, label="HA capabilities after restart")
+        expect(caps_before and caps_after == caps_before, "an HA device's capabilities changed across a restart")
     if dev:
         _, dev, _ = c.call("updateDevice", "PUT", f"/admin/devices/{dev['id']}",
                            {"name": "Persisted device", "revision": dev["revision"]}, expect=200)

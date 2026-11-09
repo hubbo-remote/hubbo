@@ -14,14 +14,15 @@ import type {
   Device,
   DeviceRegister,
   DeviceUpdate,
-  DiscoverRequest,
-  DiscoverResult,
+  DiscoverStatus,
   ExecuteResult,
   FirmwareStatus,
   GlobalBindings,
   Integration,
   IntegrationConfig,
   IntegrationConfigUpdate,
+  RemoteConfig,
+  RemoteEndpointUpdate,
   RemotePairStatus,
   RestoreResult,
   Session,
@@ -189,7 +190,16 @@ export const api = {
   integrations: async () => (await get<{ integrations: Integration[] }>('/integrations')).integrations,
   integrationConfig: (id: string) => get<IntegrationConfig>(`/admin/integrations/${enc(id)}`),
   configureIntegration: (id: string, b: IntegrationConfigUpdate) => put<IntegrationConfig>(`/admin/integrations/${enc(id)}`, b),
-  discover: (id: string, b: Partial<DiscoverRequest> = {}) => post<DiscoverResult>(`/admin/integrations/${enc(id)}/discover`, b),
+  /** Discovery runs on the hub's integration task: start it, then poll `discovery` (same as a remote scan). */
+  discoverStart: (id: string) => post<DiscoverStatus>(`/admin/integrations/${enc(id)}/discover`),
+  discovery: (id: string, f: { q?: string; domain?: string; limit?: number; cursor?: string } = {}) => {
+    // encodeURIComponent, not URLSearchParams: a space must go as %20 (URLSearchParams writes `+`).
+    const qs = Object.entries(f)
+      .flatMap(([k, v]) => (v === undefined || v === '' ? [] : [`${k}=${encodeURIComponent(String(v))}`]))
+      .join('&')
+    return get<DiscoverStatus>(`/admin/integrations/${enc(id)}/discover${qs ? `?${qs}` : ''}`)
+  },
+  discoverCancel: (id: string) => del(`/admin/integrations/${enc(id)}/discover`),
   blePairStart: (id: string) => post<BlePairingStatus>(`/admin/integrations/${enc(id)}/pair`),
   bleForget: (id: string) => del(`/admin/integrations/${enc(id)}/pair`),
 
@@ -197,6 +207,8 @@ export const api = {
   remotePairStatus: () => get<RemotePairStatus>('/admin/remote/pair'),
   remotePairStart: () => post<RemotePairStatus>('/admin/remote/pair'),
   remotePairCancel: () => del('/admin/remote/pair'),
+  remote: () => get<RemoteConfig>('/admin/remote'),
+  setRemoteEndpoint: (b: RemoteEndpointUpdate) => put<RemoteConfig>('/admin/remote/endpoint', b),
 
   // admin
   tokens: async () => (await get<{ tokens: TokenSummary[] }>('/admin/tokens')).tokens,

@@ -10,6 +10,7 @@ export function optionsFromEnv(env: NodeJS.ProcessEnv = process.env): MockOption
     firstRun: env.HUBBO_MOCK_FIRST_RUN === '1',
     requireAuth: env.HUBBO_MOCK_AUTH === '1',
     pairDelayMs: env.HUBBO_MOCK_PAIR_MS === undefined ? undefined : Number(env.HUBBO_MOCK_PAIR_MS),
+    discoverDelayMs: env.HUBBO_MOCK_DISCOVER_MS === undefined ? undefined : Number(env.HUBBO_MOCK_DISCOVER_MS),
   }
 }
 

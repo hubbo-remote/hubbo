@@ -48,11 +48,19 @@ api::RuntimeSnapshot SimRuntime::snapshot() const {
 const char *SimRuntime::integrationState(std::string_view integrationId) const {
     const IntegrationSpec *integration = hub_.configService().findIntegration(integrationId);
     if (integration == nullptr) return "not_configured";
+    if (integration->type == kHomeAssistantType && hub_.realHomeAssistant()) {
+        return integrations::haIntegrationState(hub_.haClient(), *integration);
+    }
     if (!integration->enabled) return "disabled";
     bool up = true;
     if (integration->type == kBleHidType) up = hub_.hid().connected();
     if (integration->type == kHomeAssistantType) up = hub_.homeAssistant().available();
     return up ? "connected" : "disconnected";
+}
+
+const char *SimRuntime::deviceAvailability(const DeviceSpec &device) const {
+    if (!hub_.realHomeAssistant() || device.provider.type != kHomeAssistantType) return "unknown";
+    return integrations::haDeviceAvailability(hub_.haClient(), device);
 }
 
 }  // namespace hubbo::sim

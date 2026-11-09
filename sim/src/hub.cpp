@@ -17,8 +17,10 @@ constexpr uint8_t kKeepalive[5] = {0x00, 0x4F, 0x00, 0x00, 0xB1};
 
 }  // namespace
 
-SimHub::SimHub(storage::Storage *storage, storage::StateStore *state)
-    : storage_(storage != nullptr ? storage : &memory_),
+SimHub::SimHub(storage::Storage *storage, storage::StateStore *state, bool realHomeAssistant)
+    : realHomeAssistant_(realHomeAssistant),
+      fakes_(realHomeAssistant ? &ha_.adapter : nullptr),
+      storage_(storage != nullptr ? storage : &memory_),
       records_(*storage_, config::kMaxConfigFileBytes),
       service_(records_, fakes_.set, store_),
       recordState_(records_),
@@ -42,6 +44,9 @@ ValidationReport SimHub::load(const ConfigSpec &config) {
 ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
     if (engine_.hasActiveActivity()) engine_.off(nowMs_);
     fakes_.homeAssistant.resetFaults();
+    ha_.server.reset();
+    ha_.client.reconnect();  // at once, not after the backoff; stale entities forgotten
+    remote_ = api::SimulatedRemote();
     fakes_.hid.setConnected(true);
     forgetActive();
     return load(config);
@@ -79,6 +84,7 @@ void SimHub::advance(uint32_t ms, bool silent) {
             lastPacketMs_ = nowMs_;
         }
         input_.poll(nowMs_);
+        serviceIntegrations();
         engine_.poll(nowMs_);
         // The config side remembers the active activity (delayed write),
         // ticking like the firmware's HTTP task does, not every ms.
@@ -88,8 +94,18 @@ void SimHub::advance(uint32_t ms, bool silent) {
                             service_.state() == config::ConfigState::Ok);
         }
     }
+    remote_.advance(ms);  // scan timeout
     // The radio gave up on them; the simulated thumb lets go too.
     if (silent && input_.held() == 0) held_ = 0;
+}
+
+void SimHub::serviceIntegrations() {
+    do {
+        ha_.transport.poll(0);
+        ha_.client.poll(nowMs_);
+        ha_.adapter.service();
+        ha_.transport.poll(0);
+    } while (ha_.client.hasWork());
 }
 
 void SimHub::logCommand(std::string text) {

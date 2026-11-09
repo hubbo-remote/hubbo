@@ -31,6 +31,9 @@ async function resetHub(page: Page, flags: ResetFlags): Promise<boolean> {
   if (flags.firstRun && !fresh) return false // already set up
   if (flags.requireAuth && s.auth_mode !== 'enforced') return false // no-auth simulator
   if (flags.startupRejected) return false // hub-sim can't be told to reject a startup
+  // Mock-only scenarios: hub-sim's fake HA and simulated remote are driven differently.
+  // (A scan that never finds is hub-sim's normal behaviour: only /sim/radio/found answers it.)
+  if (flags.discoverFails || flags.discoverTruncated) return false
   // A blocked config comes from seeding hub-sim's --data dir (hub-sim write-record), not from a reset.
   if (flags.configState && s.config_state !== flags.configState) return false
   if (fresh) return true
@@ -73,12 +76,67 @@ export async function ensureAdmin(page: Page) {
   expect(r.ok(), `setup for tokens -> ${r.status()}`).toBeTruthy()
 }
 
-/** Take the hub's config store down or bring it back (hub-sim: POST /sim/storage, an admin host route). */
-export async function setStorage(page: Page, health: 'available' | 'unavailable' | 'read_only') {
-  const url = SIM_URL ? `${SIM_URL}/sim/storage?health=${health}` : `${API_BASE}/__mock/storage?health=${health}`
-  const r = await page.request.post(url, { headers: csrf(await session(page)) })
-  expect(r.ok(), `storage ${health} -> ${r.status()}`).toBeTruthy()
+/** hub-sim's in-process fake Home Assistant (never a real one): its URL and the only token it accepts. */
+export const FAKE_HA = { url: 'http://homeassistant.local:8123', token: 'fake-ha-token' }
+
+/** The HA client's state as /status reports it. */
+const haState = async (page: Page) => ((await (await page.request.get(`${API_BASE}/status`)).json()).integrations as { id: string; state: string }[]).find((i) => i.id === 'ha_main')?.state
+
+/**
+ * hub-sim runs on simulated time: after a settings change or a reconnect the HA client waits out
+ * its backoff (1 s, doubling) only as sim time passes. Nudge it, then wait for `state`.
+ */
+async function settleHa(page: Page, state: string) {
+  await advance(page, 2_000)
+  await expect.poll(() => haState(page), { message: `HA client -> ${state}` }).toBe(state)
 }
+
+/** Point ha_main at the fake HA with its token (hub-sim seeds no token). The mock starts connected. */
+export async function connectHa(page: Page, token = FAKE_HA.token) {
+  if (!SIM_URL) return
+  const hub = api(page)
+  const cfg = await hub.get('/admin/integrations/ha_main')
+  const r = await hub.put('/admin/integrations/ha_main', { revision: cfg.revision, settings: { type: 'home_assistant', url: FAKE_HA.url, access_token: token } })
+  expect(r.ok(), `configure HA -> ${r.status()}`).toBeTruthy()
+  await settleHa(page, token === FAKE_HA.token ? 'connected' : 'auth_failed')
+}
+
+/** POST a test control: hub-sim's /sim/<path> or the mock's /__mock/<path>. */
+async function control(page: Page, path: string) {
+  const r = await page.request.post(`${SIM_URL ? `${SIM_URL}/sim` : `${API_BASE}/__mock`}/${path}`, { headers: csrf(await session(page)) })
+  expect(r.ok(), `control ${path} -> ${r.status()}`).toBeTruthy()
+}
+
+/** Put the HA client in a state: on hub-sim by dropping the fake HA or sending a wrong token; on the mock directly. */
+export async function setHaState(page: Page, state: 'connected' | 'unreachable' | 'auth_failed' | 'authenticating') {
+  if (!SIM_URL) return control(page, `ha?state=${state}`)
+  if (state === 'auth_failed') return connectHa(page, 'e2e-wrong-token')
+  expect(state, 'hub-sim can’t hold HA in authenticating').not.toBe('authenticating')
+  await control(page, `ha?reachable=${state === 'connected' ? 1 : 0}`)
+  await settleHa(page, state)
+}
+
+/** Run a discovery and wait for it to finish (register and re-link use the latest one). */
+export async function discoverHa(page: Page) {
+  const hub = api(page)
+  expect((await hub.post('/admin/integrations/ha_main/discover')).status()).toBe(202)
+  await expect.poll(async () => (await hub.get('/admin/integrations/ha_main/discover')).state).toBe('done')
+}
+
+/** HA forgets an entity, and a discovery runs so the hub notices: its device goes stale. */
+export async function removeHaEntity(page: Page, entityId: string) {
+  await control(page, `ha?remove=${encodeURIComponent(entityId)}`)
+  await discoverHa(page)
+}
+
+/** A Hub answers the running remote scan (hub-sim: /sim/radio/found). */
+export const hubAnswersScan = (page: Page, channel: number, address: string) => control(page, `radio/found?channel=${channel}&address=${address}`)
+
+/** Move the hub's clock forward (scan timeouts). */
+export const advance = (page: Page, ms: number) => control(page, `advance?ms=${ms}`)
+
+/** Take the hub's config store down or bring it back (hub-sim: POST /sim/storage, an admin host route). */
+export const setStorage = (page: Page, health: 'available' | 'unavailable' | 'read_only') => control(page, `storage?health=${health}`)
 
 export async function open(page: Page, hash: string) {
   await page.goto(`/#${hash}`)
@@ -120,6 +178,7 @@ export function api(page: Page) {
     get,
     put: async (path: string, data: unknown) => page.request.put(`${API_BASE}${path}`, { data, headers: await h() }),
     post: async (path: string, data?: unknown) => page.request.post(`${API_BASE}${path}`, { data, headers: await h() }),
+    del: async (path: string) => page.request.delete(`${API_BASE}${path}`, { headers: await h() }),
     activeActivity: async (): Promise<string | null> => (await get('/status')).active_activity_id,
   }
 }

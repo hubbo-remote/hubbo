@@ -8,6 +8,7 @@
 #include <SPI.h>
 
 #include "board.h"
+#include "hubbo/api/remote_port.h"
 #include "console.h"
 
 namespace hubbo::fw {
@@ -66,17 +67,7 @@ void eraseEndpoint() {
 }  // namespace
 
 bool RadioEndpoint::isValid() const {
-    if (channel > 124) {
-        return false;
-    }
-    const uint64_t masked = address & 0xFFFFFFFFFFULL;
-    if (masked == 0 || masked == 0xFFFFFFFFFFULL) {
-        return false;
-    }
-    // RF24 sends the low byte first; an alternating-bit first byte looks
-    // like the preamble.
-    const auto firstByte = static_cast<uint8_t>(masked & 0xFF);
-    return firstByte != 0x55 && firstByte != 0xAA;
+    return hubbo::api::isValidRemoteEndpoint({channel, address});
 }
 
 void RemoteRadio::persistEndpoint(const RadioEndpoint &endpoint, bool erase) {
@@ -103,6 +94,14 @@ const char *RemoteRadio::stateName(State state) {
         case State::Listening: return "listening";
     }
     return "not_ready";
+}
+
+uint32_t RemoteRadio::scanRemainingMs(uint32_t nowMs) const {
+    if (state_ != State::Scanning) {
+        return 0;
+    }
+    const uint32_t elapsed = nowMs - scanStartedMs_;
+    return elapsed >= scanTimeoutMs_ ? 0 : scanTimeoutMs_ - elapsed;
 }
 
 uint8_t RemoteRadio::scanChannel() const {

@@ -1,5 +1,6 @@
 #include "sim_api.h"
 
+#include <cstdlib>
 #include <sstream>
 #include <string>
 
@@ -30,9 +31,31 @@ api::HubInfo hubInfo(bool authEnabled) {
     return info;
 }
 
+api::ApiContext context(auth::Credentials &credentials, auth::SessionStore &sessions,
+                        auth::LoginRateLimiter &limiter, const api::Clock &clock, config::ConfigService &config,
+                        api::Runtime &runtime, bool authEnabled, api::RemotePort *remote,
+                        integrations::HomeAssistantClient *homeAssistant, auth::SecretStore *secrets) {
+    api::ApiContext c{credentials, sessions, limiter, clock, config, runtime, hubInfo(authEnabled), nullptr, remote,
+                      homeAssistant, secrets, nullptr};
+    return c;
+}
+
+// "channel=76&address=e7e7e7e7e7" (hex, 40 bits).
+bool parseEndpoint(const http::Request &r, api::RemoteEndpoint *out) {
+    const std::string channel(http::queryValue(r.query, "channel"));
+    if (channel.empty() || channel.size() > 3) return false;
+    char *end = nullptr;
+    const unsigned long ch = std::strtoul(channel.c_str(), &end, 10);
+    if (*end != '\0' || ch > api::kMaxRemoteChannel) return false;
+    out->channel = static_cast<uint8_t>(ch);
+    return api::parseRemoteAddress(http::queryValue(r.query, "address"), &out->address) &&
+           api::isValidRemoteEndpoint(*out);
+}
+
 }  // namespace
 
-SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &credentials, SwitchableStorage *storage)
+SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &credentials, SwitchableStorage *storage,
+               auth::SecretStore *secrets)
     : runner_(runner),
       authEnabled_(authEnabled),
       storage_(storage),
@@ -40,12 +63,50 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
       sessions_(random_),
       clock_(runner.hub()),
       runtime_(runner.hub()),
-      api_(api::ApiContext{credentials_, sessions_, loginLimiter_, clock_, runner.hub().configService(), runtime_,
-                           hubInfo(authEnabled)}),
+      api_(context(credentials_, sessions_, loginLimiter_, clock_, runner.hub().configService(), runtime_, authEnabled,
+                   &runner.hub().remote(), &runner.hub().haClient(), secrets)),
       productionAuth_(credentials_, sessions_, clock_),
       noAuth_(credentials_) {
     router_.setAllowedHosts({"localhost", "127.0.0.1", "[::1]"});
     api::registerApiRoutes(router_, api_);
+
+    // As the firmware does at boot: the "ha_main" URL and the stored token.
+    api::applyHomeAssistantSettings(runner.hub().configService(), secrets, runner.hub().haClient());
+
+    // The remote radio's pair scan: a Hub answers (?channel=N&address=HEX).
+    host(Method::Post, "/sim/radio/found", [this](auto &r, auto &, auto &out) {
+        api::RemoteEndpoint endpoint;
+        if (!parseEndpoint(r, &endpoint)) {
+            http::jsonError(out, 400, "bad_request", "need channel=0..124 and a valid 40-bit hex address");
+            return;
+        }
+        runner_.hub().remote().found(endpoint);
+        out.json(200, simTime());
+    });
+
+    // The fake Home Assistant: ?reachable=0|1 (also drops the connection when
+    // 0), ?commands=0|1 (answer service calls or let them time out),
+    // ?fail=<domain.service> (HA refuses it; fail=none clears), and
+    // ?remove=<entity_id> (HA forgets the entity: calls get not_found, the
+    // next discovery misses it).
+    host(Method::Post, "/sim/ha", [this](auto &r, auto &, auto &out) {
+        const std::string reachable = http::queryValue(r.query, "reachable");
+        const std::string commands = http::queryValue(r.query, "commands");
+        SimHub &hub = runner_.hub();
+        if (!reachable.empty()) hub.haServer().reachable = reachable == "1";
+        if (!commands.empty()) hub.haServer().answerCommands = commands == "1";
+        const std::string fail(http::queryValue(r.query, "fail"));
+        if (fail == "none") {
+            hub.haServer().failing.clear();
+        } else if (!fail.empty()) {
+            hub.haServer().failing.insert(fail);
+        }
+        const std::string remove(http::queryValue(r.query, "remove"));
+        if (!remove.empty()) hub.haServer().removeEntity(remove);
+        hub.serviceIntegrations();
+        out.json(200, "{\"state\":" + jsonString(integrations::haStateName(hub.haClient().state())) +
+                          ",\"calls\":" + std::to_string(hub.haServer().calls().size()) + "}");
+    });
 
     host(Method::Post, "/sim/remote/{button}/{action}", [this](auto &, auto &p, auto &out) {
         const std::string action(p[1]);
@@ -61,7 +122,7 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
     });
 
     host(Method::Post, "/sim/advance", [this](auto &r, auto &, auto &out) {
-        if (!runner_.runLine("advance " + std::string(http::queryParam(r.query, "ms")))) {
+        if (!runner_.runLine("advance " + http::queryValue(r.query, "ms"))) {
             http::jsonError(out, 400, "bad_request", runner_.error());
             return;
         }
@@ -74,7 +135,8 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
                           "}");
     });
 
-    // Back to the seed config, nothing active, faults cleared (persisted).
+    // Back to the seed config, nothing active, faults cleared (persisted);
+    // see SimHub::factoryReset().
     host(Method::Post, "/sim/reset", [this](auto &, auto &, auto &out) {
         runner_.runLine("reset");
         out.json(200, simTime());
@@ -83,7 +145,7 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
     // Storage health: ?health=available|unavailable|read_only. Edits then
     // fail (storage_unavailable) while the remote keeps working.
     host(Method::Post, "/sim/storage", [this](auto &r, auto &, auto &out) {
-        const std::string_view wanted = http::queryParam(r.query, "health");
+        const std::string wanted = http::queryValue(r.query, "health");
         storage::Health health;
         if (wanted == "available") {
             health = storage::Health::Available;

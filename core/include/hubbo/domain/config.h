@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "hubbo/domain/params.h"
+#include "hubbo/ha/snapshot.h"
 
 // Source (uncompiled) configuration model. Field names mirror the public
 // JSON (api/openapi.yaml, ARCHITECTURE.md "Data model"):
@@ -51,6 +52,9 @@ constexpr const char *kHomeAssistantType = "home_assistant";
 
 // The built-in BLE HID integration's id (always present, like "system").
 constexpr const char *kBleIntegrationId = "ble";
+// The built-in Home Assistant integration's id (always present; no URL, so
+// not_configured, until its settings are set).
+constexpr const char *kHomeAssistantIntegrationId = "ha_main";
 
 // Index of the item with this id in items[0, end), or -1. Cold path.
 template <typename T>
@@ -78,6 +82,10 @@ struct DeviceSpec {
     std::string integrationId;  // integration_id
     std::string kind = "other"; // UI hint: tv, receiver, speaker, streamer, console, light, switch, other
     ProviderSpec provider;
+    // home_assistant devices: what HA reported at registration or refresh;
+    // the device's commands come from it (works while HA is offline).
+    // Stored as `ha_capabilities`. Absent: the device has no commands.
+    std::optional<ha::CapabilitySnapshot> haCapabilities;
     uint32_t revision = 0;
 };
 
@@ -94,13 +102,12 @@ struct IntegrationSpec {
     bool enabled = true;
     std::string url;          // home_assistant
     bool verifyTls = true;    // home_assistant
-    std::optional<std::string> caCertPem;  // home_assistant
     std::string deviceName;   // ble_hid: advertised name
     uint32_t revision = 0;
 };
 
 struct ConfigSpec;
-// Adds the built-in integrations ("system", "ble") if they're missing, so
+// Adds the built-in integrations ("system", "ble", "ha_main") if they're missing, so
 // config.integrations is always complete. Idempotent.
 void ensureBuiltinIntegrations(ConfigSpec *config);
 

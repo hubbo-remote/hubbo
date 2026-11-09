@@ -7,6 +7,7 @@
 #include "hubbo/config/service.h"
 #include "hubbo/domain/system.h"
 #include "hubbo/ha/capabilities.h"
+#include "hubbo/integrations/ha_client.h"
 #include "routes.h"
 #include "support.h"
 
@@ -54,12 +55,21 @@ void putParam(JsonObject p, const ParamSpec &spec) {
     }
 }
 
-void putCommands(JsonArray out, CommandCatalog catalog) {
+// `device`: an HA device whose integration services carry HA's own labels.
+void putCommands(JsonArray out, CommandCatalog catalog, const DeviceSpec *device = nullptr) {
     for (uint16_t i = 0; i < catalog.count; i++) {
         const CommandSpec &c = catalog.items[i];
         JsonObject cmd = out.add<JsonObject>();
         cmd["command_id"] = c.id;
         const char *label = commandLabel(c.id);
+        if (label == nullptr && device != nullptr && device->haCapabilities) {
+            for (const ha::SnapshotService &s : device->haCapabilities->services) {
+                if (s.service == c.id && !s.label.empty()) {
+                    label = s.label.c_str();
+                    break;
+                }
+            }
+        }
         cmd["label"] = label != nullptr ? label : c.id;
         cmd["effect"] = commandEffectName(c.effect);
         JsonArray params = cmd["params"].to<JsonArray>();
@@ -74,7 +84,7 @@ CommandCatalog catalogFor(const ApiContext &ctx, const DeviceSpec &device) {
 }
 
 void putDevice(JsonObject out, const ApiContext &ctx, const DeviceSpec &device) {
-    config::encodeDevice(device, out);
+    config::encodeDevice(device, out, false);  // the snapshot stays on the hub
     out["availability"] = ctx.runtime.deviceAvailability(device);
 }
 
@@ -92,6 +102,30 @@ bool checkProvider(const ProviderSpec &provider, http::Response &out, const char
         sendDetail(out, path, "pattern", "entity_id must be one specific <domain>.<object_id> entity");
         return false;
     }
+    return true;
+}
+
+// An HA provider's snapshot, from the latest discovery (POST/GET
+// /admin/integrations/ha_main/discover). Fills the provider's unique_id
+// from it. False after sending 503 / 422.
+bool snapshotFor(const ApiContext &ctx, ProviderSpec *provider, ha::CapabilitySnapshot *out, http::Response &res) {
+    if (ctx.homeAssistant == nullptr) {
+        sendError(res, 503, "integration_unavailable", "This hub has no Home Assistant client");
+        return false;
+    }
+    const uint32_t generation = ctx.homeAssistant->discoveryGeneration();
+    const DiscoveryCache::Candidate *c = ctx.discovery ? ctx.discovery->find(provider->entityId, generation) : nullptr;
+    if (c == nullptr) {
+        sendDetail(res, "/provider/entity_id", "unknown_device",
+                   "Not in the latest Home Assistant discovery; run discovery first");
+        return false;
+    }
+    if (c->commandIds.empty()) {
+        sendDetail(res, "/provider/entity_id", "unknown_device", "Hubbo offers no commands for this entity");
+        return false;
+    }
+    if (!c->uniqueId.empty()) provider->uniqueId = c->uniqueId;
+    *out = c->snapshot;
     return true;
 }
 
@@ -120,7 +154,7 @@ void addRegistryRoutes(RouteSink &sink, ApiContext &ctx) {
                  JsonDocument doc;
                  doc["device_id"] = device->id;
                  doc["integration_id"] = device->integrationId;
-                 putCommands(doc["commands"].to<JsonArray>(), catalogFor(ctx, *device));
+                 putCommands(doc["commands"].to<JsonArray>(), catalogFor(ctx, *device), device);
                  sendJson(out, 200, doc);
              });
 
@@ -190,6 +224,11 @@ void addRegistryRoutes(RouteSink &sink, ApiContext &ctx) {
             return sendIssues(out, report, "The device is invalid");
         }
         if (!checkProvider(device.provider, out, "/provider/entity_id")) return;
+        if (device.provider.type == kHomeAssistantType) {
+            ha::CapabilitySnapshot snapshot;
+            if (!snapshotFor(ctx, &device.provider, &snapshot, out)) return;
+            device.haCapabilities = std::move(snapshot);
+        }
         const config::Outcome outcome = ctx.config.createDevice(std::move(device));
         if (!outcome.ok()) return sendOutcome(out, outcome, "device");
         JsonDocument body;
@@ -208,6 +247,11 @@ void addRegistryRoutes(RouteSink &sink, ApiContext &ctx) {
                      return sendIssues(out, report, "The device update is invalid");
                  }
                  if (update.provider && !checkProvider(*update.provider, out, "/provider/entity_id")) return;
+                 if (update.provider && update.provider->type == kHomeAssistantType) {  // re-link: refresh
+                     ha::CapabilitySnapshot snapshot;
+                     if (!snapshotFor(ctx, &*update.provider, &snapshot, out)) return;
+                     update.haCapabilities = std::move(snapshot);
+                 }
                  const config::Outcome outcome = ctx.config.updateDevice(p[0], update);
                  if (!outcome.ok()) return sendOutcome(out, outcome, "device");
                  JsonDocument body;

@@ -99,9 +99,10 @@ public:
 };
 
 // "ble", "ha_main" (with the fixture entities) and "ir", registered in that
-// order. Not copyable: the set points at its members.
+// order. `realHomeAssistant`, if given, is registered as "ha_main" instead of
+// the scripted one. Not copyable: the set points at its members.
 struct FakeAdapters {
-    FakeAdapters();
+    explicit FakeAdapters(IntegrationAdapter *realHomeAssistant = nullptr);
     FakeAdapters(const FakeAdapters &) = delete;
     FakeAdapters &operator=(const FakeAdapters &) = delete;
 
@@ -116,5 +117,8 @@ struct FakeAdapters {
 // option strings and formatting. Optional params not in `present` are left
 // out.
 std::string formatParams(const CommandSpec &command, const ParamValue *params, uint8_t present);
+// The pieces of the "k=v" log format: "%g" numbers, values with spaces quoted.
+std::string formatNumber(double v);
+std::string quoteIfSpaced(const std::string &s);
 
 }  // namespace hubbo::sim

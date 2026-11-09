@@ -11,10 +11,12 @@
 #include <string>
 
 #include "auth_test_util.h"
+#include "fake_ha.h"
 #include "fixtures.h"
 #include "hub.h"
 #include "hubbo/api/api.h"
 #include "hubbo/config/service.h"
+#include "hubbo/integrations/ha_client.h"
 
 using namespace hubbo;
 
@@ -139,8 +141,37 @@ protected:
         csrf = r.json["csrf_token"].as<std::string>();
     }
 
+    // The integration task's loop, against the fake HA.
+    void pumpHa(int steps = 5) {
+        for (int i = 0; i < steps; i++) {
+            haNow += 100;
+            haTransport.poll(0);
+            haClient.poll(haNow);
+            haTransport.poll(0);
+            while (haClient.hasWork()) {
+                haClient.poll(haNow);
+                haTransport.poll(0);
+            }
+        }
+    }
+    // Stores the fake HA's token and connects, as the platform does at boot.
+    void connectHa() {
+        ASSERT_TRUE(secrets.write(api::kHaTokenKey, haServer.token));
+        api::applyHomeAssistantSettings(hub.configService(), &secrets, haClient);
+        pumpHa();
+        ASSERT_EQ(haClient.state(), integrations::HaState::Connected);
+    }
+    // A finished discovery (GET's reply).
+    Reply discover(const std::string &query = "") {
+        Reply r = call(http::Method::Post, "/api/v1/admin/integrations/ha_main/discover");
+        EXPECT_EQ(r.status, 202) << dump(r);
+        pumpHa();
+        return call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover" + query);
+    }
+
     sim::SimHub hub;
     ValidationReport seeded;
+    uint64_t haNow = 0;
     SimRuntime runtime{hub};
     auth::MemorySecretStore secrets;
     auth::SoftwareHash hash;
@@ -150,7 +181,13 @@ protected:
     auth::LoginRateLimiter limiter;
     auth::test::FakeClock clock;
     api::Authenticator authn{creds, sessions, clock};
-    api::Api api{api::ApiContext{creds, sessions, limiter, clock, hub.configService(), runtime, {}}};
+    // Phase 3 ports: the remote radio and a real HA client against the fake HA.
+    api::SimulatedRemote remote;
+    sim::FakeHaServer haServer;
+    sim::FakeHaTransport haTransport{haServer};
+    integrations::HomeAssistantClient haClient{haTransport};
+    api::Api api{api::ApiContext{creds, sessions, limiter, clock, hub.configService(), runtime, {}, nullptr, &remote,
+                                 &haClient, &secrets, nullptr}};
     http::Router router;
 
     bool noAuth = true;  // simulated admin unless a test logs in
@@ -281,12 +318,41 @@ TEST_F(ApiTest, DevicesCapabilitiesExecute) {
 }
 
 TEST_F(ApiTest, AdminDeviceRegistry) {
+    sim::FakeHaEntity backlight;
+    backlight.info.entityId = "switch.tv_backlight";
+    backlight.uniqueId = "uid_backlight";
+    haServer.addEntity(backlight);
+    // Registration uses the latest discovery: none yet.
     Reply r = call(http::Method::Post, "/api/v1/admin/devices",
                    R"({"name":"TV Backlight","integration_id":"ha_main","kind":"switch",
                        "provider":{"type":"home_assistant","entity_id":"switch.tv_backlight"}})");
-    ASSERT_EQ(r.status, 201) << r.code();
+    EXPECT_EQ(r.status, 422) << dump(r);
+    EXPECT_EQ(r.json["error"]["details"][0]["code"], "unknown_device");
+    connectHa();
+    ASSERT_EQ(discover().json["state"], "done");
+    r = call(http::Method::Post, "/api/v1/admin/devices",
+                   R"({"name":"TV Backlight","integration_id":"ha_main","kind":"switch",
+                       "provider":{"type":"home_assistant","entity_id":"switch.tv_backlight"}})");
+    ASSERT_EQ(r.status, 201) << dump(r);
+    EXPECT_FALSE(r.json["ha_capabilities"].is<JsonObject>()) << "stored, not part of Device";
+    EXPECT_EQ(r.json["provider"]["unique_id"], "uid_backlight");  // filled from the discovery
     const std::string id = r.json["id"].as<std::string>();
     const uint32_t created = r.json["revision"];
+    const DeviceSpec *stored = hub.configService().findDevice(id);
+    ASSERT_NE(stored, nullptr);
+    ASSERT_TRUE(stored->haCapabilities.has_value());
+    EXPECT_EQ(stored->haCapabilities->platform, "demo");
+    // The hub reads capabilities; a client can't supply them.
+    r = call(http::Method::Post, "/api/v1/admin/devices",
+             R"({"name":"Fake","integration_id":"ha_main","ha_capabilities":{},
+                 "provider":{"type":"home_assistant","entity_id":"switch.tv_backlight"}})");
+    EXPECT_EQ(r.status, 422);
+    EXPECT_EQ(r.json["error"]["details"][0]["code"], "unknown_field");
+    r = call(http::Method::Post, "/api/v1/admin/devices",
+             R"({"name":"Ghost","integration_id":"ha_main",
+                 "provider":{"type":"home_assistant","entity_id":"switch.not_in_ha"}})");
+    EXPECT_EQ(r.status, 422);
+    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/provider/entity_id");
     r = call(http::Method::Put, "/api/v1/admin/devices/" + id,
              R"({"name":"Backlight","revision":)" + std::to_string(created) + "}");
     ASSERT_EQ(r.status, 200) << dump(r);
@@ -550,4 +616,238 @@ TEST_F(ApiTest, StatusAndUnimplemented) {
     EXPECT_EQ(r.status, 501);
     EXPECT_EQ(r.code(), "not_implemented");
     EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/firmware/update", "x").status, 501);
+}
+
+TEST_F(ApiTest, RemoteEndpointAndHubScan) {
+    Reply r = call(http::Method::Get, "/api/v1/admin/remote");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["radio"], "idle");
+    EXPECT_TRUE(r.json["endpoint"].isNull());
+    EXPECT_EQ(r.json["pairing"]["state"], "idle");
+
+    // The console's `radio set` rule.
+    EXPECT_EQ(call(http::Method::Put, "/api/v1/admin/remote/endpoint", R"({"channel":125,"address":"0x1234567890"})")
+                  .status,
+              422);
+    for (const char *bad : {"0x0000000000", "FFFFFFFFFF", "12345678AA", "12345678xx", "12345678901"}) {
+        r = call(http::Method::Put, "/api/v1/admin/remote/endpoint",
+                 std::string(R"({"channel":5,"address":")") + bad + "\"}");
+        EXPECT_EQ(r.status, 422) << bad;
+    }
+    r = call(http::Method::Put, "/api/v1/admin/remote/endpoint", R"({"channel":5,"address":"0xab12cd34ef"})");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["radio"], "listening");
+    EXPECT_EQ(r.json["endpoint"]["channel"], 5);
+    EXPECT_EQ(r.json["endpoint"]["address"], "AB12CD34EF");
+
+    r = call(http::Method::Post, "/api/v1/admin/remote/pair");
+    ASSERT_EQ(r.status, 202) << dump(r);
+    EXPECT_EQ(r.json["state"], "scanning");
+    EXPECT_EQ(r.json["remaining_s"], 120);
+    // Busy while scanning.
+    r = call(http::Method::Put, "/api/v1/admin/remote/endpoint", R"({"channel":6,"address":"AB12CD34EF"})");
+    EXPECT_EQ(r.status, 409);
+    EXPECT_EQ(r.code(), "busy");
+    remote.found({40, 0x1122334466});
+    r = call(http::Method::Get, "/api/v1/admin/remote/pair");
+    EXPECT_EQ(r.json["state"], "found");
+    EXPECT_EQ(r.json["channel"], 40);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/remote").json["endpoint"]["address"], "1122334466");
+
+    call(http::Method::Post, "/api/v1/admin/remote/pair");
+    remote.advance(api::kRemoteScanTimeoutMs);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/remote/pair").json["state"], "timeout");
+    call(http::Method::Post, "/api/v1/admin/remote/pair");
+    EXPECT_EQ(call(http::Method::Delete, "/api/v1/admin/remote/pair").status, 204);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/remote/pair").json["state"], "stopped");
+
+    remote.ready = false;
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/remote/pair").status, 503);
+}
+
+TEST_F(ApiTest, TheHomeAssistantTokenIsWriteOnly) {
+    const std::string token = haServer.token;
+    Reply r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["settings"]["has_access_token"], false);
+    uint32_t revision = r.json["revision"];
+
+    r = call(http::Method::Put, "/api/v1/admin/integrations/ha_main",
+             R"({"settings":{"type":"home_assistant","access_token":")" + token + R"("},"revision":)" +
+                 std::to_string(revision) + "}");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.body.find(token), std::string::npos);
+    EXPECT_EQ(r.json["settings"]["has_access_token"], true);
+    revision = r.json["revision"];
+    std::string stored;
+    ASSERT_EQ(secrets.read(api::kHaTokenKey, &stored), auth::SecretRead::Ok);
+    EXPECT_EQ(stored, token);
+    pumpHa();
+    EXPECT_EQ(haClient.state(), integrations::HaState::Connected);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/backup").body.find(token), std::string::npos);
+
+    // Omitted: kept. A new URL without a token: cleared.
+    r = call(http::Method::Put, "/api/v1/admin/integrations/ha_main",
+             R"({"name":"HA","revision":)" + std::to_string(revision) + "}");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["settings"]["has_access_token"], true);
+    revision = r.json["revision"];
+    r = call(http::Method::Put, "/api/v1/admin/integrations/ha_main",
+             R"({"settings":{"type":"home_assistant","url":"http://other.local:8123"},"revision":)" +
+                 std::to_string(revision) + "}");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["settings"]["has_access_token"], false);
+    EXPECT_EQ(secrets.read(api::kHaTokenKey, &stored), auth::SecretRead::NotFound);
+    pumpHa();
+    EXPECT_EQ(haClient.state(), integrations::HaState::NotConfigured);
+    revision = r.json["revision"];
+
+    // Bad shapes, a stale revision, another integration's settings.
+    for (const char *bad : {R"("url":"http://user@ha.local")", R"("url":"ftp://ha.local")",
+                            R"("url":"http://ha.local/path")", R"("access_token":"")", R"("access_token":5)",
+                            R"("secret":"x")"}) {
+        r = call(http::Method::Put, "/api/v1/admin/integrations/ha_main",
+                 std::string(R"({"settings":{"type":"home_assistant",)") + bad + R"(},"revision":)" +
+                     std::to_string(revision) + "}");
+        EXPECT_EQ(r.status, 422) << bad;
+    }
+    r = call(http::Method::Put, "/api/v1/admin/integrations/ha_main",
+             R"({"settings":{"type":"ble_hid","device_name":"x"},"revision":)" + std::to_string(revision) + "}");
+    EXPECT_EQ(r.status, 422);
+    r = call(http::Method::Put, "/api/v1/admin/integrations/ha_main", R"({"name":"x","revision":1})");
+    EXPECT_EQ(r.status, 409);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/nope").status, 404);
+    r = call(http::Method::Get, "/api/v1/admin/integrations/ble");
+    EXPECT_EQ(r.json["settings"]["device_name"], "Hubbo");
+    EXPECT_TRUE(r.json["settings"]["bonded"].is<bool>());
+
+    // A failed token write leaves no token and says so.
+    secrets.failWrites = true;
+    r = call(http::Method::Put, "/api/v1/admin/integrations/ha_main",
+             R"({"settings":{"type":"home_assistant","access_token":")" + token + R"("},"revision":)" +
+                 std::to_string(revision) + "}");
+    EXPECT_EQ(r.status, 503);
+    EXPECT_EQ(r.body.find(token), std::string::npos);
+}
+
+TEST_F(ApiTest, DiscoveryIsAsyncAndFiltered) {
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/integrations/ble/discover").status, 404);
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/integrations/ha_main/discover").status, 503);  // not connected
+    Reply r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover");
+    EXPECT_EQ(r.json["state"], "idle");
+    connectHa();
+
+    r = call(http::Method::Post, "/api/v1/admin/integrations/ha_main/discover");
+    EXPECT_EQ(r.status, 202);
+    EXPECT_EQ(r.json["state"], "running");
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/integrations/ha_main/discover").json["state"], "running");
+    pumpHa();
+    r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover");
+    ASSERT_EQ(r.json["state"], "done") << dump(r);
+    const size_t total = r.json["total"];
+    EXPECT_GT(total, 3u);
+    EXPECT_EQ(r.json["truncated"], 0);
+    EXPECT_TRUE(r.json["elapsed_ms"].is<uint32_t>());
+    // Stays until the next discovery.
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover").json["total"], total);
+
+    bool sawRegistered = false;
+    for (JsonVariant c : r.json["candidates"].as<JsonArray>()) {
+        if (c["provider"]["entity_id"] == "media_player.denon") {
+            EXPECT_EQ(c["registered_device_id"], "dev_denon");
+            EXPECT_EQ(c["supported"], true);
+            EXPECT_GT(c["command_ids"].size(), 0u);
+            sawRegistered = true;
+        }
+    }
+    EXPECT_TRUE(sawRegistered);
+
+    r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover?domain=light");
+    for (JsonVariant c : r.json["candidates"].as<JsonArray>()) EXPECT_EQ(c["domain"], "light");
+    r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover?q=DENON");
+    EXPECT_GE(r.json["candidates"].size(), 1u);
+    for (JsonVariant c : r.json["candidates"].as<JsonArray>()) {
+        EXPECT_NE(c["provider"]["entity_id"].as<std::string>().find("denon"), std::string::npos);
+    }
+    // Paging.
+    r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover?limit=2");
+    EXPECT_EQ(r.json["candidates"].size(), 2u);
+    const std::string cursor = r.json["next_cursor"];
+    r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover?limit=100&cursor=" + cursor);
+    EXPECT_EQ(r.json["candidates"].size(), total - 2);
+    EXPECT_TRUE(r.json["next_cursor"].isNull());
+    for (const char *bad : {"?limit=0", "?limit=101", "?cursor=abc", "?domain=sensor"}) {
+        EXPECT_EQ(call(http::Method::Get, std::string("/api/v1/admin/integrations/ha_main/discover") + bad).status,
+                  422)
+            << bad;
+    }
+
+    // Cancel drops the candidates.
+    EXPECT_EQ(call(http::Method::Delete, "/api/v1/admin/integrations/ha_main/discover").status, 204);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover").json["state"], "idle");
+    call(http::Method::Post, "/api/v1/admin/integrations/ha_main/discover");
+    EXPECT_EQ(call(http::Method::Delete, "/api/v1/admin/integrations/ha_main/discover").status, 204);
+    pumpHa();
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover").json["state"], "idle");
+
+    // A dropped connection fails a running discovery.
+    call(http::Method::Post, "/api/v1/admin/integrations/ha_main/discover");
+    haTransport.dropConnection();
+    pumpHa(1);
+    r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover");
+    EXPECT_EQ(r.json["state"], "failed") << dump(r);
+    EXPECT_FALSE(r.json["error"].as<std::string>().empty());
+}
+
+TEST_F(ApiTest, DiscoverySearchDecodesTheQuery) {
+    sim::FakeHaEntity office;
+    office.info.entityId = "light.office_ceiling";
+    office.name = "Office Lights";
+    office.uniqueId = "uid_office";
+    haServer.addEntity(office);
+    connectHa();
+    ASSERT_EQ(discover().json["state"], "done");
+    for (const char *q : {"office%20lights", "office+lights", "OFFICE%20LIGHTS"}) {
+        Reply r = call(http::Method::Get, std::string("/api/v1/admin/integrations/ha_main/discover?q=") + q);
+        ASSERT_EQ(r.status, 200) << q;
+        ASSERT_EQ(r.json["candidates"].size(), 1u) << q << " " << dump(r);
+        EXPECT_EQ(r.json["candidates"][0]["provider"]["entity_id"], "light.office_ceiling");
+    }
+    // Decoded before the length check: 48 decoded characters are fine.
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover?q=" + std::string(16, 'a') +
+                                          std::string(32, '+'))
+                  .status,
+              200);
+    // Other params decode too: ?revision=%31 is revision 1.
+    const uint32_t rev = hub.configService().findDevice("dev_denon")->revision;
+    const Reply r = call(http::Method::Delete,
+                   "/api/v1/admin/devices/dev_denon?revision=%" + std::to_string(30 + rev % 10));
+    ASSERT_LT(rev, 10u);
+    EXPECT_EQ(r.code(), "device_in_use");  // the revision parsed; the device is referenced
+}
+
+TEST_F(ApiTest, NewHomeAssistantSettingsDropTheOldDiscovery) {
+    connectHa();
+    ASSERT_EQ(discover().json["state"], "done");
+    ASSERT_NE(hub.configService().findIntegration("ha_main"), nullptr);
+    const uint32_t revision = hub.configService().findIntegration("ha_main")->revision;
+    // A rename keeps it; another URL (another HA) drops it.
+    Reply r = call(http::Method::Put, "/api/v1/admin/integrations/ha_main",
+                   R"({"name":"HA","revision":)" + std::to_string(revision) + "}");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover").json["state"], "done");
+    r = call(http::Method::Put, "/api/v1/admin/integrations/ha_main",
+             R"({"settings":{"type":"home_assistant","url":"http://other.local:8123"},"revision":)" +
+                 std::to_string(r.json["revision"].as<uint32_t>()) + "}");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover").json["state"], "idle");
+    r = call(http::Method::Post, "/api/v1/admin/devices",
+             R"({"name":"Old","integration_id":"ha_main",
+                 "provider":{"type":"home_assistant","entity_id":"light.family_room"}})");
+    EXPECT_EQ(r.status, 422) << "nothing is registered from the old HA's candidates";
+    // ca_cert_pem is gone from the API.
+    r = call(http::Method::Put, "/api/v1/admin/integrations/ha_main",
+             R"({"settings":{"type":"home_assistant","ca_cert_pem":null},"revision":)" +
+                 std::to_string(hub.configService().findIntegration("ha_main")->revision) + "}");
+    EXPECT_EQ(r.status, 422);
 }

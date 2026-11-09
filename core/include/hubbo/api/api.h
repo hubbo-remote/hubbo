@@ -1,10 +1,12 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "hubbo/api/authenticator.h"
+#include "hubbo/api/remote_port.h"
 #include "hubbo/auth/credentials.h"
 #include "hubbo/auth/rate_limit.h"
 #include "hubbo/auth/session.h"
@@ -24,6 +26,9 @@
 // Pointer `details`.
 namespace hubbo::config {
 class ConfigService;
+}
+namespace hubbo::integrations {
+class HomeAssistantClient;
 }
 
 namespace hubbo::api {
@@ -115,7 +120,37 @@ struct ApiContext {
     // What POST /admin/reset restores (the board's first-boot config). Null:
     // an empty config (ConfigService adds the built-in integrations).
     const ConfigSpec *factoryDefaults = nullptr;
+
+    // Phase 3 ports; null where a platform has none (the routes answer 503).
+    // The remote radio (GET/PUT /admin/remote..., the pair scan).
+    RemotePort *remote = nullptr;
+    // The Home Assistant client for integration "ha_main": settings
+    // (configure()), discovery. Any-task calls only.
+    integrations::HomeAssistantClient *homeAssistant = nullptr;
+    // Where the HA access token lives (key kHaTokenKey). Usually the same
+    // store as the credentials'. The platform reads it at boot and passes it
+    // to homeAssistant->configure() with the integration's URL.
+    auth::SecretStore *secrets = nullptr;
+
+    // Internal (Api sets it): the latest HA discovery, shared by the
+    // discover and register routes.
+    std::shared_ptr<struct DiscoveryCache> discovery;
 };
+
+// SecretStore key of the "ha_main" access token. Never in config, backups,
+// responses or logs.
+constexpr const char *kHaTokenKey = "ha_token";
+constexpr const char *kHaIntegrationId = "ha_main";
+
+// The WebSocket URL for an HA base URL: "http://ha.local:8123" ->
+// "ws://ha.local:8123/api/websocket" (https -> wss). "" if it isn't one.
+std::string homeAssistantSocketUrl(std::string_view baseUrl);
+// Configures `client` from the "ha_main" integration (no URL while it's
+// missing or disabled) and the stored token (none unless the read is Ok).
+// The platform calls it at boot; PUT /admin/integrations/ha_main calls it
+// after a change. Returns the token read's result, for a boot log line.
+auth::SecretRead applyHomeAssistantSettings(const config::ConfigService &config, const auth::SecretStore *secrets,
+                                            integrations::HomeAssistantClient &client);
 
 // Owns the route handlers; keep it alive as long as the router.
 class Api {
@@ -126,6 +161,10 @@ public:
     Api &operator=(const Api &) = delete;
 
     void registerRoutes(http::Router &router);
+    // Called between steps of the work a discovery GET does on the HTTP task
+    // (normalizing up to 2048 candidates), so the platform can let other
+    // tasks and the watchdog run (the board: vTaskDelay(1)). Optional.
+    void setYield(std::function<void()> yield);
 
 private:
     ApiContext ctx_;

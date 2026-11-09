@@ -8,14 +8,15 @@
 #include <ESPmDNS.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#include <esp_timer.h>
 #ifdef HUBBO_DEV_CONSOLE
 #include <esp_core_dump.h>
+#include <lwip/netdb.h>
 #include <esp_partition.h>
 
 #include "hubbo/auth/password.h"
 #endif
 
-#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <memory>
@@ -30,8 +31,10 @@
 #include "esp_random_source.h"
 #include "ethernet_link.h"
 #include "flash_fs.h"
+#include "ha_task.h"
 #include "http_server.h"
 #include "hubbo/api/api.h"
+#include "hubbo/api/remote_port.h"
 #include "hubbo/api/authenticator.h"
 #include "hubbo/auth/credentials.h"
 #include "hubbo/auth/crypto.h"
@@ -46,6 +49,8 @@
 #include "hubbo/engine/engine.h"
 #include "hubbo/http/route.h"
 #include "hubbo/integrations/ble_hid.h"
+#include "hubbo/integrations/ha_adapter.h"
+#include "hubbo/integrations/ha_client.h"
 #include "hubbo/remote/button.h"
 #include "hubbo/remote/input.h"
 #include "hubbo/storage/record_store.h"
@@ -54,6 +59,8 @@
 #include "nvs_secret_store.h"
 #include "ota.h"
 #include "remote_radio.h"
+#include "remote_runtime.h"
+#include "ws_transport.h"
 
 #ifndef HUBBO_BLE_NAME
 #define HUBBO_BLE_NAME "Hubbo"
@@ -75,10 +82,20 @@ char hostname[24];
 BleHid ble;
 diag::TimedHidTransport timedHid(ble);
 hubbo::integrations::BleHidAdapter bleAdapter(hubbo::kBleIntegrationId, timedHid);
+// Home Assistant: the transport and client live on the HA task; the adapter
+// bridges the engine task (execute/poll) and the HA task (service).
+EspWsTransport haTransport;
+// The client's clock: read fresh at every poll and callback (the same time
+// base as poll()'s nowMs), so a slow TLS connect doesn't age its deadlines.
+uint64_t haNowMs() {
+    return static_cast<uint64_t>(esp_timer_get_time() / 1000);
+}
+hubbo::integrations::HomeAssistantClient haClient(haTransport, haNowMs);
+hubbo::integrations::HomeAssistantAdapter haAdapter(hubbo::api::kHaIntegrationId, haClient);
 hubbo::AdapterSet adapters;
 hubbo::Engine::Store configStore;
 hubbo::Engine engine(configStore, adapters);
-EngineRuntime runtime(engine, adapters);
+EngineRuntime runtime(engine, adapters, haClient);
 
 // Bumped on every activity change (engine task); the persister tick only
 // wakes httpd when this moved or a write is still pending.
@@ -165,6 +182,7 @@ public:
 };
 InputFeeder feeder;
 RemoteRadio radio(feeder);
+RemoteRuntime remoteRuntime(radio);  // the admin API's view of the radio
 EthernetLink ethernet;
 
 // --- Config/HTTP side ----------------------------------------------------------
@@ -195,6 +213,7 @@ hubbo::storage::Health bootSecretsHealth = hubbo::storage::Health::Unavailable;
 std::unique_ptr<hubbo::api::Api> api;
 hubbo::http::Router router;
 HttpServer httpServer;
+HaTask haTask;
 
 #ifdef HUBBO_DEV_CONSOLE
 void addDevEndpoints();  // below, with the console commands
@@ -439,12 +458,28 @@ void bootState() {
     }
 }
 
+// The HA client's settings at boot (core's helper: the "ha_main" URL, none
+// while it's missing or disabled, and the token from NVS). Later changes come
+// through the API. The token is never logged.
+void configureHomeAssistant() {
+    const hubbo::auth::SecretRead read =
+        hubbo::api::applyHomeAssistantSettings(*configService, &secretStore, haClient);
+    const hubbo::IntegrationSpec *integration = configService->findIntegration(hubbo::api::kHaIntegrationId);
+    const bool hasUrl = integration != nullptr && integration->enabled &&
+                        !hubbo::api::homeAssistantSocketUrl(integration->url).empty();
+    con.printf("ha: %s, token %s\n", hasUrl ? "configured" : "not configured", hubbo::auth::secretReadName(read));
+}
+
 void startApi() {
     hubbo::api::HubInfo info;
     info.board = board::kName;
     info.hostname = hostname;
-    api = std::make_unique<hubbo::api::Api>(
-        hubbo::api::ApiContext{credentials, sessions, loginLimiter, apiClock, *configService, runtime, info});
+    hubbo::api::ApiContext context{credentials, sessions, loginLimiter, apiClock, *configService, runtime, info};
+    context.remote = &remoteRuntime;
+    context.homeAssistant = &haClient;
+    context.secrets = &secretStore;
+    api = std::make_unique<hubbo::api::Api>(std::move(context));
+    api->setYield([] { vTaskDelay(1); });  // discovery normalization on httpd, every 32 candidates
     hubbo::api::registerApiRoutes(router, *api);
     httpServer.begin(router, &authenticator);
 
@@ -540,6 +575,7 @@ void publishRuntime() {
         s.bleState = bleState;
     }
     runtime.publish(s);
+    remoteRuntime.publish(millis());
 }
 
 // --- Serial console ------------------------------------------------------------
@@ -653,9 +689,10 @@ void runCommand(char *line) {
         char *end = nullptr;
         RadioEndpoint endpoint;
         const unsigned long channel = arg2 ? strtoul(arg2, &end, 10) : 0;
-        const bool channelOk = arg2 != nullptr && *end == '\0' && channel <= 124;
-        const unsigned long long address = arg3 ? strtoull(arg3, &end, 16) : 0;
-        const bool addressOk = arg3 != nullptr && *end == '\0' && address <= 0xFFFFFFFFFFULL;
+        // Parse only; the rule is RadioEndpoint::isValid (the API's) in setEndpoint().
+        const bool channelOk = arg2 != nullptr && *end == '\0' && channel <= hubbo::api::kMaxRemoteChannel;
+        uint64_t address = 0;
+        const bool addressOk = arg3 != nullptr && hubbo::api::parseRemoteAddress(arg3, &address);
         endpoint.channel = static_cast<uint8_t>(channel);
         endpoint.address = address;
         if (!channelOk || !addressOk || !radio.setEndpoint(endpoint)) {
@@ -730,11 +767,7 @@ void pollDevCommand() {
     runCommand(line);
 }
 
-std::string queryValue(std::string_view query, std::string_view key) {
-    std::string value(hubbo::http::queryParam(query, key));
-    std::replace(value.begin(), value.end(), '+', ' ');
-    return value;
-}
+using hubbo::http::queryValue;  // form-decoded ('+' and %XX)
 
 std::string queueDevCommand(std::string_view query) {
     const std::string name = queryValue(query, "cmd");
@@ -798,12 +831,137 @@ std::string coreDump(std::string_view) {
     return image;
 }
 
+// WebSocket transport smoke test on the HA task, against a test echo server
+// (never Home Assistant): connect, echo a short text, then a 200 KB message
+// the server sends in 16 KB fragments, then a server-initiated close.
+// Runs `job` on the HA task (which may block on the network) and waits for
+// its report on httpd.
+// waitMs 0: don't wait (httpd stays free); the report goes to the log.
+std::string onHaTask(std::function<std::string()> job, uint32_t waitMs) {
+    if (waitMs == 0) {
+        return haTask.post([job = std::move(job)] { con.print(job().c_str()); }) ? "queued (read /debug/log)\n"
+                                                                                  : "ha task busy\n";
+    }
+    struct Shared {
+        SemaphoreHandle_t done = xSemaphoreCreateBinary();
+        std::string report;
+        ~Shared() { vSemaphoreDelete(done); }
+    };
+    auto shared = std::make_shared<Shared>();
+    const bool posted = haTask.post([shared, job = std::move(job)] {
+        shared->report = job();
+        xSemaphoreGive(shared->done);
+    });
+    if (!posted || xSemaphoreTake(shared->done, pdMS_TO_TICKS(waitMs)) != pdTRUE) {
+        return "ha task busy or the test didn't finish\n";
+    }
+    con.print(shared->report.c_str());
+    return shared->report;
+}
+
+std::string internalFree() {
+    return std::to_string(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) + " internal, " +
+           std::to_string(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)) + " psram free";
+}
+
+// ?host=<name>: a one-off DNS lookup (DHCP DNS, or mDNS for .local).
+std::string dnsLookup(std::string_view query) {
+    const std::string host = queryValue(query, "host");
+    return onHaTask(
+        [host] {
+            const uint32_t start = millis();
+            addrinfo hints{};
+            hints.ai_family = AF_INET;
+            addrinfo *result = nullptr;
+            const int rc = getaddrinfo(host.c_str(), nullptr, &hints, &result);
+            std::string r = "dns " + host + ": ";
+            if (rc != 0 || result == nullptr) {
+                r += "failed (" + std::to_string(rc) + ")";
+            } else {
+                char ip[16];
+                inet_ntoa_r(reinterpret_cast<sockaddr_in *>(result->ai_addr)->sin_addr, ip, sizeof(ip));
+                r += ip;
+                freeaddrinfo(result);
+            }
+            return r + " in " + std::to_string(millis() - start) + " ms\n";
+        },
+        15000);
+}
+
+// ?url=ws[s]://...[&mode=open][&hold=s][&verify=0][&async=1]. The default runs the echo test server's
+// script; mode=open only opens the connection (TLS + upgrade), reports its
+// time and memory, and closes it without sending anything.
+std::string wsEcho(std::string_view query) {
+    struct Run : hubbo::integrations::WebSocketTransport::Listener {
+        EspWsTransport transport;
+        int connected = 0, closed = 0;
+        std::string last;
+        size_t texts = 0;
+        void onConnected() override { connected++; }
+        void onText(std::string text) override {
+            texts++;
+            last.assign(text, 0, 40);
+            last += " (" + std::to_string(text.size()) + " bytes)";
+        }
+        void onClosed() override { closed++; }
+    };
+    const std::string url = queryValue(query, "url");
+    const bool openOnly = queryValue(query, "mode") == "open";
+    const bool verify = queryValue(query, "verify") != "0";  // wss://: &verify=0 skips the checks
+    const uint32_t holdMs = static_cast<uint32_t>(strtoul(queryValue(query, "hold").c_str(), nullptr, 10)) * 1000;
+    return onHaTask(
+        [url, openOnly, holdMs, verify] {
+            Run run;
+            run.transport.setListener(&run);
+            std::string r = "before: " + internalFree() + "\n";
+            auto step = [&](const char *what, auto until, uint32_t ms) {
+                const uint32_t start = millis();
+                while (!until() && millis() - start < ms) {
+                    run.transport.poll(20);
+                }
+                r += std::string(what) + ": " + (until() ? "ok" : "TIMEOUT") + " in " +
+                     std::to_string(millis() - start) + " ms; " + run.last + "\n";
+            };
+            if (!run.transport.connect(url, {verify})) {
+                return std::string("connect refused (bad url?)\n");
+            }
+            step("connect", [&] { return run.connected > 0 || run.closed > 0; }, 20000);
+            if (!run.transport.lastError().empty()) {
+                r += "  " + run.transport.lastError() + "\n";
+            }
+            r += "open: " + internalFree() + ", internal min ever " +
+                 std::to_string(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) + "\n";
+            if (run.connected > 0 && openOnly) {
+                step("hold", [&] { return run.closed > 0; }, holdMs);  // idle: poll(20) like the HA task
+                r += "held: " + internalFree() + "\n";
+                run.transport.close();
+                step("close", [&] { return run.closed > 0; }, 3000);
+            } else if (run.connected > 0) {
+                run.transport.send("hello from hubbo");
+                step("echo", [&] { return run.texts >= 1; }, 3000);
+                run.transport.send("big:200000");
+                step("200 KB fragmented", [&] { return run.texts >= 2; }, 5000);
+                run.transport.send("close");
+                step("server close", [&] { return run.closed > 0; }, 3000);
+            }
+            r += "after: " + internalFree() + "\n";
+            r += "callbacks: connected " + std::to_string(run.connected) + ", texts " + std::to_string(run.texts) +
+                 ", closed " + std::to_string(run.closed) + "\n";
+            return r;
+        },
+        queryValue(query, "async") == "1" ? 0 : 30000);
+}
+
 void addDevEndpoints() {
     httpServer.addDebugGet("/debug/log", [](std::string_view) { return con.recent(); });
     httpServer.addDebugGet("/debug/run", queueDevCommand);
     httpServer.addDebugGet("/debug/bench", benchHash);
     httpServer.addDebugGet("/debug/coredump", coreDump);
-    con.println("debug: dev console on /debug/log, /debug/run, /debug/bench, /debug/coredump (dev build)");
+    httpServer.addDebugGet("/debug/ws-echo", wsEcho);  // ?url=ws[s]://<test server>
+    httpServer.addDebugGet("/debug/dns", dnsLookup);   // ?host=<name>
+    con.println("debug: dev console on /debug/log, /debug/run, /debug/bench, /debug/coredump, /debug/ws-echo,"
+                " /debug/dns"
+                " (dev build)");
 }
 #endif
 
@@ -854,13 +1012,31 @@ void setup() {
     if (adapters.add(bleAdapter) != hubbo::ErrorCode::Ok) {
         con.println("engine: BLE adapter registration failed");
     }
+    if (adapters.add(haAdapter) != hubbo::ErrorCode::Ok) {
+        con.println("engine: Home Assistant adapter registration failed");
+    }
     if (!engine.ready()) {
         con.println("engine: no config reader slot; remote input is inert");
     }
     engine.setObserver(&engineLog);
     bootState();
+    runtime.setConfig(configService.get());
     beginEthernetOnCore0();
     startApi();
+    EspWsTransport::useExternalTlsMemory();
+    configureHomeAssistant();
+    haClient.setYield([] { vTaskDelay(1); });
+    const bool haStarted = haTask.start([] {
+        // A connect blocks here for up to 15 s (TLS); the client reads its
+        // clock (haNowMs) fresh, so its deadlines start after it.
+        haTransport.poll(haClient.hasWork() ? 0 : HaTask::kSocketWaitMs);
+        haClient.poll(haNowMs());
+        haAdapter.service();
+        return haClient.hasWork();
+    });
+    if (!haStarted) {
+        con.println("ha: task failed to start; Home Assistant is unavailable");
+    }
     con.printf("ota: %s\n", ota::enabled() ? "compiled in, starts when Ethernet is up"
                                               : "disabled (no HUBBO_OTA_PASSWORD at build)");
 
@@ -892,6 +1068,7 @@ void loop() {
     const uint32_t nowMs = millis();
     if (!stopping) {
         input.poll(nowMs);
+        remoteRuntime.poll(nowMs);
     }
     engine.poll(nowMs);
     pollReboot();

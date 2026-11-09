@@ -10,19 +10,31 @@
 //   commands  one line per dispatched action:
 //             "<integration> <device|-> <command> [k=v ...] -> <status>"
 //   events    activity changes, sequence outcomes, unbound triggers, ...
+//
+// Home Assistant: the hub always has the real HomeAssistantClient over an
+// in-process FakeHaServer (the API's settings and discovery use it). With
+// `realHomeAssistant`, the engine's "ha_main" is the real
+// HomeAssistantAdapter over that client (snapshot -> buildServiceCall ->
+// call_service -> result), as on the board; hub-sim serve runs this way.
+// Otherwise it's the scripted FakeHomeAssistant (scenarios, engine tests:
+// immediate results, injectable latency and failures).
 
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
 
+#include "fake_ha.h"
 #include "fakes.h"
 #include "hubbo/config/service.h"
 #include "hubbo/config/boot.h"
 #include "hubbo/engine/active_persister.h"
 #include "hubbo/domain/config.h"
 #include "hubbo/engine/compiler.h"
+#include "hubbo/api/remote_port.h"
 #include "hubbo/engine/engine.h"
+#include "hubbo/integrations/ha_adapter.h"
+#include "hubbo/integrations/ha_client.h"
 #include "hubbo/remote/input.h"
 
 namespace hubbo::sim {
@@ -38,7 +50,8 @@ public:
     // "active_activity") in `storage` (e.g. a StdioStorage --data dir), or
     // in memory when null; `state` overrides where the active activity goes
     // (tests). Nothing is loaded yet: call boot() or load().
-    explicit SimHub(storage::Storage *storage = nullptr, storage::StateStore *state = nullptr);
+    explicit SimHub(storage::Storage *storage = nullptr, storage::StateStore *state = nullptr,
+                    bool realHomeAssistant = false);
 
     // Simulated power-on through bootHub() (config/boot.h), the same path
     // as the firmware: load the config record (else `defaults`), the
@@ -59,7 +72,9 @@ public:
     const ConfigSpec &config() const { return service_.config(); }
 
     // Factory reset in place: fixtures-style config replaces everything,
-    // nothing is active, fake faults are cleared, the BLE host reconnects.
+    // nothing is active, fake faults are cleared (the fake HA back to its
+    // entities, the client reconnected), the BLE host reconnects, the remote
+    // radio is unpaired.
     // Persisted like any edit. References to the hub stay valid.
     ValidationReport factoryReset(const ConfigSpec &config);
     config::ConfigService &configService() { return service_; }
@@ -81,7 +96,18 @@ public:
     Engine &engine() { return engine_; }
     Engine::Store &store() { return store_; }
     AdapterSet &adapters() { return fakes_.set; }
+    // The scripted ha_main (unused with realHomeAssistant).
     FakeHomeAssistant &homeAssistant() { return fakes_.homeAssistant; }
+    bool realHomeAssistant() const { return realHomeAssistant_; }
+    FakeHaServer &haServer() { return ha_.server; }
+    integrations::HomeAssistantClient &haClient() { return ha_.client; }
+    FakeHaTransport &haTransport() { return ha_.transport; }
+    // The remote radio (the API's RemotePort); its scan clock is hub time.
+    api::SimulatedRemote &remote() { return remote_; }
+    // One turn of the integration task (transport, client, adapter) at the
+    // current time, repeated while the client has work (discovery parse
+    // steps). advance() runs it every ms.
+    void serviceIntegrations();
     RecordingHidTransport &hid() { return fakes_.hid; }
     integrations::BleHidAdapter &ble() { return fakes_.ble; }
     remote::RemoteInput &input() { return input_; }
@@ -107,6 +133,15 @@ private:
 
     // Declaration order is construction order: the engine reads the store
     // and adapters, the input feeds the engine.
+    struct RealHa {
+        FakeHaServer server;
+        FakeHaTransport transport{server};
+        integrations::HomeAssistantClient client{transport};
+        integrations::HomeAssistantAdapter adapter{"ha_main", client};
+    };
+    bool realHomeAssistant_;
+    RealHa ha_;
+    api::SimulatedRemote remote_;
     FakeAdapters fakes_;
     Engine::Store store_;
     Engine engine_{store_, fakes_.set};

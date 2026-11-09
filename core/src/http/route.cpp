@@ -54,6 +54,9 @@ void jsonError(Response &response, int status, std::string_view code, std::strin
     response.json(status, "{\"error\":{\"code\":" + jsonString(code) + ",\"message\":" + jsonString(message) + "}}");
 }
 
+namespace {
+
+// The raw slice of `key`'s value (queryValue decodes it).
 std::string_view queryParam(std::string_view query, std::string_view key) {
     while (!query.empty()) {
         const size_t amp = query.find('&');
@@ -64,6 +67,35 @@ std::string_view queryParam(std::string_view query, std::string_view key) {
         query.remove_prefix(amp + 1);
     }
     return {};
+}
+
+}  // namespace
+
+std::string percentDecode(std::string_view text) {
+    auto hex = [](char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); i++) {
+        const char c = text[i];
+        if (c == '+') {
+            out += ' ';
+        } else if (c == '%' && i + 2 < text.size() && hex(text[i + 1]) >= 0 && hex(text[i + 2]) >= 0) {
+            out += static_cast<char>(hex(text[i + 1]) * 16 + hex(text[i + 2]));
+            i += 2;
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+std::string queryValue(std::string_view query, std::string_view key) {
+    return percentDecode(queryParam(query, key));
 }
 
 Router::Segments Router::split(std::string_view path) {

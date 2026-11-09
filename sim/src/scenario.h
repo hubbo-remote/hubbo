@@ -58,7 +58,8 @@ public:
     // the firmware.
     explicit ScenarioRunner(std::ostream *trace = nullptr, storage::Storage *storage = nullptr,
                             bool pinned = false, const ConfigSpec *seed = nullptr,
-                            storage::StateStore *state = nullptr, auth::Credentials *credentials = nullptr);
+                            storage::StateStore *state = nullptr, auth::Credentials *credentials = nullptr,
+                            bool realHomeAssistant = false);
 
     // Runs a whole script; returns true if every line succeeded.
     bool run(std::istream &script, const std::string &name);
@@ -80,6 +81,7 @@ private:
     storage::StateStore *state_;
     auth::Credentials *credentials_;
     bool pinned_;
+    bool realHomeAssistant_;
     ConfigSpec seed_;
     std::unique_ptr<SimHub> hub_;
     size_t commandCursor_ = 0;

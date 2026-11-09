@@ -85,6 +85,7 @@ public:
     RadioEndpoint endpoint() const { return endpoint_; }
     ScanResult lastScanResult() const { return lastScanResult_; }
     uint8_t scanChannel() const;
+    uint32_t scanRemainingMs(uint32_t nowMs) const;  // 0 unless scanning
 
     uint32_t payloadCount() const { return payloadCount_; }
     uint32_t lastPayloadMs() const { return lastPayloadMs_; }

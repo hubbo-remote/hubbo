@@ -10,13 +10,14 @@ import type {
   Backup,
   Capabilities,
   Device,
-  DiscoverResult,
+  DiscoverCandidate,
   ExecuteResult,
   FirmwareStatus,
   GlobalBindings,
   Integration,
   IntegrationConfig,
   RemoteButtons,
+  RemoteConfig,
   Status,
   TokenSummary,
 } from '../src/api/types.ts'
@@ -41,9 +42,12 @@ export interface Seed {
   activeActivityId: string | null
   globalBindings: GlobalBindings
   tokens: TokenSummary[]
-  discover: DiscoverResult
+  /** The entities a discovery finds (fixture: integrations/ha_main.discovery.json). */
+  discover: { candidates: DiscoverCandidate[] }
   firmware: FirmwareStatus
   backup: Backup
+  /** The remote radio at boot (GET /admin/remote). */
+  remote: RemoteConfig
   /** Non-accepted execute results; the mock returns them for their device + command. */
   executeResults: ExecuteResult[]
 }
@@ -66,9 +70,10 @@ export function loadSeed(): Seed {
     activeActivityId: null, // a freshly started hub (like hub-sim) has no active activity
     globalBindings: fixture('activities/global_bindings.json'),
     tokens: fixture<{ tokens: TokenSummary[] }>('admin/tokens.json').tokens,
-    discover: fixture('integrations/ha_main.discover.json'),
+    discover: fixture('integrations/ha_main.discovery.json'),
     firmware: fixture('admin/firmware.json'),
     backup: fixture('admin/backup.json'),
+    remote: fixture('admin/remote.json'),
     executeResults: [fixture<ExecuteResult>('devices/execute.timeout.json'), fixture<ExecuteResult>('devices/execute.failed.json')],
   }
 }
