@@ -212,8 +212,8 @@ Version 0.1 • 2026-11-04
 **Gate:** new user can flash from browser, configure devices, create an activity, use remote, OTA update, backup/restore, and reproduce tests.
 
 ## Post-MVP backlog
-- **Manual remote endpoint (Phase 3):** set a remote's channel and address in the API and web UI, so a remote whose address is known works without a Harmony Hub.
 - **Discover an unknown remote's address without a Hub:** nRF24 promiscuous sniffing (research).
+- **HA `text` selector params:** a bounded string parameter type, so HA services with free-text fields can be bound. These services are skipped in Phase 3.
 - IR transmitter, model-specific code-set download from external legacy database, offline IR commands, optional IR learning.
 - More board profiles/build-matrix variants and Wi-Fi.
 - Multiple remotes and remote profiles.
