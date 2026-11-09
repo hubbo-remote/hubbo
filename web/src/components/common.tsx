@@ -27,7 +27,7 @@ export function PageHeader({ title, description, actions, back }: { title: React
 }
 
 export function HealthDot({ state, className }: { state: IntegrationState; className?: string }) {
-  const [c] = HEALTH[state]
+  const [c] = HEALTH[state] ?? ['bg-muted-foreground/40']
   return (
     <span className={cn('relative inline-flex size-2.5', className)} aria-hidden>
       {state === 'connected' && <span className={cn('absolute inline-flex size-full rounded-full opacity-40 motion-safe:animate-ping', c)} style={{ animationDuration: '2.5s' }} />}

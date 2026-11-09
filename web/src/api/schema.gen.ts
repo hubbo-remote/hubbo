@@ -220,6 +220,10 @@ export interface paths {
          *     command such as `key_down` would leave a key held with nothing to
          *     release it, so it gets `422` with detail code `hold_not_allowed`;
          *     use the momentary form (`key_tap`). Bindings may use holds.
+         *
+         *     A stale device (`availability: stale`: its HA entity is missing from
+         *     the latest discovery) answers `200` with `status: failed` and
+         *     `message: entity_not_found`; nothing is sent to HA.
          */
         post: operations["executeCommand"];
         delete?: never;
@@ -395,7 +399,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Integration instances (safe summaries, no settings or secrets) */
+        /**
+         * Integration instances (safe summaries, no settings or secrets)
+         * @description `system`, `ble` (Bluetooth keyboard) and `ha_main` (Home Assistant)
+         *     are built in and always present, even on a fresh hub; they can be
+         *     configured and disabled but not created or deleted. `ha_main` is
+         *     `not_configured` until it has a URL and an access token
+         *     (`PUT /admin/integrations/ha_main`).
+         */
         get: operations["listIntegrations"];
         put?: never;
         post?: never;
@@ -422,6 +433,13 @@ export interface paths {
          *     Changing the Home Assistant URL clears the stored token unless a new
          *     one is sent in the same request (stops a token being sent to a
          *     different host).
+         *
+         *     The Home Assistant token is write-only: it goes to the hub's secret
+         *     store and is never returned, logged or put in a backup. Responses
+         *     show only `has_access_token`. The client reconnects with the new
+         *     settings; `GET /integrations` shows its `state`. The hub connects to
+         *     `<url>/api/websocket`: `ws://` for an `http://` URL, `wss://` for
+         *     `https://`. An empty `url` unsets it (and clears the token).
          */
         put: operations["configureIntegration"];
         post?: never;
@@ -440,16 +458,28 @@ export interface paths {
             };
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Discovery progress and candidates
+         * @description `idle` (none since boot), `running`, `done` (with `candidates`) or
+         *     `failed` (with `error`). Candidates are the entities of the supported
+         *     domains with the commands Hubbo would offer; nothing is executable
+         *     until registered with `POST /admin/devices`. They stay in memory until
+         *     the next discovery or a reboot.
+         */
+        get: operations["getDiscovery"];
         put?: never;
         /**
-         * Browse candidate devices of an integration
-         * @description For Home Assistant: entities of the supported domains, with the commands
-         *     Hubbo would offer. Nothing here is executable until registered with
-         *     `POST /admin/devices`.
+         * Start discovering candidate devices
+         * @description Home Assistant only (another integration gets `404`). Starts reading
+         *     `get_states`, `get_services` and the entity registry on the
+         *     integration's task (it can take several seconds on the hub) and
+         *     answers `202` at once. If a discovery is already running, answers
+         *     `202` with that one. Poll `GET` for the result. `503
+         *     integration_unavailable` while HA isn't connected.
          */
         post: operations["discoverIntegration"];
-        delete?: never;
+        /** Cancel a running discovery and drop its candidates */
+        delete: operations["cancelDiscovery"];
         options?: never;
         head?: never;
         patch?: never;
@@ -487,7 +517,25 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Register a device */
+        /**
+         * Register a device
+         * @description Home Assistant (`provider: {type: home_assistant, entity_id, unique_id}`):
+         *     run a discovery first (`POST /admin/integrations/ha_main/discover`).
+         *     The hub takes the entity's capabilities (attributes and integration
+         *     services) from the latest discovery and stores them with the device,
+         *     so its commands work (and configs compile) while HA is offline;
+         *     `unique_id` is filled in from it. They're never accepted from the
+         *     client (`ha_capabilities` is `unknown_field`) and never returned.
+         *     `422` (detail `unknown_device` at `/provider/entity_id`) if the entity
+         *     isn't in the latest discovery, or Hubbo offers no commands for it;
+         *     `503 integration_unavailable` on a hub without an HA client. An
+         *     entity that HA later renames or removes shows as `availability:
+         *     stale` once a discovery runs without it; its commands and actions
+         *     then fail as `status: failed`, `message: entity_not_found` (not
+         *     `integration_unavailable`, and nothing is sent to HA) until an admin
+         *     re-links it (`PUT /admin/devices/{id}` with a `provider`, which
+         *     refreshes the capabilities the same way).
+         */
         post: operations["registerDevice"];
         delete?: never;
         options?: never;
@@ -505,7 +553,15 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Rename a device or re-link its provider reference */
+        /**
+         * Rename a device or re-link its provider reference
+         * @description Re-linking a Home Assistant device (`provider` with the entity's new
+         *     `entity_id`) takes its capabilities from the latest discovery, as
+         *     registration does (`422 unknown_device` if it isn't there), and
+         *     clears `availability: stale`. Until then a stale device's commands
+         *     fail as `status: failed`, `message: entity_not_found`.
+         *     `ha_capabilities` is never accepted (`unknown_field`).
+         */
         put: operations["updateDevice"];
         post?: never;
         /**
@@ -513,6 +569,48 @@ export interface paths {
          * @description Refused with `409 device_in_use` while any activity references it; `details` lists the references.
          */
         delete: operations["deleteDevice"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/remote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Remote radio endpoint and state */
+        get: operations["getRemoteConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/remote/endpoint": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Listen on a known Harmony Hub endpoint
+         * @description For a remote whose Hub address is already known (e.g. from an earlier
+         *     scan or the console's `radio show`): the same validation as the
+         *     console's `radio set`. Channel 0-124; address up to 40 bits in hex
+         *     (`0x` optional), not all zeros or ones, and its low byte not `55` or
+         *     `AA`. Saved, and used at once. `409 busy` while a scan runs; `503`
+         *     if the radio isn't working.
+         */
+        put: operations["setRemoteEndpoint"];
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -531,8 +629,10 @@ export interface paths {
         /**
          * Scan for a Harmony Hub's radio address
          * @description Start scanning, then press the existing Harmony Hub's pair button. Hubbo
-         *     learns the Hub's address and channel and listens as that Hub. Poll
-         *     `GET /admin/remote/pair`.
+         *     learns the Hub's address and channel, saves them and listens as that
+         *     Hub. The scan gives up after 120 s. Poll `GET /admin/remote/pair`.
+         *     `409 busy` if a scan is already running; `503` if the radio isn't
+         *     working.
          */
         post: operations["startRemotePairing"];
         /** Stop scanning (keeps the current pairing) */
@@ -852,8 +952,15 @@ export interface components {
          * @enum {string}
          */
         AuthMode: "enforced" | "simulator_no_auth";
-        /** @enum {string} */
-        IntegrationState: "not_configured" | "disabled" | "connecting" | "connected" | "disconnected" | "error";
+        /**
+         * @description Home Assistant: `not_configured` (no URL or token), `connecting`,
+         *     `authenticating`, `connected`, `auth_failed` (the token was refused;
+         *     no retry until the settings change) or `unreachable` (retrying with
+         *     backoff, 1 s doubling to 60 s). BLE: `connected` / `disconnected`.
+         *     Any integration: `disabled`, `error`.
+         * @enum {string}
+         */
+        IntegrationState: "not_configured" | "disabled" | "connecting" | "authenticating" | "connected" | "auth_failed" | "unreachable" | "disconnected" | "error";
         Status: {
             hubbo: {
                 version: string;
@@ -1049,13 +1156,24 @@ export interface components {
         };
         ExecuteResult: {
             /**
-             * @description `accepted`: the integration took the command (not proof of physical effect).
+             * @description `accepted`: the integration took the command (not proof of
+             *     physical effect). `failed`: it refused or couldn't send it (see
+             *     `message`). `timeout`: no answer within the action timeout (5 s);
+             *     `message` is then `adapter_timeout`.
              * @enum {string}
              */
             status: "accepted" | "failed" | "timeout";
             device_id: components["schemas"]["DeviceId"];
             command_id: components["schemas"]["CommandId"];
             elapsed_ms: number;
+            /**
+             * @description Why it failed or timed out, as a core error name:
+             *     `adapter_unavailable` (the integration isn't connected),
+             *     `adapter_failed` (it refused the call), `adapter_timeout` (no
+             *     answer within the action timeout), `entity_not_found` (the HA
+             *     entity is missing from the latest discovery, see `availability:
+             *     stale`; not sent), `queue_full`.
+             */
             message?: string;
         };
         /** @description Shared by the activity schemas (open; each closes it). */
@@ -1173,12 +1291,45 @@ export interface components {
         /** @description A device as configured (backups); no runtime state. */
         StoredDevice: {
             revision?: components["schemas"]["BackupRevision"];
+            ha_capabilities?: components["schemas"]["HaCapabilitySnapshot"];
         } & components["schemas"]["DeviceFields"];
+        /**
+         * @description Home Assistant devices only: what HA reported about the entity when it
+         *     was registered or last re-linked. The hub derives the device's
+         *     commands from it (docs/ha-capabilities.md) and re-checks it on
+         *     restore: names, types and ranges are validated like any other input,
+         *     and services must belong to `platform`. Not secret.
+         */
+        HaCapabilitySnapshot: {
+            platform: string;
+            supported_features: number;
+            source_list?: components["schemas"]["HaOptionList"];
+            sound_mode_list?: components["schemas"]["HaOptionList"];
+            supported_color_modes?: components["schemas"]["HaOptionList"];
+            min_color_temp_kelvin?: number;
+            max_color_temp_kelvin?: number;
+            /** @description Integration-specific services offered for the entity, already typed. */
+            services: components["schemas"]["HaServiceSnapshot"][];
+        };
+        HaOptionList: string[];
+        HaServiceSnapshot: {
+            /** @description `<platform>.<service>`; also the command id. */
+            service: components["schemas"]["CommandId"];
+            label?: string;
+            fields: components["schemas"]["ParamSpec"][];
+        };
         Device: {
             revision: components["schemas"]["Revision"];
             /**
-             * @description `stale`: the provider no longer knows this target (HA entity removed
-             *     or renamed, BLE bond gone). Commands fail until an admin re-links it.
+             * @description `available` / `unavailable`: the integration is connected or not.
+             *     `stale`: the provider no longer knows this target (an HA entity
+             *     missing from the latest discovery; a BLE bond gone). Commands
+             *     fail (`entity_not_found`) until an admin re-links it. Runtime
+             *     state, never saved, and only as current as the last discovery:
+             *     Home Assistant answers a call to a missing entity with success,
+             *     so until a discovery runs (after every boot, too) a renamed or
+             *     removed entity's commands are reported `accepted`. `unknown`:
+             *     the integration can't tell.
              * @enum {string}
              */
             availability: "available" | "unavailable" | "stale" | "unknown";
@@ -1195,7 +1346,11 @@ export interface components {
         DeviceUpdate: {
             name?: components["schemas"]["Name"];
             kind?: components["schemas"]["DeviceKind"];
-            /** @description Re-link (e.g. after an HA entity rename). Must stay in the same integration. */
+            /**
+             * @description Re-link (e.g. after an HA entity rename). Must stay in the same
+             *     integration. For Home Assistant, sending `provider` (even unchanged)
+             *     re-reads the entity from HA and replaces its stored capabilities.
+             */
             provider?: components["schemas"]["Provider"];
             revision: components["schemas"]["Revision"];
         };
@@ -1221,13 +1376,20 @@ export interface components {
              */
             type: "home_assistant";
             /**
-             * Format: uri
-             * @description Base URL, e.g. `https://homeassistant.local:8123`. No credentials or query.
+             * @description Base URL, e.g. `https://homeassistant.local:8123`. No credentials,
+             *     path or query. `""`: not set up yet (the built-in `ha_main` starts
+             *     so, and reports `not_configured`).
              */
             url: string;
+            /**
+             * @description `https://` only. True (the default): Home Assistant's certificate
+             *     is verified against the public CA bundle the hub ships. False:
+             *     the connection is still encrypted, but the server isn't
+             *     verified, so anyone on the network path could pose as HA and
+             *     receive the token. Use it only for a self-signed HA on a
+             *     trusted LAN. (There's no custom CA setting.)
+             */
             verify_tls: boolean;
-            /** @description Optional CA (not secret) for a self-signed HA certificate. */
-            ca_cert_pem?: string | null;
             readonly has_access_token: boolean;
         };
         BleHidSettings: {
@@ -1269,8 +1431,7 @@ export interface components {
              */
             type: "home_assistant";
             url?: components["schemas"]["HomeAssistantSettings"]["url"];
-            verify_tls?: boolean;
-            ca_cert_pem?: components["schemas"]["HomeAssistantSettings"]["ca_cert_pem"];
+            verify_tls?: components["schemas"]["HomeAssistantSettings"]["verify_tls"];
             /** @description Long-lived HA access token. Write-only; omit to keep, null to clear. */
             access_token?: string | null;
         };
@@ -1282,27 +1443,41 @@ export interface components {
             type: "ble_hid";
             device_name?: components["schemas"]["BleHidSettings"]["device_name"];
         };
-        DiscoverRequest: {
-            domains?: ("media_player" | "light" | "switch")[];
-            /** @description Case-insensitive substring of entity_id or name. */
-            query?: string;
-            /** @default 50 */
-            limit: number;
-            cursor?: string;
-        };
         DiscoverCandidate: {
             provider: components["schemas"]["HomeAssistantProvider"];
             name: string;
             domain: string;
+            /** @description The HA integration that provides the entity (e.g. `sonos`), from the entity registry. */
+            platform?: string;
             state?: string;
             /** @description False when Hubbo offers no commands for it (unsupported domain or features). */
             supported: boolean;
             command_ids?: components["schemas"]["CommandId"][];
+            /** @description Enum options left out (too long, or too many); the commands still work with the rest. */
+            dropped_options?: number;
+            /** @description Integration services that match the entity but aren't offered (a field Hubbo can't type, more than 4 fields, or no entity target). */
+            skipped_services?: string[];
             registered_device_id: components["schemas"]["NullableDeviceId"];
         };
-        DiscoverResult: {
-            candidates: components["schemas"]["DiscoverCandidate"][];
-            next_cursor: string | null;
+        DiscoverStatus: {
+            /** @enum {string} */
+            state: "idle" | "running" | "done" | "failed";
+            /** @description Why it failed (`failed` only). Never secrets or URLs with credentials. */
+            error?: string;
+            /** @description Candidates found (`done`), before `q`/`domain` filtering. */
+            total?: number;
+            /**
+             * @description `done` only: entities of the supported domains left out because
+             *     discovery stops at 2048 candidates. `0`: the list is complete;
+             *     above 0, narrow it in Home Assistant (e.g. disable unused
+             *     entities) to see the rest.
+             */
+            truncated?: number;
+            /** @description `done` only: how long the discovery took on the hub, from the request to the result. */
+            elapsed_ms?: number;
+            /** @description `done` only: the page matching `q` and `domain`. */
+            candidates?: components["schemas"]["DiscoverCandidate"][];
+            next_cursor?: string | null;
         };
         PairingStatus: {
             /** @enum {string} */
@@ -1310,13 +1485,38 @@ export interface components {
             window_s?: number;
             peer_name?: string;
         };
+        /**
+         * @description The latest scan: `idle` (none since boot), `scanning`, `found` (the
+         *     new endpoint is saved and in use), `timeout` (no Hub answered in
+         *     120 s) or `stopped` (cancelled). `paired`: an endpoint is known.
+         */
         RemotePairStatus: {
             /** @enum {string} */
-            state: "idle" | "scanning" | "found" | "failed" | "timeout";
+            state: "idle" | "scanning" | "found" | "timeout" | "stopped";
             paired: boolean;
             remaining_s?: number;
+            /** @description `scanning`: the channel being tried; otherwise the endpoint's. */
             channel?: number;
             message?: string;
+        };
+        RemoteEndpoint: {
+            channel: number;
+            /** @description 40-bit nRF24 address, 10 upper-case hex digits. */
+            address: string;
+        };
+        RemoteEndpointUpdate: {
+            channel: number;
+            /** @description Hex, `0x` optional, up to 10 digits (40 bits). */
+            address: string;
+        };
+        RemoteConfig: {
+            /**
+             * @description `not_ready` (radio not working), `idle` (no endpoint), `scanning` or `listening`.
+             * @enum {string}
+             */
+            radio: "not_ready" | "idle" | "scanning" | "listening";
+            endpoint: components["schemas"]["RemoteEndpoint"] | null;
+            pairing: components["schemas"]["RemotePairStatus"];
         };
         BackupIntegration: {
             id: components["schemas"]["IntegrationId"];
@@ -1327,7 +1527,11 @@ export interface components {
             settings?: {
                 url?: components["schemas"]["HomeAssistantSettings"]["url"];
                 verify_tls?: boolean;
-                ca_cert_pem?: components["schemas"]["HomeAssistantSettings"]["ca_cert_pem"];
+                /**
+                 * @deprecated
+                 * @description Ignored (older backups).
+                 */
+                ca_cert_pem?: string | null;
                 device_name?: components["schemas"]["BleHidSettings"]["device_name"];
             };
         };
@@ -2218,6 +2422,39 @@ export interface operations {
             503: components["responses"]["Unavailable"];
         };
     };
+    getDiscovery: {
+        parameters: {
+            query?: {
+                /** @description Case-insensitive substring of entity_id or name. */
+                q?: string;
+                domain?: "media_player" | "light" | "switch";
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                integration_id: components["parameters"]["IntegrationIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscoverStatus"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationFailed"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
     discoverIntegration: {
         parameters: {
             query?: never;
@@ -2230,28 +2467,47 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["DiscoverRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description Candidates */
-            200: {
+            /** @description Running */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DiscoverResult"];
+                    "application/json": components["schemas"]["DiscoverStatus"];
                 };
             };
-            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            413: components["responses"]["PayloadTooLarge"];
-            415: components["responses"]["UnsupportedMediaType"];
-            501: components["responses"]["NotImplemented"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    cancelDiscovery: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
+                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
+            };
+            path: {
+                integration_id: components["parameters"]["IntegrationIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancelled (or nothing was running) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             503: components["responses"]["Unavailable"];
         };
     };
@@ -2423,6 +2679,64 @@ export interface operations {
             503: components["responses"]["Unavailable"];
         };
     };
+    getRemoteConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Radio */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemoteConfig"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    setRemoteEndpoint: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
+                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RemoteEndpointUpdate"];
+            };
+        };
+        responses: {
+            /** @description Listening */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemoteConfig"];
+                };
+            };
+            400: components["responses"]["MalformedJson"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["ValidationFailed"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
     getRemotePairing: {
         parameters: {
             query?: never;
@@ -2443,7 +2757,6 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
-            501: components["responses"]["NotImplemented"];
             503: components["responses"]["Unavailable"];
         };
     };
@@ -2471,7 +2784,6 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
-            501: components["responses"]["NotImplemented"];
             503: components["responses"]["Unavailable"];
         };
     };
@@ -2496,7 +2808,6 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
-            501: components["responses"]["NotImplemented"];
             503: components["responses"]["Unavailable"];
         };
     };
