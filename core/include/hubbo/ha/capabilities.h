@@ -86,13 +86,6 @@ struct EntityInfo {
     int32_t maxColorTempKelvin = 0;
 };
 
-// Optional parameters that the caller omitted resolve to these defaults
-// (core resolveParams() fills omitted optional params with defaultValue). They
-// are outside every accepted range, so buildServiceCall() leaves the field
-// out instead of sending a made-up value.
-constexpr int32_t kOmittedInt = INT32_MIN;
-bool isOmitted(const ParamValue &value);
-
 struct ServiceValue {
     enum class Kind : uint8_t { Bool, Int, Number, String };
     Kind kind = Kind::Int;
@@ -135,14 +128,18 @@ public:
     const std::string &entityId() const { return entityId_; }
 
     // Enum options left out because they exceed limits::kMaxParamStringLength
-    // or the per-param option cap. Shown in discovery so the admin knows.
+    // or limits::kMaxEnumOptions. Shown in discovery so the admin knows.
     size_t droppedOptions() const { return droppedOptions_; }
 
     // The HA call for catalog command `index` with `params` from
-    // resolveParams() (catalog order; ranges already checked there). Errors:
+    // resolveParams() (catalog order; ranges already checked there) and its
+    // `present` mask (bit i = param i was supplied). Optional params that
+    // weren't supplied are left out of the call, so HA keeps its own
+    // behaviour (e.g. light.turn_on restores the last brightness). Errors:
     // UnknownCommand (bad index or invalid entity), InvalidParamType /
     // InvalidEnumValue (values not from this catalog).
-    ErrorCode buildServiceCall(uint16_t index, const ParamValue *params, ServiceCall *out) const;
+    ErrorCode buildServiceCall(uint16_t index, const ParamValue *params, uint8_t present,
+                               ServiceCall *out) const;
 
 private:
     EntityCapabilities() = default;
@@ -168,7 +165,5 @@ const char *commandLabel(std::string_view commandId);
 // report `forbidden_param` instead. api/lint.sh checks the spec's ParamName
 // list against this one.
 bool isForbiddenParamName(std::string_view name);
-
-constexpr size_t kMaxEnumOptions = 128;
 
 }  // namespace hubbo::ha

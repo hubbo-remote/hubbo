@@ -88,10 +88,11 @@ ErrorCode call(const EntityCapabilities &caps, const char *id, const std::vector
     if (index < 0) return ErrorCode::UnknownCommand;
     ParamValue values[limits::kMaxParams];
     std::string badParam;
-    const ErrorCode code = resolveParams(c.items[index], inputs, values, &badParam);
+    uint8_t present = 0;
+    const ErrorCode code = resolveParams(c.items[index], inputs, values, &badParam, nullptr, &present);
     if (bad) *bad = badParam;
     if (code != ErrorCode::Ok) return code;
-    return caps.buildServiceCall(static_cast<uint16_t>(index), values, out);
+    return caps.buildServiceCall(static_cast<uint16_t>(index), values, present, out);
 }
 
 }  // namespace
@@ -210,14 +211,14 @@ TEST(HaCapabilities, UnsupportedDomainsAndBadIdsGetNothing) {
 
 TEST(HaCapabilities, OptionLimits) {
     EntityInfo e = lgTv();
-    e.sourceList.push_back(std::string(40, 'x'));  // longer than kMaxParamStringLength
+    e.sourceList.push_back(std::string(limits::kMaxParamStringLength + 1, 'x'));  // longer than kMaxParamStringLength
     e.sourceList.push_back("HDMI 1");              // duplicate
     e.sourceList.push_back("");
     const auto caps = EntityCapabilities::fromEntity(e);
     EXPECT_EQ(command(caps, "media_player.select_source").params[0].optionCount, 6);
     EXPECT_EQ(caps.droppedOptions(), 3u);
 
-    e.sourceList = {std::string(40, 'y')};
+    e.sourceList = {std::string(limits::kMaxParamStringLength + 1, 'y')};
     const auto none = EntityCapabilities::fromEntity(e);
     EXPECT_LT(none.catalog().find("media_player.select_source"), 0)
         << "a source picker with no usable options is dropped";
@@ -322,9 +323,6 @@ TEST(HaServiceCall, RejectsTargetsRangesAndTypes) {
               ErrorCode::ParamOutOfRange);
     EXPECT_EQ(call(light, "light.turn_on", {in("color_temp_kelvin", ParamLiteral::ofInt(10000))}, &c),
               ErrorCode::ParamOutOfRange);
-    EXPECT_EQ(call(light, "light.turn_on", {in("brightness", ParamLiteral::ofInt(INT32_MIN))}, &c),
-              ErrorCode::ParamOutOfRange)
-        << "the omitted sentinel can't be supplied";
     // Types.
     EXPECT_EQ(call(light, "light.turn_on", {in("brightness", ParamLiteral::ofString("255"))}, &c),
               ErrorCode::InvalidParamType);
@@ -345,12 +343,12 @@ TEST(HaServiceCall, RejectsValuesNotFromThisCatalog) {
     ServiceCall c;
     const int select = caps.catalog().find("media_player.select_source");
     ParamValue outOfRange = ParamValue::ofOption(200);
-    EXPECT_EQ(caps.buildServiceCall(static_cast<uint16_t>(select), &outOfRange, &c),
+    EXPECT_EQ(caps.buildServiceCall(static_cast<uint16_t>(select), &outOfRange, 1, &c),
               ErrorCode::InvalidEnumValue);
     ParamValue wrongType = ParamValue::ofInt(1);
-    EXPECT_EQ(caps.buildServiceCall(static_cast<uint16_t>(select), &wrongType, &c),
+    EXPECT_EQ(caps.buildServiceCall(static_cast<uint16_t>(select), &wrongType, 1, &c),
               ErrorCode::InvalidParamType);
-    EXPECT_EQ(caps.buildServiceCall(999, nullptr, &c), ErrorCode::UnknownCommand);
+    EXPECT_EQ(caps.buildServiceCall(999, nullptr, 0, &c), ErrorCode::UnknownCommand);
 }
 
 TEST(HaServiceCall, OnlyAllowlistedKeysEverReachHomeAssistant) {
@@ -382,9 +380,11 @@ TEST(HaServiceCall, OnlyAllowlistedKeysEverReachHomeAssistant) {
                 EXPECT_FALSE(isForbiddenParamName(spec.name));
                 inputs.push_back({spec.name, v});
             }
-            ASSERT_EQ(resolveParams(c.items[i], inputs, values, &unused), ErrorCode::Ok);
+            uint8_t present = 0;
+            ASSERT_EQ(resolveParams(c.items[i], inputs, values, &unused, nullptr, &present), ErrorCode::Ok);
             ServiceCall sc;
-            ASSERT_EQ(caps.buildServiceCall(i, values, &sc), ErrorCode::Ok) << c.items[i].id;
+            ASSERT_EQ(caps.buildServiceCall(i, values, present, &sc), ErrorCode::Ok) << c.items[i].id;
+            EXPECT_EQ(sc.data.size(), c.items[i].paramCount) << "every supplied param is sent";
             EXPECT_EQ(sc.entityId, e.entityId);
             EXPECT_EQ(sc.domain, e.entityId.substr(0, e.entityId.find('.')));
             for (const auto &field : sc.data) {

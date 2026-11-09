@@ -137,7 +137,7 @@ params restores the light's last state rather than forcing a brightness.
    `label_id`, `target`, `data`, `service`, `service_data`, `domain`): `forbidden_param`. The
    spec's `ParamName` lists the same names; `api/lint.sh` checks they match.
 6. **Enum options are the entity's own.** `source_list` and friends are captured at
-   normalization. Options over 32 bytes (`limits::kMaxParamStringLength`), empty or duplicate
+   normalization. Options over 64 bytes (`limits::kMaxParamStringLength`), empty or duplicate
    options, and anything past 128 are dropped and counted (`droppedOptions()`). A picker with no
    usable options is dropped.
 
@@ -150,10 +150,9 @@ that token's HA user can do (see docs/security.md).
   `catalog()` from `IntegrationAdapter::commandsFor()`. The catalog points into the object, so
   it must outlive any compiled config that uses it. Rebuild it when HA reports new attributes
   (e.g. a changed `source_list`), then recompile the config.
-- Omitted optional params: core `resolveParams()` fills them with `defaultValue`. HA optional
-  params use an out-of-range default (`kOmittedInt` = INT32_MIN, or NaN) that
-  `buildServiceCall()` treats as "leave out". A user can't send those values because they're
-  outside every accepted range.
+- Omitted optional params: core `resolveParams()` reports which params were supplied as a bit
+  mask, carried to the adapter as `ExecRequest.paramsPresent`. The adapter passes it to
+  `buildServiceCall()`, which leaves unsupplied optional params out of the HA call.
 - WebSocket message shape (when the transport lands):
   `{"type":"call_service","domain":<domain>,"service":<service>,"target":{"entity_id":<entity_id>},"service_data":{<data>}}`.
   Format floats with about 6 significant digits; `level` is stored as a float, so 0.35 is

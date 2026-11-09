@@ -1,8 +1,5 @@
 #include "hubbo/ha/capabilities.h"
 
-#include <cmath>
-#include <limits>
-
 #include "hubbo/domain/limits.h"
 
 namespace hubbo::ha {
@@ -19,8 +16,6 @@ struct CommandDef {
 namespace {
 
 namespace mp = media_player_feature;
-
-constexpr float kOmittedNumber = std::numeric_limits<float>::quiet_NaN();
 
 constexpr CommandDef kCommands[] = {
     {"media_player.turn_on", "Power on", "media_player", "turn_on"},
@@ -93,7 +88,7 @@ bool brightnessMode(const std::string &mode) {
 
 ParamDraft transitionParam() {
     // HA clamps transition to 0..6553 s; its UI selector offers 0..300.
-    return {ParamSpec::number("transition", 0.0f, 300.0f, false, kOmittedNumber), "transition", {}};
+    return {ParamSpec::number("transition", 0.0f, 300.0f, false), "transition", {}};
 }
 
 ParamDraft enumParam(const char *name, std::vector<std::string> options) {
@@ -149,7 +144,7 @@ void light(const EntityInfo &e, Drafts &out) {
     CommandDraft &on = out.add("light.turn_on");
     if (brightness) {
         on.params.push_back(
-            {ParamSpec::integer("brightness", 0, 255, false, kOmittedInt), "brightness", {}});
+            {ParamSpec::integer("brightness", 0, 255, false), "brightness", {}});
     }
     if (colorTemp) {
         int32_t lo = e.minColorTempKelvin;
@@ -158,7 +153,7 @@ void light(const EntityInfo &e, Drafts &out) {
             lo = kDefaultMinKelvin;
             hi = kDefaultMaxKelvin;
         }
-        on.params.push_back({ParamSpec::integer("color_temp_kelvin", lo, hi, false, kOmittedInt),
+        on.params.push_back({ParamSpec::integer("color_temp_kelvin", lo, hi, false, lo),
                              "color_temp_kelvin", {}});
     }
     if (transition) on.params.push_back(transitionParam());
@@ -180,7 +175,7 @@ bool filterOptions(std::vector<std::string> &options, size_t *dropped) {
         bool duplicate = false;
         for (const auto &seen : kept) duplicate = duplicate || seen == option;
         if (option.empty() || option.size() > limits::kMaxParamStringLength || duplicate ||
-            kept.size() >= kMaxEnumOptions) {
+            kept.size() >= limits::kMaxEnumOptions) {
             (*dropped)++;
             continue;
         }
@@ -214,11 +209,6 @@ EntityDomain entityDomain(std::string_view id) {
     if (domain == "light") return EntityDomain::Light;
     if (domain == "switch") return EntityDomain::Switch;
     return EntityDomain::Unsupported;
-}
-
-bool isOmitted(const ParamValue &value) {
-    return (value.type == ParamType::Int && value.integer == kOmittedInt) ||
-           (value.type == ParamType::Number && std::isnan(value.number));
 }
 
 EntityCapabilities EntityCapabilities::fromEntity(const EntityInfo &entity) {
@@ -276,7 +266,7 @@ CommandCatalog EntityCapabilities::catalog() const {
     return {commands_.data(), static_cast<uint16_t>(commands_.size())};
 }
 
-ErrorCode EntityCapabilities::buildServiceCall(uint16_t index, const ParamValue *params,
+ErrorCode EntityCapabilities::buildServiceCall(uint16_t index, const ParamValue *params, uint8_t present,
                                                ServiceCall *out) const {
     // An invalid entity id produces an empty catalog, so this also covers it.
     if (index >= commands_.size()) {
@@ -298,7 +288,7 @@ ErrorCode EntityCapabilities::buildServiceCall(uint16_t index, const ParamValue 
         if (value.type != spec.type) {
             return ErrorCode::InvalidParamType;
         }
-        if (!spec.required && isOmitted(value)) {
+        if (!spec.required && (present & (1u << i)) == 0) {
             continue;
         }
         ServiceField field;
