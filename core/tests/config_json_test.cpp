@@ -161,6 +161,40 @@ TEST(ConfigJson, Devices) {
     EXPECT_EQ(u.revision, 3u);
 }
 
+TEST(ConfigJson, CapabilitiesAreStoredNotSentByClients) {
+    DeviceSpec d = sim::haDevice("dev_lights", "Lights", "light", "light.family_room");
+    d.revision = 1;
+    d.haCapabilities = ha::CapabilitySnapshot();
+    d.haCapabilities->platform = "demo";
+    // Stored (config record, backup): kept.
+    JsonDocument doc;
+    encodeDevice(d, doc.to<JsonObject>());
+    ASSERT_TRUE(doc["ha_capabilities"].is<JsonObject>());
+    DeviceSpec back;
+    ValidationReport r;
+    ASSERT_TRUE(decodeDevice(doc.as<JsonVariantConst>(), DeviceShape::Stored, &back, &r));
+    ASSERT_TRUE(back.haCapabilities.has_value());
+    EXPECT_EQ(back.haCapabilities->platform, "demo");
+    // API responses leave it out; requests can't carry it.
+    JsonDocument response;
+    encodeDevice(d, response.to<JsonObject>(), /*withCapabilities=*/false);
+    EXPECT_TRUE(response["ha_capabilities"].isUnbound());
+
+    ASSERT_EQ(parseJson(R"({"name":"TV","integration_id":"ha_main","ha_capabilities":{},
+                            "provider":{"type":"home_assistant","entity_id":"light.x"}})",
+                        doc, kMaxRequestBytes, kRequestNestingLimit),
+              ErrorCode::Ok);
+    r = {};
+    EXPECT_FALSE(decodeDevice(doc.as<JsonVariantConst>(), DeviceShape::Register, &back, &r));
+    EXPECT_TRUE(r.has(ErrorCode::UnknownField, "/ha_capabilities"));
+    ASSERT_EQ(parseJson(R"({"revision":1,"ha_capabilities":{}})", doc, kMaxRequestBytes, kRequestNestingLimit),
+              ErrorCode::Ok);
+    DeviceUpdate u;
+    r = {};
+    EXPECT_FALSE(decodeDeviceUpdate(doc.as<JsonVariantConst>(), &u, &r));
+    EXPECT_TRUE(r.has(ErrorCode::UnknownField, "/ha_capabilities"));
+}
+
 TEST(ConfigJson, IntegrationSecretsAreNotAccepted) {
     JsonDocument doc;
     ASSERT_EQ(parseJson(R"({"id":"ha_main","type":"home_assistant","name":"HA","enabled":true,"revision":1,
@@ -179,6 +213,36 @@ TEST(ConfigJson, IntegrationSecretsAreNotAccepted) {
     std::string text;
     serializeJson(out, text);
     EXPECT_EQ(text.find("token"), std::string::npos);
+}
+
+TEST(ConfigJson, ARetiredCaCertLoadsAndIsDroppedOnSave) {
+    // The board's saved config (and backups made before) carry ca_cert_pem:
+    // they must still load, or the hub boots Blocked after the update.
+    ConfigSpec c = sim::fixtureConfig();
+    std::string text = serializeConfig(c);
+    const std::string from = R"("verify_tls":true)";
+    const size_t at = text.find(from);
+    ASSERT_NE(at, std::string::npos) << text;
+    text.replace(at, from.size(), R"("verify_tls":false,"ca_cert_pem":"-----BEGIN CERTIFICATE-----")");
+    ConfigSpec loaded;
+    const ParseResult r = parseConfig(text, &loaded);
+    ASSERT_EQ(r.code, ErrorCode::Ok) << r.report.issues().size();
+    const IntegrationSpec *ha = nullptr;
+    for (const IntegrationSpec &i : loaded.integrations) {
+        if (i.id == "ha_main") ha = &i;
+    }
+    ASSERT_NE(ha, nullptr);
+    EXPECT_FALSE(ha->verifyTls);  // kept
+    EXPECT_EQ(serializeConfig(loaded).find("ca_cert_pem"), std::string::npos);
+
+    // A backup too (null, as older backups wrote it).
+    std::string backup = serializeBackup(c, BackupInfo());
+    const size_t b = backup.find(from);
+    ASSERT_NE(b, std::string::npos) << backup;
+    backup.replace(b, from.size(), R"("verify_tls":true,"ca_cert_pem":null)");
+    ConfigSpec restored;
+    EXPECT_EQ(parseBackup(backup, &restored).code, ErrorCode::Ok);
+    EXPECT_EQ(serializeBackup(restored, BackupInfo()).find("ca_cert_pem"), std::string::npos);
 }
 
 namespace {

@@ -81,7 +81,7 @@ std::string diffConfig(const ConfigSpec &a, const ConfigSpec &b) {
         const auto &x = a.integrations[i];
         const auto &y = b.integrations[i];
         if (x.id != y.id || x.type != y.type || x.name != y.name || x.enabled != y.enabled || x.url != y.url ||
-            x.verifyTls != y.verifyTls || x.caCertPem != y.caCertPem || x.deviceName != y.deviceName ||
+            x.verifyTls != y.verifyTls || x.deviceName != y.deviceName ||
             x.revision != y.revision) {
             return "integration " + x.id;
         }
@@ -386,7 +386,6 @@ TEST(RebootRoundTrip, EveryMutationType) {
 
     IntegrationSpec ha = *svc().findIntegration("ha_main");
     ha.url = "https://ha.example:8123";
-    ha.caCertPem = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
     ha.verifyTls = false;
     ASSERT_TRUE(svc().replaceIntegration("ha_main", ha, ha.revision).ok());
     EXPECT_REBOOT_CLEAN(box);
@@ -589,7 +588,7 @@ private:
                 if (in == nullptr) return "";
                 IntegrationSpec edit = *in;
                 edit.url = "http://ha-" + std::to_string(pick(100)) + ".local:8123";
-                edit.caCertPem = chance(50) ? std::optional<std::string>("PEM") : std::nullopt;
+                edit.verifyTls = chance(50);
                 o = svc().replaceIntegration("ha_main", edit, edit.revision);
                 break;
             }
@@ -671,7 +670,6 @@ TEST(RebootRoundTrip, FieldsThatDontApplyToTheTypeAreNotKept) {
     IntegrationSpec ble = *svc().findIntegration("ble");
     ble.url = "http://not-for-ble";
     ble.verifyTls = false;
-    ble.caCertPem = "PEM";
     ASSERT_TRUE(svc().replaceIntegration("ble", ble, ble.revision).ok());
     DeviceSpec tv = haDevice("", "Den TV", "tv", "media_player.family_room_lg_tv");
     tv.provider.peerName = "not-for-ha";

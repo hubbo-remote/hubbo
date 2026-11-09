@@ -111,12 +111,12 @@ void dropInapplicableFields(ConfigSpec *config) {
             d.provider.entityId.clear();
             d.provider.uniqueId.clear();
         }
+        if (d.provider.type != kHomeAssistantType) d.haCapabilities.reset();
     }
     for (auto &i : config->integrations) {
         if (i.type != kHomeAssistantType) {
             i.url.clear();
             i.verifyTls = true;
-            i.caCertPem.reset();
         }
         if (i.type != kBleHidType) i.deviceName.clear();
     }
@@ -491,6 +491,7 @@ Outcome ConfigService::updateDevice(std::string_view id, const DeviceUpdate &upd
     if (update.name) device.name = *update.name;
     if (update.kind) device.kind = *update.kind;
     if (update.provider) device.provider = *update.provider;
+    if (update.haCapabilities) device.haCapabilities = *update.haCapabilities;
     return replace(&ConfigSpec::devices, static_cast<size_t>(index), "/devices", std::move(device));
 }
 

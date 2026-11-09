@@ -35,7 +35,6 @@ constexpr uint8_t kFileNestingLimit = 12;
 constexpr size_t kMaxRequestBytes = 32 * 1024;    // largest API body (activities)
 constexpr size_t kMaxConfigFileBytes = 512 * 1024;
 constexpr size_t kMaxStringLength = 255;          // any free-form string field
-constexpr size_t kMaxCaCertLength = 4096;
 
 // Parses `text` into `doc`. MalformedJson if not JSON, empty, larger than
 // maxBytes or nested deeper than nestingLimit.
@@ -74,13 +73,16 @@ enum class DeviceShape : uint8_t {
 bool decodeDevice(JsonVariantConst json, DeviceShape shape, DeviceSpec *out, ValidationReport *report,
                   const std::string &path = "");
 // Device without `availability` (runtime state the API adds).
-void encodeDevice(const DeviceSpec &device, JsonObject out);
+// `withCapabilities`: the stored `ha_capabilities` (config record, backup);
+// false for API responses, where it isn't part of Device.
+void encodeDevice(const DeviceSpec &device, JsonObject out, bool withCapabilities = true);
 
 // DeviceUpdate: partial; revision required.
 struct DeviceUpdate {
     std::optional<std::string> name;
     std::optional<std::string> kind;
     std::optional<ProviderSpec> provider;
+    std::optional<ha::CapabilitySnapshot> haCapabilities;  // a refresh (set by the hub, never decoded)
     uint32_t revision = 0;
 };
 bool decodeDeviceUpdate(JsonVariantConst json, DeviceUpdate *out, ValidationReport *report,
