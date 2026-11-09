@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { fixture } from '../mock/fixtures.ts'
 import { api, expect, open, test } from './hub.ts'
 
 const downloadBackup = async (page: import('@playwright/test').Page, name: string | RegExp) => {
@@ -37,4 +38,15 @@ test('a restore whose activities have new ids leaves nothing active, and starts 
   const list = await hub.get('/activities')
   expect(list.active_activity_id).toBeNull()
   expect(list.activities.map((a: { id: string }) => a.id).sort()).toEqual(ids.map((id) => `${id}_v2`).sort())
+})
+
+test('a hub that couldn’t read storage when it loaded refuses a backup (503): a clear message, no file', async ({ page }) => {
+  // Only reachable at boot with storage down (storage-boot.spec), where nobody can sign in; stub that answer here.
+  await page.route('**/api/v1/admin/backup', (r) => r.fulfill({ status: 503, json: fixture('errors/backup_storage_unavailable.json') }))
+  let saved = false
+  page.on('download', () => (saved = true))
+  await open(page, '/settings/backup')
+  await page.getByRole('button', { name: 'Download backup' }).click()
+  await expect(page.getByRole('alert').filter({ hasText: 'The hub can’t read its storage' })).toContainText('No backup was made')
+  expect(saved).toBe(false)
 })

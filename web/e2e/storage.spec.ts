@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import { api, expect, onAuthSim, open, setStorage, test } from './hub.ts'
 
 // Never leave the store down for the specs after this one (resets don't touch storage health).
@@ -29,13 +30,14 @@ test('storage goes down: banner, edits disabled, switching still works; it comes
   expect(saved.status()).toBe(200)
 })
 
-test('storage down: a backup is refused with a clear 503, never an empty or stale file', async ({ page }) => {
+test('storage failing after a good load: a backup still exports the running config (the last acknowledged save)', async ({ page }) => {
   test.skip(await onAuthSim(page), 'hub-sim --auth: nobody can authenticate while storage is down (storage-auth.spec)')
   await open(page, '/settings/backup')
   await setStorage(page, 'unavailable')
-  let saved = false
-  page.on('download', () => (saved = true))
-  await page.getByRole('button', { name: 'Download backup' }).click()
-  await expect(page.getByRole('alert').filter({ hasText: 'The hub can’t read its storage' })).toContainText('No backup was made')
-  expect(saved).toBe(false)
+  await expect(page.getByText('A backup still works: it’s the configuration that’s running')).toBeVisible()
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download backup' }).click()])
+  expect(download.suggestedFilename()).toMatch(/^hubbo-backup-\d{4}-\d\d-\d\d\.json$/)
+  expect(JSON.parse(await readFile((await download.path())!, 'utf8')).format).toBe('hubbo-backup')
+  await expect(page.getByText('Backup downloaded')).toBeVisible()
+  await expect(page.getByRole('alert').filter({ hasText: /No backup was made|can’t read its storage/ })).toHaveCount(0)
 })

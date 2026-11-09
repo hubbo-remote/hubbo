@@ -30,6 +30,6 @@ export default defineConfig({
         command: 'node node_modules/vite/bin/vite.js',
         url: baseURL,
         timeout: 60_000,
-        env: { ...(process.env as Record<string, string>), HUBBO_WEB_HOST: '127.0.0.1', HUBBO_WEB_PORT: '5181', HUBBO_MOCK_LATENCY: '0', HUBBO_MOCK_PAIR_MS: '0' },
+        env: { ...(process.env as Record<string, string>), HUBBO_WEB_HOST: '127.0.0.1', HUBBO_WEB_PORT: '5181', HUBBO_MOCK_LATENCY: '0', HUBBO_MOCK_PAIR_MS: '0', HUBBO_MOCK_DISCOVER_MS: '0' },
       },
 })
