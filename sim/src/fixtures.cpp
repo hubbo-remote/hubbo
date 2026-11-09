@@ -1,5 +1,7 @@
 #include "fixtures.h"
 
+#include "hubbo/domain/limits.h"
+
 namespace hubbo::sim {
 
 ParamInput param(std::string name, ParamLiteral value) { return {std::move(name), std::move(value)}; }
@@ -37,6 +39,36 @@ ActionSpec offAction() { return action("system", "", "off"); }
 
 BindingSpec bind(std::string trigger, std::vector<ActionSpec> actions) {
     return {std::move(trigger), std::move(actions)};
+}
+
+DeviceSpec device(std::string id, std::string name, std::string integration, std::string kind,
+                  ProviderSpec provider) {
+    DeviceSpec d;
+    d.id = std::move(id);
+    d.name = std::move(name);
+    d.integrationId = std::move(integration);
+    d.kind = std::move(kind);
+    d.provider = std::move(provider);
+    d.revision = 1;
+    return d;
+}
+
+DeviceSpec haDevice(std::string id, std::string name, std::string kind, std::string entityId) {
+    return device(std::move(id), std::move(name), "ha_main", std::move(kind),
+                  {"home_assistant", std::move(entityId), "", ""});
+}
+
+DeviceSpec bleDevice(std::string id, std::string name, std::string kind) {
+    return device(std::move(id), std::move(name), "ble", std::move(kind), {"ble_hid", "", "", ""});
+}
+
+IntegrationSpec integration(std::string id, std::string type, std::string name) {
+    IntegrationSpec i;
+    i.id = std::move(id);
+    i.type = std::move(type);
+    i.name = std::move(name);
+    i.revision = 1;
+    return i;
 }
 
 namespace {
@@ -110,13 +142,20 @@ ActivitySpec playXbox() {
 ConfigSpec fixtureConfig() {
     ConfigSpec c;
     c.revision = 1;
+    c.globalBindingsRevision = 1;
+    c.integrations = {
+        integration("system", "system", "System"),
+        integration("ble", "ble_hid", "Bluetooth"),
+        integration("ha_main", "home_assistant", "Home Assistant"),
+    };
+    c.integrations[1].deviceName = "Hubbo";
+    c.integrations[2].url = "http://homeassistant.local:8123";
     c.devices = {
-        {"dev_apple_tv", "Family Room Apple TV", "ble", "bonded_host"},
-        {"dev_lg_tv", "Family Room LG TV", "ha_main", "media_player.family_room_lg_tv"},
-        {"dev_denon", "Family Room Denon", "ha_main", "media_player.denon"},
-        {"dev_xbox", "Xbox", "ha_main", "media_player.xbox"},
-        {"dev_lights", "Family Room Lights", "ha_main", "light.family_room"},
-        {"dev_projector", "Projector", "ir", "codeset_placeholder"},
+        bleDevice("dev_apple_tv", "Family Room Apple TV", "streamer"),
+        haDevice("dev_lg_tv", "Family Room LG TV", "tv", "media_player.family_room_lg_tv"),
+        haDevice("dev_denon", "Family Room Denon", "receiver", "media_player.denon"),
+        haDevice("dev_xbox", "Xbox", "console", "media_player.xbox"),
+        haDevice("dev_lights", "Family Room Lights", "light", "light.family_room"),
     };
     c.activities = {watchAppleTv(), playXbox()};
     c.globalBindings = {
@@ -131,27 +170,47 @@ ConfigSpec fixtureConfig() {
 }
 
 std::vector<ha::EntityInfo> fixtureEntities() {
+    // The union of the entities behind fixtureConfig() and the shared API
+    // dataset (api/fixtures/admin/backup.json); features and source lists
+    // match api/fixtures/devices/*.capabilities.json.
     namespace mp = ha::media_player_feature;
     const uint32_t power = mp::kTurnOn | mp::kTurnOff;
-    ha::EntityInfo tv;
-    tv.entityId = "media_player.family_room_lg_tv";
-    tv.supportedFeatures = power | mp::kVolumeStep | mp::kVolumeMute | mp::kSelectSource;
-    tv.sourceList = {"HDMI 1", "HDMI 2", "HDMI 3"};
+    const uint32_t transport = mp::kPlay | mp::kPause | mp::kNextTrack | mp::kPreviousTrack;
+    auto entity = [](std::string id, uint32_t features, std::vector<std::string> sources = {}) {
+        ha::EntityInfo e;
+        e.entityId = std::move(id);
+        e.supportedFeatures = features;
+        e.sourceList = std::move(sources);
+        return e;
+    };
 
-    ha::EntityInfo receiver;
-    receiver.entityId = "media_player.denon";
-    receiver.supportedFeatures = power | mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | mp::kSelectSource;
-    receiver.sourceList = {"Media Player", "Game", "TV Audio"};
-
-    ha::EntityInfo xbox;
-    xbox.entityId = "media_player.xbox";
-    xbox.supportedFeatures = power | mp::kPlay | mp::kPause;
-
-    ha::EntityInfo lights;
-    lights.entityId = "light.family_room";
-    lights.supportedColorModes = {"brightness"};
-
-    return {tv, receiver, xbox, lights};
+    std::vector<ha::EntityInfo> out;
+    out.push_back(entity("media_player.family_room_lg_tv",
+                         power | mp::kVolumeStep | mp::kVolumeMute | transport | mp::kStop | mp::kSelectSource,
+                         {"HDMI 1", "HDMI 2", "HDMI 3", "Live TV", "Netflix", "YouTube"}));
+    out.push_back(entity("media_player.xbox", power | mp::kVolumeStep | mp::kVolumeMute | transport));
+    // fixtureConfig()'s receiver.
+    out.push_back(entity("media_player.denon",
+                         power | mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | mp::kSelectSource,
+                         {"Media Player", "Game", "TV Audio"}));
+    // The API dataset's receiver and speaker.
+    ha::EntityInfo denon = entity("media_player.family_room_denon",
+                                  power | mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | mp::kSelectSource |
+                                      mp::kSelectSoundMode,
+                                  {"Blu-ray", "CBL/SAT", "DVD", "Game", "Media Player", "TV Audio", "Tuner", "Bluetooth"});
+    denon.soundModeList = {"MUSIC", "MOVIE", "GAME", "AUTO", "STEREO", "DIRECT"};
+    out.push_back(denon);
+    out.push_back(entity("media_player.family_room_sonos",
+                         mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | transport | mp::kStop |
+                             mp::kSelectSource | mp::kShuffleSet | mp::kRepeatSet,
+                         {"TV"}));
+    // Only used by limit tests: an enum option of the maximum length.
+    out.push_back(entity("media_player.limits_test", power | mp::kSelectSource,
+                         {std::string(limits::kMaxParamStringLength, 's'), "Short"}));
+    ha::EntityInfo lights = entity("light.family_room", ha::light_feature::kTransition);
+    lights.supportedColorModes = {"color_temp"};
+    out.push_back(lights);
+    return out;
 }
 
 }  // namespace hubbo::sim

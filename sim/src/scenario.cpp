@@ -60,22 +60,55 @@ bool parseUint(const std::string &s, uint32_t *out) {
 
 }  // namespace
 
-ScenarioRunner::ScenarioRunner(std::ostream *trace) : trace_(trace) { reset(); }
+ScenarioRunner::ScenarioRunner(std::ostream *trace, storage::Storage *storage, bool pinned, const ConfigSpec *seed,
+                               storage::StateStore *state, auth::Credentials *credentials)
+    : trace_(trace),
+      storage_(storage != nullptr ? storage : &ownStorage_),
+      state_(state),
+      credentials_(credentials),
+      pinned_(pinned),
+      seed_(seed != nullptr ? *seed : fixtureConfig()) {
+    newHub();
+    const config::LoadReport boot = hub_->boot(seed_, credentials_);
+    if (trace_ != nullptr) {
+        *trace_ << "config: " << config::configStateName(boot.state)
+                << (boot.reason != ErrorCode::Ok ? std::string(" (") + errorCodeName(boot.reason) + ")" : "")
+                << ", generation " << hub_->config().revision << "\n";
+    }
+}
+
+void ScenarioRunner::newHub() {
+    hub_ = std::make_unique<SimHub>(storage_, state_);
+    if (trace_ == nullptr) return;
+    std::ostream *out = trace_;
+    hub_->onLog = [out](const char *kind, const LogLine &line) {
+        *out << "  [" << line.atMs << " ms] " << kind << ": " << line.text << "\n";
+    };
+}
 
 void ScenarioRunner::reset() {
-    hub_ = std::make_unique<SimHub>();
-    if (trace_ != nullptr) {
-        std::ostream *out = trace_;
-        hub_->onLog = [out](const char *kind, const LogLine &line) {
-            *out << "  [" << line.atMs << " ms] " << kind << ": " << line.text << "\n";
-        };
+    ValidationReport report;
+    if (pinned_) {
+        report = hub_->factoryReset(seed_);
+    } else {
+        newHub();
+        hub_->forgetActive();  // a reset starts with nothing active
+        report = hub_->load(seed_);
     }
-    const ValidationReport report = hub_->load(fixtureConfig());
     if (!report.ok() && trace_ != nullptr) {
         for (const auto &issue : report.issues()) {
             *trace_ << "fixture invalid: " << errorCodeName(issue.code) << " at " << issue.path << "\n";
         }
     }
+    commandCursor_ = hub_->commands().size();
+    eventCursor_ = hub_->events().size();
+    hidCursor_ = hub_->hid().reports().size();
+    lastResult_ = ErrorCode::Ok;
+}
+
+void ScenarioRunner::reboot() {
+    newHub();
+    hub_->boot(seed_, credentials_);
     commandCursor_ = 0;
     eventCursor_ = 0;
     hidCursor_ = 0;
@@ -137,6 +170,11 @@ bool ScenarioRunner::runLine(const std::string &raw) {
 
     if (verb == "reset") {
         reset();
+        return true;
+    }
+    if (verb == "reboot") {
+        if (pinned_) return fail("reboot needs an unpinned hub (restart hub-sim instead)");
+        reboot();
         return true;
     }
     if (verb == "activate") {

@@ -49,6 +49,7 @@ public:
     void addEntity(const ha::EntityInfo &entity);
 
     const char *integrationId() const override { return id_.c_str(); }
+    const char *integrationType() const override { return kHomeAssistantType; }
     CommandCatalog commandsFor(const DeviceSpec &device) const override;
     ExecResult execute(const ExecRequest &request) override;
     void poll(uint32_t nowMs, CompletionSink &sink) override;
@@ -58,6 +59,13 @@ public:
     // The next execution of `commandId` fails with `error` (or times out).
     void failNext(std::string commandId, ErrorCode error);
     void setAvailable(bool available) { available_ = available; }
+    bool available() const { return available_; }
+    // Back to defaults: no latency, no injected failures, available.
+    void resetFaults() {
+        latencyMs_ = 0;
+        available_ = true;
+        failures_.clear();
+    }
 
     // HA service calls made, in order: "<domain>.<service> <entity> k=v".
     std::vector<std::string> &calls() { return calls_; }
@@ -85,6 +93,7 @@ private:
 class FakeIr : public IntegrationAdapter {
 public:
     const char *integrationId() const override { return "ir"; }
+    const char *integrationType() const override { return "ir"; }
     CommandCatalog commandsFor(const DeviceSpec &device) const override;
     ExecResult execute(const ExecRequest &request) override;
 };
@@ -104,7 +113,8 @@ struct FakeAdapters {
 };
 
 // "k=v k=v" for a compiled command's params, using its spec for names, enum
-// option strings and formatting. Omitted optional HA params are left out.
-std::string formatParams(const CommandSpec &command, const ParamValue *params);
+// option strings and formatting. Optional params not in `present` are left
+// out.
+std::string formatParams(const CommandSpec &command, const ParamValue *params, uint8_t present);
 
 }  // namespace hubbo::sim

@@ -1,0 +1,29 @@
+# The active activity survives a reboot: its button map comes back, but its
+# startup does not run again (the devices are presumably still on).
+activate act_watch_apple_tv
+advance 6000                      # past the 5 s save delay
+reboot
+expect_active act_watch_apple_tv
+expect_event activity act_watch_apple_tv
+expect_none                       # no startup, no releases
+press up                          # the restored map works straight away
+expect ble dev_apple_tv key_down key=ARROW_UP
+release up
+expect ble dev_apple_tv key_up key=ARROW_UP
+
+# Off is remembered as "nothing active".
+tap off
+advance 6000
+reboot
+expect_active none
+expect_none
+
+# A switch younger than the save delay isn't saved yet: the last saved
+# activity comes back.
+activate act_play_xbox
+advance 6000
+activate act_watch_apple_tv
+advance 1000
+reboot
+expect_active act_play_xbox
+expect_none

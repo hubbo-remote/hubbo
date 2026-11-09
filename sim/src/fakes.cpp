@@ -29,12 +29,12 @@ std::string quoteIfSpaced(const std::string &s) {
 
 }  // namespace
 
-std::string formatParams(const CommandSpec &command, const ParamValue *params) {
+std::string formatParams(const CommandSpec &command, const ParamValue *params, uint8_t present) {
     std::string out;
     for (uint8_t i = 0; i < command.paramCount; i++) {
         const ParamSpec &spec = command.params[i];
         const ParamValue &v = params[i];
-        if (ha::isOmitted(v)) continue;
+        if (!spec.required && (present & (1u << i)) == 0) continue;
         if (!out.empty()) out += ' ';
         out += spec.name;
         out += '=';
@@ -72,7 +72,7 @@ void FakeHomeAssistant::addEntity(const ha::EntityInfo &entity) {
 }
 
 CommandCatalog FakeHomeAssistant::commandsFor(const DeviceSpec &device) const {
-    const auto it = entities_.find(device.providerRef);
+    const auto it = entities_.find(providerRef(device));
     return it == entities_.end() ? CommandCatalog{} : it->second.catalog();
 }
 
@@ -86,7 +86,7 @@ ExecResult FakeHomeAssistant::execute(const ExecRequest &request) {
     const auto entity = entities_.find(request.providerRef);
     if (entity == entities_.end()) return ExecResult::failed(ErrorCode::AdapterFailed);
     ha::ServiceCall call;
-    const ErrorCode built = entity->second.buildServiceCall(request.commandIndex, request.params, &call);
+    const ErrorCode built = entity->second.buildServiceCall(request.commandIndex, request.params, request.paramsPresent, &call);
     if (built != ErrorCode::Ok) return ExecResult::failed(built);
 
     std::string line = call.domain + "." + call.service + " " + call.entityId;

@@ -17,7 +17,6 @@ namespace hubbo::sim {
 namespace {
 
 constexpr size_t kMaxHeaderBytes = 16 * 1024;
-constexpr size_t kMaxBodyBytes = 64 * 1024;
 
 std::string lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
@@ -109,10 +108,12 @@ bool HttpServer::listen(const ListenOptions &options, std::string *error) {
     return true;
 }
 
-void HttpServer::serveOnce(int timeoutMs, const Handler &handler) {
+void HttpServer::serveOnce(int timeoutMs, const BodyLimit &bodyLimit, const Handler &handler) {
     pollfd pfd{fd_, POLLIN, 0};
     if (::poll(&pfd, 1, timeoutMs) <= 0) return;
-    const int client = ::accept(fd_, nullptr, nullptr);
+    sockaddr_in peer{};
+    socklen_t peerLength = sizeof(peer);
+    const int client = ::accept(fd_, reinterpret_cast<sockaddr *>(&peer), &peerLength);
     if (client < 0) return;
     timeval tv{2, 0};
     ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -165,10 +166,22 @@ void HttpServer::serveOnce(int timeoutMs, const Handler &handler) {
     const std::string method = requestLine.substr(0, sp1);
     const std::string target = requestLine.substr(sp1 + 1, sp2 - sp1 - 1);
 
+    http::Request request;
+    if (!http::methodFromName(method, &request.method)) {
+        http::jsonError(response, 405, "method_not_allowed", "method not allowed");
+        respond(client, response);
+        ::close(client);
+        return;
+    }
+
+    const size_t q = target.find('?');
+    const std::string path = target.substr(0, q);
+    const std::string query = q == std::string::npos ? "" : target.substr(q + 1);
+
     size_t contentLength = 0;
     const std::string_view cl = headers.header("content-length");
     if (!cl.empty()) contentLength = static_cast<size_t>(std::strtoul(std::string(cl).c_str(), nullptr, 10));
-    if (contentLength > kMaxBodyBytes) {
+    if (contentLength > bodyLimit(request.method, path)) {
         http::jsonError(response, 413, "payload_too_large", "request body too large");
         respond(client, response);
         ::close(client);
@@ -182,21 +195,12 @@ void HttpServer::serveOnce(int timeoutMs, const Handler &handler) {
     }
     body.resize(std::min(body.size(), contentLength));
 
-    const size_t q = target.find('?');
-    const std::string path = target.substr(0, q);
-    const std::string query = q == std::string::npos ? "" : target.substr(q + 1);
 
-    http::Request request;
-    if (!http::methodFromName(method, &request.method)) {
-        http::jsonError(response, 405, "method_not_allowed", "method not allowed");
-        respond(client, response);
-        ::close(client);
-        return;
-    }
     request.path = path;
     request.query = query;
     request.body = body;
     request.headers = &headers;
+    request.clientKey = ntohl(peer.sin_addr.s_addr);  // login rate limiting per address
     handler(request, response);
     respond(client, response);
     ::close(client);

@@ -11,11 +11,16 @@ add_library(hubbo_sim_support STATIC
     src/hub.cpp
     src/scenario.cpp
 )
-target_include_directories(hubbo_sim_support PUBLIC src ${PROJECT_SOURCE_DIR}/core/include)
+target_include_directories(hubbo_sim_support PUBLIC src ${PROJECT_SOURCE_DIR}/core/include
+                                                    ${PROJECT_SOURCE_DIR}/core/third_party/ArduinoJson)
+# The shared API dataset (api/fixtures), seeded by `hub-sim serve`.
+target_compile_definitions(hubbo_sim_support PUBLIC HUBBO_API_FIXTURES_DIR="${PROJECT_SOURCE_DIR}/api/fixtures"
+                                                    HUBBO_SIM_FIXTURES_DIR="${PROJECT_SOURCE_DIR}/sim/fixtures")
 target_compile_options(hubbo_sim_support PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_library(hubbo_sim_http STATIC
     src/http_server.cpp
+    src/runtime.cpp
     src/sim_api.cpp
 )
 target_link_libraries(hubbo_sim_http PUBLIC hubbo_sim_support hubbo_core_sim)

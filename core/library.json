@@ -8,6 +8,9 @@
   "build": {
     "srcDir": "src",
     "includeDir": "include",
-    "flags": ["-std=gnu++17"]
+    "flags": [
+      "-std=gnu++17",
+      "-I third_party/ArduinoJson"
+    ]
   }
 }

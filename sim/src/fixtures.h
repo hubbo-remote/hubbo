@@ -28,9 +28,14 @@ ActionSpec waitMs(int64_t ms);
 ActionSpec activateAction(const char *activityId);
 ActionSpec offAction();
 BindingSpec bind(std::string trigger, std::vector<ActionSpec> actions);
+DeviceSpec device(std::string id, std::string name, std::string integration, std::string kind,
+                  ProviderSpec provider);
+DeviceSpec haDevice(std::string id, std::string name, std::string kind, std::string entityId);
+DeviceSpec bleDevice(std::string id, std::string name, std::string kind);
+IntegrationSpec integration(std::string id, std::string type, std::string name);
 
 // Devices: dev_apple_tv (ble), dev_lg_tv, dev_denon, dev_xbox, dev_lights
-// (ha_main), dev_projector (ir). Activities: act_watch_apple_tv, act_play_xbox.
+// (ha_main). Activities: act_watch_apple_tv, act_play_xbox.
 // Global bindings (as in api/fixtures): off:tap -> system.off, tv:tap and
 // movie:tap -> act_watch_apple_tv, music:tap -> act_play_xbox,
 // light_1:tap / light_2:tap -> lights on/off.

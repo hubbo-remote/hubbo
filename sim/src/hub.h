@@ -17,6 +17,9 @@
 #include <vector>
 
 #include "fakes.h"
+#include "hubbo/config/service.h"
+#include "hubbo/config/boot.h"
+#include "hubbo/engine/active_persister.h"
 #include "hubbo/domain/config.h"
 #include "hubbo/engine/compiler.h"
 #include "hubbo/engine/engine.h"
@@ -31,11 +34,37 @@ struct LogLine {
 
 class SimHub : public EngineObserver {
 public:
-    SimHub();
+    // Config and the active activity persist as records ("config",
+    // "active_activity") in `storage` (e.g. a StdioStorage --data dir), or
+    // in memory when null; `state` overrides where the active activity goes
+    // (tests). Nothing is loaded yet: call boot() or load().
+    explicit SimHub(storage::Storage *storage = nullptr, storage::StateStore *state = nullptr);
 
-    // Compile and publish. On failure nothing changes and the report says why.
+    // Simulated power-on through bootHub() (config/boot.h), the same path
+    // as the firmware: load the config record (else `defaults`), the
+    // credentials (if given), then restore the saved active activity without
+    // running its startup.
+    config::LoadReport boot(const ConfigSpec &defaults, auth::Credentials *credentials = nullptr);
+    const BootReport &lastBoot() const { return boot_; }
+    // Graceful stop: write anything pending (the debounced active activity).
+    void flush() {
+        persister_.flush(engine_.activeActivityIdShared(), service_.state() == config::ConfigState::Ok);
+    }
+    // Saved active activity -> none (factory reset).
+    void forgetActive() { state_.set(ActivePersister::kKey, ""); }
+
+    // Restore the whole config through the ConfigService (validated, saved,
+    // published). On failure nothing changes and the report says why.
     ValidationReport load(const ConfigSpec &config);
-    const ConfigSpec &config() const { return config_; }
+    const ConfigSpec &config() const { return service_.config(); }
+
+    // Factory reset in place: fixtures-style config replaces everything,
+    // nothing is active, fake faults are cleared, the BLE host reconnects.
+    // Persisted like any edit. References to the hub stay valid.
+    ValidationReport factoryReset(const ConfigSpec &config);
+    config::ConfigService &configService() { return service_; }
+    storage::Storage &storage() { return *storage_; }
+    storage::RecordStore &records() { return records_; }
 
     // Remote. press/release change the held set and send its payload now.
     void press(remote::Button button);
@@ -82,8 +111,15 @@ private:
     Engine::Store store_;
     Engine engine_{store_, fakes_.set};
     remote::RemoteInput input_{engine_};
+    storage::MemoryStorage memory_;
+    storage::Storage *storage_;
+    storage::SlotRecordStore records_;
+    config::ConfigService service_;
+    storage::RecordStateStore recordState_;
+    storage::StateStore &state_;
+    ActivePersister persister_;
+    BootReport boot_;
 
-    ConfigSpec config_;
     uint32_t nowMs_ = 0;
     uint32_t lastPacketMs_ = 0;
     remote::ButtonSet held_ = 0;

@@ -8,6 +8,7 @@ namespace hubbo::sim {
 namespace {
 
 constexpr uint32_t kKeepaliveMs = 40;  // the remote's hold packet interval
+constexpr uint32_t kPersistTickMs = 100;
 
 // Any valid non-button payload keeps RemoteInput's release timeout alive.
 // These bytes are arbitrary (not captured from a remote); only "not a button
@@ -16,20 +17,34 @@ constexpr uint8_t kKeepalive[5] = {0x00, 0x4F, 0x00, 0x00, 0xB1};
 
 }  // namespace
 
-SimHub::SimHub() { engine_.setObserver(this); }
+SimHub::SimHub(storage::Storage *storage, storage::StateStore *state)
+    : storage_(storage != nullptr ? storage : &memory_),
+      records_(*storage_, config::kMaxConfigFileBytes),
+      service_(records_, fakes_.set, store_),
+      recordState_(records_),
+      state_(state != nullptr ? *state : recordState_),
+      persister_(state_) {
+    engine_.setObserver(this);
+}
+
+config::LoadReport SimHub::boot(const ConfigSpec &defaults, auth::Credentials *credentials) {
+    boot_ = bootHub(defaults, service_, credentials, engine_, persister_, nowMs_);  // the firmware's boot path too
+    return boot_.config;
+}
 
 ValidationReport SimHub::load(const ConfigSpec &config) {
-    ValidationReport report;
-    auto compiled = compileConfig(config, fakes_.set, &report);
-    if (!compiled) return report;
-    const ErrorCode published = store_.publish(compiled);
-    if (published != ErrorCode::Ok) {
-        report.add(published, "");
-        return report;
-    }
-    config_ = config;
+    config::Outcome outcome = service_.restore(config);
+    if (!outcome.ok() && outcome.issues.ok()) outcome.issues.add(outcome.code, "");
     engine_.poll(nowMs_);  // pick it up now
-    return report;
+    return outcome.issues;
+}
+
+ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
+    if (engine_.hasActiveActivity()) engine_.off(nowMs_);
+    fakes_.homeAssistant.resetFaults();
+    fakes_.hid.setConnected(true);
+    forgetActive();
+    return load(config);
 }
 
 void SimHub::press(remote::Button button) {
@@ -65,6 +80,13 @@ void SimHub::advance(uint32_t ms, bool silent) {
         }
         input_.poll(nowMs_);
         engine_.poll(nowMs_);
+        // The config side remembers the active activity (delayed write),
+        // ticking like the firmware's HTTP task does, not every ms.
+        if (nowMs_ % kPersistTickMs == 0) {
+            service_.refresh(nowMs_);  // recover a load that failed on storage
+            persister_.tick(engine_.activeActivityIdShared(), nowMs_,
+                            service_.state() == config::ConfigState::Ok);
+        }
     }
     // The radio gave up on them; the simulated thumb lets go too.
     if (silent && input_.held() == 0) held_ = 0;
@@ -90,7 +112,7 @@ void SimHub::onActionDispatched(const DispatchRecord &record) {
     if (activate) {
         line += std::string(" activity_id=") + record.target;  // the param holds an index
     } else if (record.action.command != nullptr) {
-        const std::string params = formatParams(*record.action.command, record.action.params);
+        const std::string params = formatParams(*record.action.command, record.action.params, record.action.paramsPresent);
         if (!params.empty()) line += ' ' + params;
     }
     line += " -> ";

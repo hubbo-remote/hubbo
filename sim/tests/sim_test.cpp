@@ -2,8 +2,15 @@
 // and the loopback / no-auth guard rails.
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
+#include <random>
 #include <sstream>
 
+#include "fixtures.h"
+#include "hubbo/config/json.h"
+#include "hubbo/storage/state_store.h"
+#include "hubbo/storage/storage.h"
 #include "http_server.h"
 #include "noauth.h"
 #include "scenario.h"
@@ -14,19 +21,37 @@ using namespace hubbo::sim;
 
 namespace {
 
+// Credentials as hub-sim wires them: loaded by the runner's boot (bootHub()).
+struct SimAuth {
+    auth::MemorySecretStore secrets;
+    auth::SoftwareHash hash;
+    HostRandom random;
+    auth::Credentials credentials{secrets, hash, random};
+};
+
 bool runScript(ScenarioRunner &runner, const std::string &text) {
     std::istringstream in(text);
     return runner.run(in, "test");
 }
 
-http::Response call(SimApi &api, http::RequestAuthenticator &auth, http::Method method, const char *path,
-                    const char *query = "", const char *body = "") {
+struct Headers : http::HeaderSource {
+    std::string_view header(std::string_view name) const override {
+        if (name == "Host" || name == "host") return "127.0.0.1:8780";
+        if (name == "Content-Type" || name == "content-type") return "application/json";
+        return {};
+    }
+};
+
+http::Response call(SimApi &api, http::Method method, const char *path, const char *query = "",
+                    const char *body = "") {
+    static const Headers headers;
     http::Request r;
     r.method = method;
     r.path = path;
     r.query = query;
     r.body = body;
-    r.context = auth.authenticate(r);
+    r.headers = &headers;
+    r.context = api.authenticator().authenticate(r);
     http::Response out;
     api.handle(r, out);
     return out;
@@ -73,39 +98,84 @@ TEST(Scenario, ExpectNoneAndResult) {
 }
 
 TEST(SimApi, NoAuthCallerIsAdminAndCanDriveTheEngine) {
-    ScenarioRunner runner;
-    SimApi api(runner, "simulator_no_auth");
-    SimulatorNoAuth noAuth;
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, /*authEnabled=*/false, a.credentials);
 
-    http::Response r = call(api, noAuth, http::Method::Post, "/api/v1/activities/act_watch_apple_tv/activate");
-    EXPECT_EQ(r.status, 202);
-    r = call(api, noAuth, http::Method::Get, "/api/v1/status");
-    EXPECT_EQ(r.status, 200);
-    EXPECT_NE(r.body.find("\"active_activity_id\":\"act_watch_apple_tv\""), std::string::npos);
-    EXPECT_NE(r.body.find("\"auth_mode\":\"simulator_no_auth\""), std::string::npos);
+    http::Response r = call(api, http::Method::Post, "/api/v1/activities/act_watch_apple_tv/activate");
+    EXPECT_EQ(r.status, 200) << r.body;
+    EXPECT_NE(r.body.find("\"active_activity_id\":\"act_watch_apple_tv\""), std::string::npos) << r.body;
+    EXPECT_STREQ(runner.hub().engine().activeActivityId(), "act_watch_apple_tv");
 
-    EXPECT_EQ(call(api, noAuth, http::Method::Post, "/api/v1/activities/nope/activate").status, 404);
-    EXPECT_EQ(call(api, noAuth, http::Method::Post, "/sim/remote/up/tap").status, 200);
-    EXPECT_EQ(call(api, noAuth, http::Method::Post, "/sim/remote/up/smash").status, 400);
-    EXPECT_EQ(call(api, noAuth, http::Method::Post, "/sim/advance", "ms=250").status, 200);
-    r = call(api, noAuth, http::Method::Get, "/sim/log");
+    r = call(api, http::Method::Get, "/api/v1/status");
+    EXPECT_EQ(r.status, 200) << r.body;
+    EXPECT_NE(r.body.find("simulator_no_auth"), std::string::npos) << r.body;
+
+    EXPECT_EQ(call(api, http::Method::Post, "/api/v1/activities/act_nope/activate").status, 404);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/remote/up/tap").status, 200);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/remote/up/smash").status, 400);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/advance", "ms=250").status, 200);
+    r = call(api, http::Method::Get, "/sim/log");
     EXPECT_NE(r.body.find("key_down key=ARROW_UP"), std::string::npos);
 
-    r = call(api, noAuth, http::Method::Post, "/sim/script", "", "drain\noff\nexpect ha_main dev_lg_tv media_player.turn_off\n");
+    r = call(api, http::Method::Post, "/sim/script", "", "drain\noff\nexpect ha_main dev_lg_tv media_player.turn_off\n");
     EXPECT_EQ(r.status, 200) << r.body;
-    EXPECT_EQ(call(api, noAuth, http::Method::Post, "/api/v1/activities/off").status, 409);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/reset").status, 200);
+    EXPECT_FALSE(runner.hub().engine().hasActiveActivity());
 }
 
-TEST(SimApi, AuthEnabledModeRefusesProtectedRoutes) {
-    ScenarioRunner runner;
-    SimApi api(runner, "enforced");
-    DenyAllAuth auth;
-    const http::Response status = call(api, auth, http::Method::Get, "/api/v1/status");
+TEST(SimApi, AuthEnabledModeUsesProductionAuth) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, /*authEnabled=*/true, a.credentials);
+    const http::Response status = call(api, http::Method::Get, "/api/v1/status");
     EXPECT_EQ(status.status, 401);
     EXPECT_NE(status.body.find("\"unauthenticated\""), std::string::npos);
-    EXPECT_EQ(call(api, auth, http::Method::Post, "/api/v1/activities/act_watch_apple_tv/activate").status, 401);
-    EXPECT_EQ(call(api, auth, http::Method::Post, "/sim/reset").status, 401);
+    EXPECT_EQ(call(api, http::Method::Post, "/api/v1/activities/act_watch_apple_tv/activate").status, 401);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/reset").status, 401);
     EXPECT_FALSE(runner.hub().engine().hasActiveActivity());
+}
+
+TEST(SimApi, WrongHostIsRefused) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials);
+    http::Request r;
+    r.method = http::Method::Get;
+    r.path = "/api/v1/status";
+    r.context = api.authenticator().authenticate(r);
+    http::Response out;
+    api.handle(r, out);
+    EXPECT_NE(out.status, 200);
+}
+
+TEST(SimSeed, ApiBackupFixtureIsAValidConfig) {
+    std::ifstream in(HUBBO_API_FIXTURES_DIR "/admin/backup.json");
+    ASSERT_TRUE(in);
+    std::stringstream text;
+    text << in.rdbuf();
+    ConfigSpec seed;
+    const config::ParseResult parsed = config::parseBackup(text.str(), &seed);
+    ASSERT_EQ(parsed.code, ErrorCode::Ok) << (parsed.report.ok() ? "" : parsed.report.issues()[0].path);
+    SimHub hub;
+    const ValidationReport report = hub.load(seed);
+    ASSERT_TRUE(report.ok()) << errorCodeName(report.issues()[0].code) << " " << report.issues()[0].path;
+    EXPECT_NE(hub.configService().findDevice("dev_sonos"), nullptr);
+    EXPECT_EQ(hub.activate("act_watch_apple_tv"), ErrorCode::Ok);
+}
+
+TEST(SimSeed, ServeRestartKeepsConfig) {
+    storage::MemoryStorage disk;  // stands in for --data DIR
+    {
+        ScenarioRunner first(nullptr, &disk, /*pinned=*/true);
+        ActivitySpec a;
+        a.name = "Reboot Test";
+        ASSERT_TRUE(first.hub().configService().createActivity(a).ok());
+    }
+    ScenarioRunner second(nullptr, &disk, /*pinned=*/true);  // "restart"
+    EXPECT_NE(second.hub().configService().findActivity("act_reboot_test"), nullptr);
+    second.runLine("reset");  // --reset: back to the seed
+    EXPECT_EQ(second.hub().configService().findActivity("act_reboot_test"), nullptr);
 }
 
 TEST(HttpServer, LoopbackOnlyByDefault) {
@@ -125,3 +195,116 @@ TEST(HttpServer, LoopbackOnlyByDefault) {
 }
 
 TEST(NoAuth, BannerText) { EXPECT_STREQ(kNoAuthBanner, "AUTH DISABLED \xE2\x80\x94 SIMULATOR"); }
+
+// hub-sim serve --data over real files: a restart (new runner, same dir)
+// brings back the same config byte for byte and the same active activity,
+// without running its startup.
+TEST(SimSeed, RestartOverRealFilesRoundTrips) {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("hubbo_sim_reboot_" + std::to_string(std::random_device{}()));
+    std::filesystem::create_directories(dir);
+    std::string savedConfig;
+    std::string savedText;
+    {
+        storage::StdioStorage disk(dir.string());
+        ScenarioRunner first(nullptr, &disk, /*pinned=*/true);
+        ActivitySpec a;
+        a.name = "Over Real Files";
+        a.startup = {haAction("dev_lg_tv", "media_player.turn_on")};
+        ASSERT_TRUE(first.hub().configService().createActivity(a).ok());
+        ASSERT_EQ(first.hub().activate("act_over_real_files"), ErrorCode::Ok);
+        first.hub().advance(ActivePersister::kDefaultDelayMs + 200);
+        savedConfig = config::serializeConfig(first.hub().config());
+        ASSERT_EQ(disk.read("config.a", &savedText, 1 << 20), ErrorCode::Ok);
+        std::string b;
+        if (disk.read("config.b", &b, 1 << 20) == ErrorCode::Ok) savedText += "|" + b;
+    }
+    for (int restart = 0; restart < 2; restart++) {
+        storage::StdioStorage disk(dir.string());
+        ScenarioRunner again(nullptr, &disk, /*pinned=*/true);
+        EXPECT_EQ(config::serializeConfig(again.hub().config()), savedConfig);
+        std::string text;
+        ASSERT_EQ(disk.read("config.a", &text, 1 << 20), ErrorCode::Ok);
+        std::string b;
+        if (disk.read("config.b", &b, 1 << 20) == ErrorCode::Ok) text += "|" + b;
+        EXPECT_EQ(text, savedText);  // a clean boot writes no slot
+        EXPECT_STREQ(again.hub().engine().activeActivityId(), "act_over_real_files");
+        EXPECT_TRUE(again.hub().commands().empty());  // restored without startup
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// POST /sim/storage switches the medium's health: edits then fail with 503
+// storage_unavailable while activities still switch.
+TEST(SimApi, StorageCanBeMadeUnavailable) {
+    storage::MemoryStorage memory;
+    SwitchableStorage medium(memory);
+    SimAuth a;
+    ScenarioRunner runner(nullptr, &medium, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials, &medium);
+    const char *create = R"({"name":"Movie","startup":[],"shutdown":[],"bindings":{}})";
+
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/storage", "health=unavailable").status, 200);
+    const http::Response refused = call(api, http::Method::Post, "/api/v1/activities", "", create);
+    EXPECT_EQ(refused.status, 503) << refused.body;
+    EXPECT_NE(refused.body.find("storage_unavailable"), std::string::npos) << refused.body;
+    EXPECT_EQ(call(api, http::Method::Post, "/api/v1/activities/act_watch_apple_tv/activate").status, 200);
+
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/storage", "health=bogus").status, 400);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/storage", "health=available").status, 200);
+    EXPECT_EQ(call(api, http::Method::Post, "/api/v1/activities", "", create).status, 201);
+}
+
+// No-auth mode still reports whether an admin exists: on a fresh hub setup
+// works (once), so tokens can then be created.
+TEST(SimApi, NoAuthSetupWorksOnAFreshHub) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials);
+    const char *setup = R"({"username":"admin","password":"correct horse battery"})";
+    const http::Response first = call(api, http::Method::Post, "/api/v1/auth/setup", "", setup);
+    EXPECT_LT(first.status, 300) << first.body;
+    const http::Response second = call(api, http::Method::Post, "/api/v1/auth/setup", "", setup);
+    EXPECT_EQ(second.status, 409) << second.body;
+    EXPECT_NE(second.body.find("setup_already_done"), std::string::npos) << second.body;
+}
+
+// /status follows the medium: down -> storage_unavailable -> up -> ok, with
+// the same generation and nothing written.
+TEST(SimApi, ConfigStateFollowsStorageAtRuntime) {
+    storage::MemoryStorage memory;
+    SwitchableStorage medium(memory);
+    SimAuth a;
+    ScenarioRunner runner(nullptr, &medium, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials, &medium);
+    auto stateOf = [&] {
+        const http::Response r = call(api, http::Method::Get, "/api/v1/status");
+        const size_t at = r.body.find("\"state\":\"");
+        return at == std::string::npos ? std::string("?") : r.body.substr(at + 9, r.body.find('"', at + 9) - at - 9);
+    };
+    const uint32_t generation = runner.hub().configService().generation();
+    const auto files = memory.files();
+    EXPECT_EQ(stateOf(), "ok");
+    call(api, http::Method::Post, "/sim/storage", "health=unavailable");
+    EXPECT_EQ(stateOf(), "storage_unavailable");
+    call(api, http::Method::Post, "/sim/storage", "health=available");
+    EXPECT_EQ(stateOf(), "ok");
+    EXPECT_EQ(runner.hub().configService().generation(), generation);
+    EXPECT_EQ(memory.files(), files);
+}
+
+// Booting with storage down, then getting it back, recovers on the next tick.
+TEST(SimApi, BootingWithStorageDownRecovers) {
+    storage::MemoryStorage memory;
+    {
+        ScenarioRunner first(nullptr, &memory, /*pinned=*/true);  // saves the seed
+    }
+    SwitchableStorage medium(memory);
+    medium.setHealth(storage::Health::Unavailable);
+    ScenarioRunner runner(nullptr, &medium, /*pinned=*/true);
+    EXPECT_EQ(runner.hub().configService().state(), config::ConfigState::StorageUnavailable);
+    medium.setHealth(storage::Health::Available);
+    runner.hub().advance(200);
+    EXPECT_EQ(runner.hub().configService().state(), config::ConfigState::Ok);
+    EXPECT_EQ(runner.hub().activate("act_watch_apple_tv"), ErrorCode::Ok);
+}
