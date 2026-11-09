@@ -5,6 +5,7 @@
 
 #include "ble_hid.h"
 #include "hubbo/domain/config.h"
+#include "hubbo/integrations/ha_adapter.h"
 #include "console.h"
 
 namespace hubbo::fw {
@@ -13,6 +14,10 @@ namespace {
 
 bool isBle(std::string_view integrationId) {
     return integrationId == hubbo::kBleIntegrationId;
+}
+
+bool isHomeAssistant(std::string_view integrationId) {
+    return integrationId == hubbo::api::kHaIntegrationId;
 }
 
 struct BleStateText {
@@ -103,6 +108,12 @@ uint8_t EngineRuntime::bleState() const {
 }
 
 const char *EngineRuntime::integrationState(std::string_view integrationId) const {
+    if (isHomeAssistant(integrationId)) {
+        const hubbo::IntegrationSpec *integration =
+            config_ != nullptr ? config_->findIntegration(integrationId) : nullptr;
+        return integration != nullptr ? hubbo::integrations::haIntegrationState(homeAssistant_, *integration)
+                                      : "not_configured";
+    }
     return isBle(integrationId) ? bleText(bleState()).state : "not_configured";
 }
 
@@ -116,6 +127,9 @@ std::string EngineRuntime::integrationDetail(std::string_view integrationId) con
 }
 
 const char *EngineRuntime::deviceAvailability(const hubbo::DeviceSpec &device) const {
+    if (device.provider.type == hubbo::kHomeAssistantType) {
+        return hubbo::integrations::haDeviceAvailability(homeAssistant_, device);
+    }
     if (!isBle(device.integrationId)) {
         return "unknown";
     }

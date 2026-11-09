@@ -23,7 +23,9 @@
 #include <cstdint>
 
 #include "hubbo/api/api.h"
+#include "hubbo/config/service.h"
 #include "hubbo/engine/engine.h"
+#include "hubbo/integrations/ha_client.h"
 #include "hubbo/remote/input.h"
 
 namespace hubbo::fw {
@@ -52,8 +54,13 @@ struct RuntimeStatus {
 
 class EngineRuntime : public hubbo::api::Runtime {
 public:
-    EngineRuntime(hubbo::Engine &engine, const hubbo::AdapterSet &adapters)
-        : engine_(engine), adapters_(adapters) {}
+    EngineRuntime(hubbo::Engine &engine, const hubbo::AdapterSet &adapters,
+                  const hubbo::integrations::HomeAssistantClient &homeAssistant)
+        : engine_(engine), adapters_(adapters), homeAssistant_(homeAssistant) {}
+
+    // Once at boot, before the API starts: integrationState() looks up the
+    // integration's spec (on httpd, the ConfigService's task).
+    void setConfig(const hubbo::config::ConfigService *config) { config_ = config; }
 
     // Engine task.
     void publish(const RuntimeStatus &status);
@@ -74,6 +81,8 @@ private:
 
     hubbo::Engine &engine_;
     const hubbo::AdapterSet &adapters_;
+    const hubbo::integrations::HomeAssistantClient &homeAssistant_;  // state(): any task
+    const hubbo::config::ConfigService *config_ = nullptr;
     mutable portMUX_TYPE lock_ = portMUX_INITIALIZER_UNLOCKED;
     RuntimeStatus status_;
 };
