@@ -82,6 +82,7 @@ struct DispatchRecord {
     const CompiledAction &action;
     const char *integrationId;   // "system" for built-ins
     const char *target;          // device id, activity id for system.activate, else ""
+    const char *providerRef;     // the device's provider ref, else ""
     ExecResult result;
     uint32_t atMs;
 };
@@ -130,7 +131,12 @@ public:
     // Does not run anything; call pump(). Returns Ok, QueueFull (rejected
     // whole), Cancelled (stale generation) or TooManyActions. An empty span
     // is a no-op (Ok).
-    ErrorCode enqueue(SequenceInfo info, const CompiledConfig &config, ActionSpan span, uint32_t nowMs);
+    ErrorCode enqueue(SequenceInfo info, const CompiledConfig &config, ActionSpan span, uint32_t nowMs,
+                      uint32_t *sequenceId = nullptr);
+
+    // Queues one self-contained command (API execution) as a sequence.
+    ErrorCode enqueueCommand(SequenceInfo info, const CompiledCommand &command, uint32_t nowMs,
+                             uint32_t *sequenceId = nullptr);
 
     // Runs everything that is due. Bounded: each call executes at most the
     // queued actions once. Stops early at a system.activate/off so the engine
@@ -197,6 +203,8 @@ private:
         uint32_t deadlineMs = 0;
     };
 
+    // Reserves a sequence slot and `count` nodes, or reports Rejected.
+    Sequence *reserve(SequenceInfo &info, uint8_t count, uint32_t nowMs);
     void runLane(LaneQueue &lane, uint32_t nowMs);
     void finishFront(LaneQueue &lane, SequenceOutcome outcome, ErrorCode error, uint8_t index, uint32_t nowMs);
     void popFront(LaneQueue &lane);

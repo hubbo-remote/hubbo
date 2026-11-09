@@ -45,7 +45,24 @@ Executor::Executor(AdapterSet &adapters, uint32_t actionTimeoutMs)
     freeCount_ = limits::kExecutorActionPool;
 }
 
-ErrorCode Executor::enqueue(SequenceInfo info, const CompiledConfig &config, ActionSpan span, uint32_t nowMs) {
+Executor::Sequence *Executor::reserve(SequenceInfo &info, uint8_t count, uint32_t nowMs) {
+    info.id = nextSequenceId_++;
+    info.actionCount = count;
+    LaneQueue &lane = lanes_[static_cast<size_t>(info.lane)];
+    if (lane.count == limits::kExecutorSequencesPerLane || freeCount_ < count) {
+        finish(info, SequenceOutcome::Rejected, ErrorCode::QueueFull, 0, nowMs);
+        return nullptr;
+    }
+    Sequence &seq = lane.items[(lane.first + lane.count) % limits::kExecutorSequencesPerLane];
+    seq = Sequence{};
+    seq.info = info;
+    lane.count++;
+    stats_.enqueued++;
+    return &seq;
+}
+
+ErrorCode Executor::enqueue(SequenceInfo info, const CompiledConfig &config, ActionSpan span, uint32_t nowMs,
+                            uint32_t *sequenceId) {
     if (info.generation != generation_) {
         return ErrorCode::Cancelled;
     }
@@ -56,17 +73,10 @@ ErrorCode Executor::enqueue(SequenceInfo info, const CompiledConfig &config, Act
         static_cast<size_t>(span.offset) + span.count > config.actions.size()) {
         return ErrorCode::TooManyActions;
     }
+    Sequence *seq = reserve(info, span.count, nowMs);
+    if (sequenceId != nullptr) *sequenceId = info.id;
+    if (seq == nullptr) return ErrorCode::QueueFull;
 
-    info.id = nextSequenceId_++;
-    info.actionCount = span.count;
-
-    LaneQueue &lane = lanes_[static_cast<size_t>(info.lane)];
-    if (lane.count == limits::kExecutorSequencesPerLane || freeCount_ < span.count) {
-        finish(info, SequenceOutcome::Rejected, ErrorCode::QueueFull, 0, nowMs);
-        return ErrorCode::QueueFull;
-    }
-
-    uint16_t head = kNil;
     uint16_t tail = kNil;
     const CompiledAction *actions = config.span(span);
     for (uint8_t i = 0; i < span.count; i++) {
@@ -76,7 +86,8 @@ ErrorCode Executor::enqueue(SequenceInfo info, const CompiledConfig &config, Act
         node.target.clear();
         node.providerRef.clear();
         node.next = kNil;
-        if (node.action.op == ActionOp::Adapter && node.action.deviceIndex < config.devices.size()) {
+        const bool device = node.action.op == ActionOp::Adapter || node.action.op == ActionOp::Unavailable;
+        if (device && node.action.deviceIndex < config.devices.size()) {
             const CompiledDevice &device = config.devices[node.action.deviceIndex];
             node.target.assign(device.id.view());
             node.providerRef.assign(device.providerRef.view());
@@ -86,20 +97,29 @@ ErrorCode Executor::enqueue(SequenceInfo info, const CompiledConfig &config, Act
                 node.target.assign(config.activities[target].id.view());
             }
         }
-        if (head == kNil) {
-            head = n;
+        if (tail == kNil) {
+            seq->head = n;
         } else {
             pool_[tail].next = n;
         }
         tail = n;
     }
+    return ErrorCode::Ok;
+}
 
-    Sequence &seq = lane.items[(lane.first + lane.count) % limits::kExecutorSequencesPerLane];
-    seq = Sequence{};
-    seq.info = info;
-    seq.head = head;
-    lane.count++;
-    stats_.enqueued++;
+ErrorCode Executor::enqueueCommand(SequenceInfo info, const CompiledCommand &command, uint32_t nowMs,
+                                   uint32_t *sequenceId) {
+    if (info.generation != generation_) return ErrorCode::Cancelled;
+    Sequence *seq = reserve(info, 1, nowMs);
+    if (sequenceId != nullptr) *sequenceId = info.id;
+    if (seq == nullptr) return ErrorCode::QueueFull;
+    const uint16_t n = takeNode();
+    Node &node = pool_[n];
+    node.action = command.action;
+    node.target = command.deviceId;
+    node.providerRef = command.providerRef;
+    node.next = kNil;
+    seq->head = n;
     return ErrorCode::Ok;
 }
 
@@ -155,10 +175,20 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
         const bool last = seq.head == kNil;
         const CompiledAction &action = node.action;
 
+        if (action.op == ActionOp::Unavailable) {
+            if (observer_ != nullptr) {
+                const IntegrationAdapter *adapter = adapters_.at(action.adapterIndex);
+                observer_->onActionDispatched({seq.info, index, action,
+                                               adapter != nullptr ? adapter->integrationId() : "?",
+                                               node.target.c_str(), node.providerRef.c_str(),
+                                               ExecResult::failed(ErrorCode::IntegrationDisabled), nowMs});
+            }
+            continue;
+        }
         if (action.op != ActionOp::Adapter) {
             if (observer_ != nullptr) {
-                observer_->onActionDispatched(
-                    {seq.info, index, action, kSystemIntegrationId, node.target.c_str(), ExecResult::accepted(), nowMs});
+                observer_->onActionDispatched({seq.info, index, action, kSystemIntegrationId, node.target.c_str(), "",
+                                               ExecResult::accepted(), nowMs});
             }
             if (action.op == ActionOp::Wait) {
                 const auto duration = static_cast<uint32_t>(action.params[0].integer);
@@ -181,12 +211,13 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
             continue;
         }
         const Ticket ticket = nextTicket();
-        const ExecRequest request{action.command, action.commandIndex, action.params,
-                                  node.target.c_str(), node.providerRef.c_str(), ticket, nowMs};
+        const ExecRequest request{action.command,       action.commandIndex,  action.params,
+                                  action.paramsPresent, node.target.c_str(), node.providerRef.c_str(),
+                                  ticket,               nowMs};
         const ExecResult result = adapter->execute(request);
         if (observer_ != nullptr) {
-            observer_->onActionDispatched(
-                {seq.info, index, action, adapter->integrationId(), node.target.c_str(), result, nowMs});
+            observer_->onActionDispatched({seq.info, index, action, adapter->integrationId(), node.target.c_str(),
+                                           node.providerRef.c_str(), result, nowMs});
         }
 
         if (result.status == ExecStatus::Accepted) continue;

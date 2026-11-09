@@ -61,7 +61,8 @@ protected:
     // Compiles each sequence as the startup of its own activity.
     void build(std::vector<std::vector<ActionSpec>> sequences) {
         ConfigSpec cfg;
-        cfg.devices = {{"dev", "Dev", "fake", "ref.dev"}};
+        cfg.integrations = {sim::integration("fake", "fake", "Fake")};
+        cfg.devices = {sim::device("dev", "Dev", "fake", "other", {"fake", "ref.dev", "", ""})};
         for (size_t i = 0; i < sequences.size(); i++) {
             ActivitySpec a;
             a.id = "s" + std::to_string(i);

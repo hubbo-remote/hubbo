@@ -18,7 +18,7 @@ protected:
         ParamValue params[1] = {ParamValue::ofOption(static_cast<uint16_t>(option))};
         const CommandCatalog catalog = bleHidCatalog();
         const auto index = static_cast<uint16_t>(command);
-        return adapter.execute({&catalog.items[index], index, params, "dev_apple_tv", "host", 1, 0});
+        return adapter.execute({&catalog.items[index], index, params, 1, "dev_apple_tv", "host", 1, 0});
     }
     std::vector<std::string> &reports() { return hid.reports(); }
 
@@ -32,7 +32,7 @@ TEST(BleHidCatalog, KnownKeysUseVerifiedUsages) {
     EXPECT_EQ(bleHidKey(bleHidKeyIndex("ARROW_UP")).usage, 0x42);
     EXPECT_EQ(bleHidKey(bleHidKeyIndex("AC_HOME")).usage, 0x223);
     EXPECT_EQ(bleHidKey(bleHidKeyIndex("PLAY_PAUSE")).usage, 0xCD);
-    EXPECT_EQ(bleHidKey(bleHidKeyIndex("DIGIT_0")).page, HidPage::Keyboard);
+    EXPECT_EQ(bleHidKey(bleHidKeyIndex("KEY_0")).page, HidPage::Keyboard);
     EXPECT_EQ(bleHidKeyIndex("NOPE"), -1);
     EXPECT_EQ(bleHidKeyIndex(nullptr), -1);
     const CommandCatalog c = bleHidCatalog();
@@ -59,13 +59,13 @@ TEST_F(BleHidTest, NewConsumerKeyReplacesTheHeldOne) {
 }
 
 TEST_F(BleHidTest, KeyboardKeysAndRollover) {
-    const char *keys[] = {"DIGIT_1", "DIGIT_2", "DIGIT_3", "DIGIT_4", "DIGIT_5", "DIGIT_6"};
+    const char *keys[] = {"KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5", "KEY_6"};
     for (const char *k : keys) EXPECT_EQ(run(BleHidCommand::KeyDown, k).status, ExecStatus::Accepted);
     EXPECT_EQ(reports().back(), "keyboard 00 00 1e 1f 20 21 22 23");
-    const ExecResult seventh = run(BleHidCommand::KeyDown, "DIGIT_7");
+    const ExecResult seventh = run(BleHidCommand::KeyDown, "KEY_7");
     EXPECT_EQ(seventh.status, ExecStatus::Failed);
     EXPECT_EQ(seventh.error, ErrorCode::CapacityExceeded);
-    run(BleHidCommand::KeyUp, "DIGIT_2");
+    run(BleHidCommand::KeyUp, "KEY_2");
     EXPECT_EQ(reports().back(), "keyboard 00 00 1e 20 21 22 23 00");
     EXPECT_EQ(adapter.heldKeyboardKeys(), 5u);
 }
@@ -77,7 +77,7 @@ TEST_F(BleHidTest, TapIsDownThenUp) {
 }
 
 TEST_F(BleHidTest, ReleaseAllClearsEverything) {
-    run(BleHidCommand::KeyDown, "DIGIT_1");
+    run(BleHidCommand::KeyDown, "KEY_1");
     run(BleHidCommand::KeyDown, "SELECT");
     adapter.releaseAll(0);
     EXPECT_EQ(adapter.heldKeyboardKeys(), 0u);
@@ -110,7 +110,7 @@ TEST_F(BleHidTest, PollForgetsHeldKeysWhenTheLinkDrops) {
     adapter.poll(0, sink);
     hid.setConnected(true);    // reconnects before any further command
     EXPECT_EQ(adapter.heldConsumer(), 0);
-    run(BleHidCommand::KeyDown, "DIGIT_1");
+    run(BleHidCommand::KeyDown, "KEY_1");
     EXPECT_EQ(reports().back(), "keyboard 00 00 1e 00 00 00 00 00");  // no stale consumer key
     EXPECT_EQ(reports().size(), 2u);
 }

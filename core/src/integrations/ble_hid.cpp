@@ -3,6 +3,8 @@
 #include <cstring>
 #include <iterator>
 
+#include "hubbo/domain/config.h"
+
 namespace hubbo::integrations {
 
 namespace {
@@ -25,16 +27,16 @@ namespace {
     X("VOLUME_UP", Consumer, 0x00E9)                             \
     X("VOLUME_DOWN", Consumer, 0x00EA)                           \
     X("MUTE", Consumer, 0x00E2)                                  \
-    X("DIGIT_1", Keyboard, 0x1E)                                 \
-    X("DIGIT_2", Keyboard, 0x1F)                                 \
-    X("DIGIT_3", Keyboard, 0x20)                                 \
-    X("DIGIT_4", Keyboard, 0x21)                                 \
-    X("DIGIT_5", Keyboard, 0x22)                                 \
-    X("DIGIT_6", Keyboard, 0x23)                                 \
-    X("DIGIT_7", Keyboard, 0x24)                                 \
-    X("DIGIT_8", Keyboard, 0x25)                                 \
-    X("DIGIT_9", Keyboard, 0x26)                                 \
-    X("DIGIT_0", Keyboard, 0x27)                                 \
+    X("KEY_1", Keyboard, 0x1E)                                 \
+    X("KEY_2", Keyboard, 0x1F)                                 \
+    X("KEY_3", Keyboard, 0x20)                                 \
+    X("KEY_4", Keyboard, 0x21)                                 \
+    X("KEY_5", Keyboard, 0x22)                                 \
+    X("KEY_6", Keyboard, 0x23)                                 \
+    X("KEY_7", Keyboard, 0x24)                                 \
+    X("KEY_8", Keyboard, 0x25)                                 \
+    X("KEY_9", Keyboard, 0x26)                                 \
+    X("KEY_0", Keyboard, 0x27)                                 \
     X("ENTER", Keyboard, 0x28)                                   \
     X("F1", Keyboard, 0x3A)                                      \
     X("F2", Keyboard, 0x3B)                                      \
@@ -86,9 +88,9 @@ constexpr ParamSpec kKeyParams[] = {
 };
 
 constexpr CommandSpec kCommands[] = {
-    {"key_down", kKeyParams, 1},
-    {"key_up", kKeyParams, 1},
-    {"key_tap", kKeyParams, 1},
+    {"key_down", kKeyParams, 1, CommandEffect::Hold, "key_up"},
+    {"key_up", kKeyParams, 1, CommandEffect::Momentary, nullptr},
+    {"key_tap", kKeyParams, 1, CommandEffect::Momentary, nullptr},
 };
 
 ExecResult sent(bool ok) { return ok ? ExecResult::accepted() : ExecResult::failed(ErrorCode::AdapterFailed); }
@@ -110,6 +112,8 @@ int bleHidKeyIndex(const char *name) {
 CommandCatalog bleHidCatalog() {
     return {kCommands, static_cast<uint16_t>(std::size(kCommands))};
 }
+
+const char *BleHidAdapter::integrationType() const { return kBleHidType; }
 
 BleHidAdapter::BleHidAdapter(const char *integrationId, HidTransport &transport)
     : id_(integrationId), transport_(transport) {}

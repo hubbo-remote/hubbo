@@ -54,6 +54,7 @@ public:
     BleHidAdapter(const char *integrationId, HidTransport &transport);
 
     const char *integrationId() const override { return id_; }
+    const char *integrationType() const override;
     CommandCatalog commandsFor(const DeviceSpec &device) const override;
     ExecResult execute(const ExecRequest &request) override;
     void releaseAll(uint32_t nowMs) override;

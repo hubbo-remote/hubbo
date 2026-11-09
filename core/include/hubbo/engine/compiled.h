@@ -22,6 +22,9 @@ enum class ActionOp : uint8_t {
     Wait,      // system.wait; params[0] = duration_ms
     Activate,  // system.activate; params[0] = activity index
     Off,       // system.off
+    // A command of a device whose integration is disabled: reported as
+    // integration_disabled, never reaches the adapter; the sequence goes on.
+    Unavailable,
 };
 
 constexpr uint16_t kNoDevice = 0xFFFF;
@@ -33,6 +36,19 @@ struct CompiledAction {
     uint16_t commandIndex = 0;      // into the device's catalog
     const CommandSpec *command = nullptr;  // that catalog entry (adapter-owned storage)
     ParamValue params[limits::kMaxParams];  // command->paramCount used, spec order
+    uint8_t paramsPresent = 0;  // bit i: params[i] was supplied (not defaulted)
+    // Hold-effect commands only: what releases the hold (same params).
+    const CommandSpec *release = nullptr;
+    uint16_t releaseIndex = 0;
+};
+
+// One registered device command compiled for direct execution
+// (POST /devices/{id}/commands/{command_id}/execute). Self-contained: it
+// carries its target, so it doesn't reference any compiled config.
+struct CompiledCommand {
+    CompiledAction action;
+    IdString deviceId;
+    FixedString<limits::kMaxProviderRefLength> providerRef;
 };
 
 struct ActionSpan {
@@ -64,6 +80,11 @@ struct CompiledActivity {
 
 struct CompiledConfig {
     uint32_t revision = 0;
+    // Set only by an activity delete (ConfigService): if this was the active
+    // activity, the engine switches to the next one. Any other publish that
+    // drops the active activity (restore, reset, a reload) leaves the hub
+    // inactive without running startup or shutdown (design part 6).
+    IdString deletedActivity;
     std::vector<CompiledDevice> devices;      // sized once at compile time
     std::vector<CompiledActivity> activities;
     TriggerTable globals;

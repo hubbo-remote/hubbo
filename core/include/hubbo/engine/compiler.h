@@ -57,6 +57,29 @@ std::unique_ptr<CompiledConfig> compileConfig(const ConfigSpec &config, const Ad
 ValidationReport validateActivity(const ActivitySpec &activity, const ConfigSpec &context,
                                   const AdapterSet &adapters);
 
+// The one place a device's integration is resolved (design section 3), used
+// by compileConfig() and compileDeviceCommand(): the integration must be
+// listed in config.integrations, of the device's provider type, enabled, and
+// have a registered adapter (whose declared type, if any, matches).
+struct IntegrationResolution {
+    // Ok, UnknownIntegration (not configured), IntegrationMismatch (type),
+    // IntegrationDisabled, AdapterUnavailable (no adapter registered).
+    ErrorCode error = ErrorCode::Ok;
+    int adapterIndex = -1;  // valid for Ok and IntegrationDisabled
+    const IntegrationSpec *integration = nullptr;
+};
+IntegrationResolution resolveIntegration(const ConfigSpec &config, const AdapterSet &adapters,
+                                         const DeviceSpec &device);
+
+// Compiles one command of a registered device for direct execution. Errors:
+// NotFound (no such device), IntegrationDisabled, the other resolver errors,
+// UnknownCommand (issue at /command_id), ValidationFailed (HoldNotAllowed at
+// /command_id: only momentary commands execute directly; params at
+// /params/<name>, rooted at the execute request body).
+ErrorCode compileDeviceCommand(const ConfigSpec &config, const AdapterSet &adapters, std::string_view deviceId,
+                               std::string_view commandId, const std::vector<ParamInput> &params,
+                               CompiledCommand *out, ValidationReport *report);
+
 // JSON Pointer token escaping ("~" -> "~0", "/" -> "~1").
 std::string jsonPointerToken(const std::string &token);
 

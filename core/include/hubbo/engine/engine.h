@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string_view>
 
@@ -7,6 +8,7 @@
 #include "hubbo/domain/ids.h"
 #include "hubbo/engine/compiled.h"
 #include "hubbo/engine/executor.h"
+#include "hubbo/engine/hold_ledger.h"
 #include "hubbo/engine/snapshot.h"
 #include "hubbo/engine/spsc.h"
 #include "hubbo/remote/input.h"
@@ -14,8 +16,8 @@
 // The activity engine: the remote's brain. Owns the active activity, turns
 // remote events into queued sequences, and runs activity transitions.
 //
-// Threading. Everything except postActivate()/postOff() runs on one task
-// (the engine/RF task). Config arrives from another task through the
+// Threading. Everything except submit() and activeActivityIdShared() runs on
+// one task (the engine/RF task). Config arrives from another task through the
 // SnapshotStore; the engine reads it through its own Reader, pinning a
 // snapshot only for the duration of one call.
 //
@@ -38,12 +40,20 @@
 //     off() drops it and leaves the hub inactive. Inactive too if no
 //     activities remain. Queued sequences keep running (they hold copies).
 //
-// Held-key safety on top of the executor:
-//   * every transition calls releaseAll() on all adapters;
-//   * an Up/Tap event that was synthesized after a lost release (timedOut)
-//     also triggers releaseAll() after dispatch;
-//   * if an Up/Tap sequence is rejected for overflow, releaseAll() is called
-//     on the adapters that sequence targeted, so a key_up can't be lost.
+// Held keys are guaranteed at runtime by the hold ledger (hold_ledger.h,
+// design section 5), not by config validation:
+//   * a Hold-effect command (key_down) executed from a button's binding is
+//     recorded with its release command; a release forgets it once it has
+//     completed successfully (Accepted, or a Pending result that arrived);
+//     a pending release that fails, times out or is cancelled falls back
+//     to the adapter's releaseAll();
+//   * when the button goes up, every hold still open for it is released
+//     once its up sequence has ended, however it ended (completed, failed,
+//     cancelled, rejected), or at once if nothing is bound to it; a hold
+//     that only executes after its button went up is released at once;
+//   * a lost release (radio timeout) is an up like any other, plus a
+//     releaseAll() on every adapter;
+//   * every transition releases all open holds and calls releaseAll().
 namespace hubbo {
 
 class EngineObserver : public ExecutionObserver {
@@ -67,11 +77,92 @@ public:
     virtual void onUnbound(const remote::RemoteEvent &event) { (void)event; }
 };
 
+// One phase of a transition (startup of the new activity, shutdown of the
+// old one).
+enum class PhaseStatus : uint8_t {
+    None,      // not part of this transition (or the sequence is empty)
+    Queued,    // `actions` queued
+    Rejected,  // not queued; `reason` says why (QueueFull)
+};
+const char *phaseStatusName(PhaseStatus status);  // "none", "queued", "rejected"
+
+struct TransitionPhase {
+    PhaseStatus status = PhaseStatus::None;
+    ErrorCode reason = ErrorCode::Ok;  // Rejected only
+    uint8_t actions = 0;               // Queued only
+};
+
+// What an activate/off did (the API's TransitionResult).
+//
+//   error     Ok, or why nothing happened (UnknownActivity, NoActiveActivity):
+//             then switched == false and nothing changed.
+//   switched  the active activity changed (keys released, generation bumped).
+//             A switched transition is final even if a phase was rejected:
+//             the API must not report it as a retryable failure.
+struct TransitionResult {
+    ErrorCode error = ErrorCode::Ok;
+    bool switched = false;
+    IdString activeActivityId;    // "" = none
+    IdString previousActivityId;  // "" = none
+    uint32_t generation = 0;
+    TransitionPhase startup;      // activate
+    TransitionPhase shutdown;     // off
+    uint8_t queuedActions = 0;    // startup.actions + shutdown.actions (kept for existing callers)
+};
+
+// What a directly executed command did (the API's ExecuteResult).
+struct CommandResult {
+    ExecStatus status = ExecStatus::Failed;  // Accepted, Failed or Timeout; never Pending
+    ErrorCode error = ErrorCode::Ok;
+    uint32_t elapsedMs = 0;
+};
+
+// A request from another task (e.g. HTTP) with a reply. The caller owns it,
+// fills it, submit()s it, and waits until done() (the engine never blocks
+// on it; how the caller waits is its business: vTaskDelay on the board,
+// advancing simulated time in hub-sim). Don't touch it again until done().
+// Transitions are done on the next poll(); executions when the command's
+// result is known (immediately, or after the adapter's Pending result or
+// the action timeout).
+class EngineRequest {
+public:
+    enum class Kind : uint8_t { Activate, Off, Execute };
+
+    EngineRequest() = default;
+    EngineRequest(const EngineRequest &) = delete;
+    EngineRequest &operator=(const EngineRequest &) = delete;
+
+    void activate(std::string_view activityId) {
+        kind_ = Kind::Activate;
+        activityId_.assign(activityId);  // too long -> "" -> UnknownActivity
+    }
+    void off() { kind_ = Kind::Off; }
+    void execute(const CompiledCommand &command) {
+        kind_ = Kind::Execute;
+        command_ = command;
+    }
+
+    bool done() const { return done_.load(std::memory_order_acquire); }
+    const TransitionResult &transition() const { return transition_; }  // Activate/Off, once done
+    const CommandResult &command() const { return result_; }           // Execute, once done
+
+private:
+    friend class Engine;
+    Kind kind_ = Kind::Off;
+    IdString activityId_;
+    CompiledCommand command_;
+    TransitionResult transition_;
+    CommandResult result_;
+    uint32_t sequenceId_ = 0;
+    uint32_t startedMs_ = 0;
+    std::atomic<bool> done_{false};
+};
+
 struct EngineStats {
     uint32_t events = 0;
     uint32_t unbound = 0;
     uint32_t dispatched = 0;
-    uint32_t overflowReleases = 0;
+    uint32_t forcedReleases = 0;  // holds the ledger released (not the bindings)
     uint32_t transitions = 0;
 };
 
@@ -90,29 +181,39 @@ public:
     // RemoteInput sink (engine task). Event time is taken as "now".
     void onRemoteEvent(const remote::RemoteEvent &event) override;
 
-    // Engine task. Return Ok, UnknownActivity, NoActiveActivity (off) or
-    // QueueFull (the switch happened but the sequence was rejected).
-    ErrorCode activate(std::string_view activityId, uint32_t nowMs);
-    ErrorCode off(uint32_t nowMs);
+    // Engine task. Return TransitionResult::error: Ok when it switched (even
+    // if its sequence was rejected; see `result`), else UnknownActivity /
+    // NoActiveActivity. `result` (optional) gets the details.
+    ErrorCode activate(std::string_view activityId, uint32_t nowMs, TransitionResult *result = nullptr);
+    ErrorCode off(uint32_t nowMs, TransitionResult *result = nullptr);
 
-    // Engine task, every loop iteration: drains the mailbox, delivers adapter
-    // completions, resumes waits, applies config swaps.
+    // Boot: make `activityId` active as it was before the reboot, without
+    // running its startup, without releaseAll and without bumping the
+    // generation; the devices are presumably still on. Reported to the
+    // observer like an activation. UnknownActivity (nothing active) if the
+    // config doesn't have it.
+    ErrorCode restoreActive(std::string_view activityId, uint32_t nowMs);
+
+    // Engine task, every loop iteration: handles submitted requests, delivers
+    // adapter completions, resumes waits, applies config swaps.
     void poll(uint32_t nowMs);
 
-    // Any one other task (e.g. HTTP): queue a request for the next poll().
-    // Returns false if the mailbox is full. Results arrive via the observer.
-    bool postActivate(std::string_view activityId);
-    bool postOff();
+    // Any one other task: queue a request with a reply (see EngineRequest).
+    // False if the mailbox is full; the request is then untouched.
+    bool submit(EngineRequest &request);
 
     // Engine-task state.
     bool hasActiveActivity() const { return activeIndex_ >= 0; }
     const char *activeActivityId() const { return activeId_.c_str(); }
+    // The active id, readable from any task ("" = none).
+    std::string activeActivityIdShared() const { return shared_.load(); }
     uint32_t generation() const { return generation_; }
     uint32_t nowMs() const { return nowMs_; }
 
     Executor &executor() { return executor_; }
     const Executor &executor() const { return executor_; }
     const EngineStats &stats() const { return stats_; }
+    size_t openHolds() const { return holds_.size(); }  // engine task (tests)
 
 private:
     void advanceClock(uint32_t nowMs);
@@ -120,12 +221,22 @@ private:
     // request in pending_ (or reports inactive if none remain).
     void syncConfig(const Store::Guard &guard);
     // The one place requests become transitions (or rejections).
-    ErrorCode apply(const CompiledConfig &config, const TransitionRequest &request);
+    ErrorCode apply(const CompiledConfig &config, const TransitionRequest &request,
+                    TransitionResult *result = nullptr);
+    // Reports a refused transition to the observer and `result`.
+    ErrorCode reject(ErrorCode code, const char *activityId, TransitionResult *result);
     void applyPending(const CompiledConfig *config);
-    ErrorCode transition(const CompiledConfig &config, int targetIndex);
+    ErrorCode transition(const CompiledConfig &config, int targetIndex, TransitionResult *result = nullptr);
+    void handle(EngineRequest &request);
+    void finishCommand(const SequenceReport &report);
     // Pump the executor, applying pending and system.activate/off requests.
     void pumpAndApply(const CompiledConfig *config);
-    void releaseTargets(const CompiledConfig &config, ActionSpan span);
+    // The hold ledger (hold_ledger.h).
+    void trackHolds(const DispatchRecord &record);
+    void resolveReleases(const SequenceReport &report);
+    void releaseHolds(remote::Button button);
+    void releaseAllHolds();
+    void releaseHold(const OpenHold &hold);
 
     Store &store_;
     Store::Reader reader_;
@@ -135,6 +246,18 @@ private:
 
     int activeIndex_ = -1;
     IdString activeId_;
+
+    // Seqlock copy of activeId_ for other tasks (writer: the engine task).
+    class SharedId {
+    public:
+        void store(std::string_view id);
+        std::string load() const;
+
+    private:
+        std::atomic<uint32_t> seq_{0};
+        std::atomic<char> chars_[limits::kMaxIdLength + 1] = {};
+    } shared_;
+    void publishActive() { shared_.store(activeId_.view()); }
     uint32_t seenSerial_ = 0;
     uint32_t generation_ = 0;
     uint32_t nowMs_ = 0;
@@ -144,7 +267,23 @@ private:
     // executor, or the fallback after the active activity was deleted.
     TransitionRequest pending_;
 
-    SpscRing<TransitionRequest, 8> mailbox_;
+    SpscRing<EngineRequest *, 8> requests_;
+
+    HoldLedger holds_;
+    remote::ButtonSet held_ = 0;  // buttons down, from the events
+    uint32_t upSequence_[remote::kButtonCount] = {};  // the :up sequence per button, until it ends
+
+    // Executions waiting for their sequence to finish.
+    static constexpr size_t kMaxPendingCommands = 4;
+    EngineRequest *pendingCommands_[kMaxPendingCommands] = {};
+
+    // Sees every executor report first (to complete executions), then
+    // forwards to the user's observer.
+    struct Relay : ExecutionObserver {
+        Engine *engine = nullptr;
+        void onActionDispatched(const DispatchRecord &record) override;
+        void onSequenceFinished(const SequenceReport &report) override;
+    } relay_;
     EngineStats stats_;
 };
 

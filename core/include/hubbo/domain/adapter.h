@@ -48,6 +48,7 @@ struct ExecRequest {
     const CommandSpec *command;  // entry in the catalog the device was compiled against
     uint16_t commandIndex;       // its index in that catalog
     const ParamValue *params;    // command->paramCount values, in spec order
+    uint8_t paramsPresent;       // bit i: params[i] was supplied, not defaulted
     const char *deviceId;        // hub device id (diagnostics)
     const char *providerRef;     // the device's internal target
     Ticket ticket;               // for Pending results
@@ -68,6 +69,11 @@ public:
 
     // Stable integration_id; must satisfy isValidId and not be "system".
     virtual const char *integrationId() const = 0;
+
+    // The integration type this adapter implements (kBleHidType,
+    // kHomeAssistantType, ...). The resolver checks it against the configured
+    // integration. nullptr: unknown (not checked).
+    virtual const char *integrationType() const { return nullptr; }
 
     // Commands offered for a registered device of this integration. An empty
     // catalog means the device can't be targeted (e.g. unsupported entity).

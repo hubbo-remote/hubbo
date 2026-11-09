@@ -193,19 +193,26 @@ TEST_F(CompilerTest, TransitionsOnlyLastInABinding) {
 TEST_F(CompilerTest, DuplicateIds) {
     ConfigSpec cfg = fixtureConfig();
     cfg.activities[1].id = "act_watch_apple_tv";
-    cfg.devices.push_back({"dev_denon", "Other", "ha_main", "media_player.other"});
+    cfg.devices.push_back(haDevice("dev_denon", "Other", "receiver", "media_player.other"));
     compile(cfg);
     EXPECT_TRUE(report.has(ErrorCode::DuplicateId, "/activities/1/id"));
-    EXPECT_TRUE(report.has(ErrorCode::DuplicateId, "/devices/6/id"));
+    EXPECT_TRUE(report.has(ErrorCode::DuplicateId, "/devices/5/id"));
 }
 
 TEST_F(CompilerTest, DeviceRegistryChecks) {
     ConfigSpec cfg = fixtureConfig();
-    cfg.devices.push_back({"dev_sys", "Sys", "system", "x"});
-    cfg.devices.push_back({"dev_noref", "No ref", "ha_main", ""});
+    cfg.devices.push_back(device("dev_sys", "Sys", "system", "other", {"system", "x", "", ""}));
+    cfg.devices.push_back(haDevice("dev_noref", "No ref", "tv", ""));
+    cfg.devices.push_back(device("dev_wrong", "Wrong", "ha_main", "tv", {"ble_hid", "", "", "x"}));
+    cfg.integrations.push_back(integration("ha_main", "home_assistant", "Duplicate"));
+    cfg.integrations.push_back(integration("ghost", "home_assistant", "Ghost"));
     compile(cfg);
-    EXPECT_TRUE(report.has(ErrorCode::UnknownIntegration, "/devices/6/integration_id"));
-    EXPECT_TRUE(report.has(ErrorCode::InvalidId, "/devices/7/provider_ref"));
+    EXPECT_TRUE(report.has(ErrorCode::UnknownIntegration, "/devices/5/integration_id"));
+    EXPECT_TRUE(report.has(ErrorCode::Required, "/devices/6/provider"));
+    EXPECT_TRUE(report.has(ErrorCode::IntegrationMismatch, "/devices/7/provider/type"));
+    EXPECT_TRUE(report.has(ErrorCode::DuplicateId, "/integrations/3/id"));
+    // A listed integration without an adapter is fine until a device uses it.
+    EXPECT_FALSE(report.has(ErrorCode::UnknownIntegration, "/integrations/4/id"));
 }
 
 TEST_F(CompilerTest, Bounds) {
@@ -226,7 +233,7 @@ TEST_F(CompilerTest, Bounds) {
 
     ConfigSpec devices = fixtureConfig();
     for (size_t i = 0; i < limits::kMaxDevices; i++) {
-        devices.devices.push_back({"dev_x" + std::to_string(i), "X", "ha_main", "media_player.x"});
+        devices.devices.push_back(haDevice("dev_x" + std::to_string(i), "X", "tv", "media_player.x"));
     }
     report = {};
     EXPECT_EQ(compile(devices), nullptr);

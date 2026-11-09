@@ -182,6 +182,7 @@ TEST_F(EngineTest, HeldKeysAreReleasedOnActivitySwitch) {
     EXPECT_EQ(hub.ble().heldConsumer(), 0);
     ASSERT_GT(hub.hid().reports().size(), reports);
     EXPECT_EQ(hub.hid().reports().back(), "consumer 0x0000");
+    EXPECT_EQ(hub.engine().openHolds(), 0u);
     hub.release(Button::Up);  // Play Xbox has no up:up binding; nothing else happens
 }
 
@@ -203,6 +204,7 @@ TEST_F(EngineTest, LostReleaseTimesOutAndReleasesKeys) {
     hub.advance(600, /*silent=*/true);  // release packet lost, then silence
     EXPECT_EQ(take(), (Lines{"ble dev_apple_tv key_down key=ARROW_RIGHT", "ble dev_apple_tv key_up key=ARROW_RIGHT"}));
     EXPECT_EQ(hub.ble().heldConsumer(), 0);
+    EXPECT_EQ(hub.engine().openHolds(), 0u);
 }
 
 TEST_F(EngineTest, OverflowOnReleaseStillReleasesKeys) {
@@ -230,8 +232,152 @@ TEST_F(EngineTest, OverflowOnReleaseStillReleasesKeys) {
     }
     ASSERT_GT(hub.engine().executor().stats().rejected, 0u);
     hub.release(Button::Up);  // up:up is rejected too...
-    EXPECT_GT(hub.engine().stats().overflowReleases, 0u);
+    EXPECT_GT(hub.engine().stats().forcedReleases, 0u);
     EXPECT_EQ(hub.ble().heldConsumer(), 0);  // ...but the key is released anyway
+    EXPECT_EQ(hub.engine().openHolds(), 0u);
+}
+
+namespace {
+
+// Drops every binding of `activity` whose trigger starts with "<button>:".
+void unbind(ActivitySpec &activity, const std::string &button) {
+    auto &b = activity.bindings;
+    b.erase(std::remove_if(b.begin(), b.end(),
+                           [&](const BindingSpec &x) { return x.trigger.rfind(button + ":", 0) == 0; }),
+            b.end());
+}
+
+const char *const kNoKeys = "keyboard 00 00 00 00 00 00 00 00";
+
+}  // namespace
+
+// Review high #2: the down comes from the global bindings, the activity
+// overrides only the up. The key is released anyway.
+TEST_F(EngineTest, AGlobalHoldIsReleasedWhenTheActivityOverridesOnlyTheUp) {
+    ConfigSpec cfg = fixtureConfig();
+    unbind(cfg.activities[0], "select");
+    cfg.activities[0].bindings.push_back(bind("select:up", {haAction("dev_lights", "light.turn_on")}));
+    cfg.globalBindings.push_back(bind("select:down", {bleKey("key_down", "ENTER")}));
+    cfg.globalBindings.push_back(bind("select:up", {bleKey("key_up", "ENTER")}));
+    ASSERT_TRUE(hub.load(cfg).ok());
+    hub.activate("act_watch_apple_tv");
+    hub.advance(1000);
+    take();
+    hub.press(Button::Select);
+    hub.advance(100);
+    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 1u);
+    EXPECT_EQ(hub.engine().openHolds(), 1u);
+    hub.release(Button::Select);
+    hub.advance(100);
+    const Lines lines = take();
+    EXPECT_TRUE(anyContains(lines, "ha_main dev_lights light.turn_on"));
+    EXPECT_TRUE(anyContains(lines, "ble dev_apple_tv key_up key=ENTER"));
+    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 0u);
+    EXPECT_EQ(hub.engine().openHolds(), 0u);
+    ASSERT_FALSE(hub.hid().reports().empty());
+    EXPECT_EQ(hub.hid().reports().back(), kNoKeys);
+}
+
+// Review high #3: the up sequence fails before its own release.
+TEST_F(EngineTest, AHoldIsReleasedWhenItsUpSequenceFailsFirst) {
+    ConfigSpec cfg = fixtureConfig();
+    unbind(cfg.activities[0], "play");
+    cfg.activities[0].bindings.push_back(bind("play:down", {bleKey("key_down", "KEY_X")}));
+    cfg.activities[0].bindings.push_back(
+        bind("play:up", {haAction("dev_lights", "light.turn_on"), bleKey("key_up", "KEY_X")}));
+    ASSERT_TRUE(hub.load(cfg).ok());
+    hub.activate("act_watch_apple_tv");
+    hub.advance(1000);
+    take();
+    hub.press(Button::Play);
+    hub.advance(100);
+    ASSERT_EQ(hub.ble().heldKeyboardKeys(), 1u);
+    hub.homeAssistant().failNext("light.turn_on", ErrorCode::AdapterFailed);
+    const uint32_t forced = hub.engine().stats().forcedReleases;
+    hub.release(Button::Play);
+    hub.advance(100);
+    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 0u);
+    EXPECT_EQ(hub.engine().openHolds(), 0u);
+    EXPECT_EQ(hub.engine().stats().forcedReleases, forced + 1);  // the ledger, not the binding
+    EXPECT_EQ(hub.hid().reports().back(), kNoKeys);
+}
+
+// A slow but correct up sequence releases the key itself: the ledger
+// forgets the hold and forces nothing.
+TEST_F(EngineTest, TheBindingsOwnReleaseClosesTheHold) {
+    ConfigSpec cfg = fixtureConfig();
+    unbind(cfg.activities[0], "play");
+    cfg.activities[0].bindings.push_back(bind("play:down", {bleKey("key_down", "KEY_X")}));
+    cfg.activities[0].bindings.push_back(bind("play:up", {waitMs(2000), bleKey("key_up", "KEY_X")}));
+    ASSERT_TRUE(hub.load(cfg).ok());
+    hub.activate("act_watch_apple_tv");
+    hub.advance(1000);
+    const uint32_t forced = hub.engine().stats().forcedReleases;
+    hub.tap(Button::Play);
+    hub.advance(1000);
+    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 1u);  // still the binding's to release
+    hub.advance(1100);
+    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 0u);
+    EXPECT_EQ(hub.engine().openHolds(), 0u);
+    EXPECT_EQ(hub.engine().stats().forcedReleases, forced);
+}
+
+// The up sequence is cancelled (a transition) before it reaches its release.
+TEST_F(EngineTest, AHoldIsReleasedWhenItsUpSequenceIsCancelled) {
+    ConfigSpec cfg = fixtureConfig();
+    unbind(cfg.activities[0], "play");
+    cfg.activities[0].bindings.push_back(bind("play:down", {bleKey("key_down", "KEY_X")}));
+    cfg.activities[0].bindings.push_back(bind("play:up", {waitMs(5000), bleKey("key_up", "KEY_X")}));
+    ASSERT_TRUE(hub.load(cfg).ok());
+    hub.activate("act_watch_apple_tv");
+    hub.advance(1000);
+    hub.tap(Button::Play);
+    hub.advance(100);
+    ASSERT_EQ(hub.ble().heldKeyboardKeys(), 1u);
+    hub.activate("act_play_xbox");
+    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 0u);
+    EXPECT_EQ(hub.engine().openHolds(), 0u);
+    take();
+    hub.advance(6000);
+    EXPECT_FALSE(anyContains(take(), "key_up key=KEY_X"));  // the cancelled sequence never resumes
+}
+
+// Ledger full: the hold that doesn't fit is released at once; the rest on
+// the up. Nothing stays held.
+TEST_F(EngineTest, AHoldThatDoesNotFitTheLedgerIsReleasedAtOnce) {
+    ConfigSpec cfg = fixtureConfig();
+    unbind(cfg.activities[0], "play");
+    std::vector<ActionSpec> downs(HoldLedger::kCapacity + 1, bleKey("key_down", "KEY_X"));
+    cfg.activities[0].bindings.push_back(sim::bind("play:down", downs));
+    cfg.activities[0].bindings.push_back(bind("play:up", {bleKey("key_up", "KEY_X")}));
+    ASSERT_TRUE(hub.load(cfg).ok());
+    hub.activate("act_watch_apple_tv");
+    hub.advance(1000);
+    const uint32_t forced = hub.engine().stats().forcedReleases;
+    hub.press(Button::Play);
+    hub.advance(100);
+    EXPECT_EQ(hub.engine().openHolds(), HoldLedger::kCapacity);
+    EXPECT_EQ(hub.engine().stats().forcedReleases, forced + 1);
+    hub.release(Button::Play);
+    hub.advance(100);
+    EXPECT_EQ(hub.engine().openHolds(), 0u);
+    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 0u);
+}
+
+TEST(HoldLedgerTest, FixedCapacityTakeOneAtATime) {
+    HoldLedger ledger;
+    OpenHold hold;
+    hold.button = Button::Play;
+    for (size_t i = 0; i < HoldLedger::kCapacity; i++) EXPECT_TRUE(ledger.add(hold));
+    EXPECT_FALSE(ledger.add(hold));
+    EXPECT_EQ(ledger.size(), HoldLedger::kCapacity);
+    OpenHold out;
+    EXPECT_FALSE(ledger.take(Button::Up, &out));
+    size_t n = 0;
+    while (ledger.take(Button::Play, &out)) n++;
+    EXPECT_EQ(n, HoldLedger::kCapacity);
+    EXPECT_FALSE(ledger.takeAny(&out));
+    EXPECT_EQ(ledger.size(), 0u);
 }
 
 TEST_F(EngineTest, ConfigSwapKeepsTheActiveActivityById) {
@@ -262,15 +408,68 @@ ConfigSpec withoutPlayXbox() {
 }  // namespace
 
 TEST_F(EngineTest, DeletingTheActiveActivitySwitchesToTheNextWithoutShutdown) {
-    hub.activate("act_play_xbox");  // last in the list: "next" wraps to the first
+    ConfigSpec cfg = fixtureConfig();
+    cfg.globalBindings.erase(std::remove_if(cfg.globalBindings.begin(), cfg.globalBindings.end(),
+                                            [](const BindingSpec &b) { return b.trigger == "music:tap"; }),
+                             cfg.globalBindings.end());
+    ASSERT_TRUE(hub.load(cfg).ok());  // nothing refers to act_play_xbox
+    hub.activate("act_play_xbox");    // last in the list: "next" wraps to the first
     hub.advance(3000);
     take();
-    ASSERT_TRUE(hub.load(withoutPlayXbox()).ok());
+    const auto *spec = hub.configService().findActivity("act_play_xbox");
+    ASSERT_NE(spec, nullptr);
+    ASSERT_TRUE(hub.configService().deleteActivity("act_play_xbox", spec->revision).ok());
     hub.advance(3000);
     EXPECT_STREQ(hub.engine().activeActivityId(), "act_watch_apple_tv");
     const Lines lines = take();
     EXPECT_TRUE(anyContains(lines, "dev_lg_tv media_player.turn_on"));  // Apple TV startup ran
     EXPECT_FALSE(anyContains(lines, "dev_xbox"));                       // no Xbox shutdown
+}
+
+// Design part 6: a restore or reset never starts an activity.
+TEST_F(EngineTest, ARestoreWithoutTheActiveActivityGoesInactiveSilently) {
+    hub.activate("act_play_xbox");
+    hub.advance(3000);
+    take();
+    const size_t events = hub.events().size();
+    ASSERT_TRUE(hub.load(withoutPlayXbox()).ok());
+    hub.advance(3000);
+    EXPECT_FALSE(hub.engine().hasActiveActivity());
+    EXPECT_EQ(hub.engine().activeActivityIdShared(), "");
+    EXPECT_TRUE(take().empty());  // no startup of another activity, no Xbox shutdown
+    EXPECT_GT(hub.events().size(), events);  // the change to "inactive" is reported
+}
+
+TEST_F(EngineTest, ARestoreKeepsTheActiveActivityIfItStillExists) {
+    hub.activate("act_play_xbox");
+    hub.advance(3000);
+    take();
+    ConfigSpec cfg = fixtureConfig();
+    std::swap(cfg.activities[0], cfg.activities[1]);
+    ASSERT_TRUE(hub.load(cfg).ok());
+    hub.advance(3000);
+    EXPECT_STREQ(hub.engine().activeActivityId(), "act_play_xbox");
+    EXPECT_TRUE(take().empty());  // nothing re-run
+}
+
+TEST_F(EngineTest, AFactoryResetNeverStartsAnActivity) {
+    hub.activate("act_watch_apple_tv");
+    hub.advance(3000);
+    take();
+    ASSERT_TRUE(hub.configService().reset(withoutPlayXbox()).ok());
+    hub.advance(3000);
+    EXPECT_STREQ(hub.engine().activeActivityId(), "act_watch_apple_tv");  // still exists: kept
+    ConfigSpec empty = withoutPlayXbox();
+    empty.activities.clear();
+    empty.globalBindings.erase(std::remove_if(empty.globalBindings.begin(), empty.globalBindings.end(),
+                                              [](const BindingSpec &b) {
+                                                  return b.trigger == "tv:tap" || b.trigger == "movie:tap";
+                                              }),
+                               empty.globalBindings.end());
+    ASSERT_TRUE(hub.configService().reset(empty).ok());
+    hub.advance(3000);
+    EXPECT_FALSE(hub.engine().hasActiveActivity());
+    EXPECT_TRUE(take().empty());
 }
 
 TEST_F(EngineTest, DeletingTheActiveActivityThenOffLeavesItInactive) {
@@ -335,18 +534,22 @@ TEST_F(EngineTest, BleUnavailableIsAFailureNotFakeSuccess) {
     EXPECT_EQ(hub.commands().back().text, "ble dev_apple_tv key_down key=SELECT -> failed adapter_unavailable");
 }
 
-TEST_F(EngineTest, MailboxRequestsFromAnotherThread) {
+TEST_F(EngineTest, RequestsAreAppliedOnTheEngineTaskOnly) {
+    EngineRequest req;
     std::thread api([&] {
-        EXPECT_TRUE(hub.engine().postActivate("act_play_xbox"));
-        EXPECT_FALSE(hub.engine().postActivate(std::string(40, 'x')));  // too long for an id
+        req.activate("act_play_xbox");
+        EXPECT_TRUE(hub.engine().submit(req));
     });
     api.join();
-    EXPECT_FALSE(hub.engine().hasActiveActivity());  // applied on the engine task only
+    EXPECT_FALSE(hub.engine().hasActiveActivity());  // nothing happens until the engine polls
     hub.advance(1);
+    ASSERT_TRUE(req.done());
     EXPECT_STREQ(hub.engine().activeActivityId(), "act_play_xbox");
-    EXPECT_TRUE(hub.engine().postOff());
+    EngineRequest tooLong;
+    tooLong.activate(std::string(40, 'x'));  // can't be an id
+    hub.engine().submit(tooLong);
     hub.advance(1);
-    EXPECT_FALSE(hub.engine().hasActiveActivity());
+    EXPECT_EQ(tooLong.transition().error, ErrorCode::UnknownActivity);
 }
 
 // Config writer thread publishes new compiled configs while the engine task
@@ -399,4 +602,217 @@ TEST_F(EngineTest, HomeAssistantFakeRecordsTheRealServiceCall) {
     EXPECT_EQ(calls[0], "media_player.turn_on media_player.family_room_lg_tv");
     EXPECT_EQ(calls[2], "media_player.select_source media_player.family_room_lg_tv source=\"HDMI 1\"");
     EXPECT_EQ(calls.back(), "media_player.volume_mute media_player.denon is_volume_muted=true");
+}
+
+// ---- request/reply (EngineRequest) ----
+
+namespace {
+
+CompiledCommand compile(SimHub &hub, const char *device, const char *command, std::vector<ParamInput> params = {}) {
+    CompiledCommand cmd;
+    const config::Outcome o = hub.configService().compileCommand(device, command, params, &cmd);
+    EXPECT_TRUE(o.ok()) << errorCodeName(o.code);
+    return cmd;
+}
+
+}  // namespace
+
+TEST_F(EngineTest, TransitionRequestsReplyWithTheResult) {
+    EngineRequest req;
+    req.activate("act_watch_apple_tv");
+    ASSERT_TRUE(hub.engine().submit(req));
+    EXPECT_FALSE(req.done());
+    hub.advance(1);
+    ASSERT_TRUE(req.done());
+    EXPECT_EQ(req.transition().error, ErrorCode::Ok);
+    EXPECT_EQ(req.transition().activeActivityId, "act_watch_apple_tv");
+    EXPECT_TRUE(req.transition().previousActivityId.empty());
+    EXPECT_EQ(req.transition().queuedActions, 5);
+    EXPECT_EQ(req.transition().generation, hub.engine().generation());
+
+    EngineRequest off;
+    off.off();
+    hub.engine().submit(off);
+    hub.advance(1);
+    ASSERT_TRUE(off.done());
+    EXPECT_TRUE(off.transition().activeActivityId.empty());
+    EXPECT_EQ(off.transition().previousActivityId, "act_watch_apple_tv");
+    EXPECT_EQ(off.transition().queuedActions, 2);
+
+    EngineRequest bad;
+    bad.activate("act_nope");
+    hub.engine().submit(bad);
+    hub.advance(1);
+    EXPECT_EQ(bad.transition().error, ErrorCode::UnknownActivity);
+
+    EngineRequest none;
+    none.off();
+    hub.engine().submit(none);
+    hub.advance(1);
+    EXPECT_EQ(none.transition().error, ErrorCode::NoActiveActivity);
+}
+
+TEST_F(EngineTest, ExecuteRequestRepliesWhenTheResultIsKnown) {
+    EngineRequest req;
+    req.execute(compile(hub, "dev_denon", "media_player.volume_set", {param("level", 0.4)}));
+    hub.engine().submit(req);
+    hub.advance(1);
+    ASSERT_TRUE(req.done());
+    EXPECT_EQ(req.command().status, ExecStatus::Accepted);
+    EXPECT_EQ(hub.homeAssistant().calls().back(), "media_player.volume_set media_player.denon volume_level=0.4");
+
+    hub.homeAssistant().setLatency(250);
+    EngineRequest slow;
+    slow.execute(compile(hub, "dev_denon", "media_player.volume_up"));
+    hub.engine().submit(slow);
+    hub.advance(100);
+    EXPECT_FALSE(slow.done());
+    hub.advance(200);
+    ASSERT_TRUE(slow.done());
+    EXPECT_EQ(slow.command().status, ExecStatus::Accepted);
+    EXPECT_EQ(slow.command().elapsedMs, 250u);
+
+    hub.homeAssistant().setLatency(10000);
+    EngineRequest lost;
+    lost.execute(compile(hub, "dev_denon", "media_player.volume_up"));
+    hub.engine().submit(lost);
+    hub.advance(limits::kDefaultActionTimeoutMs + 1);
+    ASSERT_TRUE(lost.done());
+    EXPECT_EQ(lost.command().status, ExecStatus::Timeout);
+
+    hub.homeAssistant().setLatency(0);
+    hub.hid().setConnected(false);
+    EngineRequest ble;
+    ble.execute(compile(hub, "dev_apple_tv", "key_tap", {param("key", "SELECT")}));
+    hub.engine().submit(ble);
+    hub.advance(1);
+    EXPECT_EQ(ble.command().status, ExecStatus::Failed);
+    EXPECT_EQ(ble.command().error, ErrorCode::AdapterUnavailable);
+}
+
+TEST_F(EngineTest, ExecuteCancelledByATransitionStillReplies) {
+    hub.homeAssistant().setLatency(1000);
+    EngineRequest req;
+    req.execute(compile(hub, "dev_denon", "media_player.volume_up"));
+    hub.engine().submit(req);
+    hub.advance(1);
+    EXPECT_FALSE(req.done());
+    hub.activate("act_play_xbox");
+    ASSERT_TRUE(req.done());
+    EXPECT_EQ(req.command().status, ExecStatus::Failed);
+    EXPECT_EQ(req.command().error, ErrorCode::Cancelled);
+}
+
+TEST_F(EngineTest, RequestsFromAnotherThread) {
+    std::atomic<bool> stop{false};
+    std::thread api([&] {
+        for (int i = 0; i < 50; i++) {
+            EngineRequest req;
+            req.activate(i % 2 ? "act_watch_apple_tv" : "act_play_xbox");
+            while (!hub.engine().submit(req)) std::this_thread::yield();
+            while (!req.done()) std::this_thread::yield();
+            EXPECT_EQ(req.transition().error, ErrorCode::Ok);
+            EXPECT_EQ(req.transition().activeActivityId, i % 2 ? "act_watch_apple_tv" : "act_play_xbox");
+        }
+        stop = true;
+    });
+    while (!stop) hub.advance(1);
+    api.join();
+}
+
+// ---- a hold closes only once its release has completed (design part 6) ----
+
+namespace {
+
+constexpr ParamSpec kKeyParam[] = {ParamSpec::integer("k", 0, 100)};
+constexpr CommandSpec kAsyncCommands[] = {
+    {"hold", kKeyParam, 1, CommandEffect::Hold, "let_go"},
+    {"let_go", kKeyParam, 1},
+};
+
+// Holds synchronously; releases asynchronously (Pending, delivered by poll()).
+struct AsyncHoldAdapter : IntegrationAdapter {
+    const char *integrationId() const override { return "async"; }
+    CommandCatalog commandsFor(const DeviceSpec &) const override { return {kAsyncCommands, 2}; }
+    ExecResult execute(const ExecRequest &r) override {
+        calls.push_back(std::string(r.command->id) + (r.ticket == 0 ? " direct" : ""));
+        if (std::string_view(r.command->id) == "hold" || r.ticket == 0) return ExecResult::accepted();
+        pending.push_back(r.ticket);
+        return ExecResult::pending();
+    }
+    void poll(uint32_t nowMs, CompletionSink &sink) override {
+        if (!deliver) return;
+        for (Ticket t : pending) sink.complete(t, result, nowMs);
+        pending.clear();
+    }
+    void releaseAll(uint32_t) override { releaseAlls++; }
+
+    std::vector<std::string> calls;
+    std::vector<Ticket> pending;
+    bool deliver = false;
+    ExecResult result = ExecResult::accepted();
+    int releaseAlls = 0;
+};
+
+class AsyncReleaseTest : public ::testing::Test {
+protected:
+    AsyncReleaseTest() {
+        adapters.add(adapter);
+        ConfigSpec cfg;
+        cfg.integrations = {integration("async", "async", "Async")};
+        cfg.devices = {device("dev", "Dev", "async", "other", {"async", "ref.dev", "", ""})};
+        cfg.globalBindings = {sim::bind("play:down", {action("async", "dev", "hold", {param("k", 5)})}),
+                              sim::bind("play:up", {action("async", "dev", "let_go", {param("k", 5)})})};
+        ValidationReport report;
+        std::unique_ptr<CompiledConfig> compiled = compileConfig(cfg, adapters, &report);
+        EXPECT_TRUE(compiled) << (report.ok() ? "" : report.issues()[0].path);
+        EXPECT_EQ(store.publish(compiled), ErrorCode::Ok);
+        engine.poll(0);
+    }
+
+    // Press and release play; the release is then in flight.
+    void pressAndRelease() {
+        engine.onRemoteEvent({Button::Play, remote::EventKind::Down, 1});
+        engine.poll(2);
+        engine.onRemoteEvent({Button::Play, remote::EventKind::Up, 10});
+        engine.poll(11);
+        ASSERT_EQ(adapter.pending.size(), 1u);
+        EXPECT_EQ(engine.openHolds(), 1u);  // not forgotten while the release is pending
+    }
+
+    AsyncHoldAdapter adapter;
+    AdapterSet adapters;
+    Engine::Store store;
+    Engine engine{store, adapters, /*actionTimeoutMs=*/500};
+};
+
+}  // namespace
+
+TEST_F(AsyncReleaseTest, ACompletedReleaseClosesTheHold) {
+    pressAndRelease();
+    adapter.deliver = true;
+    engine.poll(20);
+    EXPECT_EQ(engine.openHolds(), 0u);
+    EXPECT_EQ(adapter.releaseAlls, 0);
+    EXPECT_EQ(adapter.calls, (std::vector<std::string>{"hold", "let_go"}));  // nothing forced
+}
+
+TEST_F(AsyncReleaseTest, AReleaseThatFailsLaterFallsBackToReleaseAll) {
+    pressAndRelease();
+    adapter.deliver = true;
+    adapter.result = ExecResult::failed(ErrorCode::AdapterFailed);
+    const uint32_t forced = engine.stats().forcedReleases;
+    engine.poll(20);
+    EXPECT_EQ(engine.openHolds(), 0u);
+    EXPECT_EQ(adapter.releaseAlls, 1);
+    EXPECT_EQ(engine.stats().forcedReleases, forced + 1);
+}
+
+TEST_F(AsyncReleaseTest, AReleaseThatNeverAnswersFallsBackToReleaseAll) {
+    pressAndRelease();
+    engine.poll(400);
+    EXPECT_EQ(engine.openHolds(), 1u);
+    engine.poll(600);  // past the action timeout
+    EXPECT_EQ(engine.openHolds(), 0u);
+    EXPECT_EQ(adapter.releaseAlls, 1);
 }
