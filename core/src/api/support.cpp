@@ -310,7 +310,7 @@ bool checkObject(JsonVariantConst value, std::initializer_list<Field> fields, Va
 }
 
 bool queryRevision(const http::Request &request, http::Response &out, uint32_t *revision) {
-    const std::string_view text = http::queryParam(request.query, "revision");
+    const std::string text = http::queryValue(request.query, "revision");
     uint64_t value = 0;
     bool ok = !text.empty() && text.size() <= 10 && text[0] != '0';
     for (char c : text) {

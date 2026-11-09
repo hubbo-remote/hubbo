@@ -68,9 +68,13 @@ struct Response {
 std::string jsonString(std::string_view text);
 // Structured error body: {"error":{"code":"...","message":"..."}}.
 void jsonError(Response &response, int status, std::string_view code, std::string_view message);
-// Value of `key` in a raw query string ("a=1&b=2"), or "" if absent. No
-// percent-decoding.
-std::string_view queryParam(std::string_view query, std::string_view key);
+// Value of `key` in a raw query string ("a=1&b=2"), percent-decoded ("+" is
+// a space, "%XX" the byte XX; a malformed escape stays as it is), or "" if
+// absent. Decodes one parameter, never the whole query, so "%26" can't split
+// parameters.
+std::string queryValue(std::string_view query, std::string_view key);
+// The decoding queryValue() applies ("a+b%20c" -> "a b c").
+std::string percentDecode(std::string_view text);
 
 class RequestAuthenticator {
 public:
