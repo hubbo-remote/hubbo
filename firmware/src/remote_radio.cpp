@@ -78,6 +78,22 @@ bool RadioEndpoint::isValid() const {
     return firstByte != 0x55 && firstByte != 0xAA;
 }
 
+void RemoteRadio::persistEndpoint(const RadioEndpoint &endpoint, bool erase) {
+    if (erase) {
+        eraseEndpoint();
+    } else {
+        saveEndpoint(endpoint);
+    }
+}
+
+void RemoteRadio::persist(const RadioEndpoint &endpoint, bool erase) {
+    if (persist_ != nullptr) {
+        persist_(endpoint, erase);
+    } else {
+        persistEndpoint(endpoint, erase);
+    }
+}
+
 const char *RemoteRadio::stateName(State state) {
     switch (state) {
         case State::NotReady: return "not_ready";
@@ -180,7 +196,7 @@ void RemoteRadio::forgetEndpoint() {
     }
     endpoint_ = {};
     if (state_ != State::NotReady) {
-        eraseEndpoint();
+        persist(endpoint_, true);
     }
     Serial.println("radio: Hub endpoint forgotten");
 }
@@ -253,7 +269,7 @@ void RemoteRadio::scanStep(uint32_t nowMs) {
             if (found.isValid()) {
                 Serial.println("radio: found Harmony Hub");
                 endpoint_ = found;
-                saveEndpoint(found);
+                persist(found, false);
                 finishScan(ScanResult::Found);
                 return;
             }

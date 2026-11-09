@@ -178,22 +178,49 @@ void BleHid::loop(uint32_t nowMs) {
         bondsChanged = false;
         const uint16_t handle = connHandle;
         if (pairing_ && secured && handle != BLE_HS_CONN_HANDLE_NONE) {
-            // Paired: keep only this host, then close the window.
+            // Paired: keep only this host (off this task), then close the window.
             const NimBLEAddress keep = server->getPeerInfoByHandle(handle).getIdAddress();
-            for (int i = NimBLEDevice::getNumBonds() - 1; i >= 0; i--) {
-                const NimBLEAddress address = NimBLEDevice::getBondedAddress(i);
-                if (!(address == keep)) {
-                    NimBLEDevice::deleteBond(address);
+            runBondJob([keep] {
+                for (int i = NimBLEDevice::getNumBonds() - 1; i >= 0; i--) {
+                    const NimBLEAddress address = NimBLEDevice::getBondedAddress(i);
+                    if (!(address == keep)) {
+                        NimBLEDevice::deleteBond(address);
+                    }
                 }
-            }
+            });
             Serial.printf("ble: paired with %s\n", keep.toString().c_str());
             stopPairing();
         }
         bondCount_ = NimBLEDevice::getNumBonds();
     }
 
+    if (pendingBondJob_ && offload_(pendingBondJob_)) {
+        pendingBondJob_ = nullptr;
+    }
+
+    // Bonding opens only once the old bonds are gone, so a deletion that
+    // runs late can't remove the new host.
+    if (pairing_ && !bondingOpen_ && !bondsClearing_.load(std::memory_order_acquire)) {
+        bondingOpen_ = true;
+        setBondingAllowed(true);
+    }
+
     // Polled rather than event-driven: NimBLE stops advertising on connect.
     updateAdvertising();
+}
+
+void BleHid::runBondJob(std::function<void()> job) {
+    bondsClearing_.store(true, std::memory_order_release);
+    auto done = [this, job = std::move(job)] {
+        job();
+        bondsChanged = true;  // loop() refreshes the count
+        bondsClearing_.store(false, std::memory_order_release);
+    };
+    if (!offload_) {
+        done();  // boot: no other task yet
+    } else if (!offload_(done)) {
+        pendingBondJob_ = std::move(done);  // queue full: loop() retries
+    }
 }
 
 // --- Reports ------------------------------------------------------------------
@@ -252,9 +279,9 @@ bool BleHid::startPairing(uint32_t nowMs, uint32_t windowMs) {
         forget();
     }
     pairing_ = true;
+    bondingOpen_ = false;  // loop() opens it once any bond deletion is done
     pairingStartedMs_ = nowMs;
     pairingWindowMs_ = windowMs;
-    setBondingAllowed(true);
     updateAdvertising();
     Serial.printf("ble: pairing window open for %lu s\n",
                   static_cast<unsigned long>(windowMs / 1000));
@@ -266,6 +293,7 @@ void BleHid::stopPairing() {
         return;
     }
     pairing_ = false;
+    bondingOpen_ = false;
     setBondingAllowed(false);
     updateAdvertising();
 }
@@ -289,7 +317,7 @@ void BleHid::forget() {
     if (handle != BLE_HS_CONN_HANDLE_NONE) {
         server->disconnect(handle);
     }
-    NimBLEDevice::deleteAllBonds();
+    runBondJob([] { NimBLEDevice::deleteAllBonds(); });
     bondCount_ = 0;
     updateAdvertising();
 }

@@ -4,7 +4,7 @@
 //
 // Hubbo listens on the radio address of an existing Harmony Hub. The address
 // is learned once by scanning while the Hub's pair button is pressed, then
-// kept in NVS. Every received payload goes to a PayloadSink untouched; the
+// kept in NVS (read at boot; written off the RF task, see setPersistRunner). Every received payload goes to a PayloadSink untouched; the
 // portable core (hubbo::remote::RemoteInput) does all decoding.
 //
 // Ported from Harmonizer's src/smart_hub.cpp (soaresbrun0/Harmonizer,
@@ -48,6 +48,16 @@ public:
 
     explicit RemoteRadio(PayloadSink &sink) : sink_(sink) {}
 
+    // Where saving/erasing the endpoint in NVS runs. NVS can block on its
+    // lock, so the RF task must never call it: main hands it to httpd. The
+    // job owns its copy of the endpoint (`erase` true: forget it). Unset:
+    // done inline (boot, before other tasks run).
+    using PersistRunner = void (*)(const RadioEndpoint &endpoint, bool erase);
+    void setPersistRunner(PersistRunner runner) { persist_ = runner; }
+
+    // Does the NVS write itself; the runner's job calls this.
+    static void persistEndpoint(const RadioEndpoint &endpoint, bool erase);
+
     // Starts SPI and the radio, loads the saved endpoint and starts
     // listening if there is one. False if the radio does not respond.
     bool begin();
@@ -83,7 +93,10 @@ private:
     void finishScan(ScanResult result);
     void drain();
 
+    void persist(const RadioEndpoint &endpoint, bool erase);
+
     PayloadSink &sink_;
+    PersistRunner persist_ = nullptr;
     State state_ = State::NotReady;
     RadioEndpoint endpoint_;
     ScanResult lastScanResult_ = ScanResult::None;

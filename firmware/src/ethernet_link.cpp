@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <ETH.h>
 
+#include <cstdio>
+
 #include "board.h"
 
 namespace hubbo::fw {
@@ -24,7 +26,7 @@ bool EthernetLink::begin(const char *hostname) {
     return true;
 }
 
-EthernetLink::State EthernetLink::state() const {
+EthernetLink::State EthernetLink::poll() const {
     if (!started_) {
         return State::Off;
     }
@@ -44,16 +46,8 @@ const char *EthernetLink::stateName(State state) {
     return "off";
 }
 
-IPAddress EthernetLink::ip() const {
-    return started_ ? ETH.localIP() : IPAddress();
-}
-
 uint16_t EthernetLink::linkSpeedMbps() const {
     return started_ && ETH.linkUp() ? ETH.linkSpeed() : 0;
-}
-
-bool EthernetLink::fullDuplex() const {
-    return started_ && ETH.linkUp() && ETH.fullDuplex();
 }
 
 void EthernetLink::loop(uint32_t nowMs) {
@@ -61,21 +55,32 @@ void EthernetLink::loop(uint32_t nowMs) {
         return;
     }
     lastCheckMs_ = nowMs;
-    const State now = state();
-    if (now == lastState_) {
+    const State now = poll();
+    const IPAddress ip = now == State::Up ? ETH.localIP() : IPAddress();
+    if (ip != ip_) {
+        ip_ = ip;
+        if (now == State::Up) {
+            snprintf(ipText_, sizeof(ipText_), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+            addressChanged_ = true;
+        } else {
+            ipText_[0] = '\0';
+        }
+    }
+    if (now == state_ && !(now == State::Up && addressChanged_)) {
         return;
     }
-    lastState_ = now;
+    const State before = state_;
+    state_ = now;
     switch (now) {
         case State::NoLink:
             Serial.println("eth: link down");
             break;
         case State::NoIp:
             Serial.printf("eth: link up %u Mbps %s duplex, waiting for DHCP\n", linkSpeedMbps(),
-                          fullDuplex() ? "full" : "half");
+                          ETH.fullDuplex() ? "full" : "half");
             break;
         case State::Up:
-            Serial.printf("eth: up, IP %s\n", ETH.localIP().toString().c_str());
+            Serial.printf("eth: %s, IP %s\n", before == State::Up ? "new address" : "up", ipText_);
             break;
         case State::Off:
             break;

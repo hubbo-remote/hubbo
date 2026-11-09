@@ -1,8 +1,8 @@
 #pragma once
 
-// Fixed-size latency recorder for the Phase 0.3 baseline. record() is O(1)
-// and allocation-free (hot path safe); summarize() sorts a copy and is for
-// the serial console only.
+// Fixed-size latency recorder (see diagnostics.h). record() is O(1)
+// and allocation-free (hot path safe); summarize() sorts a copy (~2 KB,
+// O(n log n)), so call it off the hot path and only when count() changed.
 
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +25,7 @@ public:
     void record(uint32_t us);
     Summary summarize() const;
     void reset();
+    uint32_t count() const { return count_; }  // samples since reset
 
 private:
     uint32_t samples_[kCapacity] = {};

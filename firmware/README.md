@@ -1,9 +1,9 @@
 # Hubbo firmware
 
-PlatformIO project for the Waveshare ESP32-S3-ETH. For now it is **bring-up firmware**: it
-receives the Harmony Companion remote, runs the portable core's `RemoteInput`, brings up
-Ethernet and the BLE HID keyboard, and logs events, status and latency over USB serial.
-The activity engine replaces `src/main.cpp` later.
+PlatformIO project for the Waveshare ESP32-S3-ETH. It receives the Harmony Companion remote and
+runs the portable core on it: `RemoteInput` → `Engine` → `BleHidAdapter` → NimBLE. Config loads
+from LittleFS through the core's `ConfigService`. The shared `/api/v1` handlers are served over
+Ethernet by `esp_http_server`. A serial console covers bring-up and latency measurement.
 
 ```sh
 bin/hubbo fw run                     # build (env waveshare_esp32_s3_eth)
@@ -18,12 +18,20 @@ Pinned: `espressif32@8.0.0` (arduino-esp32 3.3.12), `nRF24/RF24@1.6.2`,
 | File | What |
 |---|---|
 | `src/board.h` | Board profile: pins and SPI hosts for the Waveshare ESP32-S3-ETH. The only board. |
-| `src/remote_radio.*` | nRF24: Hub scan (learns channel + address), listener, endpoint in NVS (`hubbo-radio`). Payloads go to a `PayloadSink` unchanged. |
+| `src/remote_radio.*` | nRF24: Hub scan (learns channel + address), listener, endpoint in NVS. Payloads go to a `PayloadSink` unchanged. |
 | `src/ethernet_link.*` | W5500 Ethernet with DHCP, non-blocking, logs link changes. |
-| `src/ble_hid.*` | NimBLE HID keyboard + consumer control: link, pairing window, forget, state, and `sendKeyboard`/`sendConsumer` reports. No key state; it is shaped to back core's `HidTransport`, and core's `BleHidAdapter` tracks held keys. |
+| `src/ble_hid.*` | NimBLE HID keyboard + consumer control. It is the core's `HidTransport`: link, pairing window, forget, state, reports. No key state (`BleHidAdapter` owns it). |
+| `src/http_server.*` | `esp_http_server` → `hubbo::http::Router`: path decoding, body limit from the matched route (`Router::bodyLimit`, 413 before reading) into a per-request PSRAM buffer, headers, `clientKey` from the peer IP, allowed hosts, authenticator, response. |
+| `src/engine_runtime.*` | `api::Runtime`: the HTTP task's bridge to the engine task (`EngineRequest` submit + wait, status snapshot, BLE integration state). |
+| `src/flash_fs.*` | LittleFS on the `spiffs` partition at `/fs`. Formats only a positively blank partition (all 0xFF, scanned at boot) or at boot after `fs format`; never while running, never on an unexplained mount failure. |
+| `src/littlefs_storage.h` | `storage::Storage` on `/fs` with honest `health()` (Unavailable when not mounted), under core's `SlotRecordStore`. |
+| `src/nvs_secret_store.*` | `auth::SecretStore` on NVS. |
+| `src/esp_clock.h`, `src/esp_random_source.h` | `api::Clock` and `auth::RandomSource` ports. The RNG fails closed until BLE (the RF entropy source) is up. |
+| `src/diagnostics.*` | Serial log ring, raw payload log, latency probe (`TimedHidTransport`, loop gap). |
 | `src/latency.*` | Fixed-size latency recorder (p50/p95/p99/max). |
 | `src/ota.*` | ArduinoOTA, compiled in only with `HUBBO_OTA_PASSWORD`. |
-| `src/main.cpp` | Temporary bring-up main and serial console. |
+| `src/main.cpp` | Wiring, boot, main loop, serial console. |
+| `scripts/drop_unused_idf_libs.py` | Link step: drops the precompiled esp_matter archive. Otherwise ordinary `std::string` calls resolve to Matter's copies and pull in Matter and the Wi-Fi stack (+24 KB RAM, +230 KB flash). |
 
 The W5500 is on SPI3 (ESP-IDF driver); the nRF24 is on the Arduino `SPI` (FSPI/SPI2) with
 its own pins. They never share a bus. The nRF24's IRQ isn't wired, so the radio is polled
@@ -32,6 +40,42 @@ every loop iteration.
 Code ported from [Harmonizer](https://github.com/soaresbrun0/harmonizer) (AGPL-3.0) is marked
 at the top of each file.
 
+## Tasks
+
+| Task | Core | Priority | Runs |
+|---|---|---|---|
+| `loopTask` (Arduino) | 1 | 1 | RF + engine: radio FIFO → `RemoteInput` → `Engine` → adapters → NimBLE notify; `engine.poll()`; serial console. Task watchdog on (5 s). |
+| `httpd` | 0 | 5 | Every API handler, including `ConfigService` (round-trip, compile, record save, publish) and the active-activity persister. Reaches the engine only through `Engine::submit()` (sole producer, via `EngineRuntime::run`, which `vTaskDelay`-polls `done()`), the `SnapshotStore`, and a status record the loop publishes every 250 ms under a spinlock. |
+| `esp_timer` | 0 | framework (22) | `HttpServer::every()`: once a second, decides whether httpd housekeeping is due (an activity change, a pending active-activity write, or a config that is `storage_unavailable` and needs `ConfigService::refresh()`), and if so queues it onto httpd, at most one at a time. The work itself runs on httpd. |
+| NimBLE host | 0 | framework | BLE stack. Callbacks only set flags. |
+| `tcpip` (lwIP), W5500 driver | 0 | framework (above httpd) | Network. |
+
+`EngineRuntime::run` returns only once the engine has finished the request. The request lives on
+the handler's stack, so giving up early would leave the engine writing to freed memory. The engine
+bounds the wait: transitions finish on the next poll, executions by the 5 s action timeout.
+
+Core 1 has only the RF/engine loop, so no handler, flash write or network burst can delay a radio
+read. On core 0 httpd sits below the network and BLE stacks. A slow handler, such as login's
+PBKDF2 at about 0.5 s with software SHA, delays only other HTTP requests. The idle-task watchdog
+on core 0 (5 s) bounds any runaway handler.
+
+## Storage
+
+| Where | What |
+|---|---|
+| LittleFS `/fs` (`spiffs` partition, 0xC90000, 3.4 MB) | Core's record store (`docs/design/persistence-and-contracts.md`): `config.a`/`config.b` and `active.a`/`active.b`, each slot a CRC'd header plus payload. A save writes the older slot, fsyncs, reads it back, and only then is acknowledged; load takes the newest intact slot. Written only on the HTTP task, never on button presses. Not mounted means the store is Unavailable: config is `storage_unavailable` and every edit fails. |
+| NVS `hubbo-radio` | Learned Harmony Hub endpoint: `channel` (u8), `address` (u64). |
+| NVS `hubbo-fs` | `format_req` (bool): `fs format` asked for a format at the next boot. Unreadable counts as "not requested". (No "already formatted" flag: auto-format needs the partition to read as blank.) |
+| NVS `hubbo-secret` (chosen over the record store: NVS writes each entry atomically, and login still works if LittleFS breaks, so the hub stays reachable for a restore) | `auth::SecretStore`: `admin_user`, `admin_pw`, `tok_<id>`. Plain NVS: both NVS encryption schemes need eFuse burning (an HMAC key) or flash encryption, which this MVP doesn't do. Someone who dumps the flash can read the password hash and token hashes, but not the plaintext. |
+| NVS `nimble_bond` | NimBLE's own bond store (the paired Apple TV). |
+
+## Network
+
+DHCP on the W5500. Once the hub has an address it starts mDNS as `hubbo-<efuse MAC>.local`
+(advertising `_http._tcp`). The router accepts `Host` values matching the IP, the hostname or the
+`.local` name, refreshed on every address change. Requests are plain HTTP (`secure` = false) until
+TLS (Phase 5).
+
 ## OTA
 
 Set `HUBBO_OTA_PASSWORD` in the environment **at build time and at upload time**. Unset or
@@ -39,34 +83,158 @@ empty compiles OTA out entirely. The password is baked into the image; it's neve
 It's passed as a `-D` string, so avoid `"` and `\` in it. Hostname is `hubbo-<efuse MAC>`.
 OTA starts once Ethernet has an address.
 
+ArduinoOTA receives and writes the image inside `handle()` on the main loop. The loop's task
+watchdog stays on: each progress callback (one per chunk written) feeds it. A live transfer keeps it
+satisfied, and a stalled or trickling one trips it and reboots the hub. ArduinoOTA's receive timeout
+(1 s, up to 3 retries) and the 3 s connect timeout keep every gap under the 5 s watchdog. A
+transfer gets 120 s in total: after that, progress no longer feeds the watchdog, so a client
+trickling bytes can't hold the radio loop (and the remote) hostage. ArduinoOTA's own reboot is turned off:
+once the image is written, the hub reboots like any other deliberate reboot.
+
+## Deliberate reboots
+
+`reboot`, `fs format` and a finished OTA are requests. The main loop never waits on another task,
+because it alone polls the engine and httpd may be waiting on the engine. It releases held keys
+itself, stops reading the radio, and posts "flush and restart" to httpd. httpd writes out the
+debounced active activity, then restarts. The engine keeps being polled until then.
+
 ## Serial console
 
 115200 baud over USB CDC. Type `help`. Status prints every 30 s.
 
 | Command | |
 |---|---|
-| `status`, `mem` | Radio / Ethernet / BLE state, heap and PSRAM, latency summary. |
+| `status` | Radio, engine, Ethernet + HTTP, BLE, heap/PSRAM/loop stack, latency. Printed every 30 s. |
+| `mem` | Memory, then filesystem usage (printed by httpd: it walks the filesystem, which the RF task never does). |
 | `scan [seconds]` / `scan stop` | Learn a Harmony Hub's address (default 120 s). Saved to NVS on success. |
 | `radio forget` | Erase the saved endpoint. |
 | `pair [seconds]` / `pair stop` | BLE pairing window (default 120 s). Forgets the current host first. |
-| `ble forget`, `ble release` | Delete bonds; release all keys. |
-| `ble tap <key>` | Tap a key from core's verified HID key table for 100 ms, e.g. `ble tap SELECT`. |
+| `ble forget` | Delete bonds. |
 | `raw on\|off` | Print raw payloads. |
 | `lat`, `lat reset` | Latency summary / clear it. |
+| `fs format` | Erase the config filesystem: records the request and reboots; the format runs at boot, before anything uses the filesystem. |
 | `wdt` | Hang the loop; the task watchdog should reboot the board in ~5 s. |
 | `reboot` | |
 
-Event lines look like `event 81234 up down (42 us)`: ms timestamp, button, kind, `timedOut` if the
-release was synthesized after 500 ms of silence, and FIFO-read-to-event latency. Events from
-`poll()` (hold, timed-out release) have no latency figure.
+The log shows each remote event and then what the engine did with it:
 
-### Latency measurement (Phase 0.3)
+```
+event 81234 up down
+action 81234 ble dev_apple key_down -> accepted
+event 81402 up up
+action 81402 ble dev_apple key_up -> accepted
+activity 90001 watch_tv
+```
+
+`timedOut` marks a release synthesized after 500 ms of radio silence. Lines are formatted on the
+RF task into a ring and printed after the hot path, and an event's line is formatted only after
+the engine has dispatched it.
+
+### Latency measurement (Phase 0.3 / 1.5)
 
 - `read->event`: `micros()` right after the payload leaves the nRF24 FIFO, to the `Down`/`Up`
-  event reaching the sink. Pure decode cost. RF-to-HID latency gets measured once the engine
-  drives BLE.
+  event reaching the engine. Decode cost.
+- `read->hid`: same start, to the HID report being queued to the NimBLE host by the engine's
+  BLE adapter. This is the full internal dispatch path (ARCHITECTURE target: p95 < 10 ms,
+  p99 < 25 ms). Only reports caused directly by a radio payload count, not timed-out releases.
 - `loop`: longest main-loop iteration and count over 5 ms. The radio is polled, so a long
-  iteration delays the FIFO read; that delay is **not** in `read->event`.
+  iteration delays the FIFO read; that delay is **not** in `read->*`.
 
-Not measured here: air time from remote to radio, and BLE link to the host. Events are buffered
-and printed after the hot path, so serial output doesn't inflate the numbers (`raw on` does).
+Not measured: air time from remote to radio, and the BLE link to the host (connection interval,
+15 ms requested).
+
+## Hardware bring-up checklist
+
+Dedicated dev board only. USB power only, never USB and PoE together.
+
+1. Fit the 10 µF capacitor across the nRF24's VCC/GND. Wire SCK 15, MISO 16, MOSI 17, CSN 18, CE 38.
+2. Flash over USB and open the serial monitor at 115200. In the boot log, check:
+   - reset reason `power-on`, 16 MB flash, about 8 MB PSRAM;
+   - `fs: blank partition, formatted` the first time, then plain `fs: mounted, …` on later boots;
+   - `radio: nRF24L01+ ready`, `ble: started as "Hubbo"`;
+   - `config: no saved config; starting empty` (first boot), `auth: no admin yet`,
+     `http: listening on port 80`;
+   - the `mem:` line. Save it as the memory baseline.
+3. Plug in Ethernet. Expect `eth: link up`, then `eth: up, IP …`. From a LAN machine:
+   - `curl -i http://<ip>/api/v1/status` and `curl -i http://hubbo-<mac>.local/api/v1/status`
+     should both answer, with the status JSON or 401 as `api/openapi.yaml` says.
+   - Sending `-H 'Host: evil.example'` should get 421.
+   - The console's `status` shows the request count.
+   - Create the admin through the API (setup) and log in. That proves NVS secrets and RNG entropy.
+4. Type `scan` and press the Hub's pair button. Expect `found Harmony Hub`. Reboot: it listens
+   again from NVS.
+5. Press, hold and release buttons. With an empty config every event is unbound: you see `event`
+   lines, and `status` shows them as `unbound`. A held button gives `hold` at 800 ms. No `up`
+   should carry `timedOut`.
+6. Type `pair`, and on the Apple TV pick "Hubbo" (Settings > Remotes and Devices > Bluetooth).
+   Expect `ble: paired with …`; `status` shows `ble: connected`.
+7. Through the API, register the Apple TV as a `ble` device and create an activity that binds
+   the d-pad to `key_down`/`key_up`, then activate it through the API. Hold Up. Expect `action … key_down -> accepted`,
+   tvOS repeating, and `key_up` on release. `lat` gives `read->hid` p50/p95/p99. Record them.
+8. Hold a d-pad button and turn the Apple TV off or walk out of range. After it reconnects
+   no key may be stuck.
+9. With RF in use, drive HTTP traffic (for example `curl` in a loop). `loop: max gap` and
+   `read->hid` should not move.
+10. Type `wdt` and expect a reboot with reset reason `task watchdog`.
+11. Leave it running for 30 minutes with Ethernet up. Minimum free heap should be stable and
+    bad checksums flat.
+12. Reboot. The boot log shows `config: ok, generation N`, and `GET /api/v1/activities` lists the
+    same activities.
+13. Activate an activity and wait more than 5 s. Reboot (`reboot`, or power cycle). The boot log
+    shows `activity: restored <id> (no startup)`, and there are no `action` lines for its startup.
+    The remote's bindings work straight away. Then turn it off (API or the remote), wait over 5 s,
+    reboot, and expect `activity: none saved`.
+14. Switch activity, then immediately reboot via OTA or `reboot` (within the 5 s debounce). The
+    pending write is flushed first, so the new activity is restored. A power cut inside the window
+    may still restore the previous one; that's the debounce.
+15. Pull power during a save (repeat it several times), for example while a script PUTs an activity
+    in a loop. Every boot must show `config: ok` with either the old or the new generation, never
+    `blocked` or `fresh`. An edit the API acknowledged must never be lost.
+16. Corrupt one slot: with the board off, flash garbage over part of the `spiffs` partition (or
+    truncate `config.a` in a test build). Boot falls back to the other intact slot. With both
+    slots corrupt, expect `config: fresh`. Corrupting the whole filesystem gives
+    `fs: MOUNT FAILED` and `config: storage_unavailable`; edits return errors; `fs format` recovers.
+17. Restore a config record with a newer `schema_version` (written with `hub-sim write-record` and
+    copied over). Expect `config: blocked, unsupported_schema`, nothing active, and every edit
+    refused until a restore or factory reset.
+19. Unreadable records are errors, not "missing". With a slot file that exists but can't be read
+    (corrupt LittleFS metadata from a power cut, or a debug build that makes `config.a`
+    unreadable), boot must show `config: storage_unavailable` and never `fresh`. esp_littlefs must
+    report anything other than a truly missing file as an error (only ENOENT counts as NotFound).
+    Core's `failReads` suite proves the shared code on the host; only the board proves what
+    esp_littlefs returns.
+22. Blank partition: erase the `spiffs` partition (`esptool erase_region 0xC90000 0x360000`) and
+    boot. Expect `fs: blank partition, formatted` once, then `config: fresh`. The next boot shows a
+    plain mount.
+23. Damaged, non-blank partition: write a few KB of garbage at the start of the partition so
+    LittleFS can't mount it. Boot must show `fs: MOUNT FAILED; not blank, so not formatted` and
+    `config: storage_unavailable`. The data is untouched (read the partition back to check), and
+    it stays that way across reboots until `fs format`.
+24. Reboots never block the radio loop: run `reboot` while an API request is in flight (for
+    example a slow login). Expect `reboot requested (console)`, then `restarting` from httpd after
+    the active activity is flushed. Also try `fs format`, and an OTA upload (the board restarts
+    after `ota: update written`, through the same path). An OTA upload longer than 5 s must not
+    trip the task watchdog. Kill espota mid-transfer: expect `ota: error …` and the hub carries on
+    (radio and API working). Pause espota mid-transfer (`kill -STOP`): within about 5 s,
+    ArduinoOTA gives up (`ota: error`) or the watchdog reboots the hub (reset reason
+    `task watchdog`). It must never hang.
+25. A format request that can't be cleared. In a debug build, make clearing `hubbo-fs/format_req`
+    fail (or fill NVS so the write fails), then run `fs format`. The boot must log
+    `fs: !!! FORMAT REQUESTED BUT NOT DONE`, keep the filesystem and its records intact, and do
+    the same on every later boot. It must never format in a loop.
+26. The RF task never touches NVS or the filesystem while running. During a burst of API writes
+    (create a token, change the password, PUT activities in a loop), hold a d-pad button and run
+    `status`, `mem`, `scan`, `radio forget`, `ble forget` and `pair`. `loop: max gap` must stay
+    small: NVS and LittleFS work, and the `mem` filesystem usage, run on httpd. (OTA's image
+    write is the one exception; it happens inside `handle()` by design.)
+21. Storage recovery. Boot with LittleFS unreadable (mount works but the slots can't be read,
+    e.g. a flaky flash or an injected read fault in a debug build): expect
+    `config: storage_unavailable`, nothing active, edits refused. When the medium reads again,
+    the 1 Hz httpd tick's `refresh()` logs `config: storage back, now ok` with the same generation,
+    and nothing was rewritten (slot files unchanged). A filesystem that didn't mount at all stays
+    unavailable until `fs format`: the firmware doesn't remount while running.
+20. Secrets the same way: erase or corrupt the `hubbo-secret` NVS namespace partially (or fill
+    NVS). Boot must show `auth: unavailable` or `corrupt` with login and setup refused, never
+    `fresh`. On a factory-fresh board, `auth: fresh` with setup open.
+18. Restore a backup over 40 KB (16 activities with about 20 bindings each) through the API. It
+    must succeed, and anything over the restore route's limit must get 413 before the body is read.

@@ -1,7 +1,8 @@
 #pragma once
 
 // Onboard W5500 Ethernet with DHCP. Non-blocking: begin() starts the
-// driver and returns; link and address changes are logged from loop().
+// driver and returns; loop() polls link and address every 250 ms, logs
+// changes and caches them, so the getters below cost no driver call.
 //
 // Same arduino-esp32 3.x ETH call as Harmonizer's src/network_link.cpp
 // (soaresbrun0/Harmonizer, AGPL-3.0), without its blocking wait for DHCP.
@@ -25,18 +26,29 @@ public:
     bool begin(const char *hostname);
     void loop(uint32_t nowMs);
 
-    State state() const;
+    // As of the last loop().
+    State state() const { return state_; }
+    bool up() const { return state_ == State::Up; }
+    IPAddress ip() const { return ip_; }
+    const char *ipText() const { return ipText_; }  // "" when not up
     static const char *stateName(State state);
-    IPAddress ip() const;
-    uint16_t linkSpeedMbps() const;
-    bool fullDuplex() const;
+    uint16_t linkSpeedMbps() const;  // driver call
 
-    // As of the last loop(): link up with an address. Cheap (no driver call).
-    bool up() const { return lastState_ == State::Up; }
+    // True once after each new address (DHCP lease, renewal to a new IP).
+    bool takeAddressChange() {
+        const bool changed = addressChanged_;
+        addressChanged_ = false;
+        return changed;
+    }
 
 private:
+    State poll() const;
+
     bool started_ = false;
-    State lastState_ = State::Off;
+    State state_ = State::Off;
+    IPAddress ip_;
+    char ipText_[16] = {};
+    bool addressChanged_ = false;
     uint32_t lastCheckMs_ = 0;
 };
 

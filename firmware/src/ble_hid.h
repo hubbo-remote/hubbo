@@ -3,9 +3,8 @@
 // Bluetooth LE HID keyboard + consumer control (HID over GATT, NimBLE).
 //
 // The radio side of BLE HID only: link, pairing and sending reports. It holds
-// no key state. Which keys are down is the core's BleHidAdapter's job; this
-// class is shaped to back its HidTransport (connected / sendKeyboard /
-// sendConsumer) directly.
+// no key state: it is the HidTransport behind the core's BleHidAdapter, which
+// decides which keys are down.
 //
 // - One bonded host. Just Works bonding, allowed only while the pairing
 //   window is open; pairing a new host replaces the old one.
@@ -18,12 +17,16 @@
 // All methods are for the main loop only. NimBLE callbacks run on the host
 // task and only set flags that loop() picks up.
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+
+#include "hubbo/integrations/ble_hid.h"
 
 namespace hubbo::fw {
 
-class BleHid {
+class BleHid : public hubbo::integrations::HidTransport {
 public:
     enum class State : uint8_t {
         Off,        // not started (or failed)
@@ -38,13 +41,18 @@ public:
     bool begin(const char *name);
     void loop(uint32_t nowMs);
 
-    // Bonded host connected and encrypted: reports can be sent.
-    bool connected() const;
-    // Keyboard input report [modifiers, reserved, k1..k6]. False if not
-    // connected or the notify failed. Doesn't block.
-    bool sendKeyboard(const uint8_t report[8]);
-    // Consumer control usage, 0 = released.
-    bool sendConsumer(uint16_t usage);
+    // Deleting bonds writes NVS (NimBLE's bond store), which the RF task must
+    // never do: main hands those jobs to httpd. Returns false if it couldn't
+    // queue the job. Unset: done inline.
+    using Offload = std::function<bool(std::function<void()>)>;
+    void setOffload(Offload offload) { offload_ = std::move(offload); }
+
+    // HidTransport. connected(): bonded host connected and encrypted. The
+    // sends return false if not connected or the notify failed; they queue
+    // to the NimBLE host task and don't block.
+    bool connected() const override;
+    bool sendKeyboard(const uint8_t report[8]) override;
+    bool sendConsumer(uint16_t usage) override;
     // Sends empty reports (nothing held), e.g. before a reboot.
     void releaseAll();
 
@@ -68,9 +76,14 @@ public:
 
 private:
     void updateAdvertising();
+    void runBondJob(std::function<void()> job);
 
     bool started_ = false;
     bool pairing_ = false;
+    bool bondingOpen_ = false;              // pairing_ and the old bonds are gone
+    std::atomic<bool> bondsClearing_{false};  // a bond deletion is queued or running
+    Offload offload_;
+    std::function<void()> pendingBondJob_;  // waiting for room in the offload queue
     uint32_t pairingStartedMs_ = 0;
     uint32_t pairingWindowMs_ = 0;
     int bondCount_ = 0;
