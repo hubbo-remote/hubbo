@@ -90,6 +90,26 @@ it runs prevalidated compiled actions.
   but it would need a few MB of PSRAM per login. Revisit if the password hash ever leaves the
   device. Today it never does: it's not in backups, and NVS can be encrypted.
 
+### Unreadable or damaged credentials
+
+"Can't read" is never "doesn't exist" (`docs/design/persistence-and-contracts.md`, parts 1 and
+6). `auth::Credentials` has four states, and only `fresh` allows `POST /auth/setup`; anything
+else would let whoever asks first take over a hub whose real admin just can't be read:
+
+- `fresh`: the store is readable and positively has no admin.
+- `ok`: the admin (and tokens) loaded.
+- `unavailable`: the medium can't be read. Nothing can be authenticated, so protected requests,
+  login and setup get `503 storage_unavailable`.
+- `corrupt`: the secrets exist but can't be used: an intact record that doesn't decode, tokens
+  without an admin, or a record whose slots are present but none is intact (a torn or rotted
+  write). Setup and login get `409 credentials_corrupt`. The network can't repair this.
+
+The authenticator calls `Credentials::refresh()` on every request. Outside `ok` it reloads with
+backoff (at once on a medium health transition, then 1 s doubling to 60 s), so a broken store
+costs one reload a minute, not one per request. `setupAdmin()` ignores that schedule and always
+re-reads the store before deciding, so a stale `fresh` or `unavailable` never leads to a new
+admin.
+
 ### Sessions
 
 - `SessionStore`, RAM only, at most 8. A ninth login evicts the least recently used.
@@ -110,11 +130,14 @@ it runs prevalidated compiled actions.
    (`403 csrf_failed`), except login and setup, which run before a session exists.
 3. `Content-Type: application/json` is required for request bodies. Cross-site forms can't
    send that without a CORS preflight, and Hubbo sends no CORS headers, so the preflight fails.
-4. `Origin`, when present, must match the `Host` header (`originAllowed()`).
-5. **DNS rebinding:** the HTTP layer should also reject requests whose `Host` is not one of the
-   hub's own names (mDNS name, configured hostname, its IP addresses). Without this, a rebinding
-   page could read unauthenticated endpoints. Today only `/auth/session` is unauthenticated and
-   it reveals little. This check belongs to the HTTP adapter; noted here so it doesn't get lost.
+4. `Origin`, when present, must match the `Host` header (`originAllowed()`), on every unsafe
+   request, API and host-tool routes alike (`http::Router` checks it before
+   authorization).
+5. **DNS rebinding:** `http::Router::setAllowedHosts()` rejects requests whose `Host` (port
+   ignored, case-insensitive) is not one of the hub's own names, with `421 host_not_allowed`,
+   before routing. A missing Host is rejected too. hub-sim allows `localhost`, `127.0.0.1` and
+   `[::1]`; the firmware must set its IP address, mDNS name and hostname (and update the list
+   when DHCP changes the address).
 
 Bearer tokens are not sent automatically by browsers, so bearer requests skip CSRF checks.
 
@@ -125,7 +148,9 @@ Bearer tokens are not sent automatically by browsers, so bearer requests skip CS
   secret; a slow KDF would make every API call slow without adding security.
 - Lookup hashes the presented token once and compares against every stored hash in constant
   time, without stopping early at the first match.
-- `last_used_at` is updated in RAM and written to flash at most hourly, to save flash wear.
+- `last_used_at` is kept in RAM only, to save flash wear; it reads `null` again after a reboot.
+- Authentication (`api::Authenticator`): `Authorization: Bearer` wins over a cookie, and a bad
+  bearer token never falls back to the cookie.
 
 ### Login rate limiting
 
@@ -192,6 +217,13 @@ redirected to another host by editing the URL.
 
 ## Secrets at rest
 
+All core secrets go through one port, `auth::SecretStore` (`core/include/hubbo/auth/secret_store.h`):
+a small key-value interface shaped for NVS (keys up to 15 chars of `[a-z0-9_]`, values up to
+512 bytes, durable on return). `auth::Credentials` keeps the admin username and password hash
+in one key (`admin`: `<username>|<hash>`, so setup is a single atomic write) and one record per API token (`tok_<id>`: SHA-256, created time,
+name) there. hub-sim and the tests use `MemorySecretStore`; the firmware implements the port on
+NVS. Nothing secret goes into the ConfigService JSON, backups or responses.
+
 | Secret | Where | In backups | In API responses |
 |---|---|---|---|
 | Admin password hash | NVS | no | never |
@@ -234,7 +266,8 @@ it.
   secret.
 - `/status` diagnostics hold no URLs with credentials and no HA responses verbatim.
 - Backups list what they exclude (`excluded`), and restore reports what must be re-entered
-  (`requires`).
+  (`requires`). While the config is blocked, the backup is the saved config record's raw bytes
+  (`X-Hubbo-Backup: blocked-raw`); that record holds no secrets either.
 
 ## Firmware updates
 
@@ -264,13 +297,18 @@ Covered by unit tests today (`core/tests/auth_*_test.cpp`, `ha_capabilities_test
       `device_id` are refused by the schema (`api/fixtures/malicious/`, checked by
       `api/lint.sh`).
 
-Still to do when the HTTP layer and simulator exist:
+Covered over HTTP against hub-sim by `api/contract.sh` (both modes):
 
-- [ ] Auth-enabled simulator runs the same matrix over HTTP, including the malicious fixtures.
-- [ ] Body limits, JSON depth limit, `415` for non-JSON.
-- [ ] Host-header allowlist (DNS rebinding).
-- [ ] No secret in any response, log line or backup (grep the simulator's output for the test
-      secrets).
+- [x] Auth-enabled simulator: setup, login, cookie + CSRF, tokens, every admin operation 403 for
+      a token, revocation, logout, login rate limiting, cross-origin login refused.
+- [x] The malicious fixtures are refused (400/422).
+- [x] Body limits (`413`), JSON depth limit (`400`), `415` for non-JSON.
+- [x] Host-header allowlist (`421`).
+- [x] No secret-named field in any response (except the one-time token creation).
+
+Still to do:
+
+- [ ] No secret in any log line or backup (grep the simulator's output for the test secrets).
 - [ ] CI proves the ESP32 build cannot define `HUBBO_SIMULATOR_NO_AUTH`.
 - [ ] On hardware: PBKDF2 login time, TLS RAM and handshake time, `esp_fill_random` after BLE
       init.

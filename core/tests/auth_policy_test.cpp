@@ -59,7 +59,7 @@ TEST(AuthPolicy, RoleMatrix) {
         "startIntegrationPairing", "forgetIntegrationPairing", "registerDevice", "updateDevice",
         "deleteDevice", "getRemotePairing", "startRemotePairing", "cancelRemotePairing",
         "changeAdminPassword", "listTokens", "createToken", "revokeToken", "downloadBackup",
-        "restoreBackup", "getFirmwareStatus", "updateFirmware",
+        "restoreBackup", "factoryReset", "getFirmwareStatus", "updateFirmware",
     };
     const char *publicOps[] = {"login", "logout", "getSession"};
 
@@ -158,6 +158,14 @@ TEST(AuthPolicy, SimulatorBypassOnlyInSimulatorBuilds) {
                 << operationInfo(o).id;
         }
         EXPECT_EQ(as(forged, Operation::RegisterDevice, false), Decision::Unauthenticated);
+    }
+}
+
+TEST(AuthPolicy, MaxRequestBodyCoversEveryOperation) {
+    // Transports size their body buffers from this; it must cover restore.
+    EXPECT_EQ(maxRequestBody(), operationInfo(Operation::RestoreBackup).maxBody);
+    for (size_t i = 0; i < kOperationCount; i++) {
+        EXPECT_LE(operationInfo(static_cast<Operation>(i)).maxBody, maxRequestBody());
     }
 }
 

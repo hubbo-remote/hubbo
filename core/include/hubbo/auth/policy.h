@@ -7,9 +7,9 @@
 // Authorization policy for every /api/v1 operation.
 //
 // The table in policy.cpp is the data: operationId (as in api/openapi.yaml),
-// HTTP method, requirement and CSRF exemption. api/tools/validate.py (run by
-// api/lint.sh) fails if it disagrees with the spec's x-hubbo-role and
-// x-hubbo-csrf-exempt. Every route handler calls authorize() first, before
+// HTTP method, requirement, CSRF exemption and body limit. api/tools/validate.py
+// (run by api/lint.sh) fails if it disagrees with the spec's x-hubbo-role,
+// x-hubbo-csrf-exempt and x-hubbo-max-body. Every route handler calls authorize() first, before
 // reading the body; nothing else decides who may call what.
 //
 //   Public        anyone (login, logout, session)
@@ -80,6 +80,7 @@ enum class Operation : uint8_t {
     RevokeToken,
     DownloadBackup,
     RestoreBackup,
+    FactoryReset,
     GetFirmwareStatus,
     UpdateFirmware,
     Count
@@ -93,9 +94,16 @@ struct OperationInfo {
     Method method;
     Requirement requirement;
     Csrf csrf;
+    uint32_t maxBody;  // largest JSON body accepted (x-hubbo-max-body); 0 = takes no JSON body
 };
 
 const OperationInfo &operationInfo(Operation op);
+// The largest JSON body any operation accepts (today restore, 640 KiB: kMaxConfigFileBytes + 128 KiB).
+// Transports must accept bodies at least this large before routing (the
+// router then applies each operation's own limit); a smaller transport cap
+// would make some operations, e.g. restoring the hub's own backup, fail.
+// Firmware image uploads are streamed separately and not covered.
+uint32_t maxRequestBody();
 bool operationFromId(std::string_view id, Operation *out);
 
 enum class Credential : uint8_t { None, SessionCookie, BearerToken, SimulatorBypass };
@@ -126,7 +134,11 @@ constexpr bool kSimulatorNoAuthBuild =
 struct RequestContext {
     Principal principal;
     bool csrfValid = false;    // X-Hubbo-CSRF matched the session (cookie only)
-    bool adminExists = true;   // an admin account has been created
+    uint64_t sessionExpiresInMs = 0;  // cookie only: until the session expires
+    bool adminExists = true;   // an admin account is known to exist (credentials loaded Ok)
+    // The credential store couldn't be read: nobody can be authenticated, and
+    // saying 401 would tell a valid user their credentials are wrong.
+    bool credentialsUnavailable = false;
 };
 
 enum class Decision : uint8_t {
@@ -135,12 +147,17 @@ enum class Decision : uint8_t {
     Forbidden,        // 403 forbidden (e.g. API token on an admin operation)
     CsrfFailed,       // 403 csrf_failed
     SetupClosed,      // 409 setup_already_done
+    CredentialsUnavailable,  // 503 storage_unavailable: credentials can't be checked right now
 };
 
 Decision authorize(Operation op, const RequestContext &context);
+// The same decision for a route outside the API table (hub-sim's /sim/*
+// tools use AdminOnly + Check with their own method).
+Decision authorize(Requirement requirement, Csrf csrf, Method method, const RequestContext &context);
 
 int httpStatus(Decision decision);
 const char *decisionCode(Decision decision);  // API error code; "" for Allow
+const char *decisionMessage(Decision decision);  // human text for the error body
 
 bool isUnsafe(Method method);
 

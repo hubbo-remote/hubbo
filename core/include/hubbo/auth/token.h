@@ -38,9 +38,11 @@ bool issueToken(Hash &hash, RandomSource &random, IssuedToken *out);
 bool parseToken(std::string_view token, std::string_view *id);
 
 struct StoredToken {
-    std::string id;
+    std::string id;  // 8 chars; the API shows "tok_<id>"
     std::string name;
     uint8_t hash[kSha256Size];
+    int64_t createdAt = -1;   // Unix seconds, -1 = unknown (Credentials)
+    int64_t lastUsedAt = -1;  // RAM only (Credentials)
 };
 
 // The stored token matching `presented`, or nullptr. Hashes the presented
