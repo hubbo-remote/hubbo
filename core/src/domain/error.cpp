@@ -62,6 +62,7 @@ constexpr const char *kNames[] = {
     "unpaired_hold",
     "hold_not_allowed",
     "corrupt",
+    "entity_not_found",
 };
 static_assert(sizeof(kNames) / sizeof(kNames[0]) == static_cast<size_t>(ErrorCode::Count),
               "kNames must name every ErrorCode");

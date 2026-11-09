@@ -74,6 +74,7 @@ enum class ErrorCode : uint8_t {
     UnpairedHold,       // a hold command (e.g. key_down) without its release in the matching :up binding
     HoldNotAllowed,     // a hold command where nothing would release it (direct execute, startup, ...)
     Corrupt,            // a stored record exists but no copy of it is intact (never "absent")
+    EntityNotFound,     // the provider no longer knows the target (HA: entity removed or renamed)
 
     Count
 };

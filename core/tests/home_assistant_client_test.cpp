@@ -1,0 +1,452 @@
+// The HA WebSocket client against hub-sim's fake HA server: the handshake,
+// states and backoff, liveness, commands and chunked discovery.
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <string>
+#include <vector>
+
+#include "fake_ha.h"
+#include "hubbo/integrations/ha_client.h"
+
+using namespace hubbo;
+using namespace hubbo::integrations;
+using hubbo::sim::FakeHaEntity;
+using hubbo::sim::FakeHaServer;
+using hubbo::sim::FakeHaTransport;
+
+namespace {
+
+constexpr const char *kUrl = "ws://ha.local:8123/api/websocket";
+
+class ClientTest : public ::testing::Test {
+protected:
+    // The integration task's loop, in 100 ms steps.
+    void run(uint64_t ms, uint64_t step = 100) {
+        for (uint64_t t = 0; t < ms; t += step) tick(step);
+    }
+    void tick(uint64_t step = 100) {
+        now += step;
+        transport.poll(0);
+        client.poll(now);
+        transport.poll(0);
+    }
+    // Runs a discovery to its end (or `ms`); its result, Busy if unfinished.
+    ErrorCode discoverNow(HaDiscovery *out = nullptr, uint64_t ms = 40000) {
+        ErrorCode result = ErrorCode::Busy;
+        EXPECT_EQ(client.discover([&](ErrorCode e, HaDiscovery d) {
+                      result = e;
+                      if (out != nullptr) *out = std::move(d);
+                  }),
+                  ErrorCode::Ok);
+        for (uint64_t t = 0; t < ms && result == ErrorCode::Busy; t += 100) tick();
+        return result;
+    }
+    void connect() {
+        client.configure(kUrl, server.token);
+        run(300);
+        ASSERT_EQ(client.state(), HaState::Connected);
+    }
+
+    FakeHaServer server;
+    FakeHaTransport transport{server};
+    uint64_t now = 0;
+    HomeAssistantClient client{transport, [this] { return now; }};
+};
+
+ha::ServiceCall turnOn(const char *entity = "light.family_room") {
+    ha::ServiceCall call;
+    call.domain = "light";
+    call.service = "turn_on";
+    call.entityId = entity;
+    ha::ServiceField f;
+    f.key = "brightness";
+    f.value.kind = ha::ServiceValue::Kind::Int;
+    f.value.integer = 128;
+    call.data.push_back(f);
+    return call;
+}
+
+}  // namespace
+
+TEST_F(ClientTest, ASlowConnectStillAuthenticates) {
+    // A TLS connect that takes 12 s inside transport.poll(), and the
+    // handshake spread over the following polls: the auth deadline counts
+    // from the clock after the connect, not from the poll before it.
+    transport.maxEventsPerPoll = 1;
+    transport.beforeConnected = [&] { now += 12000; };
+    client.configure(kUrl, server.token);
+    run(500);
+    EXPECT_EQ(client.state(), HaState::Connected);
+    EXPECT_EQ(transport.connectAttempts, 1);
+}
+
+TEST_F(ClientTest, VerifyTlsReachesTheTransportAndAChangeReconnects) {
+    connect();
+    EXPECT_TRUE(transport.lastOptions.verifyTls);
+    client.configure(kUrl, server.token, false);
+    run(300);
+    EXPECT_EQ(client.state(), HaState::Connected);
+    EXPECT_FALSE(transport.lastOptions.verifyTls);
+    EXPECT_EQ(transport.connectAttempts, 2);
+}
+
+TEST_F(ClientTest, NotConfiguredUntilItHasAUrlAndAToken) {
+    run(5000);
+    EXPECT_EQ(client.state(), HaState::NotConfigured);
+    EXPECT_EQ(transport.connectAttempts, 0);
+    client.configure(kUrl, "");
+    run(5000);
+    EXPECT_EQ(client.state(), HaState::NotConfigured);
+    EXPECT_STREQ(haStateName(client.state()), "not_configured");
+}
+
+TEST_F(ClientTest, AWssUrlIsPassedThroughAsGiven) {
+    // An https HA: homeAssistantSocketUrl() gives wss://, the transport does TLS.
+    const std::string url = "wss://ha.example.org/api/websocket";
+    client.configure(url, server.token);
+    run(300);
+    EXPECT_EQ(client.state(), HaState::Connected);
+    EXPECT_EQ(transport.lastUrl(), url);
+}
+
+TEST_F(ClientTest, AuthenticatesAndNeverLeaksTheToken) {
+    connect();
+    EXPECT_EQ(transport.lastUrl(), kUrl);
+    EXPECT_EQ(server.authAttempts(), 1);
+    for (const std::string &m : server.received()) {
+        EXPECT_EQ(m.find(server.token), std::string::npos) << m;
+    }
+    EXPECT_NE(server.received().front().find("<redacted>"), std::string::npos);
+    EXPECT_STREQ(haStateName(HaState::Connected), "connected");
+}
+
+TEST_F(ClientTest, ABadTokenIsAuthFailedAndNotRetriedUntilTheConfigChanges) {
+    client.configure(kUrl, "wrong");
+    run(300);
+    EXPECT_EQ(client.state(), HaState::AuthFailed);
+    run(10 * 60 * 1000, 1000);
+    EXPECT_EQ(server.connections(), 1);  // no retry
+    client.configure(kUrl, server.token);
+    run(300);
+    EXPECT_EQ(client.state(), HaState::Connected);
+}
+
+TEST_F(ClientTest, UnreachableRetriesBackOffFrom1sTo60s) {
+    server.reachable = false;
+    client.configure(kUrl, server.token);
+    std::vector<uint64_t> attempts;
+    for (int i = 0; i < 3000; i++) {  // 300 s
+        const int before = transport.connectAttempts;
+        tick();
+        if (transport.connectAttempts != before) attempts.push_back(now);
+    }
+    EXPECT_EQ(client.state(), HaState::Unreachable);
+    // First at once, then +1, +2, +4 ... capped at +60 s.
+    const std::vector<uint64_t> expected = {100, 1100, 3100, 7100, 15100, 31100, 63100, 123100, 183100, 243100};
+    EXPECT_EQ(attempts, expected);
+    // Back: it reconnects at the next retry, and the backoff starts over.
+    server.reachable = true;
+    run(60000);
+    EXPECT_EQ(client.state(), HaState::Connected);
+}
+
+TEST_F(ClientTest, ADroppedConnectionReconnectsAfterASecond) {
+    connect();
+    transport.dropConnection();
+    tick();
+    EXPECT_EQ(client.state(), HaState::Unreachable);
+    run(1100);
+    EXPECT_EQ(client.state(), HaState::Connected);
+    EXPECT_EQ(server.connections(), 2);
+}
+
+TEST_F(ClientTest, PingsEvery30sAndAMissingPongMeansUnreachable) {
+    connect();
+    run(31000);
+    int pings = 0;
+    for (const std::string &m : server.received()) pings += m.find("\"ping\"") != std::string::npos ? 1 : 0;
+    EXPECT_EQ(pings, 1);
+    EXPECT_EQ(client.state(), HaState::Connected);  // pong arrived
+
+    // Silence: the next ping (30 s after the last pong) gets no answer, and
+    // 10 s later the connection is given up.
+    server.answerPings = false;
+    const uint64_t lastPong = 30100;  // auth_ok at 100, ping at 30100, pong at once
+    while (client.state() == HaState::Connected && now < 200000) tick();
+    EXPECT_EQ(now, lastPong + HomeAssistantClient::kPingIntervalMs + HomeAssistantClient::kPongTimeoutMs);
+    EXPECT_EQ(client.state(), HaState::Unreachable);
+    run(1100);  // the backoff's first retry
+    EXPECT_EQ(client.state(), HaState::Connected);
+    EXPECT_EQ(server.connections(), 2);
+}
+
+TEST_F(ClientTest, CallServiceResults) {
+    std::vector<ErrorCode> results;
+    auto record = [&](ErrorCode e) { results.push_back(e); };
+    EXPECT_EQ(client.callService(turnOn(), record), ErrorCode::AdapterUnavailable);  // not connected
+    connect();
+    ASSERT_EQ(client.callService(turnOn(), record), ErrorCode::Ok);
+    tick();
+    server.failing.insert("light.turn_on");
+    ASSERT_EQ(client.callService(turnOn(), record), ErrorCode::Ok);
+    tick();
+    EXPECT_EQ(results, (std::vector<ErrorCode>{ErrorCode::Ok, ErrorCode::AdapterFailed}));
+    EXPECT_EQ(server.calls().front(), "light.turn_on light.family_room brightness=128");
+}
+
+TEST_F(ClientTest, CallsTimeOutAndAreBounded) {
+    connect();
+    server.answerCommands = false;
+    std::vector<ErrorCode> results;
+    for (size_t i = 0; i < HomeAssistantClient::kMaxPendingCommands; i++) {
+        ASSERT_EQ(client.callService(turnOn(), [&](ErrorCode e) { results.push_back(e); }), ErrorCode::Ok);
+    }
+    EXPECT_EQ(client.callService(turnOn(), [&](ErrorCode e) { results.push_back(e); }), ErrorCode::QueueFull);
+    run(HomeAssistantClient::kCommandTimeoutMs - 200);
+    EXPECT_TRUE(results.empty());
+    run(400);
+    ASSERT_EQ(results.size(), HomeAssistantClient::kMaxPendingCommands);
+    for (ErrorCode e : results) EXPECT_EQ(e, ErrorCode::AdapterTimeout);
+}
+
+TEST_F(ClientTest, ADropFailsCallsInFlight) {
+    connect();
+    server.answerCommands = false;
+    std::vector<ErrorCode> results;
+    ASSERT_EQ(client.callService(turnOn(), [&](ErrorCode e) { results.push_back(e); }), ErrorCode::Ok);
+    transport.dropConnection();
+    tick();
+    EXPECT_EQ(results, (std::vector<ErrorCode>{ErrorCode::AdapterUnavailable}));
+}
+
+TEST_F(ClientTest, DiscoveryWalksTheResultsInStepsAndKeepsOnlySupportedDomains) {
+    server.fillerEntities = 600;  // sensors: not offered, but parsed past
+    sim::FakeHaEntity unregistered;
+    unregistered.info.entityId = "switch.porch";
+    unregistered.friendlyName = "Porch";
+    unregistered.registered = false;
+    server.addEntity(unregistered);
+    sim::FakeHaEntity disabled;
+    disabled.info.entityId = "light.attic";
+    disabled.disabled = true;
+    server.addEntity(disabled);
+    sim::FakeHaEntity named;
+    named.info.entityId = "media_player.den";
+    named.friendlyName = "Den speaker";
+    named.name = "Den";
+    named.platform = "sonos";
+    named.uniqueId = "RINCON_1";
+    server.addEntity(named);
+    connect();
+
+    int yields = 0;
+    client.setYield([&] { yields++; });
+    bool done = false;
+    ErrorCode result = ErrorCode::Internal;
+    HaDiscovery discovery;
+    ASSERT_EQ(client.discover([&](ErrorCode e, HaDiscovery d) {
+                  done = true;
+                  result = e;
+                  discovery = std::move(d);
+              }),
+              ErrorCode::Ok);
+    EXPECT_EQ(client.discover(nullptr), ErrorCode::Busy);
+    int polls = 0;
+    while (!done && polls < 1000) {
+        tick();
+        polls++;
+    }
+    ASSERT_TRUE(done);
+    ASSERT_EQ(result, ErrorCode::Ok);
+    EXPECT_GT(polls, 2 * 600 / static_cast<int>(HomeAssistantClient::kParseStepEntities) - 2);  // in steps
+    EXPECT_GT(yields, 10);
+
+    std::vector<std::string> ids;
+    for (const HaCandidate &c : discovery.candidates) ids.push_back(c.entityId);
+    EXPECT_TRUE(std::is_sorted(ids.begin(), ids.end()));
+    EXPECT_EQ(std::count(ids.begin(), ids.end(), "light.attic"), 0);
+    EXPECT_EQ(std::count_if(ids.begin(), ids.end(), [](const std::string &s) { return s.rfind("sensor.", 0) == 0; }), 0);
+    EXPECT_EQ(discovery.candidates.size(), server.entities().size() - 1);  // all but the disabled one
+    EXPECT_GE(discovery.skipped, 1u);
+    EXPECT_EQ(discovery.truncated, 0u);
+    EXPECT_GT(discovery.elapsedMs, 0u);
+    for (const HaCandidate &c : discovery.candidates) {
+        if (c.entityId == "media_player.den") {
+            EXPECT_EQ(c.name, "Den");
+            EXPECT_EQ(c.platform, "sonos");
+            EXPECT_EQ(c.uniqueId, "RINCON_1");
+            EXPECT_EQ(c.domain, "media_player");
+        }
+        if (c.entityId == "switch.porch") {
+            EXPECT_EQ(c.uniqueId, "");
+            EXPECT_EQ(c.name, "Porch");
+        }
+        if (c.entityId == "media_player.family_room_lg_tv") {
+            EXPECT_FALSE(c.info.sourceList.empty());
+            EXPECT_NE(c.info.supportedFeatures, 0u);
+            EXPECT_EQ(c.platform, "demo");
+        }
+    }
+    EXPECT_NE(discovery.services.find("\"media_player\""), std::string::npos);
+    EXPECT_EQ(discovery.services.front(), '{');
+}
+
+TEST_F(ClientTest, AnOversizedMessageFailsTheDiscoveryAndTheClientRecovers) {
+    server.fillerEntities = 200;
+    connect();
+    transport.maxMessageBytes = 8 * 1024;  // the platform's cap, scaled down
+    EXPECT_EQ(discoverNow(nullptr, 500), ErrorCode::AdapterUnavailable);
+    transport.maxMessageBytes = 4 * 1024 * 1024;
+    run(1500);
+    EXPECT_EQ(client.state(), HaState::Connected);
+}
+
+TEST_F(ClientTest, ADiscoveryThatGetsNoAnswerTimesOut) {
+    connect();
+    server.answerCommands = false;
+    server.answerPings = true;
+    EXPECT_EQ(discoverNow(nullptr, HomeAssistantClient::kDiscoveryTimeoutMs + 200), ErrorCode::AdapterTimeout);
+}
+
+TEST_F(ClientTest, TheDiscoveryMailboxWorksFromAnyTask) {
+    HaDiscovery out;
+    ErrorCode error = ErrorCode::Ok;
+    EXPECT_EQ(client.requestDiscovery(), ErrorCode::AdapterUnavailable);
+    connect();
+    ASSERT_EQ(client.requestDiscovery(), ErrorCode::Ok);
+    EXPECT_EQ(client.requestDiscovery(), ErrorCode::Busy);
+    EXPECT_EQ(client.takeDiscovery(&out, &error), DiscoveryStatus::Running);
+    run(2000);
+    ASSERT_EQ(client.takeDiscovery(&out, &error), DiscoveryStatus::Done);
+    EXPECT_FALSE(out.candidates.empty());
+    EXPECT_EQ(client.takeDiscovery(&out, &error), DiscoveryStatus::Idle);
+
+    // Cancel: before it starts, and while it runs.
+    ASSERT_EQ(client.requestDiscovery(), ErrorCode::Ok);
+    client.cancelDiscovery();
+    EXPECT_EQ(client.takeDiscovery(&out, &error), DiscoveryStatus::Idle);
+    run(2000);
+    EXPECT_EQ(client.takeDiscovery(&out, &error), DiscoveryStatus::Idle);
+
+    server.fillerEntities = 600;
+    ASSERT_EQ(client.requestDiscovery(), ErrorCode::Ok);
+    tick();
+    tick();
+    client.cancelDiscovery();
+    run(5000);
+    EXPECT_EQ(client.takeDiscovery(&out, &error), DiscoveryStatus::Idle);
+    EXPECT_FALSE(client.hasWork());
+
+    // A failure is reported once.
+    server.answerCommands = false;
+    ASSERT_EQ(client.requestDiscovery(), ErrorCode::Ok);
+    run(HomeAssistantClient::kDiscoveryTimeoutMs + 500);
+    EXPECT_EQ(client.takeDiscovery(&out, &error), DiscoveryStatus::Failed);
+    EXPECT_EQ(error, ErrorCode::AdapterTimeout);
+    EXPECT_EQ(client.takeDiscovery(&out, &error), DiscoveryStatus::Idle);
+    EXPECT_STREQ(discoveryStatusName(DiscoveryStatus::Failed), "failed");
+}
+
+TEST_F(ClientTest, OnlyTheCurrentGenerationIsPublished) {
+    connect();
+    HaDiscovery out;
+    ErrorCode error = ErrorCode::Ok;
+    const uint32_t first = client.discoveryGeneration();
+    ASSERT_EQ(client.requestDiscovery(), ErrorCode::Ok);
+    EXPECT_NE(client.discoveryGeneration(), first);
+    // Run up to the last command: its answer is queued, not yet delivered.
+    const auto servicesSent = [&] { return server.received().back().find("get_services") != std::string::npos; };
+    for (int i = 0; i < 400 && !servicesSent(); i++) {
+        now += 100;
+        transport.poll(0);
+        client.poll(now);
+    }
+    ASSERT_TRUE(servicesSent());
+    client.cancelDiscovery();  // from another task, before that answer arrives
+    run(1000);
+    EXPECT_EQ(client.takeDiscovery(&out, &error), DiscoveryStatus::Idle);
+
+    // The next one publishes, tagged with its generation.
+    ASSERT_EQ(client.requestDiscovery(), ErrorCode::Ok);
+    run(2000);
+    ASSERT_EQ(client.takeDiscovery(&out, &error), DiscoveryStatus::Done);
+    EXPECT_EQ(out.generation, client.discoveryGeneration());
+
+    // New settings (maybe another HA): a finished result is thrown away and
+    // the generation moves on, so a cache of `out` is stale.
+    ASSERT_EQ(client.requestDiscovery(), ErrorCode::Ok);
+    run(2000);
+    client.configure("ws://other.local:8123/api/websocket", server.token);
+    EXPECT_NE(out.generation, client.discoveryGeneration());
+    EXPECT_EQ(client.takeDiscovery(&out, &error), DiscoveryStatus::Idle);
+    // A running one is dropped too.
+    run(300);
+    ASSERT_EQ(client.requestDiscovery(), ErrorCode::Ok);
+    tick();
+    client.reconnect();
+    run(2000);
+    EXPECT_EQ(client.takeDiscovery(&out, &error), DiscoveryStatus::Idle);
+}
+
+TEST_F(ClientTest, AnEntityMissingFromDiscoveryIsStale) {
+    connect();
+    EXPECT_FALSE(client.entityStale("light.family_room"));  // nothing known yet
+    server.removeEntity("light.family_room");
+    // As real HA: a call to an entity it doesn't have still succeeds, so
+    // calls never tell us; discovery does.
+    ErrorCode result = ErrorCode::Internal;
+    ASSERT_EQ(client.callService(turnOn(), [&](ErrorCode e) { result = e; }), ErrorCode::Ok);
+    run(200);
+    EXPECT_EQ(result, ErrorCode::Ok);
+    EXPECT_FALSE(client.entityStale("light.family_room"));
+
+    ASSERT_EQ(discoverNow(), ErrorCode::Ok);
+    EXPECT_TRUE(client.entityStale("light.family_room"));
+    EXPECT_FALSE(client.entityStale("media_player.denon"));
+    EXPECT_TRUE(client.entityStale("light.never_existed"));
+
+    // Back in HA: the next discovery clears it; new settings forget it.
+    FakeHaEntity light;
+    light.info.entityId = "light.family_room";
+    server.addEntity(light);
+    ASSERT_EQ(discoverNow(), ErrorCode::Ok);
+    EXPECT_FALSE(client.entityStale("light.family_room"));
+    server.removeEntity("light.family_room");
+    ASSERT_EQ(discoverNow(), ErrorCode::Ok);
+    ASSERT_TRUE(client.entityStale("light.family_room"));
+    client.reconnect();
+    tick();
+    EXPECT_FALSE(client.entityStale("light.family_room"));
+}
+
+TEST_F(ClientTest, NewSettingsReconnectAtOnceNotAfterTheBackoff) {
+    connect();
+    const int before = server.connections();
+    client.configure("wss://other.example/api/websocket", server.token);
+    tick();  // close, and the close arrives
+    tick();  // connect, auth
+    tick();
+    EXPECT_EQ(client.state(), HaState::Connected);
+    EXPECT_EQ(server.connections(), before + 1);
+    EXPECT_EQ(transport.lastUrl(), "wss://other.example/api/websocket");
+}
+
+TEST_F(ClientTest, ABigHomeFitsAndOverTheCapIsReportedNotSilent) {
+    // More switches than kMaxCandidates.
+    const size_t extra = HomeAssistantClient::kMaxCandidates + 10;
+    for (size_t i = 0; i < extra; i++) {
+        FakeHaEntity e;
+        e.info.entityId = "switch.s" + std::to_string(10000 + i);
+        server.addEntity(e);
+    }
+    connect();
+    HaDiscovery discovery;
+    ASSERT_EQ(discoverNow(&discovery), ErrorCode::Ok);
+    EXPECT_EQ(discovery.candidates.size(), HomeAssistantClient::kMaxCandidates);
+    EXPECT_EQ(discovery.candidates.size() + discovery.truncated, server.entities().size());
+    // Left out of the list is not the same as gone from HA.
+    for (const FakeHaEntity &e : server.entities()) {
+        EXPECT_FALSE(client.entityStale(e.info.entityId)) << e.info.entityId;
+    }
+}
