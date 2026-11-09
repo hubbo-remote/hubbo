@@ -1,6 +1,7 @@
 #include "hubbo/ha/capabilities.h"
 
 #include "hubbo/domain/limits.h"
+#include "hubbo/ha/snapshot.h"
 
 namespace hubbo::ha {
 
@@ -53,26 +54,38 @@ constexpr const char *kForbiddenNames[] = {
     "target",    "data",      "service", "service_data", "domain",
 };
 
+}  // namespace
+
+// Drafts are named in the header (EntityCapabilities::build), so they live
+// outside the anonymous namespace.
 struct ParamDraft {
-    ParamSpec spec;
-    const char *field;                 // HA service data key
+    ParamDraft() = default;
+    ParamDraft(ParamSpec s, std::string f, std::vector<std::string> o = {})
+        : spec(s), field(std::move(f)), options(std::move(o)) {}
+
+    ParamSpec spec{};
+    std::string field;                 // HA service data key
     std::vector<std::string> options;  // Enum only
+    std::string name, label, unit;     // owned (snapshot services); else spec's static strings
 };
 
 struct CommandDraft {
-    const CommandDef *def;
+    std::string id, domain, service;
     std::vector<ParamDraft> params;
 };
 
-// Collects the commands an entity gets, by allowlist id.
+// Collects the commands an entity gets: allowlist ids, then snapshot services.
 struct Drafts {
     std::vector<CommandDraft> items;
 
     CommandDraft &add(const char *id, std::vector<ParamDraft> params = {}) {
-        items.push_back({findDef(id), std::move(params)});
+        const CommandDef *def = findDef(id);
+        items.push_back({def->id, def->domain, def->service, std::move(params)});
         return items.back();
     }
 };
+
+namespace {
 
 bool isLowerAlnumUnderscore(char c) {
     return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
@@ -168,8 +181,18 @@ void light(const EntityInfo &e, Drafts &out) {
     }
 }
 
-// Keeps usable enum options; counts the rest. False if none are left.
-bool filterOptions(std::vector<std::string> &options, size_t *dropped) {
+
+}  // namespace
+
+bool isHaName(std::string_view name) {
+    if (name.empty() || name.size() > 32 || name[0] < 'a' || name[0] > 'z') return false;
+    for (char c : name) {
+        if (!isLowerAlnumUnderscore(c)) return false;
+    }
+    return true;
+}
+
+bool filterEnumOptions(std::vector<std::string> &options, size_t *dropped) {
     std::vector<std::string> kept;
     for (auto &option : options) {
         bool duplicate = false;
@@ -184,8 +207,6 @@ bool filterOptions(std::vector<std::string> &options, size_t *dropped) {
     options = std::move(kept);
     return !options.empty();
 }
-
-}  // namespace
 
 bool isValidEntityId(std::string_view id) {
     if (id.empty() || id.size() > limits::kMaxProviderRefLength) {
@@ -211,11 +232,9 @@ EntityDomain entityDomain(std::string_view id) {
     return EntityDomain::Unsupported;
 }
 
-EntityCapabilities EntityCapabilities::fromEntity(const EntityInfo &entity) {
-    EntityCapabilities caps;
-    caps.entityId_ = entity.entityId;
+namespace {
 
-    Drafts drafts;
+void builtins(const EntityInfo &entity, Drafts &drafts) {
     switch (entityDomain(entity.entityId)) {
         case EntityDomain::MediaPlayer: mediaPlayer(entity, drafts); break;
         case EntityDomain::Light: light(entity, drafts); break;
@@ -225,6 +244,98 @@ EntityCapabilities EntityCapabilities::fromEntity(const EntityInfo &entity) {
             break;
         case EntityDomain::Unsupported: break;
     }
+}
+
+
+// A snapshot service as a draft, or false if it isn't safe to offer: the
+// service must belong to the entity's platform (never its domain's curated
+// services), and every field must be a valid, non-target-like param name.
+// (Decoding already validated types and ranges; this is the safety check.)
+bool serviceDraft(const SnapshotService &service, const CapabilitySnapshot &snapshot, std::string_view entityId,
+                  CommandDraft *out) {
+    const size_t dot = service.service.find('.');
+    if (dot == std::string::npos) return false;
+    const std::string domain = service.service.substr(0, dot);
+    const std::string name = service.service.substr(dot + 1);
+    if (domain != snapshot.platform || !isHaName(domain) || !isHaName(name)) return false;
+    if (entityId.substr(0, entityId.find('.')) == domain) return false;
+    if (service.fields.size() > limits::kMaxParams) return false;
+    CommandDraft draft{service.service, domain, name, {}};
+    for (const SnapshotParam &field : service.fields) {
+        if (!isHaName(field.name) || isForbiddenParamName(field.name)) return false;
+        ParamDraft param;
+        param.field = field.name;
+        switch (field.type) {
+            case SnapshotParamType::Bool: param.spec = ParamSpec::boolean(nullptr, field.required); break;
+            case SnapshotParamType::Int:
+                if (field.minimum < -2147483648.0 || field.maximum > 2147483647.0 || field.minimum > field.maximum) {
+                    return false;
+                }
+                param.spec = ParamSpec::integer(nullptr, static_cast<int32_t>(field.minimum),
+                                                static_cast<int32_t>(field.maximum), field.required,
+                                                static_cast<int32_t>(field.minimum));
+                break;
+            case SnapshotParamType::Number:
+                if (!(field.minimum <= field.maximum)) return false;
+                param.spec = ParamSpec::number(nullptr, static_cast<float>(field.minimum),
+                                               static_cast<float>(field.maximum), field.required,
+                                               static_cast<float>(field.minimum));
+                break;
+            case SnapshotParamType::Enum:
+                param.spec = ParamSpec::enumeration(nullptr, nullptr, 0, field.required);
+                param.options = field.options;
+                break;
+        }
+        param.spec.step = static_cast<float>(field.step);
+        param.name = field.name;
+        param.label = field.label;
+        param.unit = field.unit;
+        draft.params.push_back(std::move(param));
+    }
+    *out = std::move(draft);
+    return true;
+}
+
+}  // namespace
+
+EntityCapabilities EntityCapabilities::fromEntity(const EntityInfo &entity) {
+    Drafts drafts;
+    builtins(entity, drafts);
+    return build(entity.entityId, std::move(drafts));
+}
+
+EntityCapabilities EntityCapabilities::fromSnapshot(std::string_view entityId, const CapabilitySnapshot &snapshot) {
+    EntityInfo entity;
+    entity.entityId = std::string(entityId);
+    entity.supportedFeatures = snapshot.supportedFeatures;
+    entity.sourceList = snapshot.sourceList;
+    entity.soundModeList = snapshot.soundModeList;
+    entity.supportedColorModes = snapshot.supportedColorModes;
+    entity.minColorTempKelvin = snapshot.minColorTempKelvin;
+    entity.maxColorTempKelvin = snapshot.maxColorTempKelvin;
+    Drafts drafts;
+    builtins(entity, drafts);
+    size_t services = 0;
+    for (const SnapshotService &service : snapshot.services) {
+        CommandDraft draft;
+        if (services >= kMaxSnapshotServices || findDef(service.service) != nullptr ||
+            !serviceDraft(service, snapshot, entityId, &draft)) {
+            continue;
+        }
+        bool duplicate = false;
+        for (const auto &existing : drafts.items) duplicate = duplicate || existing.id == draft.id;
+        if (duplicate) continue;
+        drafts.items.push_back(std::move(draft));
+        services++;
+    }
+    return build(entityId, std::move(drafts));
+}
+
+EntityCapabilities EntityCapabilities::build(std::string_view entityId, Drafts drafts) {
+    EntityCapabilities caps;
+    caps.entityId_ = std::string(entityId);
+    // An invalid entity can't be targeted: no commands at all.
+    if (!isValidEntityId(entityId)) return caps;
 
     // Fill the owned storage first; specs hold offsets until the end.
     std::vector<size_t> firstOption;  // per params_ entry, Enum only
@@ -232,18 +343,25 @@ EntityCapabilities EntityCapabilities::fromEntity(const EntityInfo &entity) {
         bool usable = draft.params.size() <= limits::kMaxParams;
         for (auto &param : draft.params) {
             if (param.spec.type == ParamType::Enum) {
-                usable = filterOptions(param.options, &caps.droppedOptions_) && usable;
+                usable = filterEnumOptions(param.options, &caps.droppedOptions_) && usable;
             }
         }
         if (!usable) continue;
-        caps.defs_.push_back(draft.def);
+        Owned command;
+        command.id = caps.keep(std::move(draft.id));
+        command.domain = caps.keep(std::move(draft.domain));
+        command.service = caps.keep(std::move(draft.service));
+        caps.owned_.push_back(command);
         caps.firstParam_.push_back(caps.params_.size());
         for (auto &param : draft.params) {
             firstOption.push_back(caps.optionStore_.size());
             param.spec.optionCount = static_cast<uint16_t>(param.options.size());
             for (auto &option : param.options) caps.optionStore_.push_back(std::move(option));
+            if (!param.name.empty()) param.spec.name = caps.keep(std::move(param.name));
+            if (!param.label.empty()) param.spec.label = caps.keep(std::move(param.label));
+            if (!param.unit.empty()) param.spec.unit = caps.keep(std::move(param.unit));
             caps.params_.push_back(param.spec);
-            caps.fields_.push_back(param.field);
+            caps.fields_.push_back(caps.keep(std::move(param.field)));
         }
     }
 
@@ -254,12 +372,17 @@ EntityCapabilities EntityCapabilities::fromEntity(const EntityInfo &entity) {
             caps.params_[i].options = caps.optionPtrs_.data() + firstOption[i];
         }
     }
-    for (size_t i = 0; i < caps.defs_.size(); i++) {
-        const size_t end = i + 1 < caps.defs_.size() ? caps.firstParam_[i + 1] : caps.params_.size();
-        caps.commands_.push_back({caps.defs_[i]->id, caps.params_.data() + caps.firstParam_[i],
+    for (size_t i = 0; i < caps.owned_.size(); i++) {
+        const size_t end = i + 1 < caps.owned_.size() ? caps.firstParam_[i + 1] : caps.params_.size();
+        caps.commands_.push_back({caps.owned_[i].id, caps.params_.data() + caps.firstParam_[i],
                                   static_cast<uint8_t>(end - caps.firstParam_[i])});
     }
     return caps;
+}
+
+const char *EntityCapabilities::keep(std::string text) {
+    strings_.push_back(std::move(text));
+    return strings_.back().c_str();
 }
 
 CommandCatalog EntityCapabilities::catalog() const {
@@ -278,8 +401,8 @@ ErrorCode EntityCapabilities::buildServiceCall(uint16_t index, const ParamValue 
     }
 
     ServiceCall call;
-    call.domain = defs_[index]->domain;
-    call.service = defs_[index]->service;
+    call.domain = owned_[index].domain;
+    call.service = owned_[index].service;
     call.entityId = entityId_;
     call.data.reserve(command.paramCount);
     for (uint8_t i = 0; i < command.paramCount; i++) {

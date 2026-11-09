@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -110,6 +111,8 @@ struct ServiceCall {
 };
 
 struct CommandDef;  // allowlist entry (id, label, HA service); capabilities.cpp
+struct CapabilitySnapshot;  // snapshot.h
+struct Drafts;              // capabilities.cpp
 
 // Commands for one entity. Owns its option strings and spec arrays; the
 // catalog points into them, so keep the object alive (and don't copy it)
@@ -117,6 +120,11 @@ struct CommandDef;  // allowlist entry (id, label, HA service); capabilities.cpp
 class EntityCapabilities {
 public:
     static EntityCapabilities fromEntity(const EntityInfo &entity);
+    // A registered device's commands, from its stored snapshot: the
+    // allowlist for its attributes plus the snapshot's integration services
+    // (re-checked: they must belong to the snapshot's platform, with valid,
+    // non-target-like field names; others are left out). No HA needed.
+    static EntityCapabilities fromSnapshot(std::string_view entityId, const CapabilitySnapshot &snapshot);
 
     EntityCapabilities(EntityCapabilities &&) = default;
     EntityCapabilities &operator=(EntityCapabilities &&) = default;
@@ -126,7 +134,6 @@ public:
     CommandCatalog catalog() const;
     bool empty() const { return commands_.empty(); }
     const std::string &entityId() const { return entityId_; }
-
     // Enum options left out because they exceed limits::kMaxParamStringLength
     // or limits::kMaxEnumOptions. Shown in discovery so the admin knows.
     size_t droppedOptions() const { return droppedOptions_; }
@@ -143,14 +150,23 @@ public:
 
 private:
     EntityCapabilities() = default;
+    static EntityCapabilities build(std::string_view entityId, Drafts drafts);
+    const char *keep(std::string text);  // owned, address-stable string
+
+    struct Owned {
+        const char *id = nullptr;
+        const char *domain = nullptr;  // HA service domain
+        const char *service = nullptr;
+    };
 
     std::string entityId_;
+    std::deque<std::string> strings_;  // ids, labels, names, data keys (stable addresses)
     std::vector<std::string> optionStore_;
     std::vector<const char *> optionPtrs_;
     std::vector<ParamSpec> params_;
     std::vector<const char *> fields_;  // HA data key per params_ entry
     std::vector<CommandSpec> commands_;
-    std::vector<const CommandDef *> defs_;  // per command
+    std::vector<Owned> owned_;              // per command
     std::vector<size_t> firstParam_;        // per command, index into params_/fields_
     size_t droppedOptions_ = 0;
 };
@@ -165,5 +181,14 @@ const char *commandLabel(std::string_view commandId);
 // report `forbidden_param` instead. api/lint.sh checks the spec's ParamName
 // list against this one.
 bool isForbiddenParamName(std::string_view name);
+
+// ^[a-z][a-z0-9_]{0,31}$: an HA integration, service or field name as Hubbo
+// accepts it (get_services parsing, stored snapshots, the safety re-check).
+bool isHaName(std::string_view name);
+
+// Keeps usable enum options (non-empty, within kMaxParamStringLength, no
+// duplicates, at most kMaxEnumOptions) and counts the rest in `dropped`.
+// False if none are left.
+bool filterEnumOptions(std::vector<std::string> &options, size_t *dropped);
 
 }  // namespace hubbo::ha
