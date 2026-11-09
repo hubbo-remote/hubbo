@@ -18,7 +18,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "pnpm typecheck && pnpm lint && pnpm test",
-    "gen:api": "openapi-typescript ../api/openapi.yaml -o src/api/schema.gen.ts"
+    "gen:api": "openapi-typescript ../api/openapi.yaml -o src/api/schema.gen.ts",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
@@ -31,6 +32,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.29.0",
+    "@playwright/test": "1.55.0",
     "@tailwindcss/vite": "^4.1.10",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.3.0",
