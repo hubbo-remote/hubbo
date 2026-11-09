@@ -1,6 +1,7 @@
 #include "http_server.h"
 
 #include "hubbo/auth/policy.h"
+#include "console.h"
 
 #include <Arduino.h>
 #include <esp_heap_caps.h>
@@ -180,7 +181,7 @@ bool HttpServer::begin(const http::Router &router, http::RequestAuthenticator *a
 
     httpd_handle_t server = nullptr;
     if (httpd_start(&server, &config) != ESP_OK) {
-        Serial.println("http: server failed to start");
+        con.println("http: server failed to start");
         return false;
     }
     for (const httpd_method_t method : {HTTP_GET, HTTP_POST, HTTP_PUT, HTTP_DELETE}) {
@@ -192,7 +193,7 @@ bool HttpServer::begin(const http::Router &router, http::RequestAuthenticator *a
         httpd_register_uri_handler(server, &uri);
     }
     handle_ = server;
-    Serial.printf("http: listening on port %u (core %d, priority %u)\n", kPort, kCore, kPriority);
+    con.printf("http: listening on port %u (core %d, priority %u)\n", kPort, kCore, kPriority);
     return true;
 }
 
@@ -212,6 +213,33 @@ bool HttpServer::post(std::function<void()> fn) {
     }
     return true;
 }
+
+#ifdef HUBBO_DEV_CONSOLE
+bool HttpServer::addDebugGet(const char *uri, DebugGet handler) {
+    if (handle_ == nullptr) {
+        return false;
+    }
+    auto owned = std::make_unique<DebugGet>(std::move(handler));
+    httpd_uri_t route = {};
+    route.uri = uri;
+    route.method = HTTP_GET;
+    route.user_ctx = owned.get();
+    route.handler = [](httpd_req_t *req) -> esp_err_t {
+        const std::string_view full(req->uri);
+        const size_t queryAt = full.find('?');
+        const std::string_view query = queryAt == std::string_view::npos ? std::string_view() : full.substr(queryAt + 1);
+        const std::string body = (*static_cast<DebugGet *>(req->user_ctx))(query);
+        httpd_resp_set_type(req, "text/plain; charset=utf-8");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        return httpd_resp_send(req, body.data(), static_cast<ssize_t>(body.size()));
+    };
+    if (httpd_register_uri_handler(static_cast<httpd_handle_t>(handle_), &route) != ESP_OK) {
+        return false;
+    }
+    debugGets_.push_back(std::move(owned));
+    return true;
+}
+#endif
 
 bool HttpServer::every(uint32_t periodMs, std::function<void()> fn, std::function<bool()> due) {
     auto job = std::make_unique<Periodic>();

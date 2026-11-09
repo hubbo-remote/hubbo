@@ -13,3 +13,6 @@ dist/
 # Local settings
 .env
 .DS_Store
+
+# Personal Claude Code settings
+.claude/settings.local.json

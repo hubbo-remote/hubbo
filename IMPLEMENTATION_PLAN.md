@@ -205,12 +205,15 @@ Version 0.1 • 2026-11-04
 
 ## Phase 6 — Release and stabilization
 **6.1 GitHub Actions release:** build board-specific PlatformIO binary, bootloader/partitions or merged image, manifest, hashes, license/source notices, release notes. Pin toolchain.
+**6.1a Production OTA env:** today the only OTA build env (`waveshare_esp32_s3_eth_ota`) is the dev build with the `/debug/*` console. Release builds need an OTA-capable env without it, and `bin/hubbo ota` should be able to choose between them.
 **6.2 Browser USB installation:** ESP Web Tools compatible installer/manifest for Waveshare board; first flash without Arduino IDE.
 **6.3 Full-system soak:** 24–72 hour test with Ethernet, BLE, RF, HA reconnections, repeated activities, UI traffic; collect memory leak, watchdog, queue overflow and latency metrics.
 **6.4 Docs:** installation, wiring, first-run, pairing, API/OpenAPI, LLM agent instructions, troubleshooting, backup/OTA recovery, security threat model and explicit MVP limitations.
 **Gate:** new user can flash from browser, configure devices, create an activity, use remote, OTA update, backup/restore, and reproduce tests.
 
 ## Post-MVP backlog
+- **Manual remote endpoint (Phase 3):** set a remote's channel and address in the API and web UI, so a remote whose address is known works without a Harmony Hub.
+- **Discover an unknown remote's address without a Hub:** nRF24 promiscuous sniffing (research).
 - IR transmitter, model-specific code-set download from external legacy database, offline IR commands, optional IR learning.
 - More board profiles/build-matrix variants and Wi-Fi.
 - Multiple remotes and remote profiles.

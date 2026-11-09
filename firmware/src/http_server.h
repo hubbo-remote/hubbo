@@ -30,6 +30,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "hubbo/http/route.h"
@@ -58,6 +60,13 @@ public:
     // false skips that period without waking httpd.
     bool every(uint32_t periodMs, std::function<void()> fn, std::function<bool()> due = nullptr);
 
+#ifdef HUBBO_DEV_CONSOLE
+    // A plain-text GET outside the API router and its auth. Runs on httpd.
+    // For read-only diagnostics only. `query` is raw (not decoded).
+    using DebugGet = std::function<std::string(std::string_view query)>;
+    bool addDebugGet(const char *uri, DebugGet handler);
+#endif
+
     uint32_t requestCount() const { return requests_; }
 
 private:
@@ -71,6 +80,9 @@ private:
         std::atomic<bool> queued{false};
     };
     std::vector<std::unique_ptr<Periodic>> periodic_;  // live for the program
+#ifdef HUBBO_DEV_CONSOLE
+    std::vector<std::unique_ptr<DebugGet>> debugGets_;  // live for the program
+#endif
 
     void *handle_ = nullptr;  // httpd_handle_t
     const http::Router *router_ = nullptr;

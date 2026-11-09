@@ -1,10 +1,13 @@
 #include "ota.h"
+#include "console.h"
 
 #include <Arduino.h>
 #include <ArduinoOTA.h>
 
-#ifndef HUBBO_OTA_PASSWORD
-#define HUBBO_OTA_PASSWORD ""
+// SHA-256 of the OTA password, hex, from scripts/ota_password_hash.py. The
+// password itself is never in the image. Empty: OTA off.
+#ifndef HUBBO_OTA_PASSWORD_SHA256
+#define HUBBO_OTA_PASSWORD_SHA256 ""
 #endif
 
 namespace hubbo::fw::ota {
@@ -26,7 +29,7 @@ uint32_t transferStartMs = 0;
 }  // namespace
 
 bool enabled() {
-    return sizeof(HUBBO_OTA_PASSWORD) > 1;
+    return sizeof(HUBBO_OTA_PASSWORD_SHA256) > 1;
 }
 
 void begin(const char *hostname, void (*onStart)(), void (*onWritten)()) {
@@ -38,10 +41,10 @@ void begin(const char *hostname, void (*onStart)(), void (*onWritten)()) {
     ArduinoOTA.setHostname(hostname);
     ArduinoOTA.setMdnsEnabled(false);      // main runs mDNS for the whole hub
     ArduinoOTA.setRebootOnSuccess(false);  // onWritten -> the caller's reboot path
-    ArduinoOTA.setPassword(HUBBO_OTA_PASSWORD);
+    ArduinoOTA.setPasswordHash(HUBBO_OTA_PASSWORD_SHA256);
     ArduinoOTA.setTimeout(kReceiveTimeoutMs);
     ArduinoOTA.onStart([] {
-        Serial.println("ota: update starting");
+        con.println("ota: update starting");
         transferStartMs = millis();
         if (startHook != nullptr) {
             startHook();
@@ -54,18 +57,18 @@ void begin(const char *hostname, void (*onStart)(), void (*onWritten)()) {
         }
     });
     ArduinoOTA.onEnd([] {
-        Serial.println("ota: update written");
+        con.println("ota: update written");
         if (writtenHook != nullptr) {
             writtenHook();
         }
     });
     ArduinoOTA.onError([](ota_error_t error) {
         // Only the error class; never anything credential-related.
-        Serial.printf("ota: error %u\n", static_cast<unsigned>(error));
+        con.printf("ota: error %u\n", static_cast<unsigned>(error));
     });
     ArduinoOTA.begin();
     started = true;
-    Serial.printf("ota: enabled as %s.local\n", hostname);
+    con.printf("ota: enabled as %s.local\n", hostname);
 }
 
 void loop() {

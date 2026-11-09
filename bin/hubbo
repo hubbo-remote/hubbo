@@ -4,6 +4,7 @@
 #
 #   bin/hubbo test            build the native core and run its tests
 #   bin/hubbo fw <pio args>   PlatformIO in firmware/ (e.g. `fw run`)
+#   bin/hubbo ota <ip>        build the dev firmware and upload it over Ethernet
 #   bin/hubbo sim <args>      build and run hub-sim (`sim serve`, `sim run <script>`)
 #   bin/hubbo tsan            core + sim tests under ThreadSanitizer
 #   bin/hubbo asan            core + sim tests under AddressSanitizer + UBSan
@@ -14,6 +15,7 @@
 #   bin/hubbo web e2e [args]  Playwright e2e (HUBBO_API_TARGET=http://127.0.0.1:8780 for hub-sim)
 set -euo pipefail
 
+self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 export HOST_UID="$(id -u)" HOST_GID="$(id -g)"
 
@@ -60,7 +62,35 @@ case "$cmd" in
         native_tests toolchain build/native Debug "$@"
         ;;
     fw)
-        in_toolchain bash -c 'cd firmware && pio "$@"' _ "$@"
+        # One firmware build at a time: concurrent pio runs share firmware/.pio.
+        # Only `run` (build/upload) takes the lock; `device monitor` etc. don't.
+        in_toolchain bash -c '
+            if [ "${1:-}" = run ]; then
+                mkdir -p build
+                exec 9>build/firmware.lock
+                flock -w 600 9 || { echo "fw: another firmware build is still running (waited 10 min)" >&2; exit 1; }
+            fi
+            cd firmware && pio "$@"' _ "$@"
+        ;;
+    ota)
+        # Build the dev (_ota) firmware and upload it over Ethernet. Adds only
+        # the password handling to `fw`: read from a private file, never
+        # printed (any output line containing it is dropped).
+        ip="${1:?usage: bin/hubbo ota <board ip>}"
+        pwfile="${HUBBO_OTA_PASSWORD_FILE:-$HOME/.config/hubbo/ota-password}"
+        [ -r "$pwfile" ] || { echo "ota: no password file at $pwfile" >&2; exit 1; }
+        pw="$(<"$pwfile")"
+        [ "${#pw}" -ge 12 ] || { echo "ota: password in $pwfile is empty or too short" >&2; exit 1; }
+        echo "ota: building and uploading to $ip ..."
+        set +e
+        # The filter pattern comes from a file descriptor, so the password never
+        # appears in a process argument list.
+        HUBBO_OTA_PASSWORD="$pw" "$self" fw run -e waveshare_esp32_s3_eth_ota -t upload --upload-port "$ip" 2>&1 |
+            grep -vFf <(printf '%s\n' "$pw")
+        status=${PIPESTATUS[0]}
+        set -e
+        if [ "$status" -eq 0 ]; then echo "ota: done; the board is rebooting"; else echo "ota: FAILED (exit $status)" >&2; fi
+        exit "$status"
         ;;
     sim)
         # Build under the build-dir lock, then run a private copy, so a later

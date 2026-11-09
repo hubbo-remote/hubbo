@@ -8,12 +8,20 @@
 #include <ESPmDNS.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#ifdef HUBBO_DEV_CONSOLE
+#include <esp_core_dump.h>
+#include <esp_partition.h>
 
+#include "hubbo/auth/password.h"
+#endif
+
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <memory>
 #include <string>
 
+#include "console.h"
 #include "ble_hid.h"
 #include "board.h"
 #include "diagnostics.h"
@@ -188,6 +196,61 @@ std::unique_ptr<hubbo::api::Api> api;
 hubbo::http::Router router;
 HttpServer httpServer;
 
+#ifdef HUBBO_DEV_CONSOLE
+void addDevEndpoints();  // below, with the console commands
+#endif
+
+// Loop task priority (Arduino's default is 1). Above every task without a
+// core affinity (the W5500 driver's RX task runs at 15, and at 1 it took
+// core 1 for 10-17 ms at a time), so those run on core 0 and core 1 belongs
+// to the radio loop. Tasks pinned to core 1 above it (IPC, Arduino network
+// events) still preempt it, briefly.
+constexpr UBaseType_t kLoopPriority = 16;
+
+// Ethernet starts from a short task pinned to core 0, so the W5500's GPIO
+// and SPI interrupts are installed there rather than on the loop's core.
+void beginEthernetOnCore0() {
+    // Static: on a timeout the task may still finish after setup() moves on.
+    static struct {
+        SemaphoreHandle_t done;
+        UBaseType_t stackLeft;
+    } init{xSemaphoreCreateBinary(), 0};
+    constexpr uint32_t kStackBytes = 4096;
+    constexpr uint32_t kWaitMs = 10000;
+    const bool started =
+        init.done != nullptr &&
+        xTaskCreatePinnedToCore(
+            [](void *) {
+                ethernet.begin(hostname);
+                init.stackLeft = uxTaskGetStackHighWaterMark(nullptr);
+                xSemaphoreGive(init.done);
+                vTaskDelete(nullptr);
+            },
+            "eth_init", kStackBytes, nullptr, 5, nullptr, 0) == pdPASS;
+    if (!started) {
+        con.println("eth: couldn't start the core-0 init task; starting Ethernet on this core");
+        ethernet.begin(hostname);
+        return;
+    }
+    // Never block boot on it: the loop and its watchdog aren't running yet.
+    // On a timeout the task may still be inside ETH.begin(), so it isn't
+    // called a second time; Ethernet comes up if that call ever finishes.
+    if (xSemaphoreTake(init.done, pdMS_TO_TICKS(kWaitMs)) != pdTRUE) {
+        con.println("eth: init still running after 10 s; continuing boot without waiting");
+        return;
+    }
+    con.printf("eth: init stack %lu of %lu bytes unused\n", static_cast<unsigned long>(init.stackLeft),
+               static_cast<unsigned long>(kStackBytes));
+}
+
+// Before a restart. The console's TX timeout is 0 (never wait for the USB
+// host), and with that HWCDC's flush() drops what's queued instead of sending
+// it, so the last lines before the reboot were lost.
+void flushSerial() {
+    Serial.setTxTimeoutMs(200);
+    Serial.flush();
+}
+
 // Deliberate reboots (`reboot`, `fs format`, OTA) are requests. This task
 // never waits on another one (it alone polls the engine, which httpd may be
 // waiting on): it releases held keys itself, stops reading the radio, and
@@ -206,8 +269,8 @@ void releaseOutputs() {
 void flushAndRestart() {
     activePersister.flush(engine.activeActivityIdShared(),
                           configService && configService->state() == hubbo::config::ConfigState::Ok);
-    Serial.println("restarting");
-    Serial.flush();
+    con.println("restarting");
+    flushSerial();
     esp_restart();
 }
 
@@ -230,20 +293,20 @@ void pollReboot() {
     if (!rebooting) {
         rebooting = true;
         requestedAtMs = millis();
-        Serial.printf("reboot requested (%s)\n", why);
+        con.printf("reboot requested (%s)\n", why);
         releaseOutputs();
         if (!httpServer.running()) {
             flushAndRestart();
         }
         restartPosted = httpServer.post(&flushAndRestart);
-        Serial.println(restartPosted ? "reboot: flush queued on httpd"
+        con.println(restartPosted ? "reboot: flush queued on httpd"
                                      : "reboot: couldn't queue the flush; restarting at the deadline");
     }
     // httpd busy or the job lost: don't leave the remote dead. Restart
     // without the flush (at worst the last seconds of active-activity state).
     if (millis() - requestedAtMs >= kRestartDeadlineMs) {
-        Serial.println("reboot: deadline passed, restarting without the flush");
-        Serial.flush();
+        con.println("reboot: deadline passed, restarting without the flush");
+        flushSerial();
         esp_restart();
     }
 }
@@ -271,7 +334,7 @@ const char *resetReasonName(esp_reset_reason_t reason) {
 }
 
 void printStorage() {
-    Serial.printf("fs: %s, %lu of %lu KB used\n",
+    con.printf("fs: %s, %lu of %lu KB used\n",
                   flash_fs::mounted() ? "mounted" : "NOT MOUNTED (storage unavailable; `fs format` to fix)",
                   static_cast<unsigned long>(flash_fs::usedBytes() >> 10),
                   static_cast<unsigned long>(flash_fs::totalBytes() >> 10));
@@ -280,47 +343,47 @@ void printStorage() {
 void mountFilesystem() {
     switch (flash_fs::mount()) {
         case flash_fs::MountResult::Mounted: break;
-        case flash_fs::MountResult::FormattedBlank: Serial.println("fs: blank partition, formatted"); break;
-        case flash_fs::MountResult::FormattedOnRequest: Serial.println("fs: formatted as requested"); break;
+        case flash_fs::MountResult::FormattedBlank: con.println("fs: blank partition, formatted"); break;
+        case flash_fs::MountResult::FormattedOnRequest: con.println("fs: formatted as requested"); break;
         case flash_fs::MountResult::FormatRefusedMounted:
         case flash_fs::MountResult::FormatRefused:
-            Serial.println("fs: !!! FORMAT REQUESTED BUT NOT DONE: the request flag in NVS couldn't be cleared, so"
+            con.println("fs: !!! FORMAT REQUESTED BUT NOT DONE: the request flag in NVS couldn't be cleared, so"
                            " formatting would repeat every boot. Storage left as it was. Check NVS.");
             break;
         case flash_fs::MountResult::Failed:
-            Serial.println("fs: MOUNT FAILED; not blank, so not formatted (`fs format` to erase)");
+            con.println("fs: MOUNT FAILED; not blank, so not formatted (`fs format` to erase)");
             break;
     }
     printStorage();
 }
 
 void printConfigState(const hubbo::config::LoadReport &r) {
-    Serial.printf("config: %s", hubbo::config::configStateName(r.state));
+    con.printf("config: %s", hubbo::config::configStateName(r.state));
     if (r.generation != 0) {
-        Serial.printf(", generation %llu", static_cast<unsigned long long>(r.generation));
+        con.printf(", generation %llu", static_cast<unsigned long long>(r.generation));
     }
     if (r.migratedFrom >= 0) {
-        Serial.printf(", migrated from schema %d", r.migratedFrom);
+        con.printf(", migrated from schema %d", r.migratedFrom);
     }
     if (r.reason != hubbo::ErrorCode::Ok) {
-        Serial.printf(", %s", hubbo::errorCodeName(r.reason));
+        con.printf(", %s", hubbo::errorCodeName(r.reason));
     }
-    Serial.println();
+    con.println();
 }
 
 void printCredentialState() {
-    Serial.printf("auth: %s, secrets %s", hubbo::auth::credentialStateName(bootCredentials),
+    con.printf("auth: %s, secrets %s", hubbo::auth::credentialStateName(bootCredentials),
                   hubbo::storage::healthName(bootSecretsHealth));
     switch (bootCredentials) {
-        case hubbo::auth::CredentialState::Fresh: Serial.println(" (no admin yet: first-run setup open)"); break;
+        case hubbo::auth::CredentialState::Fresh: con.println(" (no admin yet: first-run setup open)"); break;
         case hubbo::auth::CredentialState::Ok:
-            Serial.printf(", %u API token(s)\n", static_cast<unsigned>(bootTokens));
+            con.printf(", %u API token(s)\n", static_cast<unsigned>(bootTokens));
             break;
         case hubbo::auth::CredentialState::Unavailable:
-            Serial.println(" (SECRETS UNREADABLE: login and setup refused)");
+            con.println(" (SECRETS UNREADABLE: login and setup refused)");
             break;
         case hubbo::auth::CredentialState::Corrupt:
-            Serial.println(" (SECRETS CORRUPT: login and setup refused)");
+            con.println(" (SECRETS CORRUPT: login and setup refused)");
             break;
     }
 }
@@ -339,20 +402,20 @@ void bootState() {
     const auto &config = configService->config();
     switch (bootConfig.state) {
         case hubbo::config::ConfigState::Fresh:
-            Serial.println("config: no saved config; starting empty (no activities)");
+            con.println("config: no saved config; starting empty (no activities)");
             break;
         case hubbo::config::ConfigState::Ok:
-            Serial.printf("config: %u activit%s, %u device(s)\n", static_cast<unsigned>(config.activities.size()),
+            con.printf("config: %u activit%s, %u device(s)\n", static_cast<unsigned>(config.activities.size()),
                           config.activities.size() == 1 ? "y" : "ies", static_cast<unsigned>(config.devices.size()));
             break;
         case hubbo::config::ConfigState::Blocked:
-            Serial.println("config: BLOCKED; nothing runs and edits are refused until a restore or reset");
+            con.println("config: BLOCKED; nothing runs and edits are refused until a restore or reset");
             for (const auto &issue : bootConfig.issues.issues()) {
-                Serial.printf("  %s at %s\n", hubbo::errorCodeName(issue.code), issue.path.c_str());
+                con.printf("  %s at %s\n", hubbo::errorCodeName(issue.code), issue.path.c_str());
             }
             break;
         case hubbo::config::ConfigState::StorageUnavailable:
-            Serial.println("config: STORAGE UNAVAILABLE; nothing runs and edits are refused (`fs format`)");
+            con.println("config: STORAGE UNAVAILABLE; nothing runs and edits are refused (`fs format`)");
             break;
     }
 
@@ -363,13 +426,13 @@ void bootState() {
 
     switch (report.active) {
         case hubbo::ActiveRestore::Restored:
-            Serial.printf("activity: restored %s (no startup)\n", report.activityId.c_str());
+            con.printf("activity: restored %s (no startup)\n", report.activityId.c_str());
             break;
         case hubbo::ActiveRestore::NoneSaved:
-            Serial.println("activity: none saved");
+            con.println("activity: none saved");
             break;
         case hubbo::ActiveRestore::Unknown:
-            Serial.printf("activity: unknown (%s%s%s); none active, saved value kept\n",
+            con.printf("activity: unknown (%s%s%s); none active, saved value kept\n",
                           hubbo::errorCodeName(report.reason), report.activityId.empty() ? "" : ", saved ",
                           report.activityId.c_str());
             break;
@@ -389,10 +452,13 @@ void startApi() {
     // deletion) run on httpd: the RF task never touches NVS.
     radio.setPersistRunner([](const RadioEndpoint &endpoint, bool erase) {
         if (!httpServer.post([endpoint, erase] { RemoteRadio::persistEndpoint(endpoint, erase); })) {
-            Serial.println("radio: couldn't queue saving the Hub endpoint; it won't survive a reboot");
+            con.println("radio: couldn't queue saving the Hub endpoint; it won't survive a reboot");
         }
     });
     ble.setOffload([](std::function<void()> job) { return httpServer.post(std::move(job)); });
+#ifdef HUBBO_DEV_CONSOLE
+    addDevEndpoints();
+#endif
 
     // httpd housekeeping, once a second while there's something to do:
     //  - the active activity, saved 5 s after it settles (on a change or
@@ -412,7 +478,7 @@ void startApi() {
                 configNeedsRefresh.store(state == hubbo::config::ConfigState::StorageUnavailable,
                                          std::memory_order_release);
                 if (state != hubbo::config::ConfigState::StorageUnavailable) {
-                    Serial.printf("config: storage back, now %s\n", hubbo::config::configStateName(state));
+                    con.printf("config: storage back, now %s\n", hubbo::config::configStateName(state));
                 }
             }
             seenChanges.store(activityChanges.load(std::memory_order_acquire), std::memory_order_release);
@@ -426,7 +492,7 @@ void startApi() {
                    activityChanges.load(std::memory_order_acquire) != seenChanges.load(std::memory_order_acquire);
         });
     if (!ticking) {
-        Serial.println("httpd: housekeeping timer failed; the active activity won't be saved");
+        con.println("httpd: housekeeping timer failed; the active activity won't be saved");
     }
 }
 
@@ -479,7 +545,7 @@ void publishRuntime() {
 // --- Serial console ------------------------------------------------------------
 
 void printMemory() {
-    Serial.printf("mem: heap free %lu min %lu largest %lu | internal free %lu min %lu | psram free %lu"
+    con.printf("mem: heap free %lu min %lu largest %lu | internal free %lu min %lu | psram free %lu"
                   " | loop stack left %lu\n",
                   static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()),
                   static_cast<unsigned long>(ESP.getMaxAllocHeap()),
@@ -492,15 +558,15 @@ void printMemory() {
 void printStatus() {
     const uint32_t nowMs = millis();
     const RadioEndpoint ep = radio.endpoint();
-    Serial.printf("status: up %lu s\n", static_cast<unsigned long>(nowMs / 1000));
+    con.printf("status: up %lu s\n", static_cast<unsigned long>(nowMs / 1000));
     if (radio.state() == RemoteRadio::State::Scanning) {
-        Serial.printf("  radio: scanning (channel %u)\n", radio.scanChannel());
+        con.printf("  radio: scanning (channel %u)\n", radio.scanChannel());
     } else {
-        Serial.printf("  radio: %s", RemoteRadio::stateName(radio.state()));
+        con.printf("  radio: %s", RemoteRadio::stateName(radio.state()));
         if (ep.isValid()) {
-            Serial.printf(" channel %u address 0x%010llX", ep.channel, static_cast<unsigned long long>(ep.address));
+            con.printf(" channel %u address 0x%010llX", ep.channel, static_cast<unsigned long long>(ep.address));
         }
-        Serial.printf(", %lu payloads, last %lu ms ago, %lu bad checksums, %lu unknown codes\n",
+        con.printf(", %lu payloads, last %lu ms ago, %lu bad checksums, %lu unknown codes\n",
                       static_cast<unsigned long>(radio.payloadCount()),
                       static_cast<unsigned long>(radio.payloadCount() ? nowMs - radio.lastPayloadMs() : 0),
                       static_cast<unsigned long>(input.badChecksumCount()),
@@ -508,41 +574,42 @@ void printStatus() {
     }
     const auto &es = engine.stats();
     const auto &xs = engine.executor().stats();
-    Serial.printf("  engine: %s, %lu events, %lu unbound, %lu dispatched, %lu transitions;"
+    con.printf("  engine: %s, %lu events, %lu unbound, %lu dispatched, %lu transitions;"
                   " sequences %lu ok %lu failed %lu rejected %lu timeouts\n",
                   engine.hasActiveActivity() ? engine.activeActivityId() : "(off)",
                   static_cast<unsigned long>(es.events), static_cast<unsigned long>(es.unbound),
                   static_cast<unsigned long>(es.dispatched), static_cast<unsigned long>(es.transitions),
                   static_cast<unsigned long>(xs.completed), static_cast<unsigned long>(xs.failed),
                   static_cast<unsigned long>(xs.rejected), static_cast<unsigned long>(xs.timeouts));
-    Serial.printf("  eth: %s %s, http %s (%lu requests), ota %s\n", EthernetLink::stateName(ethernet.state()),
+    con.printf("  eth: %s %s, http %s (%lu requests), ota %s\n", EthernetLink::stateName(ethernet.state()),
                   ethernet.ipText(), httpServer.running() ? "up" : "down",
                   static_cast<unsigned long>(httpServer.requestCount()), ota::enabled() ? "enabled" : "disabled");
     char peer[18];
     ble.peerAddress(peer, sizeof(peer));
-    Serial.printf("  ble: %s", BleHid::stateName(ble.state()));
+    con.printf("  ble: %s", BleHid::stateName(ble.state()));
     if (peer[0] != '\0') {
-        Serial.printf(" peer %s", peer);
+        con.printf(" peer %s", peer);
     }
     if (ble.state() == BleHid::State::Pairing) {
-        Serial.printf(" (%lu s left)", static_cast<unsigned long>(ble.pairingSecondsLeft(nowMs)));
+        con.printf(" (%lu s left)", static_cast<unsigned long>(ble.pairingSecondsLeft(nowMs)));
     }
-    Serial.printf(", notify failures %lu\n", static_cast<unsigned long>(ble.notifyFailures()));
-    Serial.print("  at boot ");  // live state: GET /api/v1/status
+    con.printf(", notify failures %lu\n", static_cast<unsigned long>(ble.notifyFailures()));
+    con.print("  at boot ");  // live state: GET /api/v1/status
     printConfigState(bootConfig);
-    Serial.print("  at boot ");
+    con.print("  at boot ");
     printCredentialState();
-    Serial.print("  ");
+    con.print("  ");
     printMemory();
     diag::printLatency();
 }
 
 void printHelp() {
-    Serial.println(
+    con.println(
         "commands (activities and devices are driven through the API):\n"
         "  status                 radio / engine / eth / ble / memory / latency\n"
         "  scan [seconds]         learn a Harmony Hub (press its pair button)\n"
         "  scan stop              stop scanning\n"
+        "  radio set <ch> <addr>  use a known Hub endpoint instead of scanning (ch 0-124, hex addr)\n"
         "  radio forget           erase the saved Hub endpoint\n"
         "  pair [seconds]         open the BLE pairing window\n"
         "  pair stop              close it\n"
@@ -550,6 +617,7 @@ void printHelp() {
         "  raw on|off             print raw radio payloads (distorts latency)\n"
         "  lat [reset]            latency summary, or clear it\n"
         "  mem                    memory and filesystem\n"
+        "  tasks                  CPU share per task since the last `tasks` (core, priority)\n"
         "  fs format              ERASE the config filesystem (reboots, formats at boot)\n"
         "  wdt                    hang the loop to test the watchdog (reboots)\n"
         "  reboot");
@@ -559,6 +627,8 @@ void runCommand(char *line) {
     const uint32_t nowMs = millis();
     char *cmd = strtok(line, " \t");
     char *arg1 = strtok(nullptr, " \t");
+    char *arg2 = strtok(nullptr, " \t");
+    char *arg3 = strtok(nullptr, " \t");
     if (cmd == nullptr) {
         return;
     }
@@ -576,32 +646,47 @@ void runCommand(char *line) {
         radio.stopScan();
     } else if (is(cmd, "scan")) {
         if (!radio.startScan(nowMs, seconds(RemoteRadio::kDefaultScanTimeoutMs))) {
-            Serial.println("radio: can't scan now (not ready or already scanning)");
+            con.println("radio: can't scan now (not ready or already scanning)");
         }
+    } else if (is(cmd, "radio") && is(arg1, "set")) {
+        // radio set <channel 0-124, decimal> <40-bit address, hex, 0x optional>
+        char *end = nullptr;
+        RadioEndpoint endpoint;
+        const unsigned long channel = arg2 ? strtoul(arg2, &end, 10) : 0;
+        const bool channelOk = arg2 != nullptr && *end == '\0' && channel <= 124;
+        const unsigned long long address = arg3 ? strtoull(arg3, &end, 16) : 0;
+        const bool addressOk = arg3 != nullptr && *end == '\0' && address <= 0xFFFFFFFFFFULL;
+        endpoint.channel = static_cast<uint8_t>(channel);
+        endpoint.address = address;
+        if (!channelOk || !addressOk || !radio.setEndpoint(endpoint)) {
+            con.println("radio: usage `radio set <channel 0-124> <40-bit hex address>`; invalid endpoint or radio not ready");
+        }  // listen() logs the endpoint
     } else if (is(cmd, "radio") && is(arg1, "forget")) {
         radio.forgetEndpoint();
     } else if (is(cmd, "pair") && is(arg1, "stop")) {
         ble.stopPairing();
-        Serial.println("ble: pairing window closed");
+        con.println("ble: pairing window closed");
     } else if (is(cmd, "pair")) {
         if (!ble.startPairing(nowMs, seconds(BleHid::kDefaultPairingWindowMs))) {
-            Serial.println("ble: not started");
+            con.println("ble: not started");
         }
     } else if (is(cmd, "ble") && is(arg1, "forget")) {
         ble.forget();
     } else if (is(cmd, "raw")) {
         diag::setRawLog(is(arg1, "on"));
-        Serial.printf("raw %s\n", diag::rawLog() ? "on" : "off");
+        con.printf("raw %s\n", diag::rawLog() ? "on" : "off");
     } else if (is(cmd, "lat") && is(arg1, "reset")) {
         diag::resetLatency();
-        Serial.println("latency reset");
+        con.println("latency reset");
     } else if (is(cmd, "lat")) {
         diag::printLatency();
+    } else if (is(cmd, "tasks")) {
+        diag::printTasks();
     } else if (is(cmd, "mem")) {
         printMemory();
         // Filesystem usage walks flash: httpd prints it.
         if (!httpServer.post(&printStorage)) {
-            Serial.println("fs: busy, try again");
+            con.println("fs: busy, try again");
         }
     } else if (is(cmd, "fs") && is(arg1, "format")) {
         // Never live: a config save may be running on httpd. The request is
@@ -610,23 +695,117 @@ void runCommand(char *line) {
             if (flash_fs::requestFormatAtBoot()) {
                 requestReboot("fs format: the format runs at boot");
             } else {
-                Serial.println("fs: couldn't record the format request; not rebooting");
+                con.println("fs: couldn't record the format request; not rebooting");
             }
         });
         if (!posted) {
-            Serial.println("fs: busy, try again");
+            con.println("fs: busy, try again");
         }
     } else if (is(cmd, "wdt")) {
-        Serial.println("hanging the loop; the task watchdog should reboot in ~5 s");
-        Serial.flush();
+        con.println("hanging the loop; the task watchdog should reboot in ~5 s");
+        flushSerial();
         for (;;) {
         }
     } else if (is(cmd, "reboot")) {
         requestReboot("console");
     } else {
-        Serial.printf("unknown command: %s (try `help`)\n", cmd);
+        con.printf("unknown command: %s (try `help`)\n", cmd);
     }
 }
+
+#ifdef HUBBO_DEV_CONSOLE
+// One read-only console command queued by GET /debug/run, run here on the
+// loop task like a typed one (its output lands in /debug/log). Nothing that
+// changes state, pairs, erases or reboots.
+constexpr const char *kDevCommands[] = {"status", "mem", "lat", "lat reset", "tasks", "help"};
+std::atomic<const char *> devCommand{nullptr};
+
+void pollDevCommand() {
+    if (devCommand.load(std::memory_order_relaxed) == nullptr) {
+        return;
+    }
+    char line[32];
+    snprintf(line, sizeof(line), "%s", devCommand.exchange(nullptr, std::memory_order_acq_rel));
+    con.printf("> %s\n", line);
+    runCommand(line);
+}
+
+std::string queryValue(std::string_view query, std::string_view key) {
+    std::string value(hubbo::http::queryParam(query, key));
+    std::replace(value.begin(), value.end(), '+', ' ');
+    return value;
+}
+
+std::string queueDevCommand(std::string_view query) {
+    const std::string name = queryValue(query, "cmd");
+    for (const char *command : kDevCommands) {
+        if (name == command) {
+            const char *expected = nullptr;
+            if (!devCommand.compare_exchange_strong(expected, command)) {
+                return "busy: a command is already queued\n";
+            }
+            return std::string("queued: ") + command + " (read /debug/log)\n";
+        }
+    }
+    std::string allowed = "allowed:";
+    for (const char *command : kDevCommands) {
+        allowed += std::string(" ") + command + ",";
+    }
+    allowed.back() = '\n';
+    return allowed;
+}
+
+// PBKDF2-HMAC-SHA256 on httpd, as a login runs it. Default: a login's cost.
+// Capped well below what would hold httpd long enough to trip the core-0
+// watchdog.
+std::string benchHash(std::string_view query) {
+    const std::string requested = queryValue(query, "iterations");
+    constexpr uint32_t kMaxBenchIterations = 20000;
+    const uint32_t iterations = requested.empty() ? hubbo::auth::kDefaultPasswordIterations
+                                                  : strtoul(requested.c_str(), nullptr, 10);
+    if (iterations == 0 || iterations > kMaxBenchIterations) {
+        return "refused: iterations must be 1-20000\n";
+    }
+    static const uint8_t kPassword[] = "benchmark-password";
+    static const uint8_t kSalt[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    uint8_t out[hubbo::auth::kSha256Size];
+    const uint32_t start = micros();
+    hash.pbkdf2Sha256(kPassword, sizeof(kPassword) - 1, kSalt, sizeof(kSalt), iterations, out, sizeof(out));
+    char text[80];
+    snprintf(text, sizeof(text), "pbkdf2-sha256 %lu iterations: %lu ms\n", static_cast<unsigned long>(iterations),
+             static_cast<unsigned long>((micros() - start) / 1000));
+    con.print(text);
+    return text;
+}
+
+// The core dump the last panic left in flash (raw partition image: header,
+// ELF, checksum). Decode with esp-coredump against that build's firmware.elf.
+std::string coreDump(std::string_view) {
+    size_t address = 0;
+    size_t size = 0;
+    if (esp_core_dump_image_get(&address, &size) != ESP_OK) {
+        return "no core dump stored\n";
+    }
+    const esp_partition_t *partition =
+        esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, nullptr);
+    if (partition == nullptr || address < partition->address || size > partition->size) {
+        return "core dump partition not found\n";
+    }
+    std::string image(size, '\0');
+    if (esp_partition_read(partition, address - partition->address, image.data(), size) != ESP_OK) {
+        return "core dump read failed\n";
+    }
+    return image;
+}
+
+void addDevEndpoints() {
+    httpServer.addDebugGet("/debug/log", [](std::string_view) { return con.recent(); });
+    httpServer.addDebugGet("/debug/run", queueDevCommand);
+    httpServer.addDebugGet("/debug/bench", benchHash);
+    httpServer.addDebugGet("/debug/coredump", coreDump);
+    con.println("debug: dev console on /debug/log, /debug/run, /debug/bench, /debug/coredump (dev build)");
+}
+#endif
 
 void pollSerial() {
     static char line[64];
@@ -648,46 +827,53 @@ void pollSerial() {
 }  // namespace
 
 void setup() {
-    Serial.begin(115200);
+    con.begin(115200);
     // Give USB CDC up to 1 s to attach so the boot log isn't lost; on PoE
     // (no USB) this times out.
     while (!Serial && millis() < 1000) {
     }
     snprintf(hostname, sizeof(hostname), "hubbo-%012llX", static_cast<unsigned long long>(ESP.getEfuseMac()));
 
-    Serial.printf("\nHubbo on %s (%s)\n", board::kName, hostname);
-    Serial.printf("reset reason: %s\n", resetReasonName(esp_reset_reason()));
-    Serial.printf("chip %s rev %u, %u cores, %lu MHz, flash %lu MB, psram %lu KB\n", ESP.getChipModel(),
+    con.printf("\nHubbo on %s (%s)\n", board::kName, hostname);
+    con.printf("reset reason: %s\n", resetReasonName(esp_reset_reason()));
+    con.printf("chip %s rev %u, %u cores, %lu MHz, flash %lu MB, psram %lu KB\n", ESP.getChipModel(),
                   ESP.getChipRevision(), ESP.getChipCores(), static_cast<unsigned long>(ESP.getCpuFreqMHz()),
                   static_cast<unsigned long>(ESP.getFlashChipSize() >> 20),
                   static_cast<unsigned long>(ESP.getPsramSize() >> 10));
-    Serial.printf("sdk %s\n", ESP.getSdkVersion());
+    con.printf("sdk %s\n", ESP.getSdkVersion());
 
     mountFilesystem();
     if (!radio.begin()) {
-        Serial.println("radio: failed; check wiring and the 10 uF capacitor. Continuing without it.");
+        con.println("radio: failed; check wiring and the 10 uF capacitor. Continuing without it.");
     }
     if (ble.begin(HUBBO_BLE_NAME)) {
         randomSource.setEntropyReady(true);  // RF is on: esp_fill_random is now secure
     } else {
-        Serial.println("ble: failed. Continuing without it; logins and tokens are refused (no RNG entropy).");
+        con.println("ble: failed. Continuing without it; logins and tokens are refused (no RNG entropy).");
     }
     if (adapters.add(bleAdapter) != hubbo::ErrorCode::Ok) {
-        Serial.println("engine: BLE adapter registration failed");
+        con.println("engine: BLE adapter registration failed");
     }
     if (!engine.ready()) {
-        Serial.println("engine: no config reader slot; remote input is inert");
+        con.println("engine: no config reader slot; remote input is inert");
     }
     engine.setObserver(&engineLog);
     bootState();
-    ethernet.begin(hostname);
+    beginEthernetOnCore0();
     startApi();
-    Serial.printf("ota: %s\n", ota::enabled() ? "compiled in, starts when Ethernet is up"
+    con.printf("ota: %s\n", ota::enabled() ? "compiled in, starts when Ethernet is up"
                                               : "disabled (no HUBBO_OTA_PASSWORD at build)");
+
+    // From here on every malloc/new tries PSRAM first, then internal RAM (the
+    // prebuilt sdkconfig only does that for blocks of 4 KB and up). A big
+    // restore's small allocations otherwise use up internal RAM. Drivers,
+    // all started above, ask for internal or DMA memory explicitly. See README.
+    heap_caps_malloc_extmem_enable(0);
 
     printMemory();
     enableLoopWDT();
-    Serial.println("ready; type `help`");
+    vTaskPrioritySet(nullptr, kLoopPriority);
+    con.println("ready; type `help`");
     diag::resetLatency();
 }
 
@@ -725,6 +911,9 @@ void loop() {
 
     diag::printLogs();
     pollSerial();
+#ifdef HUBBO_DEV_CONSOLE
+    pollDevCommand();
+#endif
 
     static uint32_t lastStatusMs = 0;
     if (nowMs - lastStatusMs >= kStatusIntervalMs) {

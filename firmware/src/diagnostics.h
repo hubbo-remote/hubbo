@@ -38,6 +38,8 @@ void eventEmitted(hubbo::remote::EventKind kind);
 // Call once per loop iteration.
 void loopTick();
 void printLatency();
+// CPU share per task (core affinity, priority) since the previous call.
+void printTasks();
 void resetLatency();
 // read->hid summary; sorts only when there are new samples.
 LatencyStats::Summary hidSummary();

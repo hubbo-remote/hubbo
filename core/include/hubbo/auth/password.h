@@ -17,14 +17,13 @@
 // JSON or backups.
 namespace hubbo::auth {
 
-// Default work factor. PBKDF2 is the only option mbedTLS gives us without
-// extra code; this is a compromise for a ~240 MHz MCU (measure login latency
-// on hardware and raise it if it's well under ~0.5 s). Login is also rate
-// limited, which matters more on a LAN appliance.
-constexpr uint32_t kDefaultPasswordIterations = 60000;
 // Accepted range when verifying a stored hash. Bounds the work an attacker
 // who can write NVS could force, and rejects absurdly weak hashes.
 constexpr uint32_t kMinPasswordIterations = 10000;
+// Default work factor for new hashes: the minimum, ~0.55 s per login on the
+// ESP32-S3 (measurements and reasoning: docs/security.md). Each hash stores
+// its own count, so hashes made with an older default still verify.
+constexpr uint32_t kDefaultPasswordIterations = kMinPasswordIterations;
 constexpr uint32_t kMaxPasswordIterations = 2000000;
 
 constexpr size_t kMinPasswordLength = 10;

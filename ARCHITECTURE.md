@@ -117,7 +117,7 @@ These are implementation investigations with tests, not reasons to reopen the ag
 - **Remote pairing:** Hubbo listens on the address of an existing Harmony Hub, learned by scanning while the Hub's pair button is pressed. A Hub is needed once per remote at setup. Pairing a remote with no Hub at all is unsolved and is not MVP.
 - **Hardware verified by the spike:** W5500 SCLK 13, MISO 12, MOSI 11, CS 14, INT 10, RST 9. nRF24 on its own SPI pins: SCK 15, MISO 16, MOSI 17, CSN 18, CE 38. The nRF24 needs a 10 µF capacitor across VCC/GND on PoE. BLE HID to Apple TV works on NimBLE-Arduino 2.5.1. Never connect USB and PoE at once.
 - **Toolchain:** all builds run in Docker (`bin/hubbo`). Firmware is pinned to PlatformIO `espressif32@8.0.0` (arduino-esp32 3.3.12). See `docs/development.md`.
-- **Dev hardware:** a dedicated third board. The two deployed Harmonizer boards are not touched.
+- **Dev hardware:** the former guest room Harmonizer board (reflashed with Hubbo; its remote is on channel 5, address `0xFC5C97550E`). The family room Harmonizer board stays untouched.
 - **Re-activating the active activity** re-runs its startup (Harmony's "fix it" behaviour).
 - **Deleting the active activity** switches to the next activity (the one that takes its list position, wrapping to the first) and runs its startup; no shutdown runs. Inactive only when none remain.
 - **Active activity survives reboot:** the active id is saved to NVS a few seconds after the last switch (only if changed, Off = none), from the config side, never the RF path. On boot the hub restores that activity's button map without running its startup. If the activity no longer exists, it boots with nothing active.

@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "board.h"
+#include "console.h"
 
 namespace hubbo::fw {
 
@@ -18,11 +19,11 @@ bool EthernetLink::begin(const char *hostname) {
     namespace pins = board::w5500;
     if (!ETH.begin(ETH_PHY_W5500, pins::kPhyAddr, pins::kCs, pins::kInt, pins::kRst, pins::kSpiHost,
                    pins::kSck, pins::kMiso, pins::kMosi)) {
-        Serial.println("eth: W5500 not responding");
+        con.println("eth: W5500 not responding");
         return false;
     }
     started_ = true;
-    Serial.printf("eth: W5500 started, MAC %s\n", ETH.macAddress().c_str());
+    con.printf("eth: W5500 started, MAC %s\n", ETH.macAddress().c_str());
     return true;
 }
 
@@ -73,14 +74,14 @@ void EthernetLink::loop(uint32_t nowMs) {
     state_ = now;
     switch (now) {
         case State::NoLink:
-            Serial.println("eth: link down");
+            con.println("eth: link down");
             break;
         case State::NoIp:
-            Serial.printf("eth: link up %u Mbps %s duplex, waiting for DHCP\n", linkSpeedMbps(),
+            con.printf("eth: link up %u Mbps %s duplex, waiting for DHCP\n", linkSpeedMbps(),
                           ETH.fullDuplex() ? "full" : "half");
             break;
         case State::Up:
-            Serial.printf("eth: %s, IP %s\n", before == State::Up ? "new address" : "up", ipText_);
+            con.printf("eth: %s, IP %s\n", before == State::Up ? "new address" : "up", ipText_);
             break;
         case State::Off:
             break;
