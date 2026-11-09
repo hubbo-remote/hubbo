@@ -215,6 +215,11 @@ export interface paths {
          *     device; the body holds only typed params checked against the command's
          *     parameter schema. `200` means the command reached the adapter; read
          *     `status`. `4xx` means nothing was sent.
+         *
+         *     Only `momentary` commands (see `effect` in capabilities). A `hold`
+         *     command such as `key_down` would leave a key held with nothing to
+         *     release it, so it gets `422` with detail code `hold_not_allowed`;
+         *     use the momentary form (`key_tap`). Bindings may use holds.
          */
         post: operations["executeCommand"];
         delete?: never;
@@ -279,8 +284,16 @@ export interface paths {
         /**
          * Run the active activity's shutdown and clear it
          * @description Same as the remote's Off button. Runs only the current activity's
-         *     shutdown sequence. With no active activity it does nothing and returns
-         *     `shutdown_actions: 0`.
+         *     shutdown sequence. With no active activity it does nothing
+         *     (`switched: false`, shutdown `none`).
+         *
+         *     `200` means it happened; read `shutdown` for whether the sequence was
+         *     queued. Never retry a `switched: true` result. `503 busy` means the
+         *     request never reached the engine, so nothing changed and a retry is
+         *     safe.
+         *     While the config is `blocked` (nothing runs) this answers `409
+         *     config_blocked`. With the store unavailable, switching still works;
+         *     the active activity just isn't saved.
          */
         post: operations["activitiesOff"];
         delete?: never;
@@ -335,6 +348,15 @@ export interface paths {
          * @description Selects the activity's mapping atomically and queues its startup
          *     sequence. Never runs the previous activity's shutdown. Activating the
          *     already active activity re-runs its startup.
+         *
+         *     `200` means the hub switched (`switched: true`), even if the startup
+         *     sequence could not be queued (`startup.status: rejected` with a
+         *     reason): don't retry it, that would run a second full transition.
+         *     `503 busy` means the request never reached the engine, so nothing
+         *     changed and a retry is safe.
+         *     While the config is `blocked` (nothing runs) this answers `409
+         *     config_blocked`. With the store unavailable, switching still works;
+         *     the active activity just isn't saved.
          */
         post: operations["activateActivity"];
         delete?: never;
@@ -587,6 +609,23 @@ export interface paths {
         /**
          * Download a backup of non-secret configuration
          * @description Excludes the admin password, API tokens, integration secrets and BLE bonds.
+         *     `X-Hubbo-Backup` says what the download is:
+         *
+         *     * `config`: the running configuration as a `Backup` (`application/json`,
+         *       `hubbo-backup-<date>.json`).
+         *     * `blocked-raw`: while `/status` `config.state` is `blocked` nothing runs,
+         *       so there is no configuration to back up. Instead the download is the
+         *       saved config record's bytes exactly as stored, untouched
+         *       (`application/octet-stream`, `hubbo-backup-BLOCKED-<date>.json`). It's
+         *       a `hubbo-config` document, not a `Backup`, and may be from newer
+         *       firmware. Keep it before a factory reset: `POST /admin/restore` takes it
+         *       back once the firmware can read it.
+         *
+         *     While `config.state` is `storage_unavailable`: if the config loaded
+         *     (or was last saved) fine and the store failed later, the running config
+         *     is the last acknowledged save and is exported as usual. Only when the
+         *     load itself couldn't read the store is there nothing trustworthy to
+         *     export: `503 storage_unavailable`, never an empty backup.
          */
         get: operations["downloadBackup"];
         put?: never;
@@ -610,10 +649,54 @@ export interface paths {
          * Validate and atomically restore a backup
          * @description Validates and migrates the whole archive, then replaces devices,
          *     activities and non-secret integration settings in one commit. On any
-         *     error nothing changes. `dry_run=true` validates only. The active
-         *     activity is cleared. Secrets must be entered again afterwards.
+         *     error nothing changes. `dry_run=true` validates only. Secrets are not
+         *     in backups: `requires` lists what to re-enter or re-pair.
+         *
+         *     A restore never starts or stops an activity. The active activity stays
+         *     active if the restored config still has an activity with its id;
+         *     otherwise the hub becomes inactive without running any startup or
+         *     shutdown commands.
+         *
+         *     The body is a `Backup`, or a `blocked-raw` download from
+         *     `GET /admin/backup` (a `hubbo-config` record). A record is accepted only
+         *     if this firmware can read it (migrating older versions). One from newer
+         *     firmware, or one this firmware can't migrate, is refused with
+         *     `422 validation_failed` (detail `unsupported_schema` at
+         *     `/schema_version`); one that doesn't parse or compile with
+         *     `422 validation_failed` and its issues. Either way nothing changes.
+         *
+         *     Every restored object is stamped with the new config generation, so
+         *     revisions in the backup are ignored (missing or 0 is fine) and any
+         *     client holding an older revision gets 409. Restore works while the
+         *     config is `blocked`.
          */
         post: operations["restoreBackup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reset the configuration to factory defaults
+         * @description Replaces devices, activities, global bindings and integration
+         *     settings with the defaults, stamped with a new generation (so every
+         *     client's old revisions get 409). Works while the config is `blocked`.
+         *     Credentials, tokens and pairings are kept. Like a restore it never
+         *     starts or stops an activity: the active activity stays active if the
+         *     defaults have an activity with its id, otherwise the hub becomes
+         *     inactive without running any startup or shutdown commands.
+         */
+        post: operations["factoryReset"];
         delete?: never;
         options?: never;
         head?: never;
@@ -706,7 +789,7 @@ export interface components {
          */
         Trigger: string;
         /** @enum {string} */
-        ErrorCode: "malformed_json" | "validation_failed" | "unsupported_media_type" | "payload_too_large" | "unauthenticated" | "invalid_credentials" | "forbidden" | "csrf_failed" | "rate_limited" | "not_found" | "revision_conflict" | "device_in_use" | "limit_reached" | "busy" | "setup_required" | "setup_already_done" | "integration_unavailable" | "not_implemented" | "internal_error";
+        ErrorCode: "malformed_json" | "validation_failed" | "unsupported_media_type" | "payload_too_large" | "method_not_allowed" | "host_not_allowed" | "unauthenticated" | "invalid_credentials" | "forbidden" | "csrf_failed" | "rate_limited" | "not_found" | "revision_conflict" | "device_in_use" | "activity_in_use" | "config_blocked" | "storage_unavailable" | "credentials_corrupt" | "limit_reached" | "busy" | "setup_required" | "setup_already_done" | "integration_unavailable" | "not_implemented" | "internal_error";
         ErrorDetail: {
             /** @description JSON Pointer into the request body ('' for the whole body). */
             path: string;
@@ -717,7 +800,7 @@ export interface components {
              *     `weak_password`).
              * @enum {string}
              */
-            code: "required" | "unknown_field" | "wrong_type" | "too_long" | "pattern" | "forbidden_param" | "referenced" | "id_mismatch" | "weak_password" | "invalid_id" | "invalid_name" | "invalid_command_id" | "duplicate_id" | "unknown_integration" | "unknown_device" | "device_required" | "device_not_allowed" | "integration_mismatch" | "unknown_command" | "unknown_param" | "duplicate_param" | "missing_param" | "invalid_param_type" | "param_out_of_range" | "invalid_enum_value" | "too_many_params" | "invalid_trigger" | "duplicate_trigger" | "unknown_activity" | "misplaced_transition" | "too_many_actions" | "too_many_activities" | "too_many_devices" | "capacity_exceeded";
+            code: "required" | "unknown_field" | "wrong_type" | "too_long" | "pattern" | "forbidden_param" | "referenced" | "id_mismatch" | "weak_password" | "hold_not_allowed" | "unpaired_hold" | "integration_disabled" | "invalid_id" | "invalid_name" | "invalid_command_id" | "duplicate_id" | "unknown_integration" | "unknown_device" | "device_required" | "device_not_allowed" | "integration_mismatch" | "unknown_command" | "unknown_param" | "duplicate_param" | "missing_param" | "invalid_param_type" | "param_out_of_range" | "invalid_enum_value" | "too_many_params" | "invalid_trigger" | "duplicate_trigger" | "unknown_activity" | "misplaced_transition" | "too_many_actions" | "too_many_activities" | "too_many_devices" | "capacity_exceeded" | "unsupported_schema";
             message: string;
         };
         Error: {
@@ -731,6 +814,38 @@ export interface components {
                 /** @description Present with `rate_limited` (mirrors `Retry-After`). */
                 retry_after_s?: number;
             };
+        };
+        /**
+         * @description What the hub knows about its credentials. "Can't read" is never
+         *     "doesn't exist": only `fresh` (the store is readable and holds no
+         *     admin) allows `POST /auth/setup`.
+         *     `ok`: loaded. `unavailable`: the store can't be read; logins and
+         *     authenticated requests get `503 storage_unavailable` until it can.
+         *     `corrupt`: stored credentials are damaged; logins and setup get
+         *     `409 credentials_corrupt` (recovery needs physical access).
+         * @enum {string}
+         */
+        AuthState: "fresh" | "ok" | "unavailable" | "corrupt";
+        /**
+         * @description Health of the saved configuration.
+         *     `ok`: loaded and running. `fresh`: nothing was saved yet, the defaults
+         *     are running. `blocked`: a saved config exists but can't be used
+         *     (`reason`, human-readable: from newer firmware, a failed migration,
+         *     not valid JSON, doesn't compile, or damaged: its slots exist but none
+         *     is intact); nothing is
+         *     active, every edit is refused with `409 config_blocked`, and only
+         *     `POST /admin/restore` or `POST /admin/reset` may write. A backup
+         *     while blocked is the saved record's raw bytes (`blocked-raw`), or
+         *     `409 config_blocked` when it's damaged.
+         *     `storage_unavailable`: the store can't be written; edits get
+         *     `503 storage_unavailable`.
+         */
+        ConfigState: {
+            /** @enum {string} */
+            state: "ok" | "fresh" | "blocked" | "storage_unavailable";
+            reason?: string;
+            /** @description The saved config generation (0 when nothing is saved). */
+            generation: number;
         };
         /**
          * @description `simulator_no_auth` only ever appears on the native simulator; the UI shows AUTH DISABLED — SIMULATOR.
@@ -748,6 +863,8 @@ export interface components {
             uptime_s: number;
             time?: components["schemas"]["Timestamp"];
             auth_mode: components["schemas"]["AuthMode"];
+            auth_state: components["schemas"]["AuthState"];
+            config: components["schemas"]["ConfigState"];
             active_activity_id: components["schemas"]["NullableActivityId"];
             network: {
                 /** @enum {string} */
@@ -833,7 +950,14 @@ export interface components {
             /** @description Echo in `X-Hubbo-CSRF`. Present only for cookie sessions. Keep in memory, not browser storage. */
             csrf_token?: string;
             expires_in_s?: number;
+            /** @description True only when `auth_state` is `fresh`. */
             setup_required: boolean;
+            auth_state: components["schemas"]["AuthState"];
+            /**
+             * @description `ConfigState.state`, so the UI can warn before login.
+             * @enum {string}
+             */
+            config_state?: "ok" | "fresh" | "blocked" | "storage_unavailable";
             auth_mode: components["schemas"]["AuthMode"];
         };
         TokenCreate: {
@@ -880,6 +1004,14 @@ export interface components {
         };
         Command: {
             command_id: components["schemas"]["CommandId"];
+            /**
+             * @description `momentary`: a one-shot command. `hold`: leaves something held
+             *     that must be released (e.g. `key_down`). Execute accepts only
+             *     `momentary` (a `hold` gets 422 `hold_not_allowed`); bindings may
+             *     use `hold` paired with its release (down/up).
+             * @enum {string}
+             */
+            effect: "momentary" | "hold";
             label: string;
             description?: string;
             params: components["schemas"]["ParamSpec"][];
@@ -956,6 +1088,21 @@ export interface components {
             activities: components["schemas"]["Activity"][];
             active_activity_id: components["schemas"]["NullableActivityId"];
         };
+        /**
+         * @description Revision as found in a backup. Optional, and 0 is accepted: restore
+         *     stamps every object with the new config generation anyway.
+         */
+        BackupRevision: number;
+        BackupActivity: {
+            id: components["schemas"]["ActivityId"];
+            /** @constant */
+            schema_version?: 1;
+            revision?: components["schemas"]["BackupRevision"];
+        } & components["schemas"]["ActivityFields"];
+        BackupGlobalBindings: {
+            bindings: components["schemas"]["Bindings"];
+            revision?: components["schemas"]["BackupRevision"];
+        };
         GlobalBindings: {
             bindings: components["schemas"]["Bindings"];
             revision: components["schemas"]["Revision"];
@@ -964,13 +1111,28 @@ export interface components {
             valid: boolean;
             errors: components["schemas"]["ErrorDetail"][];
         };
+        /** @description What an activate/off did, phase by phase. */
         TransitionResult: {
+            /** @description The active activity changed (or, for activate, was re-selected). Never retry when true. */
+            switched: boolean;
             active_activity_id: components["schemas"]["NullableActivityId"];
             previous_activity_id: components["schemas"]["NullableActivityId"];
             /** @description Transition counter; delayed actions from older generations are dropped. */
             generation: number;
-            /** @description Startup actions (activate) or shutdown actions (off) queued. */
+            startup: components["schemas"]["PhaseResult"];
+            shutdown: components["schemas"]["PhaseResult"];
+        };
+        /**
+         * @description One sequence of a transition. `none`: the phase doesn't apply (activate
+         *     has no shutdown, off has no startup, off with nothing active).
+         *     `rejected`: the hub switched but this sequence did not run; `reason`
+         *     says why (e.g. `queue_full`).
+         */
+        PhaseResult: {
+            /** @enum {string} */
+            status: "queued" | "rejected" | "none";
             queued_actions: number;
+            reason?: string;
         };
         /**
          * @description UI hint only.
@@ -998,22 +1160,29 @@ export interface components {
             peer_name?: string;
         };
         Provider: components["schemas"]["HomeAssistantProvider"] | components["schemas"]["BleHidProvider"];
-        Device: {
+        /** @description Shared by Device and StoredDevice (open; each closes it). */
+        DeviceFields: {
             id: components["schemas"]["DeviceId"];
             name: components["schemas"]["Name"];
             integration_id: components["schemas"]["IntegrationId"];
             kind: components["schemas"]["DeviceKind"];
             provider: components["schemas"]["Provider"];
+            /** @constant */
+            schema_version: 1;
+        };
+        /** @description A device as configured (backups); no runtime state. */
+        StoredDevice: {
+            revision?: components["schemas"]["BackupRevision"];
+        } & components["schemas"]["DeviceFields"];
+        Device: {
+            revision: components["schemas"]["Revision"];
             /**
              * @description `stale`: the provider no longer knows this target (HA entity removed
              *     or renamed, BLE bond gone). Commands fail until an admin re-links it.
              * @enum {string}
              */
             availability: "available" | "unavailable" | "stale" | "unknown";
-            /** @constant */
-            schema_version: 1;
-            revision: components["schemas"]["Revision"];
-        };
+        } & components["schemas"]["DeviceFields"];
         DeviceList: {
             devices: components["schemas"]["Device"][];
         };
@@ -1176,11 +1345,27 @@ export interface components {
                 channel: number;
             };
             integrations: components["schemas"]["BackupIntegration"][];
-            devices: components["schemas"]["Device"][];
-            global_bindings: components["schemas"]["GlobalBindings"];
-            activities: components["schemas"]["Activity"][];
+            devices: components["schemas"]["StoredDevice"][];
+            global_bindings: components["schemas"]["BackupGlobalBindings"];
+            activities: components["schemas"]["BackupActivity"][];
             /** @description What a restore will not bring back. */
             excluded: ("admin_password" | "api_tokens" | "integration_secrets" | "ble_bonds")[];
+        };
+        /**
+         * @description A `Backup`, or a saved config record as `GET /admin/backup` exports it
+         *     while the config is blocked (`X-Hubbo-Backup: blocked-raw`).
+         */
+        RestoreRequest: components["schemas"]["Backup"] | components["schemas"]["BlockedConfigRecord"];
+        /**
+         * @description The saved config record exactly as stored (`format: hubbo-config`).
+         *     Its layout belongs to the firmware that wrote it, so only the header is
+         *     described here; the hub checks the rest on restore.
+         */
+        BlockedConfigRecord: {
+            /** @constant */
+            format: "hubbo-config";
+            schema_version: number;
+            revision?: number;
         };
         RestoreResult: {
             dry_run: boolean;
@@ -1240,7 +1425,7 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description `revision_conflict`, `device_in_use`, `limit_reached`, `busy`, `setup_already_done` */
+        /** @description `revision_conflict`, `device_in_use`, `activity_in_use`, `config_blocked`, `limit_reached`, `busy`, `setup_already_done`, `setup_required` */
         Conflict: {
             headers: {
                 [name: string]: unknown;
@@ -1267,6 +1452,33 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description Body is not `Content-Type application/json` (`unsupported_media_type`) */
+        UnsupportedMediaType: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description Could not save (`internal_error`); nothing changed */
+        InternalError: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description Not implemented on this firmware yet (`not_implemented`); nothing happened */
+        NotImplemented: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description Too many attempts (`rate_limited`) */
         RateLimited: {
             headers: {
@@ -1277,7 +1489,11 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description Integration not connected or not implemented (`integration_unavailable`, `not_implemented`) */
+        /**
+         * @description Integration not connected, the engine is busy, the config store can't
+         *     be written, or stored credentials can't be read so nobody can be
+         *     authenticated (`integration_unavailable`, `busy`, `storage_unavailable`).
+         */
         Unavailable: {
             headers: {
                 [name: string]: unknown;
@@ -1324,6 +1540,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            503: components["responses"]["Unavailable"];
         };
     };
     getRemoteStatus: {
@@ -1345,6 +1562,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            503: components["responses"]["Unavailable"];
         };
     };
     listRemoteButtons: {
@@ -1366,6 +1584,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            503: components["responses"]["Unavailable"];
         };
     };
     setupAdmin: {
@@ -1391,9 +1610,15 @@ export interface operations {
                     "application/json": components["schemas"]["Session"];
                 };
             };
+            400: components["responses"]["MalformedJson"];
+            403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
             429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
         };
     };
     login: {
@@ -1419,6 +1644,7 @@ export interface operations {
                     "application/json": components["schemas"]["Session"];
                 };
             };
+            400: components["responses"]["MalformedJson"];
             /** @description Wrong username or password (`invalid_credentials`) */
             401: {
                 headers: {
@@ -1428,6 +1654,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            403: components["responses"]["Forbidden"];
             /** @description No admin account yet (`setup_required`) */
             409: {
                 headers: {
@@ -1437,8 +1664,12 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
             429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
         };
     };
     logout: {
@@ -1461,6 +1692,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            403: components["responses"]["Forbidden"];
         };
     };
     getSession: {
@@ -1502,6 +1734,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            503: components["responses"]["Unavailable"];
         };
     };
     getDevice: {
@@ -1526,6 +1759,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
         };
     };
     getDeviceCapabilities: {
@@ -1550,6 +1784,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
         };
     };
     executeCommand: {
@@ -1580,9 +1815,12 @@ export interface operations {
                     "application/json": components["schemas"]["ExecuteResult"];
                 };
             };
+            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
             503: components["responses"]["Unavailable"];
         };
@@ -1606,6 +1844,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            503: components["responses"]["Unavailable"];
         };
     };
     createActivity: {
@@ -1634,11 +1873,15 @@ export interface operations {
                     "application/json": components["schemas"]["Activity"];
                 };
             };
+            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
             413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
         };
     };
     validateActivity: {
@@ -1668,7 +1911,11 @@ export interface operations {
             };
             400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["ValidationFailed"];
+            503: components["responses"]["Unavailable"];
         };
     };
     activitiesOff: {
@@ -1683,8 +1930,8 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Shutdown queued */
-            202: {
+            /** @description Done (see `switched` and `shutdown`) */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1694,6 +1941,8 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["Unavailable"];
         };
     };
     getActivity: {
@@ -1718,6 +1967,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
         };
     };
     replaceActivity: {
@@ -1747,12 +1997,16 @@ export interface operations {
                     "application/json": components["schemas"]["Activity"];
                 };
             };
+            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
         };
     };
     deleteActivity: {
@@ -1783,6 +2037,9 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationFailed"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
         };
     };
     activateActivity: {
@@ -1799,8 +2056,8 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Switched; startup queued */
-            202: {
+            /** @description Switched (see `startup`) */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1811,6 +2068,8 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["Unavailable"];
         };
     };
     getGlobalBindings: {
@@ -1832,6 +2091,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            503: components["responses"]["Unavailable"];
         };
     };
     replaceGlobalBindings: {
@@ -1859,11 +2119,15 @@ export interface operations {
                     "application/json": components["schemas"]["GlobalBindings"];
                 };
             };
+            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
             413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
         };
     };
     listIntegrations: {
@@ -1885,6 +2149,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            503: components["responses"]["Unavailable"];
         };
     };
     getIntegrationConfig: {
@@ -1910,6 +2175,8 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            501: components["responses"]["NotImplemented"];
+            503: components["responses"]["Unavailable"];
         };
     };
     configureIntegration: {
@@ -1939,11 +2206,16 @@ export interface operations {
                     "application/json": components["schemas"]["IntegrationConfig"];
                 };
             };
+            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
+            501: components["responses"]["NotImplemented"];
+            503: components["responses"]["Unavailable"];
         };
     };
     discoverIntegration: {
@@ -1973,9 +2245,13 @@ export interface operations {
                     "application/json": components["schemas"]["DiscoverResult"];
                 };
             };
+            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            501: components["responses"]["NotImplemented"];
             503: components["responses"]["Unavailable"];
         };
     };
@@ -2006,6 +2282,8 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            501: components["responses"]["NotImplemented"];
+            503: components["responses"]["Unavailable"];
         };
     };
     forgetIntegrationPairing: {
@@ -2032,6 +2310,8 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            501: components["responses"]["NotImplemented"];
+            503: components["responses"]["Unavailable"];
         };
     };
     registerDevice: {
@@ -2060,10 +2340,15 @@ export interface operations {
                     "application/json": components["schemas"]["Device"];
                 };
             };
+            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
         };
     };
     updateDevice: {
@@ -2093,11 +2378,16 @@ export interface operations {
                     "application/json": components["schemas"]["Device"];
                 };
             };
+            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
         };
     };
     deleteDevice: {
@@ -2128,6 +2418,9 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationFailed"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
         };
     };
     getRemotePairing: {
@@ -2150,6 +2443,8 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+            503: components["responses"]["Unavailable"];
         };
     };
     startRemotePairing: {
@@ -2176,6 +2471,8 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            501: components["responses"]["NotImplemented"];
+            503: components["responses"]["Unavailable"];
         };
     };
     cancelRemotePairing: {
@@ -2199,6 +2496,8 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+            503: components["responses"]["Unavailable"];
         };
     };
     changeAdminPassword: {
@@ -2224,10 +2523,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
             429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
         };
     };
     listTokens: {
@@ -2250,6 +2554,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
         };
     };
     createToken: {
@@ -2277,10 +2582,15 @@ export interface operations {
                     "application/json": components["schemas"]["TokenCreated"];
                 };
             };
+            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
         };
     };
     revokeToken: {
@@ -2307,6 +2617,8 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
         };
     };
     downloadBackup: {
@@ -2318,18 +2630,34 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Backup archive */
+            /** @description Backup archive, or the blocked config record (see `X-Hubbo-Backup`) */
             200: {
                 headers: {
                     "Content-Disposition"?: string;
+                    "X-Hubbo-Backup": "config" | "blocked-raw";
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["Backup"];
+                    "application/octet-stream": string;
                 };
             };
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
+            /**
+             * @description `config_blocked`: the config is blocked and there is no intact saved
+             *     record to export (it's damaged, or was never saved).
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            501: components["responses"]["NotImplemented"];
+            503: components["responses"]["Unavailable"];
         };
     };
     restoreBackup: {
@@ -2346,7 +2674,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Backup"];
+                "application/json": components["schemas"]["RestoreRequest"];
             };
         };
         responses: {
@@ -2359,10 +2687,41 @@ export interface operations {
                     "application/json": components["schemas"]["RestoreResult"];
                 };
             };
+            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
+            501: components["responses"]["NotImplemented"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    factoryReset: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
+                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reset */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigState"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
         };
     };
     getFirmwareStatus: {
@@ -2385,6 +2744,8 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+            503: components["responses"]["Unavailable"];
         };
     };
     updateFirmware: {
@@ -2416,11 +2777,15 @@ export interface operations {
                     "application/json": components["schemas"]["FirmwareStatus"];
                 };
             };
+            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
             413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
+            501: components["responses"]["NotImplemented"];
+            503: components["responses"]["Unavailable"];
         };
     };
 }

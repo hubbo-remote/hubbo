@@ -1,9 +1,9 @@
-import { ArrowLeft, type LucideIcon } from 'lucide-react'
+import { ArrowLeft, Construction, type LucideIcon } from 'lucide-react'
 import { Link } from 'wouter'
 import type { ReactNode } from 'react'
 import type { IntegrationState } from '@/api/types'
 import { HEALTH } from '@/lib/health'
-import { ApiError, errorMessage } from '@/api/client'
+import { ApiError, errorMessage, isNotImplemented } from '@/api/client'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -26,7 +26,6 @@ export function PageHeader({ title, description, actions, back }: { title: React
   )
 }
 
-
 export function HealthDot({ state, className }: { state: IntegrationState; className?: string }) {
   const [c] = HEALTH[state]
   return (
@@ -38,8 +37,25 @@ export function HealthDot({ state, className }: { state: IntegrationState; class
 }
 
 
-export function ErrorState({ error, retry }: { error: unknown; retry?: () => void }) {
-  const msg = errorMessage(error)
+/** Calm placeholder for features the connected hub doesn't implement yet (HTTP 501). */
+export function NotAvailable({ what = 'This feature' }: { what?: string }) {
+  return (
+    <div role="status" className="flex items-start gap-3 rounded-lg border border-dashed bg-muted/40 px-4 py-3 text-sm">
+      <Construction className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+      <div className="grid gap-0.5">
+        <p className="font-medium">Not available yet</p>
+        <p className="text-muted-foreground">
+          {what}: this hub’s firmware doesn’t support it yet. Nothing is wrong with your setup.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+/** A failed load or action: "not available yet" for 501s, otherwise an error alert (with Retry for loads). */
+export function ErrorState({ error, retry, what }: { error: unknown; retry?: () => void; what?: string }) {
+  if (isNotImplemented(error)) return <NotAvailable what={what} />
+  const msg = errorMessage(error, { details: true })
   return (
     <Alert
       variant="error"
@@ -50,7 +66,7 @@ export function ErrorState({ error, retry }: { error: unknown; retry?: () => voi
         </Button>
       )}
     >
-      {msg}
+      <p className="whitespace-pre-line">{msg}</p>
     </Alert>
   )
 }

@@ -2,13 +2,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createMock, type MockOptions } from './handler.ts'
 
-const API_PREFIX = '/api/v1'
+import { API_BASE as API_PREFIX } from '../src/api/constants.ts'
 
 export function optionsFromEnv(env: NodeJS.ProcessEnv = process.env): MockOptions {
   return {
     latencyMs: Number(env.HUBBO_MOCK_LATENCY ?? 120),
     firstRun: env.HUBBO_MOCK_FIRST_RUN === '1',
     requireAuth: env.HUBBO_MOCK_AUTH === '1',
+    pairDelayMs: env.HUBBO_MOCK_PAIR_MS === undefined ? undefined : Number(env.HUBBO_MOCK_PAIR_MS),
   }
 }
 
@@ -42,6 +43,11 @@ export function mockMiddleware(opts: MockOptions) {
       rawBody: new Uint8Array(raw),
     })
     const headers: Record<string, string> = { 'cache-control': 'no-store', ...out.headers }
+    // Bytes (a blocked-raw backup) go out exactly as they are, with the handler's content-type.
+    if (out.body instanceof Uint8Array) {
+      res.writeHead(out.status, headers)
+      return res.end(out.body)
+    }
     if (out.body !== undefined) headers['content-type'] = 'application/json'
     res.writeHead(out.status, headers)
     res.end(out.body === undefined ? undefined : JSON.stringify(out.body))

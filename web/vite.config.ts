@@ -7,7 +7,7 @@ import { mockMiddleware, optionsFromEnv } from './mock/node.ts'
 
 // HUBBO_API_TARGET picks where /api goes in dev:
 //   mock (default)            in-process TypeScript mock (mock/)
-//   http://127.0.0.1:8080     hub-sim (the real C++ core)
+//   http://127.0.0.1:8780     hub-sim (the real C++ core)
 //   http://hubbo.local        a board on your LAN
 const target = process.env.HUBBO_API_TARGET || 'mock'
 
@@ -27,7 +27,22 @@ export default defineConfig({
     host: process.env.HUBBO_WEB_HOST || '0.0.0.0',
     port: Number(process.env.HUBBO_WEB_PORT || 5180),
     strictPort: true,
-    proxy: target === 'mock' ? undefined : { '/api': { target, changeOrigin: true, secure: false } },
+    proxy:
+      target === 'mock'
+        ? undefined
+        : {
+            '/api': {
+              target,
+              // The hub only accepts its own Host (else 421) and rejects a
+              // foreign Origin on unsafe requests (CSRF defence, else 403).
+              // Served from the hub the UI is same-origin; through this dev
+              // proxy it isn't, so send the target's Host and drop Origin
+              // (the hub accepts requests without one).
+              changeOrigin: true,
+              secure: false,
+              configure: (proxy) => proxy.on('proxyReq', (req) => req.removeHeader('origin')),
+            },
+          },
   },
   build: {
     target: 'es2022',

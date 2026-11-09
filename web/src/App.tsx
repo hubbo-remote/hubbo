@@ -10,6 +10,7 @@ import { Spinner } from '@/components/ui/misc'
 import { Dashboard } from '@/pages/Dashboard'
 import { Login } from '@/pages/Login'
 import { NotFound } from '@/pages/NotFound'
+import { CredentialsProblem } from '@/pages/CredentialsProblem'
 
 // Code-split: the dashboard ships in the entry chunk, everything else loads on demand.
 const Activities = lazy(() => import('@/pages/Activities'))
@@ -69,7 +70,12 @@ export function App() {
         <Spinner />
       </div>
     )
-  } else if (session.setup_required) {
+  } else if (!session.authenticated && (session.auth_state === 'unavailable' || session.auth_state === 'corrupt')) {
+    // Never the wizard or login: the hub can't read (or trust) its credentials.
+    body = <CredentialsProblem kind={session.auth_state} onRetry={refresh} />
+  } else if (session.setup_required && session.auth_state === 'fresh') {
+    // Only a hub that positively knows it has no admin offers setup (and the
+    // no-auth simulator, which is fresh but signed in, never needs it).
     body = (
       <Suspense fallback={<Loading />}>
         <Setup onDone={refresh} />

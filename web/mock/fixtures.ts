@@ -27,6 +27,9 @@ export function fixture<T>(rel: string): T {
   return JSON.parse(readFileSync(join(FIXTURES_DIR, rel), 'utf8')) as T
 }
 
+/** A fixture's bytes, untouched (the mock serves some bodies exactly as stored). */
+export const fixtureBytes = (rel: string): Uint8Array => new Uint8Array(readFileSync(join(FIXTURES_DIR, rel)))
+
 export interface Seed {
   status: Status
   buttons: RemoteButtons
@@ -60,7 +63,7 @@ export function loadSeed(): Seed {
       ['system', { id: 'system', type: 'system', name: 'System', enabled: true, settings: { type: 'system' }, revision: 1 }],
     ]),
     activities: acts.activities,
-    activeActivityId: acts.active_activity_id,
+    activeActivityId: null, // a freshly started hub (like hub-sim) has no active activity
     globalBindings: fixture('activities/global_bindings.json'),
     tokens: fixture<{ tokens: TokenSummary[] }>('admin/tokens.json').tokens,
     discover: fixture('integrations/ha_main.discover.json'),

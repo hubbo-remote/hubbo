@@ -1,16 +1,14 @@
 import { AlertTriangle, Bluetooth, Cable, Home, Loader2, Power, Radio, type LucideIcon } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { Link } from 'wouter'
-import { api } from '@/api/client'
-import { invalidate } from '@/api/hooks'
 import type { IntegrationState, LatencyStats, Status } from '@/api/types'
 import { ErrorState, HealthDot, PageHeader } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/misc'
-import { toast, toastError } from '@/components/ui/toast'
-import { useActivities, useIntegrations, useStatus } from '@/hooks/data'
+import { switchActivity } from '@/hooks/switchActivity'
+import { useActivities, useConfigLock, useIntegrations, useStatus } from '@/hooks/data'
 import { buttonLabel } from '@/lib/buttons'
 import { healthLabel } from '@/lib/health'
 import { agoMs, bytes, cn, formatDuration, plural, timeAgo } from '@/lib/utils'
@@ -76,21 +74,15 @@ export function Dashboard() {
 function ActivityCard({ status, className }: { status: Status | undefined; className?: string }) {
   const acts = useActivities()
   const [pending, setPending] = useState<string | null>(null)
+  const lock = useConfigLock()
   const activeId = status?.active_activity_id ?? acts.data?.active_activity_id ?? null
   const list = acts.data?.activities
   const active = list?.find((a) => a.id === activeId)
 
   const run = async (id: string | 'off') => {
     setPending(id)
-    try {
-      const r = id === 'off' ? await api.off() : await api.activate(id)
-      invalidate('status', 'activities')
-      if (r.queued_actions) toast(id === 'off' ? 'Shutting down' : `Starting ${list?.find((a) => a.id === id)?.name ?? id}`, { description: `${plural(r.queued_actions, 'step')} queued` })
-    } catch (e) {
-      toastError(id === 'off' ? 'Could not turn off' : 'Could not start activity', e)
-    } finally {
-      setPending(null)
-    }
+    await switchActivity(id, (x) => list?.find((a) => a.id === x)?.name ?? x)
+    setPending(null)
   }
 
   return (
@@ -100,7 +92,7 @@ function ActivityCard({ status, className }: { status: Status | undefined; class
           <CardDescription>Current activity</CardDescription>
           {status ? <p className="mt-1 text-2xl font-semibold tracking-tight">{active?.name ?? (activeId ? activeId : 'Off')}</p> : <Skeleton className="mt-2 h-7 w-48" />}
         </div>
-        <Button variant={activeId ? 'outline' : 'secondary'} onClick={() => run('off')} disabled={!activeId || !!pending} aria-label="Off: runs the current activity's shutdown">
+        <Button variant={activeId ? 'outline' : 'secondary'} onClick={() => run('off')} disabled={!activeId || !!pending || lock.state === 'blocked'} aria-label="Off: runs the current activity's shutdown">
           {pending === 'off' ? <Loader2 className="animate-spin" /> : <Power />}
           Off
         </Button>
@@ -117,7 +109,8 @@ function ActivityCard({ status, className }: { status: Status | undefined; class
                   <button
                     key={a.id}
                     onClick={() => run(a.id)}
-                    disabled={!!pending}
+                    disabled={!!pending || lock.state === 'blocked'}
+                    title={lock.state === 'blocked' ? lock.title : undefined}
                     aria-pressed={on}
                     className={cn(
                       'flex min-h-16 flex-col items-start justify-between gap-1 rounded-lg border p-3 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-60 cursor-pointer',

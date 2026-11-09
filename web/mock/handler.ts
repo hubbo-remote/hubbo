@@ -3,9 +3,12 @@
 // validation errors and slow/failing adapters. NOT behavioural truth: that
 // is hub-sim running the real C++ core.
 import type {
+  Action,
   Activity,
   ActivityDraft,
+  AuthState,
   Backup,
+  ConfigState,
   Device,
   DeviceRegister,
   DeviceUpdate,
@@ -21,10 +24,12 @@ import type {
   Status,
   TokenCreated,
   TokenSummary,
+  TransitionResult,
   ValidationIssue,
 } from '../src/api/types.ts'
-import { validateActivity, validateBindings, type Catalog } from '../src/lib/activity.ts'
-import { fixture, loadSeed, type Seed } from './fixtures.ts'
+import { CSRF_HEADER } from '../src/api/constants.ts'
+import { forEachAction, validateActivity, validateBindings, type Catalog } from '../src/lib/activity.ts'
+import { fixture, fixtureBytes, loadSeed, type Seed } from './fixtures.ts'
 import { activityShape, bindingsShape } from './shape.ts'
 
 export interface MockRequest {
@@ -49,14 +54,39 @@ export interface MockOptions {
   firstRun?: boolean
   /** Require login. Default false: the mock starts signed in as admin. */
   requireAuth?: boolean
+  /** How long a remote-pairing scan takes to "find" the Hub. Default 6 s; e2e uses 0. */
+  pairDelayMs?: number
   random?: () => number
+}
+
+/** What `POST /__mock/reset` may change until the next reset (e2e uses this). */
+export type ResetFlags = Pick<MockOptions, 'firstRun' | 'requireAuth'> & {
+  /** Start with a saved config the hub can't use (`blocked`) or can't write (`storage_unavailable`). */
+  configState?: 'blocked' | 'storage_unavailable'
+  /** With `configState: 'blocked'`: the saved record is damaged (no intact slot), so there's nothing to export. */
+  configDamaged?: boolean
+  /** Activations switch but report the startup as rejected (`queue_full`), like a full action queue. */
+  startupRejected?: boolean
+  /** The credentials store can't be read (`unavailable`) or is damaged (`corrupt`). */
+  authState?: 'unavailable' | 'corrupt'
 }
 
 type Role = 'public' | 'setup' | 'token' | 'admin'
 type Handler = (req: MockRequest, m: string[]) => MockResponse | Promise<MockResponse>
 
 const DEV_SID = 'dev'
+/** Requests refused while the config is blocked or unwritable (validate is a dry run, so it isn't one). */
+const EDITS = [/^\/activities(\/(?!validate$)[^/]+)?$/, /^\/activities\/[^/]+\/activate$/, /^\/global-bindings$/, /^\/admin\/devices/]
 const MAX_BODY = 32 * 1024
+/** POST /admin/restore x-hubbo-max-body (api/openapi.yaml). */
+const RESTORE_MAX_BODY = 640 * 1024
+/** The saved config record format this "firmware" reads (core kConfigFileVersion). */
+const CONFIG_SCHEMA = 1
+/** The saved record a blocked mock hub holds: from newer firmware, so restoring it here is refused. */
+const BLOCKED_RECORD = 'admin/restore.blocked-raw.request.json'
+const BLOCKED_RECORD_SCHEMA = fixture<{ schema_version: number }>(BLOCKED_RECORD).schema_version
+/** An error response straight from api/fixtures/errors. */
+const fixtureError = (status: number, file: string): MockResponse => ({ status, body: fixture(file) })
 
 const err = (status: number, code: ErrorCode, message: string, extra: Record<string, unknown> = {}): MockResponse => ({ status, body: { error: { code, message, ...extra } } })
 const invalid = (details: ValidationIssue[]) => err(422, 'validation_failed', details[0]?.message ?? 'Invalid request', { details: details.slice(0, 32) })
@@ -80,28 +110,72 @@ export function createMock(opts: MockOptions = {}) {
   let password: string
   let sessions: Map<string, { csrf: string }>
   let pairing: RemotePairStatus & { startedAt?: number }
-  let generation: number
+  let transitions: number // TransitionResult.generation
   let lastEventAt: number
+  // The config generation: every committed change bumps it, and the changed
+  // object's revision is that generation (api/openapi.yaml ConfigState).
+  let configGen: number
+  let config: ConfigState
+  /** While blocked: the saved config record's bytes, exactly as stored (null when it's damaged). */
+  let blockedRecord: Uint8Array | null = null
+  const commit = () => {
+    configGen++
+    config = { state: 'ok', generation: configGen } // the first save also ends `fresh`
+    return configGen
+  }
 
-  function reset() {
+  /** `flags` override the start-up options until the next reset (e2e tests use this). */
+  let mode: ResetFlags = opts
+  function reset(flags: ResetFlags = {}) {
+    mode = { ...flags, firstRun: flags.firstRun ?? opts.firstRun, requireAuth: flags.requireAuth ?? opts.requireAuth }
     db = loadSeed()
-    adminCreated = !opts.firstRun
+    adminCreated = !mode.firstRun
     password = fixture<{ password: string }>('auth/login.request.json').password
-    sessions = new Map(opts.requireAuth || opts.firstRun ? [] : [[DEV_SID, { csrf: `csrf-${DEV_SID}` }]])
-    pairing = { state: 'idle', paired: !opts.firstRun, channel: 74 }
-    generation = 17
+    // No sessions where none could exist: login required, first run, or credentials the hub can't read or trust.
+    sessions = new Map(mode.requireAuth || mode.firstRun || mode.authState ? [] : [[DEV_SID, { csrf: `csrf-${DEV_SID}` }]])
+    pairing = { state: 'idle', paired: !mode.firstRun, channel: 74 }
+    transitions = 17
     lastEventAt = Date.now() - 5230
-    if (opts.firstRun) {
-      db.devices = []
-      db.capabilities.clear()
-      db.activities = []
-      db.activeActivityId = null
-      db.globalBindings = { bindings: {}, revision: 1 }
+    configGen = Math.max(1, db.globalBindings.revision, ...db.activities.map((a) => a.revision), ...db.devices.map((d) => d.revision), ...[...db.configs.values()].map((c) => c.revision))
+    config = { state: 'ok', generation: configGen }
+    if (mode.firstRun) {
       db.tokens = []
-      db.discover.candidates.forEach((c) => (c.registered_device_id = null))
-      const ha = db.configs.get('ha_main')!
-      ha.settings = { type: 'home_assistant', url: 'http://homeassistant.local:8123', verify_tls: false, ca_cert_pem: null, has_access_token: false }
+      factoryDefaults()
+      configGen = 0
+      config = { state: 'fresh', generation: 0 }
     }
+    blockedRecord = null
+    if (mode.configState === 'blocked' && mode.configDamaged) config = { state: 'blocked', generation: configGen + 1, reason: 'Saved config is damaged (no intact copy)' }
+    else if (mode.configState === 'blocked') {
+      config = { state: 'blocked', generation: configGen + 1, reason: `config.json schema_version ${BLOCKED_RECORD_SCHEMA} is newer than this firmware (${CONFIG_SCHEMA})` }
+      blockedRecord = fixtureBytes(BLOCKED_RECORD)
+    }
+    if (mode.configState === 'storage_unavailable') config = { state: 'storage_unavailable', generation: configGen, reason: 'Storage could not be mounted' }
+    if (mode.configState) db.activeActivityId = null
+  }
+
+  /** Factory defaults: no devices, activities or global bindings; built-in integrations unconfigured. Credentials and tokens stay. */
+  function factoryDefaults() {
+    db.devices = []
+    db.capabilities.clear()
+    db.activities = []
+    db.activeActivityId = null
+    db.globalBindings = { bindings: {}, revision: configGen }
+    db.discover.candidates.forEach((c) => (c.registered_device_id = null))
+    const ha = db.configs.get('ha_main')!
+    ha.settings = { type: 'home_assistant', url: 'http://homeassistant.local:8123', verify_tls: false, ca_cert_pem: null, has_access_token: false }
+  }
+
+  /** Restore and reset stamp every object with one new generation, so every stale client gets 409. */
+  function stampAll() {
+    const g = commit()
+    blockedRecord = null
+    db.activities = db.activities.map((a) => ({ ...a, revision: g }))
+    db.devices = db.devices.map((d) => ({ ...d, revision: g }))
+    db.globalBindings = { ...db.globalBindings, revision: g }
+    for (const c of db.configs.values()) c.revision = g
+    // Restore and reset never start (or stop) an activity: the active one stays only if its id survived.
+    if (!db.activities.some((a) => a.id === db.activeActivityId)) db.activeActivityId = null
   }
   reset()
 
@@ -137,10 +211,14 @@ export function createMock(opts: MockOptions = {}) {
     return sid && sessions.has(sid) ? sid : null
   }
 
+  /** What the hub knows about its credentials; only `fresh` allows setup ("can't read" is never "doesn't exist"). */
+  const authState = (): AuthState => mode.authState ?? (adminCreated ? 'ok' : 'fresh')
+
   function sessionBody(sid: string | null): Session {
+    const common = { auth_mode: 'enforced', config_state: config.state, auth_state: authState() } as const
     return sid
-      ? { authenticated: true, role: 'admin', username: 'admin', csrf_token: sessions.get(sid)!.csrf, expires_in_s: 28_800, setup_required: false, auth_mode: 'enforced' }
-      : { authenticated: false, role: null, setup_required: !adminCreated, auth_mode: 'enforced' }
+      ? { authenticated: true, role: 'admin', username: 'admin', csrf_token: sessions.get(sid)!.csrf, expires_in_s: 28_800, setup_required: false, ...common }
+      : { authenticated: false, role: null, setup_required: authState() === 'fresh', ...common }
   }
 
   function newSession(): [string, Session] {
@@ -156,6 +234,8 @@ export function createMock(opts: MockOptions = {}) {
     s.uptime_s = db.status.uptime_s + Math.round((Date.now() - bootedAt) / 1000)
     s.time = isoNow()
     s.active_activity_id = db.activeActivityId
+    s.config = config
+    s.auth_state = authState()
     s.integrations = integrations().map(({ id, type, state }) => ({ id, type, state }))
     s.remote.paired = pairing.paired
     s.remote.last_packet_age_ms = Date.now() - lastEventAt
@@ -177,7 +257,20 @@ export function createMock(opts: MockOptions = {}) {
     return v.valid ? null : invalid(v.errors)
   }
 
+  /** Every place an action matching `hit` is used, in the hub's error-detail form. */
+  function references(hit: (a: Action) => boolean, skipActivity?: string): ValidationIssue[] {
+    const out: ValidationIssue[] = []
+    for (const a of db.activities) {
+      if (a.id === skipActivity) continue
+      forEachAction(a, (x, rel) => hit(x) && out.push({ path: `/activities/${a.id}${rel}`, code: 'referenced', message: `Referenced by activity ${a.id}` }))
+    }
+    forEachAction(db.globalBindings, (x, rel) => hit(x) && out.push({ path: `/global_bindings${rel}`, code: 'referenced', message: 'Referenced by the global bindings' }))
+    return out
+  }
+
   const revisionOf = (req: MockRequest) => Number(req.query.get('revision'))
+  const requireRevision = (req: MockRequest) =>
+    req.query.has('revision') ? null : err(422, 'validation_failed', 'Send ?revision=N (the revision you last read)', { details: [{ path: '/revision', code: 'required', message: 'Required field is missing' }] })
 
   // ---------- routes ----------
   const routes: [string, RegExp, Role, Handler][] = [
@@ -249,7 +342,7 @@ export function createMock(opts: MockOptions = {}) {
       const b = req.body as ActivityDraft
       let id = `act_${slug(b.name)}`
       while (db.activities.some((a) => a.id === id)) id = `act_${slug(b.name).slice(0, 20)}_${rand36(3)}`
-      const act: Activity = { id, name: b.name, startup: b.startup, shutdown: b.shutdown, bindings: b.bindings, schema_version: 1, revision: 1 }
+      const act: Activity = { id, name: b.name, startup: b.startup, shutdown: b.shutdown, bindings: b.bindings, schema_version: 1, revision: commit() }
       db.activities.push(act)
       return { status: 201, body: act, headers: { location: `/api/v1/activities/${id}` } }
     }],
@@ -261,9 +354,10 @@ export function createMock(opts: MockOptions = {}) {
     }],
     ['POST', /^\/activities\/off$/, 'token', () => {
       const cur = db.activities.find((a) => a.id === db.activeActivityId)
-      const prev = db.activeActivityId
       db.activeActivityId = null
-      return ok({ active_activity_id: null, previous_activity_id: prev, generation: ++generation, queued_actions: cur?.shutdown.length ?? 0 }, 202)
+      const none = { status: 'none', queued_actions: 0 } as const
+      const r: TransitionResult = { switched: !!cur, active_activity_id: null, previous_activity_id: cur?.id ?? null, generation: ++transitions, startup: none, shutdown: cur ? { status: 'queued', queued_actions: cur.shutdown.length } : none }
+      return ok(r)
     }],
     ['GET', /^\/activities\/([^/]+)$/, 'token', (_r, m) => {
       const a = db.activities.find((x) => x.id === m[1])
@@ -279,16 +373,22 @@ export function createMock(opts: MockOptions = {}) {
       if (b.revision !== cur.revision) return err(409, 'revision_conflict', `Activity changed since revision ${b.revision}`, { current_revision: cur.revision })
       const bad = checkActivity(req.body, ['id', 'name', 'startup', 'shutdown', 'bindings', 'schema_version', 'revision'])
       if (bad) return bad
-      const next: Activity = { ...cur, name: b.name, startup: b.startup, shutdown: b.shutdown, bindings: b.bindings, revision: cur.revision + 1 }
+      const next: Activity = { ...cur, name: b.name, startup: b.startup, shutdown: b.shutdown, bindings: b.bindings, revision: commit() }
       db.activities[i] = next
       return ok(next)
     }],
     ['DELETE', /^\/activities\/([^/]+)$/, 'token', (req, m) => {
       const i = db.activities.findIndex((x) => x.id === m[1])
       if (i < 0) return err(404, 'not_found', 'No such activity')
+      const missing = requireRevision(req)
+      if (missing) return missing
       if (revisionOf(req) !== db.activities[i]!.revision) return err(409, 'revision_conflict', 'Activity changed since you loaded it', { current_revision: db.activities[i]!.revision })
+      // Referenced by a system.activate binding elsewhere: refuse, listing where (as the hub does).
+      const refs = references((x) => x.command_id === 'activate' && x.params.activity_id === m[1], m[1])
+      if (refs.length) return err(409, 'activity_in_use', 'The activity is used elsewhere; remove those references first', { details: refs.slice(0, 32) })
       db.activities.splice(i, 1)
-      if (db.activeActivityId === m[1]) db.activeActivityId = null
+      // Deleting the active activity switches to the one now in its place (wrapping) and runs its startup.
+      if (db.activeActivityId === m[1]) db.activeActivityId = db.activities.length ? db.activities[i % db.activities.length]!.id : null
       return ok()
     }],
     ['POST', /^\/activities\/([^/]+)\/activate$/, 'token', (_r, m) => {
@@ -296,7 +396,9 @@ export function createMock(opts: MockOptions = {}) {
       if (!a) return err(404, 'not_found', 'No such activity')
       const prev = db.activeActivityId
       db.activeActivityId = a.id
-      return ok({ active_activity_id: a.id, previous_activity_id: prev, generation: ++generation, queued_actions: a.startup.length }, 202)
+      const startup = mode.startupRejected ? ({ status: 'rejected', queued_actions: 0, reason: 'queue_full' } as const) : ({ status: 'queued', queued_actions: a.startup.length } as const)
+      const r: TransitionResult = { switched: true, active_activity_id: a.id, previous_activity_id: prev, generation: ++transitions, startup, shutdown: { status: 'none', queued_actions: 0 } }
+      return ok(r)
     }],
     ['GET', /^\/global-bindings$/, 'token', () => ok(db.globalBindings)],
     ['PUT', /^\/global-bindings$/, 'token', (req) => {
@@ -308,7 +410,7 @@ export function createMock(opts: MockOptions = {}) {
       const errors: ValidationIssue[] = []
       validateBindings(b.bindings, catalog(), errors, [])
       if (errors.length) return invalid(errors)
-      db.globalBindings = { bindings: b.bindings, revision: b.revision + 1 }
+      db.globalBindings = { bindings: b.bindings, revision: commit() }
       return ok(db.globalBindings)
     }],
 
@@ -341,7 +443,7 @@ export function createMock(opts: MockOptions = {}) {
       } else if (s?.type === 'ble_hid' && next.settings.type === 'ble_hid') {
         if (s.device_name !== undefined) next.settings.device_name = s.device_name
       } else if (s) return invalid([{ path: '/settings/type', code: 'wrong_type', message: `Settings type must be ${next.settings.type}` }])
-      next.revision++
+      next.revision = commit()
       db.configs.set(c.id, next)
       return ok(next)
     }],
@@ -379,7 +481,7 @@ export function createMock(opts: MockOptions = {}) {
       } else if (b.provider?.type !== 'ble_hid' || b.integration_id !== 'ble') return invalid([{ path: '/provider', code: 'integration_mismatch', message: 'Provider does not belong to that integration' }])
       let id = `dev_${slug(b.name)}`
       while (db.devices.some((d) => d.id === id)) id = `dev_${slug(b.name).slice(0, 20)}_${rand36(3)}`
-      const d: Device = { id, name: b.name.trim(), integration_id: b.integration_id, kind: b.kind ?? 'other', provider: b.provider, availability: 'available', schema_version: 1, revision: 1 }
+      const d: Device = { id, name: b.name.trim(), integration_id: b.integration_id, kind: b.kind ?? 'other', provider: b.provider, availability: 'available', schema_version: 1, revision: commit() }
       db.devices.push(d)
       const prov = b.provider
       const cand = prov.type === 'home_assistant' ? db.discover.candidates.find((x) => x.provider.entity_id === prov.entity_id) : undefined
@@ -397,21 +499,17 @@ export function createMock(opts: MockOptions = {}) {
       const b = req.body as DeviceUpdate
       if (b?.revision !== d.revision) return err(409, 'revision_conflict', `Device changed since revision ${b?.revision}`, { current_revision: d.revision })
       if (b.name !== undefined && !b.name.trim()) return invalid([{ path: '/name', code: 'required', message: 'Name is required' }])
-      db.devices[i] = { ...d, ...(b.name ? { name: b.name.trim() } : {}), ...(b.kind ? { kind: b.kind } : {}), ...(b.provider ? { provider: b.provider } : {}), revision: d.revision + 1 }
+      db.devices[i] = { ...d, ...(b.name ? { name: b.name.trim() } : {}), ...(b.kind ? { kind: b.kind } : {}), ...(b.provider ? { provider: b.provider } : {}), revision: commit() }
       return ok(db.devices[i])
     }],
     ['DELETE', /^\/admin\/devices\/([^/]+)$/, 'admin', (req, m) => {
       const d = db.devices.find((x) => x.id === m[1])
       if (!d) return err(404, 'not_found', 'No such device')
+      const missing = requireRevision(req)
+      if (missing) return missing
       if (revisionOf(req) !== d.revision) return err(409, 'revision_conflict', 'Device changed since you loaded it', { current_revision: d.revision })
-      const refs: ValidationIssue[] = []
-      for (const a of db.activities) {
-        a.startup.forEach((x, i) => x.device_id === d.id && refs.push({ path: `/activities/${a.id}/startup/${i}`, code: 'referenced', message: `${a.name} startup step ${i + 1}` }))
-        a.shutdown.forEach((x, i) => x.device_id === d.id && refs.push({ path: `/activities/${a.id}/shutdown/${i}`, code: 'referenced', message: `${a.name} shutdown step ${i + 1}` }))
-        for (const [k, list] of Object.entries(a.bindings)) list.forEach((x, i) => x.device_id === d.id && refs.push({ path: `/activities/${a.id}/bindings/${k}/${i}`, code: 'referenced', message: `${a.name} ${k}` }))
-      }
-      for (const [k, list] of Object.entries(db.globalBindings.bindings)) list.forEach((x, i) => x.device_id === d.id && refs.push({ path: `/global_bindings/${k}/${i}`, code: 'referenced', message: `Global ${k}` }))
-      if (refs.length) return err(409, 'device_in_use', `${d.id} is used in ${refs.length} place${refs.length === 1 ? '' : 's'}`, { details: refs.slice(0, 32) })
+      const refs = references((x) => x.device_id === d.id)
+      if (refs.length) return err(409, 'device_in_use', 'The device is used elsewhere; remove those references first', { details: refs.slice(0, 32) })
       db.devices = db.devices.filter((x) => x.id !== d.id)
       db.capabilities.delete(d.id)
       db.discover.candidates.forEach((c) => c.registered_device_id === d.id && (c.registered_device_id = null))
@@ -422,7 +520,7 @@ export function createMock(opts: MockOptions = {}) {
     ['GET', /^\/admin\/remote\/pair$/, 'admin', () => {
       if (pairing.state === 'scanning') {
         const s = (Date.now() - (pairing.startedAt ?? 0)) / 1000
-        if (s > 6) pairing = { state: 'found', paired: true, channel: 74, message: 'Learned the Hub address. Press a remote button to confirm.' }
+        if (s * 1000 >= (opts.pairDelayMs ?? 6000)) pairing = { state: 'found', paired: true, channel: 74, message: 'Learned the Hub address. Press a remote button to confirm.' }
         else pairing.remaining_s = Math.max(0, 60 - Math.floor(s))
       }
       const { startedAt: _s, ...rest } = pairing
@@ -466,10 +564,22 @@ export function createMock(opts: MockOptions = {}) {
 
     // backup & firmware
     ['GET', /^\/admin\/backup$/, 'admin', () => {
+      const date = isoNow().slice(0, 10)
+      // Never a backup that might be empty or out of date.
+      if (config.state === 'storage_unavailable') return fixtureError(503, 'errors/backup_storage_unavailable.json')
+      if (config.state === 'blocked') {
+        // Nothing runs, so export the saved record exactly as stored, clearly marked.
+        if (!blockedRecord) return fixtureError(409, 'errors/backup_blocked_damaged.json')
+        return {
+          status: 200,
+          body: blockedRecord,
+          headers: { 'content-type': 'application/octet-stream', 'x-hubbo-backup': 'blocked-raw', 'content-disposition': `attachment; filename="hubbo-backup-BLOCKED-${date}.json"` },
+        }
+      }
       const b: Backup = {
         ...db.backup,
         created_at: isoNow(),
-        devices: db.devices,
+        devices: db.devices.map(({ availability: _a, ...stored }) => stored), // StoredDevice: availability is live state
         activities: db.activities,
         global_bindings: db.globalBindings,
         integrations: [...db.configs.values()].map((c) => ({
@@ -480,22 +590,38 @@ export function createMock(opts: MockOptions = {}) {
           settings: c.settings.type === 'home_assistant' ? { url: c.settings.url, verify_tls: c.settings.verify_tls, ca_cert_pem: c.settings.ca_cert_pem ?? null } : c.settings.type === 'ble_hid' ? { device_name: c.settings.device_name } : {},
         })),
       }
-      return { status: 200, body: b, headers: { 'content-disposition': 'attachment; filename="hubbo-backup.json"' } }
+      return { status: 200, body: b, headers: { 'x-hubbo-backup': 'config', 'content-disposition': `attachment; filename="hubbo-backup-${date}.json"` } }
     }],
     ['POST', /^\/admin\/restore$/, 'admin', (req) => {
+      // A Backup, or a saved config record exported while blocked (blocked-raw). Only the top-level `format` decides.
+      const body = req.body as { format?: unknown; schema_version?: unknown; format_version?: unknown } | null
+      const record = body?.format === 'hubbo-config'
+      if (record) {
+        const v = body.schema_version
+        if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return invalid([{ path: '/schema_version', code: 'wrong_type', message: 'schema_version must be a whole number' }])
+        if (v !== CONFIG_SCHEMA) return fixtureError(422, 'errors/restore_unsupported_schema.json')
+      } else {
+        if (body?.format !== 'hubbo-backup') return invalid([{ path: '/format', code: 'wrong_type', message: 'This is not a Hubbo backup file' }])
+        if (typeof body.format_version === 'number' && body.format_version > 1) return invalid([{ path: '/format_version', code: 'unsupported_schema', message: 'This backup is from newer firmware; update first' }])
+        if (body.format_version !== 1) return invalid([{ path: '/format_version', code: 'wrong_type', message: `Backup format ${String(body.format_version)} is not supported` }])
+      }
       const b = req.body as Partial<Backup>
-      if (b?.format !== 'hubbo-backup') return invalid([{ path: '/format', code: 'wrong_type', message: 'This is not a Hubbo backup file' }])
-      if (b.format_version !== 1) return invalid([{ path: '/format_version', code: 'wrong_type', message: `Backup format ${String(b.format_version)} is not supported` }])
       if (!Array.isArray(b.devices) || !Array.isArray(b.activities)) return invalid([{ path: '', code: 'required', message: 'Backup is missing devices or activities' }])
       const dry = req.query.get('dry_run') === 'true'
       const result = { dry_run: dry, devices: b.devices.length, activities: b.activities.length, integrations: b.integrations?.length ?? 0, migrated_from: null, requires: ['home_assistant_token', 'ble_pairing', 'api_tokens'], warnings: [] }
       if (!dry) {
-        db.devices = b.devices
-        db.activities = b.activities
-        if (b.global_bindings) db.globalBindings = b.global_bindings
-        db.activeActivityId = null
+        // Revisions in the backup may be missing or 0; stampAll() replaces them all.
+        db.devices = b.devices.map((d) => ({ ...d, availability: 'unknown' as const, revision: 0 }))
+        db.activities = b.activities.map((a) => ({ ...a, schema_version: 1 as const, revision: 0 }))
+        db.globalBindings = { bindings: b.global_bindings?.bindings ?? {}, revision: 0 }
+        stampAll()
       }
       return ok(result)
+    }],
+    ['POST', /^\/admin\/reset$/, 'admin', () => {
+      factoryDefaults()
+      stampAll()
+      return ok(config)
     }],
     ['GET', /^\/admin\/firmware$/, 'admin', () => ok(db.firmware)],
     ['POST', /^\/admin\/firmware\/update$/, 'admin', (req) => {
@@ -505,10 +631,13 @@ export function createMock(opts: MockOptions = {}) {
     }],
 
     // Mock-only controls (never in the real API).
-    ['POST', /^\/__mock\/reset$/, 'public', () => (reset(), ok())],
-    ['POST', /^\/__mock\/touch\/([^/]+)$/, 'public', (_r, m) => {
-      const a = db.activities.find((x) => x.id === m[1])
-      if (a) db.activities[db.activities.indexOf(a)] = { ...a, name: `${a.name} (edited elsewhere)`, revision: a.revision + 1 }
+    ['POST', /^\/__mock\/reset$/, 'public', (req) => (reset((req.body ?? {}) as ResetFlags), ok())],
+    // Like hub-sim's POST /sim/storage?health=…: the store goes down or comes back at runtime.
+    ['POST', /^\/__mock\/storage$/, 'public', (req) => {
+      const health = req.query.get('health')
+      if (health === 'available') config = { state: 'ok', generation: configGen }
+      else if (health === 'unavailable' || health === 'read_only') config = { state: 'storage_unavailable', generation: configGen, reason: health === 'read_only' ? 'Storage is read-only' : 'Storage could not be written' }
+      else return invalid([{ path: '/health', code: 'wrong_type', message: 'health must be available, unavailable or read_only' }])
       return ok()
     }],
   ]
@@ -516,18 +645,41 @@ export function createMock(opts: MockOptions = {}) {
   async function handle(req: MockRequest): Promise<MockResponse> {
     const base = opts.latencyMs ?? 0
     if (base > 0) await new Promise((r) => setTimeout(r, base * (0.5 + rand())))
-    if (req.rawBody && req.rawBody.byteLength > MAX_BODY && !req.path.startsWith('/admin/firmware') && !req.path.startsWith('/admin/restore')) {
-      return err(413, 'payload_too_large', `Request bodies are limited to ${MAX_BODY / 1024} KiB`)
+    // Per-route limits (x-hubbo-max-body): restore takes a whole config; firmware images are streamed.
+    const limit = req.path.startsWith('/admin/restore') ? RESTORE_MAX_BODY : MAX_BODY
+    if (req.rawBody && req.rawBody.byteLength > limit && !req.path.startsWith('/admin/firmware')) {
+      return err(413, 'payload_too_large', `Request bodies are limited to ${limit / 1024} KiB`)
     }
     const hit = routes.find(([method, re]) => method === req.method && re.test(req.path))
-    if (!hit) return err(404, 'not_found', `No route for ${req.method} ${req.path}`)
+    if (!hit) {
+      const known = routes.some(([, re]) => re.test(req.path))
+      return known ? err(405, 'method_not_allowed', `${req.method} is not allowed here`) : err(404, 'not_found', `No route for ${req.method} ${req.path}`)
+    }
     const [, re, role, fn] = hit
     const sid = sessionId(req)
+    // Credentials the hub can't read or trust: no logins, no setup, no authenticated requests.
+    if (authState() === 'unavailable' && (role !== 'public' || /^\/auth\/login$/.test(req.path))) {
+      return err(503, 'storage_unavailable', 'The saved login data can’t be read right now')
+    }
+    if (authState() === 'corrupt' && (role === 'setup' || /^\/auth\/login$/.test(req.path))) {
+      return err(409, 'credentials_corrupt', 'The saved login data is damaged')
+    }
     if (role === 'setup' && adminCreated) return err(409, 'setup_already_done', 'An admin account already exists')
+    // Like the hub: a browser Origin on an unsafe request must be this hub (CSRF defence).
+    const origin = req.headers.origin
+    if (req.method !== 'GET' && origin && req.headers.host && new URL(origin).host !== req.headers.host) {
+      return err(403, 'forbidden', 'Origin does not match this hub')
+    }
     if (role === 'token' || role === 'admin') {
       if (!adminCreated) return err(409, 'setup_required', 'Finish first-run setup')
       if (!sid) return err(401, 'unauthenticated', 'Sign in to continue')
-      if (req.method !== 'GET' && req.headers['x-hubbo-csrf'] !== sessions.get(sid)!.csrf) return err(403, 'csrf_failed', 'Missing or wrong X-Hubbo-CSRF header')
+      if (req.method !== 'GET' && req.headers[CSRF_HEADER] !== sessions.get(sid)!.csrf) return err(403, 'csrf_failed', 'Missing or wrong X-Hubbo-CSRF header')
+    }
+    // Config state: a blocked config refuses every edit (and switching, since nothing is compiled);
+    // unwritable storage refuses edits. Restore and reset are the way out.
+    if (req.method !== 'GET' && EDITS.some((e) => e.test(req.path))) {
+      if (config.state === 'blocked') return err(409, 'config_blocked', 'The saved configuration can’t be used; restore a backup or reset')
+      if (config.state === 'storage_unavailable' && !/\/(activate|off)$/.test(req.path)) return err(503, 'storage_unavailable', 'The configuration store can’t be written')
     }
     const m = re.exec(req.path)!.map((s) => (s === undefined ? '' : decodeURIComponent(s)))
     return fn(req, m)

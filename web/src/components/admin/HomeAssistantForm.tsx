@@ -14,7 +14,7 @@ import { useIntegrationConfig } from '@/hooks/data'
 /** Loads the integration's settings, then shows the form. */
 export function HomeAssistantSettings({ id, onSaved }: { id: string; onSaved?: () => void }) {
   const cfg = useIntegrationConfig(id)
-  if (cfg.error) return <ErrorState error={cfg.error} retry={cfg.refetch} />
+  if (cfg.error) return <ErrorState error={cfg.error} retry={cfg.refetch} what="Home Assistant settings" />
   if (!cfg.data) return <Skeleton className="h-48" />
   return <HomeAssistantForm key={cfg.data.revision} config={cfg.data} onSaved={onSaved} />
 }
@@ -75,7 +75,7 @@ function HomeAssistantForm({ config, onSaved }: { config: IntegrationConfig; onS
         <Input id="ha-token" type="password" autoComplete="off" spellCheck={false} placeholder={keepsToken ? '•••••••• (stored)' : 'Paste token'} value={token} onChange={(e) => setToken(e.target.value)} maxLength={512} required={!keepsToken} />
       </Field>
       <Alert variant="info">Hubbo only calls services on devices you register, but Home Assistant tokens aren’t sandboxed: anyone holding this token can control everything it can.</Alert>
-      {error && !urlError && <Alert variant="error">{error.code === 'revision_conflict' ? 'These settings changed in another window. Reload and try again.' : error.message}</Alert>}
+      {error && !urlError && (error.code === 'revision_conflict' ? <Alert variant="error">These settings changed in another window. Reload and try again.</Alert> : <ErrorState error={error} what="Configuring Home Assistant" />)}
       <div>
         <Button type="submit" disabled={busy}>
           {busy && <Loader2 className="animate-spin" />}

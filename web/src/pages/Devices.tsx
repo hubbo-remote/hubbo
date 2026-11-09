@@ -9,12 +9,13 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/misc'
 import { toast } from '@/components/ui/toast'
-import { useDevices, useIntegrations } from '@/hooks/data'
+import { useConfigLock, useDevices, useIntegrations } from '@/hooks/data'
 
 export default function Devices() {
   const devices = useDevices()
   const integrations = useIntegrations()
   const [adding, setAdding] = useState(false)
+  const lock = useConfigLock()
   const [, navigate] = useLocation()
 
   const groups = (integrations.data ?? [])
@@ -27,7 +28,7 @@ export default function Devices() {
         title="Devices"
         description="The curated list of things Hubbo may control. Activities can only use registered devices."
         actions={
-          <Button onClick={() => setAdding(true)}>
+          <Button onClick={() => setAdding(true)} disabled={lock.locked} title={lock.title}>
             <Plus /> Add device
           </Button>
         }
@@ -37,7 +38,7 @@ export default function Devices() {
       ) : !devices.data || !integrations.data ? (
         <div className="grid gap-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-16" />)}</div>
       ) : devices.data.length === 0 ? (
-        <EmptyState icon={Tv2} title="No devices yet" action={<Button onClick={() => setAdding(true)}>Add your first device</Button>}>
+        <EmptyState icon={Tv2} title="No devices yet" action={<Button onClick={() => setAdding(true)} disabled={lock.locked} title={lock.title}>Add your first device</Button>}>
           Register a receiver, TV or Apple TV from one of your integrations.
         </EmptyState>
       ) : (

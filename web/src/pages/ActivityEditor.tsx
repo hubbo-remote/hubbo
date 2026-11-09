@@ -16,7 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Kbd, Skeleton } from '@/components/ui/misc'
 import { Tabs } from '@/components/ui/tabs'
 import { toast, toastError } from '@/components/ui/toast'
-import { useActivity, useCatalog, useGlobalBindings } from '@/hooks/data'
+import { useActivity, useCatalog, useConfigLock, useGlobalBindings } from '@/hooks/data'
 import { buttonForPath, LIMITS, parseTrigger, validateActivity, type Catalog } from '@/lib/activity'
 import { cn, plural, same } from '@/lib/utils'
 
@@ -52,6 +52,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
   const [serverIssues, setServerIssues] = useState<ValidationIssue[] | null>(null)
   const [busy, setBusy] = useState<'save' | 'validate' | null>(null)
   const [conflict, setConflict] = useState<Activity | null>(null)
+  const lock = useConfigLock()
 
   const isNew = !draft.id
   const dirty = useMemo(() => !same(draft, saved), [draft, saved])
@@ -121,7 +122,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
   // Cmd/Ctrl+S saves. The listener is attached once and reads the latest state through a ref.
   const onSaveKey = useRef<() => void>(() => {})
   onSaveKey.current = () => {
-    if ((dirty || isNew) && !busy && local.valid) void save()
+    if ((dirty || isNew) && !busy && local.valid && !lock.locked) void save()
   }
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -187,7 +188,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
               {busy === 'validate' ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
               Validate
             </Button>
-            <Button onClick={() => save()} disabled={!!busy || (!dirty && !isNew) || !local.valid} title="Save (Ctrl+S)">
+            <Button onClick={() => save()} disabled={!!busy || (!dirty && !isNew) || !local.valid || lock.locked} title={lock.title ?? 'Save (Ctrl+S)'}>
               {busy === 'save' ? <Loader2 className="animate-spin" /> : <Save />}
               {isNew ? 'Create' : 'Save'}
               <Kbd className="hidden border-primary-foreground/30 bg-transparent text-primary-foreground/70 lg:inline">⌘S</Kbd>

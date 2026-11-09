@@ -17,7 +17,7 @@ import type {
   TriggerKey,
   ValidationIssue,
 } from '../api/types.ts'
-import { isButtonId } from './buttons.ts'
+import { buttonLabel, isButtonId } from './buttons.ts'
 
 export const EVENT_ORDER: readonly EventKind[] = ['down', 'up', 'tap', 'hold']
 export const LIMITS = { maxSequence: 32, maxBindingActions: 32, nameMax: 64, paramStringMax: 32 } as const
@@ -36,6 +36,13 @@ export function parseTrigger(key: string): { button: ButtonId; event: EventKind 
 /** Event kinds with at least one action for this button. */
 export function boundEvents(bindings: Bindings, button: ButtonId): EventKind[] {
   return EVENT_ORDER.filter((e) => (bindings[triggerKey(button, e)]?.length ?? 0) > 0)
+}
+
+/** Visit every action of an activity (or a bindings set) with its JSON-pointer path, e.g. `/bindings/up:down/0`. */
+export function forEachAction(doc: { startup?: Action[]; shutdown?: Action[]; bindings: Bindings }, fn: (a: Action, path: string) => void) {
+  doc.startup?.forEach((a, i) => fn(a, `/startup/${i}`))
+  doc.shutdown?.forEach((a, i) => fn(a, `/shutdown/${i}`))
+  for (const [k, list] of Object.entries(doc.bindings)) list.forEach((a, i) => fn(a, `/bindings/${k}/${i}`))
 }
 
 export function bindingCount(bindings: Bindings): number {
@@ -78,8 +85,11 @@ export function defaultParams(params: ParamSpec[]): ActionParams {
   return out
 }
 
+/** `label` is optional in the spec; fall back to a readable form of the name (`duration_ms` → `Duration ms`). */
+export const paramLabel = (p: ParamSpec) => p.label ?? p.name.charAt(0).toUpperCase() + p.name.slice(1).replace(/_/g, ' ')
+
 export function checkParam(p: ParamSpec, v: ParamValue | undefined, activityIds?: ReadonlySet<string>): string | null {
-  const label = p.label ?? p.name
+  const label = paramLabel(p)
   if (v === undefined || v === '') return p.required ? `${label} is required` : null
   switch (p.type) {
     case 'int':
@@ -155,6 +165,11 @@ function checkAction(a: Action, path: string, cat: Catalog, out: ValidationIssue
     }
   }
   if (!cmd) return
+  // A hold (e.g. key_down) needs a release: only a button's down event can pair one (checked in validateBindings).
+  if (cmd.effect === 'hold' && where === 'sequence') {
+    out.push({ path: `${path}/command_id`, code: 'hold_not_allowed', message: `${cmd.label} holds until released; use the momentary form in sequences` })
+    return
+  }
   for (const p of cmd.params) {
     const err = checkParam(p, a.params[p.name], cat.activities.length ? activityIds(cat) : undefined)
     if (err) out.push({ path: `${path}/params/${p.name}`, code: p.type === 'int' || p.type === 'number' ? 'param_out_of_range' : 'missing_param', message: `${owner}: ${err}` })
@@ -163,6 +178,13 @@ function checkAction(a: Action, path: string, cat: Catalog, out: ValidationIssue
     if (!cmd.params.some((p) => p.name === k)) out.push({ path: `${path}/params/${k}`, code: 'unknown_param', message: `${cmd.label} does not take ${k}` })
   }
 }
+
+/**
+ * The release of a hold: same device and params, `<x>_down` released by `<x>_up`
+ * (the catalog's only hold today is key_down/key_up; core keeps the mapping as `releasedBy`).
+ */
+export const releaseFor = (hold: Action): Action => ({ ...hold, command_id: hold.command_id.replace(/_down$/, '_up') })
+const isReleaseOf = (r: Action, hold: Action) => r.device_id === hold.device_id && r.command_id === releaseFor(hold).command_id && JSON.stringify(r.params) === JSON.stringify(hold.params)
 
 export function validateBindings(bindings: Bindings, cat: Catalog, errors: ValidationIssue[], warnings: ValidationIssue[]) {
   for (const [key, actions] of Object.entries(bindings)) {
@@ -173,7 +195,15 @@ export function validateBindings(bindings: Bindings, cat: Catalog, errors: Valid
       continue
     }
     if (actions.length > LIMITS.maxBindingActions) errors.push({ path: base, code: 'too_many_actions', message: `At most ${LIMITS.maxBindingActions} actions per trigger` })
-    actions.forEach((act, i) => checkAction(act, `${base}/${i}`, cat, errors, i === actions.length - 1 ? 'binding-last' : 'binding-mid'))
+    actions.forEach((act, i) => {
+      checkAction(act, `${base}/${i}`, cat, errors, i === actions.length - 1 ? 'binding-last' : 'binding-mid')
+      if (commandFor(act, cat)?.effect !== 'hold') return
+      const at = `${base}/${i}/command_id`
+      if (t.event !== 'down') errors.push({ path: at, code: 'hold_not_allowed', message: `${buttonLabel(t.button)} ${t.event}: a held command only works on down, released on up` })
+      else if (!bindings[triggerKey(t.button, 'up')]?.some((r) => isReleaseOf(r, act))) {
+        errors.push({ path: at, code: 'unpaired_hold', message: `${buttonLabel(t.button)}: ${act.command_id} needs its release on the up event` })
+      }
+    })
   }
   // Advisory: legal, but usually mistakes.
   const buttons = new Set(Object.keys(bindings).map((k) => parseTrigger(k)?.button).filter((b): b is ButtonId => !!b))
@@ -181,10 +211,6 @@ export function validateBindings(bindings: Bindings, cat: Catalog, errors: Valid
     const ev = boundEvents(bindings, b)
     if (ev.includes('down') && (ev.includes('tap') || ev.includes('hold'))) {
       warnings.push({ path: `/bindings/${b}:down`, code: 'mixed_semantics', message: `down fires on every press, before tap or hold is known` })
-    }
-    const down = bindings[triggerKey(b, 'down')]?.[0]
-    if (down?.command_id === 'key_down' && !ev.includes('up')) {
-      warnings.push({ path: `/bindings/${b}:up`, code: 'missing_release', message: `key down without a key up binding (the hub releases it after a timeout)` })
     }
   }
 }

@@ -8,13 +8,14 @@ import { TestButton } from '@/components/actions/ActionPicker'
 import { ParamForm } from '@/components/actions/ParamForm'
 import { ErrorState, PageHeader } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { toast, toastError } from '@/components/ui/toast'
-import { useCapabilities, useDevice, useIntegrations } from '@/hooks/data'
+import { useCapabilities, useConfigLock, useDevice, useIntegrations } from '@/hooks/data'
 import { providerRef } from '@/lib/health'
 import { defaultParams } from '@/lib/activity'
 import { cn } from '@/lib/utils'
@@ -61,9 +62,12 @@ export default function DeviceDetail({ id }: { id: string }) {
 
 function CommandRow({ deviceId, command, open, onToggle }: { deviceId: string; command: Command; open: boolean; onToggle: () => void }) {
   const [params, setParams] = useState(() => defaultParams(command.params))
+  // A hold (e.g. key down) needs its release on a button's up event, so the hub
+  // refuses it here; it can only be used in a binding.
+  const hold = command.effect === 'hold'
   return (
     <div className={cn('rounded-lg border', open && 'bg-muted/30')}>
-      <button onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-3 px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg cursor-pointer">
+      <button onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-3 rounded-lg px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer">
         <div className="min-w-0 flex-1">
           <p className="font-medium">{command.label}</p>
           <p className="truncate font-mono text-xs text-muted-foreground">
@@ -71,13 +75,22 @@ function CommandRow({ deviceId, command, open, onToggle }: { deviceId: string; c
             {command.params.length > 0 && ` (${command.params.map((p) => p.name).join(', ')})`}
           </p>
         </div>
+        {hold && <Badge variant="secondary">Binding only</Badge>}
         <ChevronDown className={cn('size-4 text-muted-foreground transition-transform', open && 'rotate-180')} aria-hidden />
       </button>
       {open && (
         <div className="grid gap-4 border-t px-4 py-4">
           {command.description && <p className="text-sm text-muted-foreground">{command.description}</p>}
-          <ParamForm params={command.params} values={params} onChange={setParams} compact />
-          <TestButton action={{ integration_id: '', device_id: deviceId, command_id: command.command_id, params }} />
+          {hold ? (
+            <p className="text-sm text-muted-foreground">
+              This command holds until it is released, so it can’t be tested on its own. Bind it to a button’s <b>down</b> event; Hubbo adds the release on <b>up</b>.
+            </p>
+          ) : (
+            <>
+              <ParamForm params={command.params} values={params} onChange={setParams} compact />
+              <TestButton action={{ integration_id: '', device_id: deviceId, command_id: command.command_id, params }} />
+            </>
+          )}
         </div>
       )}
     </div>
@@ -89,6 +102,7 @@ function DeviceAdmin({ device }: { device: Device }) {
   const [busy, setBusy] = useState(false)
   const [confirm, setConfirm] = useState(false)
   const [delError, setDelError] = useState<string | null>(null)
+  const lock = useConfigLock()
   const [, navigate] = useLocation()
 
   const rename = async () => {
@@ -138,12 +152,12 @@ function DeviceAdmin({ device }: { device: Device }) {
         <Field label="Name" htmlFor="dn">
           <div className="flex gap-2">
             <Input id="dn" value={name} onChange={(e) => setName(e.target.value)} maxLength={64} />
-            <Button variant="outline" onClick={rename} disabled={busy || !name.trim() || name === device.name}>
+            <Button variant="outline" onClick={rename} disabled={busy || !name.trim() || name === device.name || lock.locked} title={lock.title}>
               {busy ? <Loader2 className="animate-spin" /> : 'Save'}
             </Button>
           </div>
         </Field>
-        <Button variant="outline" className="text-destructive hover:text-destructive" onClick={() => (setDelError(null), setConfirm(true))}>
+        <Button variant="outline" className="text-destructive hover:text-destructive" onClick={() => (setDelError(null), setConfirm(true))} disabled={lock.locked} title={lock.title}>
           <Trash2 /> Remove device
         </Button>
       </CardContent>

@@ -1,15 +1,16 @@
 import { CheckCircle2, Loader2, Radio } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { api, errorMessage } from '@/api/client'
+import { api } from '@/api/client'
 import { invalidate } from '@/api/hooks'
 import type { RemotePairStatus } from '@/api/types'
+import { ErrorState } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 
 /** RF pairing by learning an existing Hub's address while its pair button is pressed. */
 export function PairRemote({ paired, channel, onPaired }: { paired?: boolean; channel?: number; onPaired?: () => void }) {
   const [st, setSt] = useState<RemotePairStatus | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
   const scanning = st?.state === 'scanning'
 
   useEffect(() => {
@@ -24,7 +25,8 @@ export function PairRemote({ paired, channel, onPaired }: { paired?: boolean; ch
           onPaired?.()
         }
       } catch (e) {
-        setError(errorMessage(e))
+        setError(e)
+        setSt(null) // stop polling; the error explains why
       }
     }, 1000)
     return () => clearInterval(t)
@@ -35,7 +37,7 @@ export function PairRemote({ paired, channel, onPaired }: { paired?: boolean; ch
     try {
       setSt(await api.remotePairStart())
     } catch (e) {
-      setError(errorMessage(e))
+      setError(e)
     }
   }
   const cancel = async () => {
@@ -53,7 +55,7 @@ export function PairRemote({ paired, channel, onPaired }: { paired?: boolean; ch
         <li>Press a few buttons on the remote. Hubbo learns the Hub’s address and listens on it.</li>
       </ol>
       <p className="text-xs text-muted-foreground">You only need the old Hub once per remote. Pairing a remote without a Hub isn’t supported yet.</p>
-      {error && <Alert variant="error">{error}</Alert>}
+      {error != null && <ErrorState error={error} what="Remote pairing" />}
       {st?.state === 'found' ? (
         <Alert variant="success" title="Remote paired">
           Listening on channel {st.channel}. {st.message}

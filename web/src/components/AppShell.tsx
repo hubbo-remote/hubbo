@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { useActivities, useStatus } from '@/hooks/data'
 import { useTheme, type ThemePref } from '@/lib/theme'
 import { cn } from '@/lib/utils'
+import { ConfigBanner } from './ConfigBanner'
 import { Logo } from './Logo'
 
 const NAV: { href: string; label: string; icon: LucideIcon }[] = [
@@ -122,6 +123,7 @@ export function AppShell({ session, onSignedOut, children }: { session: Session;
             AUTH DISABLED — SIMULATOR
           </div>
         )}
+        <ConfigBanner admin={session.role === 'admin'} />
         {/* Mobile header */}
         <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur md:hidden">
           <Logo className="size-6" />

@@ -46,23 +46,20 @@ describe('activity helpers', () => {
       cat,
     )
     expect(r.valid).toBe(false)
-    expect(r.errors.map((e) => e.code).sort()).toEqual(['integration_mismatch', 'misplaced_transition', 'missing_param', 'param_out_of_range', 'param_out_of_range', 'required', 'unknown_device'])
+    expect(r.errors.map((e) => e.code).sort()).toEqual(['integration_mismatch', 'misplaced_transition', 'missing_param', 'param_out_of_range', 'param_out_of_range', 'required', 'unknown_device', 'unpaired_hold'])
   })
 
-  it('warns about key_down without key_up and mixed semantics', () => {
-    const r = validateActivity(
-      {
-        name: 'x',
-        startup: [],
-        shutdown: [],
-        bindings: {
-          'up:down': [{ integration_id: 'ble', device_id: 'dev_apple_tv', command_id: 'key_down', params: { key: 'ARROW_UP' } }],
-          'up:hold': [{ integration_id: 'ble', device_id: 'dev_apple_tv', command_id: 'key_tap', params: { key: 'AC_HOME' } }],
-        },
-      },
-      cat,
-    )
-    expect(r.valid).toBe(true)
-    expect(r.warnings.map((w) => w.code).sort()).toEqual(['missing_release', 'mixed_semantics'])
+  it('holds: down only, released on up; never in sequences', () => {
+    const apple = (command_id: string, key = 'ARROW_UP') => ({ integration_id: 'ble', device_id: 'dev_apple_tv', command_id, params: { key } })
+    const codes = (bindings: Record<string, ReturnType<typeof apple>[]>, startup: ReturnType<typeof apple>[] = []) => {
+      const r = validateActivity({ name: 'x', startup, shutdown: [], bindings }, cat)
+      return { errors: r.errors.map((e) => `${e.code}@${e.path}`), warnings: r.warnings.map((w) => w.code) }
+    }
+    expect(codes({ 'up:down': [apple('key_down')], 'up:up': [apple('key_up')] }).errors).toEqual([])
+    expect(codes({ 'up:down': [apple('key_down')] }).errors).toEqual(['unpaired_hold@/bindings/up:down/0/command_id'])
+    expect(codes({ 'up:down': [apple('key_down')], 'up:up': [apple('key_up', 'ARROW_DOWN')] }).errors).toEqual(['unpaired_hold@/bindings/up:down/0/command_id'])
+    expect(codes({ 'up:tap': [apple('key_down')] }).errors).toEqual(['hold_not_allowed@/bindings/up:tap/0/command_id'])
+    expect(codes({}, [apple('key_down')]).errors).toEqual(['hold_not_allowed@/startup/0/command_id'])
+    expect(codes({ 'up:down': [apple('key_down')], 'up:up': [apple('key_up')], 'up:hold': [apple('key_tap', 'AC_HOME')] }).warnings).toEqual(['mixed_semantics'])
   })
 })

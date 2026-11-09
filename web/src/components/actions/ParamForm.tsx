@@ -2,7 +2,7 @@ import { useId } from 'react'
 import type { ActionParams, ParamSpec, ParamValue } from '@/api/types'
 import { Field, Input, Select } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { checkParam } from '@/lib/activity'
+import { checkParam, paramLabel } from '@/lib/activity'
 
 /** Form fields generated from a command's parameter schema (ParamSpec). */
 export function ParamForm({ params, values, onChange, activities = [], compact }: { params: ParamSpec[]; values: ActionParams; onChange: (v: ActionParams) => void; activities?: { id: string; name: string }[]; compact?: boolean }) {
@@ -21,7 +21,7 @@ export function ParamForm({ params, values, onChange, activities = [], compact }
         const id = `${base}-${p.name}`
         const v = values[p.name]
         const error = checkParam(p, v, activities.length ? ids : undefined)
-        const label = `${p.label ?? p.name}${p.required ? '' : ' (optional)'}`
+        const label = `${paramLabel(p)}${p.required ? '' : ' (optional)'}`
         switch (p.type) {
           case 'enum':
           case 'activity_ref': {
@@ -60,7 +60,7 @@ export function ParamForm({ params, values, onChange, activities = [], compact }
                   {ranged && (
                     <input
                       type="range"
-                      aria-label={`${p.label ?? p.name} slider`}
+                      aria-label={`${paramLabel(p)} slider`}
                       min={p.minimum}
                       max={p.maximum}
                       step={step}

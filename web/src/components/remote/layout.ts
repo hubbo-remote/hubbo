@@ -116,8 +116,8 @@ export const BODY_SEAM = (() => {
 export const WORDMARK_Y = v([0, 100])[1]
 /** Decorative labels on the volume and channel rockers (view units). */
 export const ROCKER_LABELS: { text: string; at: Pt }[] = [
-  { text: 'VOL', at: v([84, 629]) },
-  { text: 'CH/PG', at: v([330, 629]) },
+  { text: 'VOL', at: v([89, 629]) },
+  { text: 'CH/PG', at: v([325, 629]) },
 ]
 
 const ACCENT = 'var(--remote-accent)'
@@ -125,8 +125,9 @@ const [music, tv, movie] = bar(64, 352, 205, 37, 3, 14)
 const [dvr, guide, info] = bar(64, 352, 437, 41, 3, 15)
 const numRows = [897, 940, 983, 1022].map((y) => bar(64, 352, y, 24, 3, 11))
 
-const volUp: Pt[] = [[62, 557], [135, 557], [135, 598], [106, 627], [62, 627]]
-const volDown: Pt[] = [[62, 631], [106, 631], [135, 660], [135, 700], [62, 700]]
+// The rocker halves leave a gap at the middle for the VOL / CH/PG label, so the label never sits on a key.
+const volUp: Pt[] = [[62, 557], [135, 557], [135, 598], [116, 617], [62, 617]]
+const volDown: Pt[] = [[62, 641], [116, 641], [135, 660], [135, 700], [62, 700]]
 const exitPts: Pt[] = [[64, 503], [192, 503], [165, 543], [64, 543]]
 const mutePts: Pt[] = [[64, 712], [165, 712], [192, 752], [64, 752]]
 

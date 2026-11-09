@@ -29,7 +29,7 @@ export function BlePanel({ id }: { id: string }) {
   }, [windowEnds, refetch])
 
   const s = cfg.data?.settings
-  if (cfg.error) return <ErrorState error={cfg.error} retry={cfg.refetch} />
+  if (cfg.error) return <ErrorState error={cfg.error} retry={cfg.refetch} what="Bluetooth settings" />
   if (!s || s.type !== 'ble_hid') return <Skeleton className="h-24" />
 
   const pair = async () => {

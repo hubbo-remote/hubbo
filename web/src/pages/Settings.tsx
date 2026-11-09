@@ -1,7 +1,7 @@
-import { Check, Copy, Download, KeyRound, Loader2, Plus, RefreshCw, Trash2, Upload } from 'lucide-react'
+import { Check, Copy, Download, KeyRound, Loader2, Plus, RefreshCw, RotateCcw, Trash2, Upload } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { useLocation } from 'wouter'
-import { api, errorMessage } from '@/api/client'
+import { api, errorMessage, toApiError, type BackupKind } from '@/api/client'
 import { invalidate, invalidateAll, useQuery } from '@/api/hooks'
 import type { RestoreResult, TokenCreated } from '@/api/types'
 import { PairRemote } from '@/components/admin/PairRemote'
@@ -15,7 +15,7 @@ import { Field, Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { Tabs } from '@/components/ui/tabs'
 import { toast, toastError } from '@/components/ui/toast'
-import { useStatus } from '@/hooks/data'
+import { useConfigLock, useStatus } from '@/hooks/data'
 import { agoMs, timeAgo } from '@/lib/utils'
 
 const TABS = [
@@ -23,7 +23,7 @@ const TABS = [
   { id: 'tokens', label: 'API tokens' },
   { id: 'remote', label: 'Remote' },
   { id: 'network', label: 'Network' },
-  { id: 'backup', label: 'Backup' },
+  { id: 'backup', label: 'Backup & reset' },
   { id: 'firmware', label: 'Firmware' },
   { id: 'diagnostics', label: 'Diagnostics' },
 ]
@@ -228,22 +228,75 @@ function Network() {
   return <NetworkInfo />
 }
 
+/** Shown before and after a `blocked-raw` download. */
+const BLOCKED_RAW_NOTE = 'This is the hub’s saved configuration exactly as stored, exported while the hub is blocked. It may only be restorable on firmware that can read it.'
+
+/** Why a download failed, in the admin's terms (409 config_blocked, 503 storage_unavailable). */
+function DownloadError({ error }: { error: unknown }) {
+  const e = toApiError(error)
+  if (e.code === 'config_blocked')
+    return (
+      <Alert variant="error" title="Nothing intact to download">
+        <p>The saved configuration is damaged and the hub has no intact copy to export, so there’s no backup to download. Restore a backup or reset to factory defaults to continue.</p>
+        <p className="mt-1 text-muted-foreground">The hub said: {e.message}</p>
+      </Alert>
+    )
+  if (e.code === 'storage_unavailable')
+    return (
+      <Alert variant="error" title="The hub can’t read its storage">
+        <p>No backup was made: the saved configuration can’t be read right now, and a backup might be empty or out of date. Try again once the storage is back (restarting the hub may help).</p>
+        <p className="mt-1 text-muted-foreground">The hub said: {e.message}</p>
+      </Alert>
+    )
+  return <ErrorState error={error} what="Downloading backups" />
+}
+
+/** A 422 whose detail is `unsupported_schema`: the file is from newer firmware (or one this firmware can't migrate). */
+const unsupportedSchema = (e: unknown) => {
+  const err = toApiError(e)
+  return err.status === 422 && err.details.some((d) => d.code === 'unsupported_schema')
+}
+
+function RestoreError({ error }: { error: unknown }) {
+  if (unsupportedSchema(error))
+    return (
+      <Alert variant="error" title="This file needs newer firmware">
+        <p>This file was made by newer firmware; update the hub first. Nothing was changed.</p>
+        <p className="mt-1 text-muted-foreground">The hub said: {toApiError(error).message}</p>
+      </Alert>
+    )
+  return <ErrorState error={error} what="Restoring backups" />
+}
+
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = Object.assign(document.createElement('a'), { href: url, download: filename })
+  document.body.append(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
 function Backup() {
-  const [file, setFile] = useState<{ name: string; data: unknown } | null>(null)
+  const blocked = useConfigLock().state === 'blocked'
+  const [file, setFile] = useState<{ name: string; text: string } | null>(null)
   const [preview, setPreview] = useState<RestoreResult | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
+  const [downloaded, setDownloaded] = useState<{ kind: BackupKind; filename: string } | null>(null)
+  const [downloadError, setDownloadError] = useState<unknown>(null)
   const [busy, setBusy] = useState<'download' | 'check' | 'restore' | null>(null)
 
   const download = async () => {
     setBusy('download')
+    setDownloaded(null)
+    setDownloadError(null)
     try {
-      const data = await api.backup()
-      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }))
-      const a = Object.assign(document.createElement('a'), { href: url, download: `hubbo-backup-${new Date().toISOString().slice(0, 10)}.json` })
-      a.click()
-      URL.revokeObjectURL(url)
+      const d = await api.downloadBackup()
+      saveBlob(d.blob, d.filename)
+      setDownloaded({ kind: d.kind, filename: d.filename })
+      if (d.kind === 'config') toast('Backup downloaded', { variant: 'success', description: d.filename })
     } catch (e) {
-      toastError('Backup failed', e)
+      setDownloadError(e)
     } finally {
       setBusy(null)
     }
@@ -254,12 +307,13 @@ function Backup() {
     setError(null)
     if (!f) return setFile(null)
     try {
-      const data = JSON.parse(await f.text())
-      setFile({ name: f.name, data })
+      const text = await f.text()
+      JSON.parse(text) // early feedback only: the hub gets the file exactly as chosen
+      setFile({ name: f.name, text })
       setBusy('check')
-      setPreview(await api.restore(data, true))
+      setPreview(await api.restore(text, true))
     } catch (e) {
-      setError(e instanceof SyntaxError ? 'That file isn’t valid JSON.' : errorMessage(e))
+      setError(e instanceof SyntaxError ? new Error('That file isn’t valid JSON.') : e)
     } finally {
       setBusy(null)
     }
@@ -269,26 +323,44 @@ function Backup() {
     if (!file) return
     setBusy('restore')
     try {
-      await api.restore(file.data, false)
+      await api.restore(file.text, false)
       invalidateAll()
       toast('Backup restored', { variant: 'success' })
       setFile(null)
       setPreview(null)
     } catch (e) {
-      setError(errorMessage(e))
+      setError(e)
     } finally {
       setBusy(null)
     }
   }
 
+  const showRawNote = blocked || downloaded?.kind === 'blocked-raw'
   return (
     <div className="grid gap-4">
-      <Section title="Download a backup" description="One JSON file with devices, activities and integration settings. Passwords, API tokens, Home Assistant tokens and Bluetooth bonds are never included.">
-        <Button variant="outline" onClick={download} disabled={!!busy}>
-          {busy === 'download' ? <Loader2 className="animate-spin" /> : <Download />} Download backup
-        </Button>
+      <Section
+        title={blocked ? 'Download the saved configuration (raw)' : 'Download a backup'}
+        description={
+          blocked
+            ? 'The hub can’t run its saved configuration, so there’s no normal backup. You can still download the saved configuration as stored, to keep it before restoring or resetting.'
+            : 'One JSON file with devices, activities and integration settings. Passwords, API tokens, Home Assistant tokens and Bluetooth bonds are never included.'
+        }
+      >
+        <div className="grid gap-4">
+          {showRawNote && (
+            <Alert variant="warning" title={downloaded?.kind === 'blocked-raw' ? `Saved as ${downloaded.filename}` : 'Raw saved configuration'}>
+              <p>{BLOCKED_RAW_NOTE}</p>
+            </Alert>
+          )}
+          {downloadError != null && <DownloadError error={downloadError} />}
+          <div>
+            <Button variant="outline" onClick={download} disabled={!!busy}>
+              {busy === 'download' ? <Loader2 className="animate-spin" /> : <Download />} {blocked ? 'Download the saved configuration (raw)' : 'Download backup'}
+            </Button>
+          </div>
+        </div>
       </Section>
-      <Section title="Restore" description="The hub validates the whole file before replacing anything.">
+      <Section title="Restore" description="The hub validates the whole file before replacing anything. Restoring never starts an activity: one that’s running stays on if the backup still has it, otherwise nothing is active.">
         <div className="grid gap-4">
           <label className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center text-sm hover:bg-accent/40 focus-within:ring-[3px] focus-within:ring-ring/50">
             <Upload className="size-5 text-muted-foreground" aria-hidden />
@@ -296,7 +368,7 @@ function Backup() {
             <input type="file" accept="application/json,.json" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
           </label>
           {busy === 'check' && <p className="text-sm text-muted-foreground">Checking…</p>}
-          {error && <Alert variant="error">{error}</Alert>}
+          {error != null && <RestoreError error={error} />}
           {preview && (
             <Alert variant="warning" title="Ready to restore">
               <p>
@@ -312,7 +384,49 @@ function Backup() {
           </div>
         </div>
       </Section>
+      <FactoryReset />
     </div>
+  )
+}
+
+function FactoryReset() {
+  const [confirm, setConfirm] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const reset = async () => {
+    setBusy(true)
+    try {
+      await api.factoryReset()
+      invalidateAll() // every object has a new revision now
+      toast('Reset to factory defaults', { variant: 'success', description: 'Devices, activities and global buttons were removed. Your password and API tokens are unchanged.' })
+      setConfirm(false)
+    } catch (e) {
+      toastError('Factory reset failed', e)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Section title="Factory reset" description="Removes every device, activity and global button and resets integration settings. Your admin password, API tokens and pairings are kept. Works even when the saved configuration can’t be used.">
+      <Button variant="outline" className="text-destructive hover:text-destructive" onClick={() => setConfirm(true)}>
+        <RotateCcw /> Factory reset…
+      </Button>
+      <Dialog
+        open={confirm}
+        onClose={() => setConfirm(false)}
+        title="Reset to factory defaults?"
+        description="This can’t be undone. Download a backup first if you might want this configuration again."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirm(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={reset} disabled={busy}>
+              {busy && <Loader2 className="animate-spin" />} Reset everything
+            </Button>
+          </>
+        }
+      />
+    </Section>
   )
 }
 
@@ -320,7 +434,7 @@ function Firmware() {
   const fw = useQuery('firmware', () => api.firmware())
   const [file, setFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [result, setResult] = useState<{ ok: true; message: string } | { ok: false; error: unknown } | null>(null)
 
   const upload = async () => {
     if (!file) return
@@ -328,9 +442,10 @@ function Firmware() {
     setResult(null)
     try {
       const r = await api.uploadFirmware(file)
-      setResult({ ok: r.update_state !== 'failed', message: r.message ?? (r.update_state === 'rebooting' ? 'Verified. The hub is rebooting into the new version.' : `Update state: ${r.update_state}`) })
+      const message = r.message ?? (r.update_state === 'rebooting' ? 'Verified. The hub is rebooting into the new version.' : `Update state: ${r.update_state}`)
+      setResult(r.update_state === 'failed' ? { ok: false, error: new Error(message) } : { ok: true, message })
     } catch (e) {
-      setResult({ ok: false, message: errorMessage(e) })
+      setResult({ ok: false, error: e })
     } finally {
       setBusy(false)
     }
@@ -354,7 +469,7 @@ function Firmware() {
             ))}
           </dl>
         ) : fw.error ? (
-          <ErrorState error={fw.error} retry={fw.refetch} />
+          <ErrorState error={fw.error} retry={fw.refetch} what="Firmware updates" />
         ) : (
           <Skeleton className="h-10" />
         )}
@@ -368,7 +483,7 @@ function Firmware() {
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">Remote response may pause briefly while the image is written.</p>
-        {result && <Alert variant={result.ok ? 'success' : 'error'}>{result.message}</Alert>}
+        {result && (result.ok ? <Alert variant="success">{result.message}</Alert> : <ErrorState error={result.error} what="Firmware updates" />)}
       </div>
     </Section>
   )

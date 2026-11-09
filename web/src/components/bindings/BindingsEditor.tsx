@@ -7,7 +7,7 @@ import { EV_COLOR, EventLegend, RemoteSvg } from '@/components/remote/RemoteSvg'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { boundEvents, buttonForPath, EVENT_ORDER, isSystem, triggerKey, type Catalog } from '@/lib/activity'
+import { boundEvents, buttonForPath, commandFor, EVENT_ORDER, isSystem, releaseFor, triggerKey, type Catalog } from '@/lib/activity'
 import { BUTTONS, buttonLabel } from '@/lib/buttons'
 import { cn } from '@/lib/utils'
 
@@ -64,10 +64,11 @@ export function BindingsEditor({
     if (action) next[key] = [action]
     else delete next[key]
     // Key-like convenience: a key pressed on down is released on up.
-    if (event === 'down' && action?.command_id === 'key_down') {
+    // A hold (e.g. key down) is released on up, so the key never sticks.
+    if (event === 'down' && action && commandFor(action, catalog)?.effect === 'hold') {
       const upKey = triggerKey(button, 'up')
       const up = next[upKey]?.[0]
-      if (!up || (up.command_id === 'key_up' && up.device_id === action.device_id)) next[upKey] = [{ ...action, command_id: 'key_up' }]
+      if (!up || up.device_id === action.device_id) next[upKey] = [releaseFor(action)]
     }
     onChange(next)
   }
@@ -185,7 +186,7 @@ function BindingPanel({ button, bindings, fallback, fallbackLabel = 'Global', ca
               </div>
               {isEditing && (
                 <div className="mt-3 grid gap-3 border-t pt-3">
-                  <ActionPicker value={pending} onChange={setPending} catalog={catalog} context="binding" testable={false} />
+                  <ActionPicker value={pending} onChange={setPending} catalog={catalog} context="binding" allowHold={ev === 'down'} testable={false} />
                   <div className="flex flex-wrap items-center gap-2">
                     <Button
                       size="sm"
@@ -200,13 +201,13 @@ function BindingPanel({ button, bindings, fallback, fallbackLabel = 'Global', ca
                     <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
                       Cancel
                     </Button>
-                    {pending?.device_id && pending.command_id && (
+                    {pending?.device_id && pending.command_id && commandFor(pending, catalog)?.effect === 'momentary' && (
                       <div className="ml-auto">
                         <TestButton action={pending} />
                       </div>
                     )}
                   </div>
-                  {ev === 'down' && pending?.command_id === 'key_down' && <p className="text-xs text-muted-foreground">A matching key up is added to the up event so the key never sticks.</p>}
+                  {pending && commandFor(pending, catalog)?.effect === 'hold' && <p className="text-xs text-muted-foreground">This command holds until released, so the matching release is added to the up event.</p>}
                 </div>
               )}
             </div>

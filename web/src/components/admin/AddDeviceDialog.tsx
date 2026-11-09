@@ -167,7 +167,7 @@ function HaCandidates({ integration, q, setQ, onPick }: { integration: string; q
         <Input placeholder="Search entities" aria-label="Search Home Assistant entities" value={q} onChange={(e) => setQ(e.target.value)} className="pl-9" maxLength={48} autoFocus />
       </div>
       {disc.error ? (
-        <ErrorState error={disc.error} retry={disc.refetch} />
+        <ErrorState error={disc.error} retry={disc.refetch} what="Browsing Home Assistant entities" />
       ) : disc.loading ? (
         <div className="grid gap-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-12" />)}</div>
       ) : (
@@ -211,7 +211,7 @@ function HaCandidates({ integration, q, setQ, onPick }: { integration: string; q
 function BleCandidate({ integration, onPick }: { integration: string; onPick: (peer: string | undefined) => void }) {
   const cfg = useIntegrationConfig(integration)
   const s = cfg.data?.settings
-  if (cfg.error) return <ErrorState error={cfg.error} retry={cfg.refetch} />
+  if (cfg.error) return <ErrorState error={cfg.error} retry={cfg.refetch} what="Bluetooth settings" />
   if (!s) return <Skeleton className="h-16" />
   if (s.type !== 'ble_hid' || !s.bonded) {
     return <Alert variant="info" title="Nothing paired yet">Pair a host from Integrations → Bluetooth keyboard first, then come back.</Alert>

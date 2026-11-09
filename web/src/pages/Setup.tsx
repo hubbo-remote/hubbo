@@ -8,6 +8,7 @@ import { HomeAssistantSettings } from '@/components/admin/HomeAssistantForm'
 import { NetworkInfo } from '@/components/admin/NetworkInfo'
 import { PairRemote } from '@/components/admin/PairRemote'
 import { ThemeToggle } from '@/components/AppShell'
+import { ConfigBanner } from '@/components/ConfigBanner'
 import { Logo } from '@/components/Logo'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -39,6 +40,8 @@ export default function Setup({ onDone }: { onDone: () => void }) {
 
   return (
     <div className="min-h-dvh bg-muted/40">
+      {/* The config state needs a session, so this appears once the admin exists. */}
+      {current !== null && current > 0 && <ConfigBanner admin link={false} />}
       <div className="mx-auto grid max-w-3xl gap-6 px-4 py-8 sm:py-12">
         <header className="flex items-center gap-3">
           <Logo className="size-9" />

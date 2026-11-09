@@ -226,7 +226,7 @@ export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, 
           </g>
         )
       })}
-      <g aria-hidden pointerEvents="none" fontSize={6.5} fontWeight={600} fill="var(--remote-glyph)" textAnchor="middle" dominantBaseline="central" opacity={0.9}>
+      <g aria-hidden pointerEvents="none" fontSize={5.5} fontWeight={700} fill="var(--remote-glyph)" textAnchor="middle" dominantBaseline="central" opacity={0.7} style={{ letterSpacing: '0.06em' }}>
         {ROCKER_LABELS.map((l) => (
           <text key={l.text} x={l.at[0]} y={l.at[1]}>
             {l.text}

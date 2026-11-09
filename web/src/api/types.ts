@@ -21,6 +21,9 @@ export type ActivityInput = S['ActivityInput']
 export type ActivityList = S['ActivityList']
 export type GlobalBindings = S['GlobalBindings']
 export type TransitionResult = S['TransitionResult']
+export type PhaseResult = S['PhaseResult']
+export type ConfigState = S['ConfigState']
+export type AuthState = S['AuthState']
 /** UI-only: what the editor holds. `id`/`revision` are absent for a new activity. */
 export type ActivityDraft = ActivityInput & { id?: string; revision?: number }
 

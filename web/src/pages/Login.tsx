@@ -22,6 +22,8 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
       setPassword('')
       onSignedIn()
     } catch (err) {
+      // The hub can't read or trust its login data: re-check the session, which shows the right screen.
+      if (err instanceof ApiError && (err.code === 'storage_unavailable' || err.code === 'credentials_corrupt')) return onSignedIn()
       setError(err instanceof ApiError && err.status === 429 ? 'Too many attempts. Wait a minute and try again.' : errorMessage(err))
     } finally {
       setBusy(false)

@@ -40,3 +40,14 @@ export function useCatalog() {
   const loading = devices.loading || caps.loading || integrations.loading || activities.loading
   return { catalog, loading, error: devices.error ?? caps.error ?? integrations.error, devices: devices.data ?? [] }
 }
+
+/**
+ * Whether the hub refuses edits right now (/status config: `blocked` or
+ * `storage_unavailable`). Editing controls disable themselves instead of
+ * letting saves fail one by one; the banner explains the way out.
+ */
+export function useConfigLock() {
+  const c = useStatus().data?.config
+  const locked = c?.state === 'blocked' || c?.state === 'storage_unavailable'
+  return { locked, state: c?.state, reason: c?.reason, title: locked ? 'The hub isn’t accepting changes right now (see the banner at the top)' : undefined }
+}

@@ -16,7 +16,7 @@ const SYSTEM_VALUE = '__system__'
  * Device → command → typed params. Only registered devices and their
  * discovered commands are offered, plus Hubbo's own system commands.
  */
-export function ActionPicker({ value, onChange, catalog, context, testable = true }: { value: Action | null; onChange: (a: Action | null) => void; catalog: Catalog; context: 'sequence' | 'binding'; testable?: boolean }) {
+export function ActionPicker({ value, onChange, catalog, context, allowHold = false, testable = true }: { value: Action | null; onChange: (a: Action | null) => void; catalog: Catalog; context: 'sequence' | 'binding'; /** Offer hold commands (only a binding's down event can release them on up). */ allowHold?: boolean; testable?: boolean }) {
   const id = useId()
   const system = value ? isSystem(value) : false
   const deviceId = !value ? '' : system ? SYSTEM_VALUE : (value.device_id ?? '')
@@ -24,7 +24,7 @@ export function ActionPicker({ value, onChange, catalog, context, testable = tru
   const caps = useCapabilities(deviceId && deviceId !== SYSTEM_VALUE && !known ? deviceId : null)
   // The binding UI edits one action per trigger, so it is always the last one.
   const systemCommands = catalog.systemCommands.filter((c) => systemCommandAllowed(c.command_id, context === 'sequence' ? 'sequence' : 'binding-last'))
-  const commands = system ? systemCommands : (known ?? caps.data)?.commands ?? []
+  const commands = (system ? systemCommands : ((known ?? caps.data)?.commands ?? [])).filter((c) => allowHold || c.effect !== 'hold')
   const cmd = value ? commandFor(value, catalog) ?? commands.find((c) => c.command_id === value.command_id) : undefined
 
   const pickDevice = (d: string) => {
@@ -34,7 +34,7 @@ export function ActionPicker({ value, onChange, catalog, context, testable = tru
       return onChange({ integration_id: SYSTEM, device_id: null, command_id: first?.command_id ?? '', params: first ? defaultParams(first.params) : {} })
     }
     const dev = catalog.devices.get(d)!
-    const first = catalog.capabilities.get(d)?.commands[0]
+    const first = catalog.capabilities.get(d)?.commands.find((c) => allowHold || c.effect !== 'hold')
     onChange({ integration_id: dev.integration_id, device_id: d, command_id: first?.command_id ?? '', params: first ? defaultParams(first.params) : {} })
   }
 
@@ -73,7 +73,7 @@ export function ActionPicker({ value, onChange, catalog, context, testable = tru
       </div>
       {cmd?.description && <p className="text-xs text-muted-foreground">{cmd.description}</p>}
       {value && cmd && <ParamForm params={cmd.params} values={value.params} onChange={(params) => onChange({ ...value, params })} activities={catalog.activities} compact />}
-      {testable && value && cmd && !system && <TestButton action={value} />}
+      {testable && value && cmd && !system && cmd.effect === 'momentary' && <TestButton action={value} />}
     </div>
   )
 }

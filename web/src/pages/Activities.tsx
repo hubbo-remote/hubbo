@@ -11,7 +11,8 @@ import { Card } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/misc'
 import { toast, toastError } from '@/components/ui/toast'
-import { useActivities, useStatus } from '@/hooks/data'
+import { switchActivity } from '@/hooks/switchActivity'
+import { useActivities, useConfigLock, useStatus } from '@/hooks/data'
 import { bindingCount, LIMITS } from '@/lib/activity'
 import { plural } from '@/lib/utils'
 
@@ -21,6 +22,7 @@ export default function Activities() {
   const [, navigate] = useLocation()
   const [confirm, setConfirm] = useState<Activity | null>(null)
   const [menu, setMenu] = useState<string | null>(null)
+  const lock = useConfigLock()
 
   const duplicate = async (a: Activity) => {
     try {
@@ -44,15 +46,7 @@ export default function Activities() {
     setConfirm(null)
   }
 
-  const start = async (a: Activity) => {
-    try {
-      await api.activate(a.id)
-      invalidate('status', 'activities')
-      toast(`Starting ${a.name}`, { variant: 'success' })
-    } catch (e) {
-      toastError('Could not start', e)
-    }
-  }
+  const start = (a: Activity) => switchActivity(a.id, (x) => acts.data?.activities.find((y) => y.id === x)?.name ?? x)
 
   return (
     <>
@@ -64,9 +58,15 @@ export default function Activities() {
             <Link href="/activities/global" className={buttonVariants({ variant: 'outline' })}>
               <Globe /> Global buttons
             </Link>
-            <Link href="/activities/new" className={buttonVariants()}>
-              <Plus /> New activity
-            </Link>
+            {lock.locked ? (
+              <Button disabled title={lock.title}>
+                <Plus /> New activity
+              </Button>
+            ) : (
+              <Link href="/activities/new" className={buttonVariants()}>
+                <Plus /> New activity
+              </Link>
+            )}
           </>
         }
       />
@@ -98,11 +98,11 @@ export default function Activities() {
                     </p>
                   </Link>
                   <div className="relative z-10 flex items-center gap-1 border-t px-3 py-2">
-                    <Button variant="ghost" size="sm" onClick={() => start(a)} disabled={running}>
+                    <Button variant="ghost" size="sm" onClick={() => start(a)} disabled={running || lock.state === 'blocked'} title={lock.state === 'blocked' ? lock.title : undefined}>
                       <Play /> Start
                     </Button>
                     <div className="relative ml-auto">
-                      <Button variant="ghost" size="icon" className="size-8" aria-label={`More actions for ${a.name}`} aria-expanded={menu === a.id} onClick={() => setMenu(menu === a.id ? null : a.id)}>
+                      <Button variant="ghost" size="icon" className="size-8" aria-label={`More actions for ${a.name}`} aria-expanded={menu === a.id} onClick={() => setMenu(menu === a.id ? null : a.id)} disabled={lock.locked} title={lock.title}>
                         <MoreHorizontal />
                       </Button>
                       {menu === a.id && (
@@ -127,7 +127,7 @@ export default function Activities() {
         open={!!confirm}
         onClose={() => setConfirm(null)}
         title={`Delete ${confirm?.name}?`}
-        description={status.data?.active_activity_id === confirm?.id ? 'It’s running now. Deleting it clears it without running its shutdown.' : 'Its bindings and sequences are removed from the hub. This can’t be undone (unless you have a backup).'}
+        description={status.data?.active_activity_id === confirm?.id ? 'It’s running now. Hubbo switches to the next activity and runs its startup; this one’s shutdown doesn’t run.' : 'Its bindings and sequences are removed from the hub. This can’t be undone (unless you have a backup).'}
         footer={
           <>
             <Button variant="ghost" onClick={() => setConfirm(null)}>

@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/misc'
 import { toast, toastError } from '@/components/ui/toast'
-import { useCatalog, useGlobalBindings } from '@/hooks/data'
+import { useCatalog, useConfigLock, useGlobalBindings } from '@/hooks/data'
 import { validateBindings, type Catalog } from '@/lib/activity'
 import { same } from '@/lib/utils'
 
@@ -30,6 +30,7 @@ function Editor({ initial, catalog }: { initial: GB; catalog: Catalog }) {
   const [serverIssues, setServerIssues] = useState<ValidationIssue[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [stale, setStale] = useState(false)
+  const lock = useConfigLock()
   const dirty = useMemo(() => !same(bindings, saved.bindings), [bindings, saved.bindings])
 
   const local = useMemo(() => {
@@ -70,7 +71,7 @@ function Editor({ initial, catalog }: { initial: GB; catalog: Catalog }) {
           </span>
         }
         actions={
-          <Button onClick={save} disabled={busy || !dirty || errors.length > 0}>
+          <Button onClick={save} disabled={busy || !dirty || errors.length > 0 || lock.locked} title={lock.title}>
             {busy ? <Loader2 className="animate-spin" /> : <Save />} Save
           </Button>
         }

@@ -8,9 +8,9 @@ import type {
   ActivityList,
   ActionParams,
   ApiErrorBody,
-  Backup,
   BlePairingStatus,
   Capabilities,
+  ConfigState,
   Device,
   DeviceRegister,
   DeviceUpdate,
@@ -33,8 +33,7 @@ import type {
   ValidationResult,
 } from './types'
 
-const API_BASE = '/api/v1'
-const CSRF_HEADER = 'x-hubbo-csrf'
+import { API_BASE, CSRF_HEADER } from './constants'
 
 export class ApiError extends Error {
   readonly status: number
@@ -58,6 +57,9 @@ export function errorMessage(e: unknown, opts: { details?: boolean } = {}): stri
   return opts.details && err.details.length ? [err.message, ...err.details.map((d) => `· ${d.message}`)].join('\n') : err.message
 }
 
+/** The hub answered 501: the feature exists in the API but this hub (e.g. hub-sim today) doesn't implement it yet. */
+export const isNotImplemented = (e: unknown) => toApiError(e).status === 501
+
 let csrfToken: string | null = null
 const remember = (s: Session) => {
   csrfToken = s.csrf_token ?? null
@@ -72,34 +74,75 @@ export const onUnauthorized = (fn: () => void) => {
 
 const enc = encodeURIComponent
 
-async function request<T>(method: string, path: string, body?: unknown, init: { raw?: BodyInit; headers?: Record<string, string> } = {}): Promise<T> {
+type RequestInit_ = { raw?: BodyInit; headers?: Record<string, string> }
+
+/** Sends one request; throws ApiError for network failures and non-2xx answers. */
+async function send(method: string, path: string, body?: unknown, init: RequestInit_ = {}): Promise<Response> {
   const headers: Record<string, string> = { accept: 'application/json', ...init.headers }
   if (method !== 'GET' && csrfToken) headers[CSRF_HEADER] = csrfToken
   let payload: BodyInit | undefined = init.raw
   if (body !== undefined) {
     headers['content-type'] = 'application/json'
     payload = JSON.stringify(body)
-  } else if (init.raw) headers['content-type'] = 'application/octet-stream'
+  } else if (init.raw) headers['content-type'] ??= 'application/octet-stream'
   let res: Response
   try {
     res = await fetch(API_BASE + path, { method, headers, body: payload, credentials: 'same-origin' })
   } catch {
     throw new ApiError(0, null, 'Cannot reach the hub')
   }
-  if (res.status === 204) return undefined as T
-  const text = await res.text()
+  if (res.ok) return res
   let json: unknown = null
   try {
+    const text = await res.text()
     json = text ? JSON.parse(text) : null
   } catch {
     /* non-JSON error page */
   }
-  if (!res.ok) {
-    if (res.status === 401 && !path.startsWith('/auth/')) unauthorizedListeners.forEach((l) => l())
-    const errBody = json && typeof json === 'object' && 'error' in json ? (json as ApiErrorBody) : null
-    throw new ApiError(res.status, errBody, `${res.status} ${res.statusText}`)
+  // 401, or a 503 storage_unavailable (under auth nobody can authenticate while the
+  // credentials store is unreadable): re-check the session so the right screen shows.
+  const storageDown = res.status === 503 && (json as ApiErrorBody | null)?.error?.code === 'storage_unavailable'
+  if ((res.status === 401 || storageDown) && !path.startsWith('/auth/')) unauthorizedListeners.forEach((l) => l())
+  const errBody = json && typeof json === 'object' && 'error' in json ? (json as ApiErrorBody) : null
+  throw new ApiError(res.status, errBody, `${res.status} ${res.statusText}`)
+}
+
+async function request<T>(method: string, path: string, body?: unknown, init: RequestInit_ = {}): Promise<T> {
+  const res = await send(method, path, body, init)
+  if (res.status === 204) return undefined as T
+  const text = await res.text()
+  try {
+    return (text ? JSON.parse(text) : null) as T
+  } catch {
+    return null as T
   }
-  return json as T
+}
+
+/** What `GET /admin/backup` sent (`X-Hubbo-Backup`). */
+export type BackupKind = 'config' | 'blocked-raw'
+export interface BackupDownload {
+  kind: BackupKind
+  /** The body exactly as the hub sent it: never parsed or re-serialized. */
+  blob: Blob
+  filename: string
+}
+
+/** `filename="…"` from Content-Disposition, reduced to a safe base name. */
+export function dispositionFilename(header: string | null): string | null {
+  const m = header ? /filename\s*=\s*(?:"([^"]*)"|([^;\s]+))/i.exec(header) : null
+  const base = [...((m?.[1] ?? m?.[2])?.split(/[\\/]/).pop() ?? '')].filter((c) => c >= ' ').join('').trim()
+  return base && base !== '.' && base !== '..' ? base : null
+}
+
+async function downloadBackup(): Promise<BackupDownload> {
+  const res = await send('GET', '/admin/backup', undefined, { headers: { accept: 'application/json, application/octet-stream' } })
+  const kind = res.headers.get('x-hubbo-backup')
+  if (kind !== 'config' && kind !== 'blocked-raw') throw new ApiError(res.status, null, 'The hub’s answer didn’t say what kind of backup it is (no X-Hubbo-Backup header), so it wasn’t saved.')
+  const blob = await res.blob()
+  if (blob.size === 0) throw new ApiError(res.status, null, 'The hub sent an empty backup, so nothing was saved.')
+  const date = new Date().toISOString().slice(0, 10)
+  const filename = dispositionFilename(res.headers.get('content-disposition')) ?? (kind === 'blocked-raw' ? `hubbo-backup-BLOCKED-${date}.json` : `hubbo-backup-${date}.json`)
+  return { kind, blob, filename }
 }
 
 const get = <T>(p: string) => request<T>('GET', p)
@@ -159,8 +202,11 @@ export const api = {
   tokens: async () => (await get<{ tokens: TokenSummary[] }>('/admin/tokens')).tokens,
   createToken: (name: string) => post<TokenCreated>('/admin/tokens', { name }),
   revokeToken: (id: string) => del(`/admin/tokens/${enc(id)}`),
-  backup: () => get<Backup>('/admin/backup'),
-  restore: (backup: unknown, dryRun: boolean) => post<RestoreResult>(`/admin/restore?dry_run=${dryRun}`, backup),
+  /** The backup download, as an opaque blob: a `Backup`, or (`blocked-raw`) the saved record's raw bytes. */
+  downloadBackup,
+  /** Sends the file's text exactly as chosen: a `Backup` or a `blocked-raw` record (RestoreRequest). */
+  restore: (text: string, dryRun: boolean) => request<RestoreResult>('POST', `/admin/restore?dry_run=${dryRun}`, undefined, { raw: text, headers: { 'content-type': 'application/json' } }),
+  factoryReset: () => post<ConfigState>('/admin/reset'),
   firmware: () => get<FirmwareStatus>('/admin/firmware'),
   uploadFirmware: async (file: File) => {
     const sha = await sha256Hex(file)
