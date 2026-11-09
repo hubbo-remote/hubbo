@@ -6,10 +6,12 @@
 #   bin/hubbo fw <pio args>   PlatformIO in firmware/ (e.g. `fw run`)
 #   bin/hubbo sim <args>      build and run hub-sim (`sim serve`, `sim run <script>`)
 #   bin/hubbo tsan            core + sim tests under ThreadSanitizer
+#   bin/hubbo asan            core + sim tests under AddressSanitizer + UBSan
 #   bin/hubbo shell           interactive shell in the toolchain
 #   bin/hubbo run <cmd...>    any command in the toolchain
 #   bin/hubbo image           (re)build the toolchain image
 #   bin/hubbo web [pnpm args] web admin (default: `dev`, e.g. `web build`)
+#   bin/hubbo web e2e [args]  Playwright e2e (HUBBO_API_TARGET=http://127.0.0.1:8780 for hub-sim)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -30,12 +32,20 @@ in_toolchain() {
 
 # Build a native tree and run ctest. Configures only on first use; after that
 # ninja re-runs cmake itself when a CMakeLists.txt or globbed source changes.
+#
+# Each build dir is guarded by an exclusive lock (`<dir>.lock`), held for the
+# build and the test run. Several agents or terminals share these dirs, and
+# without the lock one build relinks binaries while another is linking or
+# running them, which gives phantom failures and crashes.
 native_tests() {  # <service> <build dir> <build type> [ctest args...]
     local service=$1
     shift
     run_in "$service" bash -c '
         dir=$1 type=$2
         shift 2
+        mkdir -p build
+        exec 9>"$dir.lock"
+        flock 9
         { [ -f "$dir/build.ninja" ] ||
             cmake -S . -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE="$type" >/dev/null; } &&
         cmake --build "$dir" &&
@@ -53,14 +63,24 @@ case "$cmd" in
         in_toolchain bash -c 'cd firmware && pio "$@"' _ "$@"
         ;;
     sim)
+        # Build under the build-dir lock, then run a private copy, so a later
+        # rebuild can't replace the binary under a running sim.
         in_toolchain bash -c '
+            mkdir -p build
+            exec 9>build/native.lock
+            flock 9
             { [ -f build/native/build.ninja ] ||
                 cmake -S . -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Debug >/dev/null; } &&
             cmake --build build/native --target hub-sim >/dev/null &&
-            exec build/native/sim/hub-sim "$@"' _ "$@"
+            cp build/native/sim/hub-sim /tmp/hub-sim &&
+            exec 9>&- &&
+            exec /tmp/hub-sim "$@"' _ "$@"
         ;;
     tsan)
         native_tests tsan build/tsan RelWithDebInfo "$@"
+        ;;
+    asan)
+        native_tests asan build/asan Debug "$@"
         ;;
     shell)
         in_toolchain bash
@@ -73,7 +93,13 @@ case "$cmd" in
         ;;
     web)
         [ $# -eq 0 ] && set -- dev
-        run_in web "$@"
+        if [ "$1" = e2e ]; then
+            shift
+            run_in web exec true  # install/update node_modules first
+            run_in web-e2e "$@"
+        else
+            run_in web "$@"
+        fi
         ;;
     *)
         sed -n 's/^#   \(bin\/hubbo\)/\1/p' "$0"

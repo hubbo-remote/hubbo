@@ -36,9 +36,16 @@ services:
     environment:
       - CXXFLAGS=-fsanitize=thread -fno-omit-frame-pointer
 
+  # Same setup for AddressSanitizer + UBSan (`bin/hubbo asan`). ASan also
+  # hangs intermittently under full mmap randomization, so it needs ASLR off.
+  asan:
+    extends: tsan
+    environment:
+      - CXXFLAGS=-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
+
   # Web admin dev server (Vite + HMR) on :5180 (HUBBO_WEB_PORT). The API is served by the
   # TypeScript mock unless HUBBO_API_TARGET points at hub-sim or a board,
-  # e.g. HUBBO_API_TARGET=http://127.0.0.1:8080. Host networking so the
+  # e.g. HUBBO_API_TARGET=http://127.0.0.1:8780. Host networking so the
   # proxy can reach hub-sim's loopback listener.
   web:
     build:
@@ -64,6 +71,27 @@ services:
       - HUBBO_MOCK_LATENCY
       - HUBBO_MOCK_FIRST_RUN
       - HUBBO_MOCK_AUTH
+
+  # Playwright end-to-end tests for the web admin (`bin/hubbo web e2e`).
+  # Pinned to the same version as @playwright/test in web/package.json. It
+  # reuses the web service's node_modules volume, which `bin/hubbo web e2e`
+  # installs first, and starts its own Vite on :5181. HUBBO_API_TARGET picks
+  # the mock (default) or hub-sim.
+  web-e2e:
+    image: mcr.microsoft.com/playwright:v1.55.0-noble
+    init: true
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    working_dir: /work/web
+    entrypoint: ["node_modules/.bin/playwright", "test"]
+    network_mode: host
+    ipc: host
+    volumes:
+      - .:/work
+      - web_node_modules:/work/web/node_modules
+    environment:
+      - HOME=/tmp
+      - HUBBO_API_TARGET
+      - HUBBO_E2E_BASE_URL
 
 volumes:
   platformio:
