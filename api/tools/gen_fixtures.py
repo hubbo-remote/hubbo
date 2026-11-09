@@ -211,6 +211,26 @@ def ha_device(dev_id, e):
     }
 
 
+def ha_snapshot(e):
+    """The stored `ha_capabilities` (backups only; never in a Device response)."""
+    snap = {"platform": e.get("platform", "demo"), "supported_features": e["supported_features"]}
+    for key in ("source_list", "sound_mode_list", "supported_color_modes",
+                "min_color_temp_kelvin", "max_color_temp_kelvin"):
+        if key in e["attributes"]:
+            snap[key] = e["attributes"][key]
+    snap["services"] = []
+    return snap
+
+
+def stored_device(d):
+    """A Device as a backup stores it: no availability; HA devices carry their snapshot."""
+    out = {k: x for k, x in d.items() if k != "availability"}
+    entity = HA_ENTITIES.get(d["id"])
+    if entity is not None:
+        out["ha_capabilities"] = ha_snapshot(entity)
+    return out
+
+
 def ha_commands(e):
     if e["domain"] == "media_player":
         return media_player_commands(e["supported_features"], e["attributes"])
@@ -488,7 +508,7 @@ fx("integrations/list.json", "listIntegrations", "200", {"integrations": INTEGRA
 fx("integrations/ha_main.config.json", "getIntegrationConfig", "200", {
     "id": "ha_main", "type": "home_assistant", "name": "Home Assistant", "enabled": True,
     "settings": {"type": "home_assistant", "url": "https://homeassistant.local:8123",
-                 "verify_tls": True, "ca_cert_pem": None, "has_access_token": True},
+                 "verify_tls": True, "has_access_token": True},
     "revision": 2})
 fx("integrations/ble.config.json", "getIntegrationConfig", "200", {
     "id": "ble", "type": "ble_hid", "name": "Bluetooth keyboard", "enabled": True,
@@ -502,16 +522,21 @@ fx("integrations/ha_main.configure.request.json", "configureIntegration", "reque
 cands = []
 for dev_id, e in HA_ENTITIES.items():
     cands.append({"provider": ha_provider(e["entity_id"], e["unique_id"]),
-                  "name": e["name"], "domain": e["domain"], "state": e["state"], "supported": True,
-                  "command_ids": [c["command_id"] for c in ha_commands(e)], "registered_device_id": dev_id})
+                  "name": e["name"], "domain": e["domain"], "platform": e.get("platform", "demo"),
+                  "supported": True, "command_ids": [c["command_id"] for c in ha_commands(e)],
+                  "dropped_options": 0, "skipped_services": [], "registered_device_id": dev_id})
 cands.append({"provider": ha_provider("switch.tv_backlight", "0x00158d0001a2b3c4-switch"),
-              "name": "TV Backlight", "domain": "switch", "state": "off", "supported": True,
-              "command_ids": [c["command_id"] for c in switch_commands()], "registered_device_id": None})
+              "name": "TV Backlight", "domain": "switch", "platform": "zha", "supported": True,
+              "command_ids": [c["command_id"] for c in switch_commands()], "dropped_options": 0,
+              "skipped_services": [], "registered_device_id": None})
 cands.append({"provider": ha_provider("media_player.kitchen_display"),
-              "name": "Kitchen Display", "domain": "media_player", "state": "unavailable",
-              "supported": False, "command_ids": [], "registered_device_id": None})
-fx("integrations/ha_main.discover.json", "discoverIntegration", "200",
-   {"candidates": cands, "next_cursor": None})
+              "name": "Kitchen Display", "domain": "media_player", "platform": "cast", "supported": False,
+              "command_ids": [], "dropped_options": 0, "skipped_services": [], "registered_device_id": None})
+fx("integrations/ha_main.discover.json", "discoverIntegration", "202", {"state": "running"})
+fx("integrations/ha_main.discovery.json", "getDiscovery", "200",
+   {"state": "done", "total": len(cands), "truncated": 0, "elapsed_ms": 1840, "candidates": cands, "next_cursor": None})
+fx("integrations/ha_main.discovery_failed.json", "getDiscovery", "200",
+   {"state": "failed", "error": "Home Assistant didn't answer in time"})
 fx("integrations/ble.pair.json", "startIntegrationPairing", "202", {"state": "pairing", "window_s": 120})
 
 fx("admin/register_device.request.json", "registerDevice", "request", {
@@ -523,6 +548,11 @@ fx("admin/remote_pair.scanning.json", "startRemotePairing", "202",
     "message": "Press the pair button on the Harmony Hub"})
 fx("admin/remote_pair.found.json", "getRemotePairing", "200",
    {"state": "found", "paired": True, "channel": 74})
+fx("admin/remote.json", "getRemoteConfig", "200",
+   {"radio": "listening", "endpoint": {"channel": 74, "address": "FC5C97550F"},
+    "pairing": {"state": "found", "paired": True, "channel": 74}})
+fx("admin/remote_endpoint.request.json", "setRemoteEndpoint", "request",
+   {"channel": 74, "address": "0xFC5C97550F"})
 fx("admin/tokens.json", "listTokens", "200", {"tokens": [
     {"id": "tok_k3x9q2mf", "name": "Claude agent", "hint": "hbt_k3x9q2mf_",
      "created_at": "2026-11-08T18:00:00Z", "last_used_at": "2026-11-08T20:01:13Z"},
@@ -545,9 +575,9 @@ BACKUP = {
         {"id": "ble", "type": "ble_hid", "name": "Bluetooth keyboard", "enabled": True,
          "settings": {"device_name": "Family Room Hubbo"}},
         {"id": "ha_main", "type": "home_assistant", "name": "Home Assistant", "enabled": True,
-         "settings": {"url": "https://homeassistant.local:8123", "verify_tls": True, "ca_cert_pem": None}},
+         "settings": {"url": "https://homeassistant.local:8123", "verify_tls": True}},
     ],
-    "devices": [{k: x for k, x in d.items() if k != "availability"} for d in DEVICES],
+    "devices": [stored_device(d) for d in DEVICES],
     "global_bindings": GLOBAL_BINDINGS, "activities": ACTIVITIES,
     "excluded": ["admin_password", "api_tokens", "integration_secrets", "ble_bonds"],
 }

@@ -31,8 +31,7 @@
       "enabled": true,
       "settings": {
         "url": "https://homeassistant.local:8123",
-        "verify_tls": true,
-        "ca_cert_pem": null
+        "verify_tls": true
       }
     }
   ],
@@ -60,7 +59,30 @@
         "unique_id": "c5a1e0b2f3d44c1aa1b2c3d4e5f60718"
       },
       "schema_version": 1,
-      "revision": 1
+      "revision": 1,
+      "ha_capabilities": {
+        "platform": "demo",
+        "supported_features": 69004,
+        "source_list": [
+          "Blu-ray",
+          "CBL/SAT",
+          "DVD",
+          "Game",
+          "Media Player",
+          "TV Audio",
+          "Tuner",
+          "Bluetooth"
+        ],
+        "sound_mode_list": [
+          "MUSIC",
+          "MOVIE",
+          "GAME",
+          "AUTO",
+          "STEREO",
+          "DIRECT"
+        ],
+        "services": []
+      }
     },
     {
       "id": "dev_sonos",
@@ -73,7 +95,15 @@
         "unique_id": "RINCON_48A6B8000000001400"
       },
       "schema_version": 1,
-      "revision": 3
+      "revision": 3,
+      "ha_capabilities": {
+        "platform": "demo",
+        "supported_features": 8321599,
+        "source_list": [
+          "TV"
+        ],
+        "services": []
+      }
     },
     {
       "id": "dev_lg_tv",
@@ -86,7 +116,20 @@
         "unique_id": "1b2e6c3a-9f4d-4a7e-b1c2-d3e4f5a6b7c8"
       },
       "schema_version": 1,
-      "revision": 1
+      "revision": 1,
+      "ha_capabilities": {
+        "platform": "demo",
+        "supported_features": 24505,
+        "source_list": [
+          "HDMI 1",
+          "HDMI 2",
+          "HDMI 3",
+          "Live TV",
+          "Netflix",
+          "YouTube"
+        ],
+        "services": []
+      }
     },
     {
       "id": "dev_xbox",
@@ -99,7 +142,12 @@
         "unique_id": "FD00112233445566"
       },
       "schema_version": 1,
-      "revision": 1
+      "revision": 1,
+      "ha_capabilities": {
+        "platform": "demo",
+        "supported_features": 149433,
+        "services": []
+      }
     },
     {
       "id": "dev_family_room_lights",
@@ -112,7 +160,18 @@
         "unique_id": "7d3e2a1b-4c5d-4e6f-8a9b-0c1d2e3f4a5b"
       },
       "schema_version": 1,
-      "revision": 1
+      "revision": 1,
+      "ha_capabilities": {
+        "platform": "demo",
+        "supported_features": 44,
+        "supported_color_modes": [
+          "color_temp",
+          "xy"
+        ],
+        "min_color_temp_kelvin": 2000,
+        "max_color_temp_kelvin": 6535,
+        "services": []
+      }
     }
   ],
   "global_bindings": {

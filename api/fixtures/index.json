@@ -229,6 +229,16 @@
     {
       "file": "integrations/ha_main.discover.json",
       "operation": "discoverIntegration",
+      "kind": "202"
+    },
+    {
+      "file": "integrations/ha_main.discovery.json",
+      "operation": "getDiscovery",
+      "kind": "200"
+    },
+    {
+      "file": "integrations/ha_main.discovery_failed.json",
+      "operation": "getDiscovery",
       "kind": "200"
     },
     {
@@ -255,6 +265,16 @@
       "file": "admin/remote_pair.found.json",
       "operation": "getRemotePairing",
       "kind": "200"
+    },
+    {
+      "file": "admin/remote.json",
+      "operation": "getRemoteConfig",
+      "kind": "200"
+    },
+    {
+      "file": "admin/remote_endpoint.request.json",
+      "operation": "setRemoteEndpoint",
+      "kind": "request"
     },
     {
       "file": "admin/tokens.json",

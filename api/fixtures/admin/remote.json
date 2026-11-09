@@ -1,0 +1,12 @@
+{
+  "radio": "listening",
+  "endpoint": {
+    "channel": 74,
+    "address": "FC5C97550F"
+  },
+  "pairing": {
+    "state": "found",
+    "paired": true,
+    "channel": 74
+  }
+}
