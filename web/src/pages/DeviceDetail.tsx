@@ -1,9 +1,10 @@
-import { ChevronDown, Loader2, Trash2 } from 'lucide-react'
+import { ChevronDown, Loader2, RefreshCw, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { useLocation } from 'wouter'
 import { api, errorMessage } from '@/api/client'
 import { invalidate } from '@/api/hooks'
-import type { Command, Device } from '@/api/types'
+import type { Command, Device, DiscoverCandidate } from '@/api/types'
+import { HaCandidates } from '@/components/admin/HaCandidates'
 import { TestButton } from '@/components/actions/ActionPicker'
 import { ParamForm } from '@/components/actions/ParamForm'
 import { ErrorState, PageHeader } from '@/components/common'
@@ -18,6 +19,7 @@ import { toast, toastError } from '@/components/ui/toast'
 import { useCapabilities, useConfigLock, useDevice, useIntegrations } from '@/hooks/data'
 import { providerRef } from '@/lib/health'
 import { defaultParams } from '@/lib/activity'
+import { haDeviceError, runDiscovery } from '@/lib/ha'
 import { cn } from '@/lib/utils'
 
 export default function DeviceDetail({ id }: { id: string }) {
@@ -37,6 +39,13 @@ export default function DeviceDetail({ id }: { id: string }) {
         title={d?.name ?? <Skeleton className="h-8 w-56" />}
         description={d ? `${integration?.name ?? d.integration_id} · ${providerRef(d.provider)}` : undefined}
       />
+      {d?.availability === 'stale' && (
+        <Alert variant="error" title="This device needs re-linking" className="mb-4" action={d.provider.type === 'home_assistant' ? <HaRelink device={d} /> : undefined}>
+          {d.provider.type === 'home_assistant'
+            ? `Home Assistant no longer has ${d.provider.entity_id} (it was renamed or removed). Its commands fail until you re-link it to the entity’s new name.`
+            : 'Its integration no longer knows this target. Its commands fail until you remove this device and add it again.'}
+        </Alert>
+      )}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <Card>
           <CardHeader>
@@ -97,6 +106,76 @@ function CommandRow({ deviceId, command, open, onToggle }: { deviceId: string; c
   )
 }
 
+const refreshDevice = (id: string) => invalidate('devices', `devices/${id}`, `caps/${id}`, 'caps-all', 'discover')
+
+/** Point an HA device at another entity (after a rename), which also re-reads its capabilities. */
+function HaRelink({ device }: { device: Device }) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const lock = useConfigLock()
+  const relink = async (c: DiscoverCandidate) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await api.updateDevice(device.id, { provider: c.provider, revision: device.revision })
+      refreshDevice(device.id)
+      toast(`Linked to ${c.provider.entity_id}`, { variant: 'success' })
+      setOpen(false)
+    } catch (e) {
+      setError(haDeviceError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <>
+      <Button size="sm" variant="outline" onClick={() => (setError(null), setOpen(true))} disabled={lock.locked} title={lock.title}>
+        Re-link…
+      </Button>
+      <Dialog open={open} onClose={() => setOpen(false)} title={`Re-link ${device.name}`} description="Pick the Home Assistant entity this device should control. Its commands are read again from Home Assistant.">
+        <div className="grid gap-3">
+          {error && <Alert variant="error"><p className="whitespace-pre-line">{error}</p></Alert>}
+          {busy ? (
+            <p className="flex items-center gap-2 text-sm"><Loader2 className="size-4 animate-spin" /> Re-linking…</p>
+          ) : (
+            <HaCandidates
+              integration={device.integration_id}
+              onPick={relink}
+              blocker={(c) => (c.registered_device_id && c.registered_device_id !== device.id ? 'Another device' : !c.supported ? 'Not supported' : null)}
+            />
+          )}
+        </div>
+      </Dialog>
+    </>
+  )
+}
+
+/** Re-read an HA device's entity and services (sending its provider unchanged). */
+function HaRefresh({ device }: { device: Device }) {
+  const [busy, setBusy] = useState(false)
+  const lock = useConfigLock()
+  const refresh = async () => {
+    setBusy(true)
+    try {
+      // The hub reads the entity from its latest discovery, so take a fresh one first.
+      await runDiscovery(device.integration_id)
+      await api.updateDevice(device.id, { provider: device.provider, revision: device.revision })
+      refreshDevice(device.id)
+      toast('Commands refreshed from Home Assistant', { variant: 'success' })
+    } catch (e) {
+      toast('Could not refresh', { variant: 'error', description: haDeviceError(e) })
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Button size="sm" variant="outline" onClick={refresh} disabled={busy || lock.locked} title={lock.title ?? 'Read the entity and its services from Home Assistant again'}>
+      {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />} Refresh from Home Assistant
+    </Button>
+  )
+}
+
 function DeviceAdmin({ device }: { device: Device }) {
   const [name, setName] = useState(device.name)
   const [busy, setBusy] = useState(false)
@@ -149,6 +228,12 @@ function DeviceAdmin({ device }: { device: Device }) {
             </div>
           ))}
         </dl>
+        {device.provider.type === 'home_assistant' && (
+          <div className="flex flex-wrap gap-2">
+            <HaRefresh device={device} />
+            <HaRelink device={device} />
+          </div>
+        )}
         <Field label="Name" htmlFor="dn">
           <div className="flex gap-2">
             <Input id="dn" value={name} onChange={(e) => setName(e.target.value)} maxLength={64} />

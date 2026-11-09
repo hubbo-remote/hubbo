@@ -1,8 +1,10 @@
-import { Check, Loader2, Search } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api, errorMessage } from '@/api/client'
-import { invalidate, useQuery } from '@/api/hooks'
+import { invalidate } from '@/api/hooks'
 import type { Device, DeviceKind, DiscoverCandidate, Provider } from '@/api/types'
+import { CandidatePreview, HaCandidates } from '@/components/admin/HaCandidates'
+import { haDeviceError } from '@/lib/ha'
 import { ErrorState } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -20,6 +22,8 @@ interface Pick {
   provider: Provider
   label: string
   ref: string
+  /** HA only: what discovery said about it (for the preview). */
+  candidate?: DiscoverCandidate
 }
 
 /** Integration → discovered target → name. Only discovered targets can be registered. */
@@ -30,7 +34,6 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
   const [pick, setPick] = useState<Pick | null>(null)
   const [name, setName] = useState('')
   const [kind, setKind] = useState<DeviceKind>('other')
-  const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -39,7 +42,6 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
       setIntegration(null)
       setPick(null)
       setName('')
-      setQ('')
       setError(null)
     }
   }, [open])
@@ -55,7 +57,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
       onAdded?.(d)
       onClose()
     } catch (e) {
-      setError(errorMessage(e, { details: true }))
+      setError(pick.provider.type === 'home_assistant' ? haDeviceError(e) : errorMessage(e, { details: true }))
     } finally {
       setBusy(false)
     }
@@ -67,7 +69,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
       open={open}
       onClose={onClose}
       title="Add a device"
-      description={step === 1 ? 'Where does it live?' : step === 2 ? 'Pick what to register. Only registered devices can be used in activities.' : 'Give it a name you’ll recognise.'}
+      description={step === 1 ? 'Where does it live?' : step === 2 ? 'Pick what to register. Only registered devices can be used in activities.' : pick?.provider.type === 'home_assistant' ? 'Check what it can do, then give it a name you’ll recognise.' : 'Give it a name you’ll recognise.'}
       footer={
         <>
           {step > 1 && (
@@ -108,10 +110,8 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
       {step === 2 && type === 'home_assistant' && (
         <HaCandidates
           integration={integration!}
-          q={q}
-          setQ={setQ}
           onPick={(c) => {
-            setPick({ provider: c.provider, label: c.name, ref: c.provider.entity_id })
+            setPick({ provider: c.provider, label: c.name, ref: c.provider.entity_id, candidate: c })
             setName(c.name.slice(0, 64))
             setKind(guessKind(c))
           }}
@@ -133,7 +133,8 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
             <p className="font-medium">{pick.label}</p>
             <p className="font-mono text-xs text-muted-foreground">{pick.ref}</p>
           </div>
-          {error && <Alert variant="error">{error}</Alert>}
+          {pick.candidate && <CandidatePreview c={pick.candidate} />}
+          {error && <Alert variant="error"><p className="whitespace-pre-line">{error}</p></Alert>}
           <Field label="Name" htmlFor="dev-name">
             <Input id="dev-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={64} autoFocus />
           </Field>
@@ -149,62 +150,6 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
         </div>
       )}
     </Dialog>
-  )
-}
-
-function HaCandidates({ integration, q, setQ, onPick }: { integration: string; q: string; setQ: (s: string) => void; onPick: (c: DiscoverCandidate) => void }) {
-  const [query, setQuery] = useState(q)
-  useEffect(() => {
-    const t = setTimeout(() => setQuery(q.trim()), 250)
-    return () => clearTimeout(t)
-  }, [q])
-  const disc = useQuery(`discover/${integration}/${query}`, () => api.discover(integration, query ? { query } : {}))
-  const list = disc.data?.candidates ?? []
-  return (
-    <div className="grid gap-3">
-      <div className="relative">
-        <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input placeholder="Search entities" aria-label="Search Home Assistant entities" value={q} onChange={(e) => setQ(e.target.value)} className="pl-9" maxLength={48} autoFocus />
-      </div>
-      {disc.error ? (
-        <ErrorState error={disc.error} retry={disc.refetch} what="Browsing Home Assistant entities" />
-      ) : disc.loading ? (
-        <div className="grid gap-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-12" />)}</div>
-      ) : (
-        <ul className="grid max-h-80 gap-1 overflow-y-auto" aria-label="Discovered entities">
-          {list.map((c) => {
-            const disabled = !!c.registered_device_id || !c.supported
-            return (
-              <li key={c.provider.entity_id}>
-                <button
-                  disabled={disabled}
-                  onClick={() => onPick(c)}
-                  className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent cursor-pointer"
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{c.name}</p>
-                    <p className="truncate font-mono text-xs text-muted-foreground">
-                      {c.provider.entity_id}
-                      {c.state && ` · ${c.state}`}
-                    </p>
-                  </div>
-                  {c.registered_device_id ? (
-                    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                      <Check className="size-3" /> Added
-                    </span>
-                  ) : !c.supported ? (
-                    <span className="text-xs text-muted-foreground">Not supported</span>
-                  ) : (
-                    <span className="text-xs text-muted-foreground">{c.command_ids?.length ?? 0} commands</span>
-                  )}
-                </button>
-              </li>
-            )
-          })}
-          {list.length === 0 && <li className="px-3 py-6 text-center text-sm text-muted-foreground">Nothing matches.</li>}
-        </ul>
-      )}
-    </div>
   )
 }
 
