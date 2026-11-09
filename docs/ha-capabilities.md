@@ -167,27 +167,45 @@ that token's HA user can do (see docs/security.md).
 - **Volume repeat on hold:** decided, not for now (2026-11-08). An HA command fires once per
   trigger.
 
-## Integration-specific services (decided 2026-11-08, not built yet)
+## Integration-specific services
 
-Resolve them from Home Assistant rather than curating per integration. Never take free-text
-service calls: the user asked for that as a fallback, but HA's metadata covers the need.
+Built in Phase 3 (`core/include/hubbo/ha/services.h`, `snapshot.h`). Resolved from Home
+Assistant rather than curated per integration. Never free-text service calls: the user asked for
+that as a fallback, but HA's metadata covers the need.
 
 - `get_services` (WebSocket) returns every service with its `target` filter and its `fields`
   with selectors. For example, `webostv.button` targets `entity: {integration: webostv, domain:
   media_player}`, and its `button` field is a `select` selector listing `INFO`, `HOME`, ....
-- `config/entity_registry/get` gives an entity's `platform` (integration), e.g. `webostv`.
-- For a registered entity, offer each non-core-domain service whose target filter matches its
-  integration, domain and supported features. Map field selectors to typed params:
-  - `select` with options → `enum`
-  - `number` → `int` or `number` with min/max/step
+- `config/entity_registry/list` gives each entity's `platform` (integration), e.g. `webostv`.
+- For an entity of platform P, a service `P.S` is offered when its `target` has an `entity`
+  filter matching the entity: the filter's integration (if any) is P, its domain list (if any)
+  has the entity's domain, and one of its `supported_features` entries (if any) is fully
+  supported. Only P's own services are considered (never the entity domain's, which are the
+  allowlist above), and never when P is the entity's domain. Services with no entity target
+  (domain-wide, device-only) are never offered.
+- Field selectors map to typed params; a field with its own feature filter the entity doesn't
+  meet is dropped:
   - `boolean` → `bool`
-  - `text` → a bounded string param
-  - `entity`, `object`, `template`, `target` and other selector types → skip the service.
+  - `number` with `min` and `max` → `int` (integral step and bounds) or `number` (`step: any`
+    or fractional)
+  - `select` (single, string or `{value}` options) → `enum` (options over the length limit, or
+    past the count limit, are dropped and counted in `dropped_options`)
+  - anything else (`text` is deferred, decided 2026-11-08; `entity`, `object`, `template`,
+    `target`, `time`, multiple selects, ...) → the whole service is skipped, as it is for more
+    than 4 fields, a field name that isn't a valid param name or names a target (`entity_id`,
+    `area_id`, `device_id`, ...), or a service/platform name outside `^[a-z][a-z0-9_]{0,31}$`.
+    Skipped services are listed in the discovery candidate's `skipped_services`.
 - Same safety rules as the allowlist: the target is always the registered entity, only declared
   fields can be sent, and nothing can override `entity_id`, `area_id` or `device_id`.
-- The capability list is fetched when a device is registered or refreshed and stored with the
-  device, so it's available offline and never looked up on the hot path. The core needs a string
-  param type for `text` selectors.
+- **The capabilities snapshot.** Discovery (`POST`/`GET /admin/integrations/ha_main/discover`)
+  normalizes every candidate: its attributes (supported features, source and sound mode lists,
+  colour modes, kelvin range), platform and offered services (at most 32). Registering
+  (`POST /admin/devices`) or re-linking (`PUT /admin/devices/{id}` with a `provider`) copies the
+  candidate's snapshot into the device (`DeviceSpec.haCapabilities`, stored and backed up as
+  `ha_capabilities`). The device's commands are compiled from it, so they work offline and HA is
+  never asked on the hot path. The API never accepts a snapshot from a client and never returns
+  one; a stored snapshot is re-validated when it's loaded (`ha/snapshot_json.h`), so a
+  hand-edited backup can't smuggle in a service of another integration or a target param.
 - **Hue rate.** Hue handles about one command per second (Harmonizer/HANDOFF.md). Bursts of
   `light.brightness_step` should be coalesced by the HA adapter's queue rather than sent one by
   one.

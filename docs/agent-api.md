@@ -40,8 +40,8 @@ replace, delete, validate and activate activities; turn the current activity off
 bindings; list integrations.
 
 Can't (`403 forbidden`): register, edit or delete devices; configure or discover integrations;
-pair the remote or Bluetooth; manage tokens or the password; back up, restore or update
-firmware. Ask the admin for those.
+set the remote's endpoint or pair the remote or Bluetooth; manage tokens or the password; back
+up, restore or update firmware. Ask the admin for those.
 
 ## Discover
 
@@ -62,6 +62,13 @@ A capability lists each command and its parameters:
 Param types: `bool`, `int`, `number`, `enum` (pick from `options`, exact match), and
 `activity_ref` (an activity ID). Optional params can be left out. Leaving them out is different
 from sending a default; for example `light.turn_on` without `brightness` keeps the last brightness.
+
+Home Assistant devices can also have their integration's own services (e.g.
+`webostv.button {button: enum}`), typed from HA's metadata when the device was registered. Their
+labels are HA's. A device whose entity is missing from the latest discovery shows
+`availability: stale`, and its commands fail (`status: failed`, `message: entity_not_found`)
+until an admin re-links it. Until a discovery runs, a renamed or removed entity's commands are
+reported `accepted` (HA itself says success).
 
 Deviceless commands come from the `system` integration in `GET /integrations` (`commands`):
 `wait {duration_ms}`, `activate {activity_id}`, `off {}`. Use them with `"device_id": null`.
@@ -290,9 +297,10 @@ Then use `Authorization: Bearer hbt_...` as above.
 
 - **A command is missing from capabilities.** Hubbo only offers commands the entity supports
   (HA `supported_features`) and that are on its allowlist (docs/ha-capabilities.md). Toggles,
-  `play_media` and integration-specific services are deliberately absent.
-- **A device shows `availability: stale`.** Its HA entity was removed or renamed. Only the admin
-  can re-link it.
+  `play_media` are deliberately absent, and an integration service appears only if HA describes
+  every field in a way Hubbo can type (discovery lists the rest as `skipped_services`).
+- **A device shows `availability: stale`.** Its HA entity wasn't in the latest discovery
+  (removed or renamed). Only the admin can re-link it.
 - **`timeout` on HA commands.** Hubbo waited and gave up; the device may still have acted. Don't
   retry volume steps blindly.
 - **Volume buttons step once per press.** Repeat-while-held isn't implemented yet.
