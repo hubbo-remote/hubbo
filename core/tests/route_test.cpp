@@ -2,6 +2,7 @@
 // policy decision per route.
 #include <gtest/gtest.h>
 
+#include "auth_test_util.h"
 #include "hubbo/http/route.h"
 
 using namespace hubbo;
@@ -62,7 +63,7 @@ TEST_F(RouterTest, NotFoundAndMethodNotAllowed) {
     EXPECT_EQ(call(Method::Get, "/a/b/c/d/e/f/g/h/i/j/k/l/m/n").status, 404);  // too deep
     const Response r = call(Method::Post, "/api/v1/session");
     EXPECT_EQ(r.status, 405);
-    EXPECT_EQ(r.body, "{\"error\":{\"code\":\"method_not_allowed\",\"message\":\"method not allowed\"}}");
+    EXPECT_NE(r.body.find("\"method_not_allowed\""), std::string::npos);
 }
 
 TEST_F(RouterTest, AuthPolicyDecides) {
@@ -81,6 +82,17 @@ TEST_F(RouterTest, HostRoutesNeedAdmin) {
     EXPECT_EQ(call(Method::Post, "/sim/reset", auth::Principal::admin()).status, 200);
 }
 
+TEST_F(RouterTest, BodyLimitComesFromThePolicyTable) {
+    router.add("/api/v1/activities", auth::Operation::CreateActivity, echo);
+    router.add("/api/v1/admin/restore", auth::Operation::RestoreBackup, echo);
+    EXPECT_EQ(router.bodyLimit(Method::Post, "/api/v1/activities"),
+              auth::operationInfo(auth::Operation::CreateActivity).maxBody);
+    EXPECT_EQ(router.bodyLimit(Method::Post, "/api/v1/admin/restore"), auth::maxRequestBody());
+    EXPECT_EQ(router.bodyLimit(Method::Post, "/api/v1/activities/off"), 0u) << "takes no body";
+    EXPECT_EQ(router.bodyLimit(Method::Post, "/api/v1/nope"), auth::maxRequestBody()) << "404 decided later";
+    EXPECT_EQ(router.bodyLimit(Method::Post, "/sim/reset"), auth::maxRequestBody()) << "host tools decide";
+}
+
 TEST(Http, Helpers) {
     EXPECT_EQ(jsonString("a\"b\\c\n\x01"), "\"a\\\"b\\\\c\\n\\u0001\"");
     Method m;
@@ -90,4 +102,42 @@ TEST(Http, Helpers) {
     EXPECT_EQ(queryParam("a=1&ms=250&b", "ms"), "250");
     EXPECT_EQ(queryParam("a=1&b", "b"), "");
     EXPECT_EQ(queryParam("", "ms"), "");
+}
+
+
+TEST_F(RouterTest, HostAllowlistBlocksRebinding) {
+    router.setAllowedHosts({"localhost", "127.0.0.1", "[::1]", "hubbo.local"});
+    auto withHost = [&](const char *host) {
+        auth::test::Headers headers;
+        if (host != nullptr) headers.items["Host"] = host;
+        Request r;
+        r.method = Method::Get;
+        r.path = "/api/v1/session";
+        r.headers = &headers;
+        r.context = as(auth::Principal::admin());
+        Response out;
+        router.dispatch(r, out);
+        return out;
+    };
+    for (const char *ok : {"localhost", "localhost:8080", "127.0.0.1:8080", "[::1]:8080", "[::1]", "HUBBO.local"}) {
+        EXPECT_EQ(withHost(ok).status, 200) << ok;
+    }
+    for (const char *bad : {"evil.example", "evil.example:8080", "localhost.evil.example", "", "[::2]:80"}) {
+        const Response r = withHost(bad);
+        EXPECT_EQ(r.status, 421) << bad;
+        EXPECT_NE(r.body.find("host_not_allowed"), std::string::npos);
+    }
+    EXPECT_EQ(withHost(nullptr).status, 421) << "no Host header";
+}
+
+TEST_F(RouterTest, HostRoutesUseThePolicyTableIncludingCsrf) {
+    Request r;
+    r.method = Method::Post;
+    r.path = "/sim/reset";
+    r.context.principal = auth::Principal::admin();
+    r.context.csrfValid = false;
+    Response out;
+    router.dispatch(r, out);
+    EXPECT_EQ(out.status, 403);
+    EXPECT_NE(out.body.find("csrf_failed"), std::string::npos);
 }

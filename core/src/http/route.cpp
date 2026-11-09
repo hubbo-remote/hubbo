@@ -2,6 +2,9 @@
 
 #include <cstdio>
 
+#include "hubbo/auth/crypto.h"
+#include "hubbo/auth/csrf.h"
+
 namespace hubbo::http {
 
 const char *methodName(Method method) {
@@ -88,11 +91,26 @@ void Router::addRoute(Route route, std::string_view pattern) {
 }
 
 void Router::add(std::string pattern, auth::Operation operation, RouteHandler &handler) {
-    addRoute({auth::operationInfo(operation).method, {}, false, operation, &handler}, pattern);
+    addRoute({auth::operationInfo(operation).method, {}, operation, &handler}, pattern);
 }
 
 void Router::addHostRoute(Method method, std::string pattern, RouteHandler &handler) {
-    addRoute({method, {}, true, auth::Operation::Count, &handler}, pattern);
+    addRoute({method, {}, auth::Operation::Count, &handler}, pattern);
+}
+
+bool Router::hostAllowed(std::string_view host) const {
+    if (allowedHosts_.empty()) return true;
+    // Strip the port: "name:8080" or "[::1]:8080".
+    if (!host.empty() && host.front() == '[') {
+        const size_t end = host.find(']');
+        if (end != std::string_view::npos) host = host.substr(0, end + 1);
+    } else {
+        host = host.substr(0, host.find(':'));
+    }
+    for (const auto &allowed : allowedHosts_) {
+        if (auth::asciiEqualsIgnoreCase(host, allowed)) return true;
+    }
+    return false;
 }
 
 bool Router::match(const Route &route, const Segments &path, PathParams *params) {
@@ -111,29 +129,68 @@ bool Router::match(const Route &route, const Segments &path, PathParams *params)
     return true;
 }
 
-void Router::dispatch(const Request &request, Response &response) const {
-    const Segments path = split(request.path);
-    bool pathMatched = false;
-    for (const auto &route : routes_) {
-        PathParams params;
-        if (!match(route, path, &params)) continue;
-        pathMatched = true;
-        if (route.method != request.method) continue;
-
-        auth::Decision decision;
-        if (!route.hostOnly) {
-            decision = auth::authorize(route.operation, request.context);
-        } else if (request.context.principal.role == auth::Role::Admin) {
-            decision = auth::Decision::Allow;
-        } else {
-            decision = request.context.principal.role == auth::Role::Anonymous ? auth::Decision::Unauthenticated
-                                                                                : auth::Decision::Forbidden;
+bool Router::admit(const Route &route, const Request &request, Response &response) {
+    const bool api = route.operation != auth::Operation::Count;
+    const std::string_view origin = request.headers ? request.headers->header("Origin") : std::string_view();
+    const std::string_view host = request.headers ? request.headers->header("Host") : std::string_view();
+    if (auth::isUnsafe(request.method) && !auth::originAllowed(origin, host)) {
+        jsonError(response, 403, "forbidden", "Origin does not match this hub");
+        return false;
+    }
+    const auth::Decision decision =
+        api ? auth::authorize(route.operation, request.context)
+            : auth::authorize(auth::Requirement::AdminOnly, auth::Csrf::Check, route.method, request.context);
+    if (decision != auth::Decision::Allow) {
+        jsonError(response, auth::httpStatus(decision), auth::decisionCode(decision), auth::decisionMessage(decision));
+        return false;
+    }
+    // JSON bodies of API operations: size from the policy table, then type.
+    const uint32_t maxBody = api ? auth::operationInfo(route.operation).maxBody : 0;
+    if (maxBody > 0 && !request.body.empty()) {
+        if (request.body.size() > maxBody) {
+            jsonError(response, 413, "payload_too_large", "Body exceeds " + std::to_string(maxBody) + " bytes");
+            return false;
         }
-        if (decision != auth::Decision::Allow) {
-            jsonError(response, auth::httpStatus(decision), auth::decisionCode(decision), "not allowed");
+        if (!auth::isJsonContentType(request.headers ? request.headers->header("Content-Type") : std::string_view())) {
+            jsonError(response, 415, "unsupported_media_type", "Send Content-Type: application/json");
+            return false;
+        }
+    }
+    return true;
+}
+
+const Router::Route *Router::find(Method method, const Segments &path, PathParams *params,
+                                  bool *pathMatched) const {
+    *pathMatched = false;
+    for (const auto &route : routes_) {
+        if (!match(route, path, params)) continue;
+        *pathMatched = true;
+        if (route.method == method) return &route;
+    }
+    return nullptr;
+}
+
+size_t Router::bodyLimit(Method method, std::string_view path) const {
+    PathParams params;
+    bool pathMatched = false;
+    const Route *route = find(method, split(path), &params, &pathMatched);
+    if (route == nullptr || route->operation == auth::Operation::Count) return auth::maxRequestBody();
+    return auth::operationInfo(route->operation).maxBody;
+}
+
+void Router::dispatch(const Request &request, Response &response) const {
+    if (!allowedHosts_.empty()) {
+        const std::string_view host = request.headers ? request.headers->header("Host") : std::string_view();
+        if (host.empty() || !hostAllowed(host)) {
+            jsonError(response, 421, "host_not_allowed", "Host header is not one of this hub's names");
             return;
         }
-        route.handler->handle(request, params, response);
+    }
+    PathParams params;
+    bool pathMatched = false;
+    const Route *route = find(request.method, split(request.path), &params, &pathMatched);
+    if (route != nullptr) {
+        if (admit(*route, request, response)) route->handler->handle(request, params, response);
         return;
     }
     if (pathMatched) {
