@@ -5,6 +5,8 @@ import { api, errorMessage, toApiError, type BackupKind } from '@/api/client'
 import { invalidate, invalidateAll, useQuery } from '@/api/hooks'
 import type { RestoreResult, TokenCreated } from '@/api/types'
 import { PairRemote } from '@/components/admin/PairRemote'
+import { RemoteEndpoint } from '@/components/admin/RemoteEndpoint'
+import { RemoteSvg } from '@/components/remote/RemoteSvg'
 import { NetworkInfo } from '@/components/admin/NetworkInfo'
 import { ErrorState, PageHeader, Section } from '@/components/common'
 import { ThemeToggle } from '@/components/AppShell'
@@ -217,10 +219,21 @@ function Tokens() {
 
 function RemoteTab() {
   const status = useStatus()
+  const last = status.data?.remote.last_event
   return (
-    <Section title="Remote pairing" description="Hubbo listens on the radio address of a Hub the remote is already paired with.">
-      <PairRemote paired={status.data?.remote.paired} channel={status.data?.remote.channel} />
-    </Section>
+    <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_14rem]">
+      <div className="grid gap-4">
+        <Section title="Remote endpoint" description="The radio channel and Hub address Hubbo listens on.">
+          <RemoteEndpoint />
+        </Section>
+        <Section title="Scan from Hub" description="Hubbo learns the radio address of a Hub the remote is already paired with.">
+          <PairRemote paired={status.data?.remote.paired} channel={status.data?.remote.channel} />
+        </Section>
+      </div>
+      <div className="hidden lg:block">
+        <RemoteSvg selected={last && last.age_ms < 5000 ? last.button : null} label="The remote; the last button pressed is highlighted" className="mx-auto max-h-[32rem]" />
+      </div>
+    </div>
   )
 }
 
@@ -244,7 +257,7 @@ function DownloadError({ error }: { error: unknown }) {
   if (e.code === 'storage_unavailable')
     return (
       <Alert variant="error" title="The hub can’t read its storage">
-        <p>No backup was made: the saved configuration can’t be read right now, and a backup might be empty or out of date. Try again once the storage is back (restarting the hub may help).</p>
+        <p>No backup was made: the hub couldn’t read its saved configuration when it started, so it has nothing it can vouch for. Try again once the storage is back (restarting the hub may help).</p>
         <p className="mt-1 text-muted-foreground">The hub said: {e.message}</p>
       </Alert>
     )
@@ -278,7 +291,8 @@ function saveBlob(blob: Blob, filename: string) {
 }
 
 function Backup() {
-  const blocked = useConfigLock().state === 'blocked'
+  const configState = useConfigLock().state
+  const blocked = configState === 'blocked'
   const [file, setFile] = useState<{ name: string; text: string } | null>(null)
   const [preview, setPreview] = useState<RestoreResult | null>(null)
   const [error, setError] = useState<unknown>(null)
@@ -347,6 +361,11 @@ function Backup() {
         }
       >
         <div className="grid gap-4">
+          {configState === 'storage_unavailable' && (
+            <Alert variant="info" title="Storage is down">
+              <p>A backup still works: it’s the configuration that’s running, which is the last one the hub saved.</p>
+            </Alert>
+          )}
           {showRawNote && (
             <Alert variant="warning" title={downloaded?.kind === 'blocked-raw' ? `Saved as ${downloaded.filename}` : 'Raw saved configuration'}>
               <p>{BLOCKED_RAW_NOTE}</p>
