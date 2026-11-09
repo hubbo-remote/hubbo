@@ -17,7 +17,6 @@
 #include "hubbo/auth/password.h"
 #endif
 
-#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <memory>
@@ -690,9 +689,10 @@ void runCommand(char *line) {
         char *end = nullptr;
         RadioEndpoint endpoint;
         const unsigned long channel = arg2 ? strtoul(arg2, &end, 10) : 0;
-        const bool channelOk = arg2 != nullptr && *end == '\0' && channel <= 124;
-        const unsigned long long address = arg3 ? strtoull(arg3, &end, 16) : 0;
-        const bool addressOk = arg3 != nullptr && *end == '\0' && address <= 0xFFFFFFFFFFULL;
+        // Parse only; the rule is RadioEndpoint::isValid (the API's) in setEndpoint().
+        const bool channelOk = arg2 != nullptr && *end == '\0' && channel <= hubbo::api::kMaxRemoteChannel;
+        uint64_t address = 0;
+        const bool addressOk = arg3 != nullptr && hubbo::api::parseRemoteAddress(arg3, &address);
         endpoint.channel = static_cast<uint8_t>(channel);
         endpoint.address = address;
         if (!channelOk || !addressOk || !radio.setEndpoint(endpoint)) {
@@ -767,11 +767,7 @@ void pollDevCommand() {
     runCommand(line);
 }
 
-std::string queryValue(std::string_view query, std::string_view key) {
-    std::string value(hubbo::http::queryParam(query, key));
-    std::replace(value.begin(), value.end(), '+', ' ');
-    return value;
-}
+using hubbo::http::queryValue;  // form-decoded ('+' and %XX)
 
 std::string queueDevCommand(std::string_view query) {
     const std::string name = queryValue(query, "cmd");
