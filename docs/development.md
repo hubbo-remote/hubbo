@@ -56,9 +56,10 @@ fails with `#error`.
 ### Firmware bring-up
 
 See `firmware/README.md` for the serial console (`status`, `scan`, `pair`, `lat`, `raw`, ...), the
-latency method and the hardware checklist. Network flashing:
-`HUBBO_OTA_PASSWORD=... bin/hubbo fw run -e waveshare_esp32_s3_eth_ota -t upload --upload-port <dev board IP>`.
-Never point it at the deployed Harmonizer boards.
+latency method and the hardware checklist. Network flashing: `bin/hubbo ota <board ip>` builds the
+dev firmware and uploads it, reading the OTA password from `~/.config/hubbo/ota-password` (mode 600;
+it is never printed). The dev board is at 192.168.1.196. Never point it at the family room
+Harmonizer board. Firmware builds (`fw`, `ota`) hold a lock, so only one runs at a time.
 
 ## Toolchain
 
