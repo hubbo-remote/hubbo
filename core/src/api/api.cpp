@@ -5,8 +5,10 @@
 
 namespace hubbo::api {
 
-Api::Api(ApiContext context) : ctx_(context) {}
+Api::Api(ApiContext context) : ctx_(context) { ctx_.discovery = std::make_shared<DiscoveryCache>(); }
 Api::~Api() = default;
+
+void Api::setYield(std::function<void()> yield) { ctx_.discovery->yield = std::move(yield); }
 
 void Api::registerRoutes(http::Router &router) {
     RouteSink sink{router, handlers_, ctx_.config, ctx_.clock};
@@ -15,6 +17,8 @@ void Api::registerRoutes(http::Router &router) {
     addActivityRoutes(sink, ctx_);
     addStatusRoutes(sink, ctx_);
     addBackupRoutes(sink, ctx_);
+    addIntegrationRoutes(sink, ctx_);
+    addRemoteRoutes(sink, ctx_);
     addUnimplementedRoutes(sink);
 }
 
@@ -29,19 +33,10 @@ void addUnimplementedRoutes(RouteSink &sink) {
         const char *message;
     };
     static constexpr Pending kPending[] = {
-        {"/api/v1/admin/integrations/{integration_id}", auth::Operation::GetIntegrationConfig,
-         "Integration settings are not implemented yet"},
-        {"/api/v1/admin/integrations/{integration_id}", auth::Operation::ConfigureIntegration,
-         "Integration settings are not implemented yet"},
-        {"/api/v1/admin/integrations/{integration_id}/discover", auth::Operation::DiscoverIntegration,
-         "Integration discovery is not implemented yet"},
         {"/api/v1/admin/integrations/{integration_id}/pair", auth::Operation::StartIntegrationPairing,
          "Bluetooth pairing is not implemented yet"},
         {"/api/v1/admin/integrations/{integration_id}/pair", auth::Operation::ForgetIntegrationPairing,
          "Bluetooth pairing is not implemented yet"},
-        {"/api/v1/admin/remote/pair", auth::Operation::GetRemotePairing, "Remote pairing is not implemented yet"},
-        {"/api/v1/admin/remote/pair", auth::Operation::StartRemotePairing, "Remote pairing is not implemented yet"},
-        {"/api/v1/admin/remote/pair", auth::Operation::CancelRemotePairing, "Remote pairing is not implemented yet"},
         {"/api/v1/admin/firmware", auth::Operation::GetFirmwareStatus, "Firmware status is not implemented yet"},
         {"/api/v1/admin/firmware/update", auth::Operation::UpdateFirmware, "Firmware update is not implemented yet"},
     };

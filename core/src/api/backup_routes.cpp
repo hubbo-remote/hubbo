@@ -85,7 +85,10 @@ void addBackupRoutes(RouteSink &sink, ApiContext &ctx) {
 
     sink.add("/api/v1/admin/reset", auth::Operation::FactoryReset, [&ctx](auto &, auto &, auto &out) {
         const ConfigSpec empty;
-        const config::Outcome outcome = ctx.config.reset(ctx.factoryDefaults ? *ctx.factoryDefaults : empty);
+        const ConfigSpec &defaults = ctx.factoryDefaults ? *ctx.factoryDefaults : empty;
+        if (!forgetTokenForNewHaUrl(ctx, defaults, out)) return;
+        const config::Outcome outcome = ctx.config.reset(defaults);
+        reapplyHomeAssistant(ctx, true);
         if (!outcome.ok()) return sendOutcome(out, outcome, "configuration");
         JsonDocument doc;
         putConfigState(doc.to<JsonObject>(), ctx);
@@ -93,7 +96,7 @@ void addBackupRoutes(RouteSink &sink, ApiContext &ctx) {
     });
 
     sink.add("/api/v1/admin/restore", auth::Operation::RestoreBackup, [&ctx](auto &request, auto &, auto &out) {
-        const std::string_view dryRunText = http::queryParam(request.query, "dry_run");
+        const std::string dryRunText = http::queryValue(request.query, "dry_run");
         const bool dryRun = dryRunText == "true" || dryRunText == "1";
 
         ConfigSpec restored;
@@ -133,8 +136,10 @@ void addBackupRoutes(RouteSink &sink, ApiContext &ctx) {
             bluetooth = bluetooth || integration.type == "ble_hid";
         }
 
+        if (!dryRun && !forgetTokenForNewHaUrl(ctx, restored, out)) return;
         // One pipeline: a dry run is the real restore without the save.
         const config::Outcome outcome = ctx.config.restore(std::move(restored), dryRun);
+        if (!dryRun) reapplyHomeAssistant(ctx, true);
         if (!outcome.ok()) return sendOutcome(out, outcome, "backup");
 
         JsonDocument doc;
