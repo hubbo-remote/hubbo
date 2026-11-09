@@ -54,6 +54,27 @@ enum class ErrorCode : uint8_t {
     Busy,                // config swap: old snapshots still in use
     Internal,
 
+    // Config service, storage and JSON (Phase 2). Names match api/openapi.yaml.
+    MalformedJson,      // not JSON, too deep or too large
+    Required,           // a required field is missing
+    UnknownField,       // a field the schema doesn't have
+    WrongType,          // a field of the wrong JSON type
+    TooLong,            // a string or array over its bound
+    NotFound,           // no such activity/device/integration (or file)
+    RevisionConflict,   // stale `revision`; see current revision
+    DeviceInUse,        // device referenced by activities/global bindings
+    ValidationFailed,   // see the issue list
+    LimitReached,       // too many activities/devices to add another
+    StorageFailed,      // read/write/rename failed
+    UnsupportedSchema,  // schema_version newer than this firmware understands
+    Referenced,         // activity still targeted by a system.activate
+    IntegrationDisabled,  // the device's integration is disabled
+    ConfigBlocked,      // the saved config can't be used; only restore/reset may write
+    MigrationFailed,    // a schema migration couldn't upgrade the saved config
+    UnpairedHold,       // a hold command (e.g. key_down) without its release in the matching :up binding
+    HoldNotAllowed,     // a hold command where nothing would release it (direct execute, startup, ...)
+    Corrupt,            // a stored record exists but no copy of it is intact (never "absent")
+
     Count
 };
 
