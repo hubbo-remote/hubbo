@@ -1,6 +1,7 @@
 #include "hubbo/auth/password.h"
 
 #include <cstring>
+#include <string>
 
 namespace hubbo::auth {
 
@@ -98,9 +99,11 @@ PasswordCheck verifyPassword(Hash &hash, std::string_view password, std::string_
 }
 
 const char *dummyPasswordHash() {
-    // Random salt and key with no known preimage.
-    return "pbkdf2-sha256$60000$q1Vx0mJb3Yk8fT2nW6sR4g$"
-           "Hn3pQ9vL2xZ7cK5rT8wM1bJ6yF4dG0sA9eU3iO7tX2c";
+    // Random salt and key with no known preimage, at the default count so an
+    // unknown username costs as much as a wrong password.
+    static const std::string dummy = kPrefix + std::to_string(kDefaultPasswordIterations) +
+                                     "$q1Vx0mJb3Yk8fT2nW6sR4g$Hn3pQ9vL2xZ7cK5rT8wM1bJ6yF4dG0sA9eU3iO7tX2c";
+    return dummy.c_str();
 }
 
 }  // namespace hubbo::auth

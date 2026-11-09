@@ -178,4 +178,18 @@ TEST(AuthPassword, DummyHashIsWellFormedAndMatchesNothingObvious) {
     SoftwareHash h;
     EXPECT_EQ(verifyPassword(h, "", dummyPasswordHash()), PasswordCheck::Mismatch);
     EXPECT_EQ(verifyPassword(h, "admin", dummyPasswordHash()), PasswordCheck::Mismatch);
+    const std::string prefix = "pbkdf2-sha256$" + std::to_string(kDefaultPasswordIterations) + "$";
+    EXPECT_EQ(std::string(dummyPasswordHash()).rfind(prefix, 0), 0u)
+        << "an unknown username must cost the same as a wrong password";
+}
+
+TEST(AuthPassword, StoredCountIsUsedNotTheDefault) {
+    // A hash made with another count (e.g. an older default) still verifies.
+    SoftwareHash h;
+    CountingRandom random;
+    const uint32_t other = kDefaultPasswordIterations + 1;
+    std::string stored;
+    ASSERT_TRUE(hashPassword(h, random, "correct horse battery", other, &stored));
+    EXPECT_EQ(stored.rfind("pbkdf2-sha256$" + std::to_string(other) + "$", 0), 0u);
+    EXPECT_EQ(verifyPassword(h, "correct horse battery", stored), PasswordCheck::Match);
 }

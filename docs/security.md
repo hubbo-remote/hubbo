@@ -81,8 +81,13 @@ it runs prevalidated compiled actions.
   decision, 2026-11-08): the hub lives on a trusted home LAN and is set up right after flashing.
 - 10–128 bytes, no composition rules.
 - Stored as `pbkdf2-sha256$<iterations>$<salt>$<key>` (16-byte random salt, 32-byte key) in NVS.
-  Default 60,000 iterations: measure on the board and raise it if login stays well under half a
-  second. The iteration count is in the string, so it can go up without a migration.
+  Default 10,000 iterations (the minimum accepted). Measured on the dev ESP32-S3 with the
+  firmware built at -O2: about 550 ms per setup or login. The earlier default of 60,000 would
+  take over 3 s there (and about 4.6 s in the -O0 build that was measured first, at the 5 s
+  task watchdog: setup rebooted the board). For a
+  single-home LAN device the login rate limit matters more than the work factor. The iteration
+  count is in the string, so existing hashes (including 60,000 ones) still verify and the
+  default can change without a migration.
 - Verification compares in constant time. An unknown username is verified against
   `dummyPasswordHash()` so it takes as long as a wrong password.
 - PBKDF2 is the choice because mbedTLS has it (`mbedtls_pkcs5_pbkdf2_hmac_ext`) and it needs no
