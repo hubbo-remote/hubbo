@@ -8,11 +8,12 @@ bin/hubbo image          # build the toolchain image (first time, or after chang
 bin/hubbo test           # build the portable core natively and run its tests
 bin/hubbo fw run         # cross-compile the ESP32 firmware (any `pio` args work)
 bin/hubbo sim run sim/scenarios/*.hubbo   # run simulator scenario scripts
-bin/hubbo sim serve      # hub-sim HTTP on 127.0.0.1:8080, AUTH DISABLED (simulator only)
+bin/hubbo sim serve [--data DIR] [--reset] [--seed FILE] [--auth]   # hub-sim HTTP on 127.0.0.1:8780
 bin/hubbo web            # web admin dev server on :5180 (Vite + HMR, mock API)
 bin/hubbo web check      # web typecheck + lint + tests (also: build, test, gen:api)
 api/lint.sh              # validate OpenAPI spec, fixtures and role policy (`gen` regenerates fixtures)
 bin/hubbo tsan           # native tests under ThreadSanitizer (one-off container, seccomp unconfined)
+bin/hubbo asan           # native tests under AddressSanitizer + UBSan (same container setup)
 bin/hubbo shell          # shell inside the toolchain
 ```
 
@@ -23,14 +24,31 @@ compose up` (the `dev` launcher's logs window) runs just the web dev server.
 
 `bin/hubbo web` serves on :5180 (set `HUBBO_WEB_PORT`; 5173 is taken on this host). The API comes
 from the TypeScript mock in `web/mock`, seeded from `api/fixtures`. Point `HUBBO_API_TARGET` at
-`http://127.0.0.1:8080` for hub-sim, or at a board URL. Mock options: `HUBBO_MOCK_LATENCY` (ms),
+`http://127.0.0.1:8780` for hub-sim, or at a board URL. Mock options: `HUBBO_MOCK_LATENCY` (ms),
 `HUBBO_MOCK_FIRST_RUN=1` (setup wizard), `HUBBO_MOCK_AUTH=1` (require login). After any change to
 `api/openapi.yaml`, run `bin/hubbo web gen:api`. `bin/hubbo web build` writes `web/dist` and prints
 gzipped sizes.
 
 ### Simulator
 
-`hub-sim` runs the real core with fake adapters and deterministic time. The scenario script syntax
+`hub-sim` runs the real core with fake adapters and deterministic time. `sim serve` serves the
+real `/api/v1` handlers. Without `--auth` it runs as AUTH DISABLED (simulator only); with `--auth`
+it uses the production authenticator. It seeds from `api/fixtures/admin/backup.json`, the same
+data the web mock uses (`--seed FILE` overrides). With `--data DIR` the config is saved there, so
+restarting the sim acts as a reboot; `--reset` goes back to the seed.
+
+Under `--data`, every saved record is a pair of slot files (`config.a/.b`, `active_activity.a/.b`,
+`secrets.a/.b`), in the same format the board uses. See
+`docs/design/persistence-and-contracts.md`. To test the Blocked state, write an intact but
+unusable config and then start the sim without `--reset`:
+
+```sh
+bin/hubbo sim write-record --data build/sim-x --name config --file sim/fixtures/config.newer-schema.json
+bin/hubbo sim serve --data build/sim-x
+```
+
+`sim/fixtures/` also has `config.does-not-compile.json`. `--reset` or `POST /sim/reset` leaves
+Blocked. The scenario script syntax
 is documented in `sim/src/scenario.h`, and each script in `sim/scenarios/` is also a ctest. The
 no-auth bypass is compile-time and host-only: an ESP32 build that defines `HUBBO_SIMULATOR_NO_AUTH`
 fails with `#error`.

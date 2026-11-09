@@ -120,11 +120,15 @@ These are implementation investigations with tests, not reasons to reopen the ag
 - **Dev hardware:** a dedicated third board. The two deployed Harmonizer boards are not touched.
 - **Re-activating the active activity** re-runs its startup (Harmony's "fix it" behaviour).
 - **Deleting the active activity** switches to the next activity (the one that takes its list position, wrapping to the first) and runs its startup; no shutdown runs. Inactive only when none remain.
+- **Active activity survives reboot:** the active id is saved to NVS a few seconds after the last switch (only if changed, Off = none), from the config side, never the RF path. On boot the hub restores that activity's button map without running its startup. If the activity no longer exists, it boots with nothing active.
 - **First-run setup:** the first person to reach a fresh hub creates the admin. No physical confirmation step.
 - **HA integration-specific services** (e.g. `webostv.button`) are resolved from HA's `get_services` target filters and field selectors, never entered as free text. See `docs/ha-capabilities.md`.
 - **No held-button repeat** for HA actions in the MVP.
 - **Flash encryption / Secure Boot:** not in the MVP. Revisit before any public release.
 - **ThreadSanitizer:** `bin/hubbo tsan` runs the native tests under TSan in a one-off container with seccomp unconfined.
+
+## Scope and threat model (2026-11-09)
+Hubbo is a hobbyist's device: one board in one home, on a trusted home LAN, with one user. It isn't sold, isn't multi-user and isn't exposed to the internet. Engineering effort goes to what affects that user: never losing or corrupting config, a remote that keeps working, and correct device behaviour. The existing auth (admin password, tokens, CSRF) stays as sensible LAN hygiene. Hardening against hostile LAN clients, DoS and scale is out of scope unless explicitly requested.
 
 ## Native desktop simulator — required architecture (amendment)
 The **actual C++ domain and application code** must build and run on a developer computer without ESP32 hardware. Separate `core` (activity engine, action models, compilation, registry, configuration validation, authorization policy, action scheduling) from `platform` adapters (RF, BLE, W5500, LittleFS, NVS, ESP-IDF HTTP). Core must not include Arduino headers or depend on FreeRTOS primitives directly; inject clocks, storage, task scheduling, transport, and integration interfaces.
