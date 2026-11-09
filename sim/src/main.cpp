@@ -3,7 +3,10 @@
 //
 //   hub-sim run <script|->...  [-v]   run scenario scripts; exit 1 on failure
 //   hub-sim serve [--port 8780] [--data DIR] [--reset] [--seed FILE] [--auth]
-//                 [--storage-unavailable] [--bind 127.0.0.1] [--allow-remote] [-v]
+//                 [--storage-unavailable] [--ha-token] [--bind 127.0.0.1] [--allow-remote] [-v]
+//       Home Assistant is the in-process fake HA (never a real one). It's
+//       not_configured until a token is set (PUT /admin/integrations/ha_main
+//       with "fake-ha-token"); --ha-token stores that token at boot if none is.
 //       --storage-unavailable boots with the storage medium unavailable
 //       (config state storage_unavailable); POST /sim/storage?health=...
 //       (admin) or, locally, SIGUSR1 (unavailable) / SIGUSR2 (available)
@@ -24,7 +27,6 @@
 #include <vector>
 
 #include "host_guard.h"
-#include "hubbo/domain/time.h"
 #include "http_server.h"
 #include "hubbo/config/json.h"
 #include "hubbo/auth/credentials.h"
@@ -52,7 +54,8 @@ int usage() {
     std::cerr << "usage:\n"
                  "  hub-sim run <script|->... [-v]\n"
                  "  hub-sim serve [--port N] [--data DIR] [--reset] [--seed FILE] [--auth]\n"
-                 "                [--storage-unavailable] [--bind ADDR] [--allow-remote] [-v]\n"
+                 "                [--storage-unavailable] [--ha-token] [--bind ADDR] [--allow-remote] [-v]\n"
+                 "      --ha-token: store the fake HA's token (fake-ha-token) at boot if none is\n"
                  "      --storage-unavailable: boot with storage down; POST /sim/storage?health=\n"
                  "      available|unavailable|read_only (admin) switches it at runtime, as do the\n"
                  "      local signals SIGUSR1 (unavailable) and SIGUSR2 (available)\n"
@@ -120,6 +123,7 @@ int serve(const std::vector<std::string> &args) {
     bool verbose = false;
     bool reset = false;
     bool storageUnavailable = false;
+    bool haToken = false;
     std::string dataDir;
     std::string seedPath = HUBBO_API_FIXTURES_DIR "/admin/backup.json";
     for (size_t i = 0; i < args.size(); i++) {
@@ -136,6 +140,8 @@ int serve(const std::vector<std::string> &args) {
             reset = true;
         } else if (a == "--storage-unavailable") {
             storageUnavailable = true;
+        } else if (a == "--ha-token") {
+            haToken = true;
         } else if (a == "--allow-remote") {
             options.allowNonLoopback = true;
         } else if (a == "--auth") {
@@ -189,10 +195,18 @@ int serve(const std::vector<std::string> &args) {
     hubbo::sim::HostRandom random;
     hubbo::auth::Credentials credentials(*secrets, hash, random);
     // Boots through bootHub(): config, credentials, active activity.
-    hubbo::sim::ScenarioRunner runner(&std::cout, &medium, /*pinned=*/true, &seed, /*state=*/nullptr, &credentials);
+    // Serve runs the real HA adapter against the fake HA server, so the API
+    // contract and e2e go through snapshot -> call_service -> result.
+    // --ha-token: connected from the start (the fake token guards nothing).
+    if (std::string token;
+        haToken && secrets->read(hubbo::api::kHaTokenKey, &token) == hubbo::auth::SecretRead::NotFound) {
+        secrets->write(hubbo::api::kHaTokenKey, hubbo::sim::FakeHaServer().token);
+    }
+    hubbo::sim::ScenarioRunner runner(&std::cout, &medium, /*pinned=*/true, &seed, /*state=*/nullptr, &credentials,
+                                      /*realHomeAssistant=*/true);
     if (!verbose) runner.hub().onLog = nullptr;
     if (reset) runner.runLine("reset");
-    hubbo::sim::SimApi api(runner, authEnabled, credentials, &medium);
+    hubbo::sim::SimApi api(runner, authEnabled, credentials, &medium, secrets.get());
     hubbo::sim::HttpServer server;
     std::string error;
     if (!server.listen(options, &error)) {
@@ -223,6 +237,7 @@ int serve(const std::vector<std::string> &args) {
     std::signal(SIGUSR2, onStorageSignal);
     hubbo::http::RequestAuthenticator &auth = api.authenticator();
     const auto start = std::chrono::steady_clock::now();
+    uint64_t drivenMs = 0;  // real time already turned into hub time
     while (!gStop) {
         if (const int signal = gStorageSignal) {
             gStorageSignal = 0;
@@ -242,13 +257,16 @@ int serve(const std::vector<std::string> &args) {
                           << response.status << std::endl;
             }
         });
-        // Real time drives simulated time in serve mode.
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 std::chrono::steady_clock::now() - start)
-                                 .count();
-        const auto target = static_cast<uint32_t>(elapsed);
-        const uint32_t now = runner.hub().nowMs();
-        if (hubbo::timeAfter(target, now)) runner.hub().advance(target - now);
+        // Real time drives simulated time in serve mode: each pass adds the
+        // real time since the last one, so a /sim/advance jump ahead never
+        // stops the clock until real time catches up.
+        const auto elapsed = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                       std::chrono::steady_clock::now() - start)
+                                                       .count());
+        if (elapsed > drivenMs) {
+            runner.hub().advance(static_cast<uint32_t>(elapsed - drivenMs));
+            drivenMs = elapsed;
+        }
     }
     runner.hub().flush();  // graceful stop: write the debounced active activity
     std::cout << "hub-sim: stopped" << std::endl;

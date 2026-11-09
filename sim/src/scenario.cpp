@@ -61,13 +61,17 @@ bool parseUint(const std::string &s, uint32_t *out) {
 }  // namespace
 
 ScenarioRunner::ScenarioRunner(std::ostream *trace, storage::Storage *storage, bool pinned, const ConfigSpec *seed,
-                               storage::StateStore *state, auth::Credentials *credentials)
+                               storage::StateStore *state, auth::Credentials *credentials,
+                               bool realHomeAssistant)
     : trace_(trace),
       storage_(storage != nullptr ? storage : &ownStorage_),
       state_(state),
       credentials_(credentials),
       pinned_(pinned),
+      realHomeAssistant_(realHomeAssistant),
       seed_(seed != nullptr ? *seed : fixtureConfig()) {
+    // The real adapter only has commands for devices with a snapshot.
+    if (realHomeAssistant_) addFakeHaSnapshots(&seed_, FakeHaServer());
     newHub();
     const config::LoadReport boot = hub_->boot(seed_, credentials_);
     if (trace_ != nullptr) {
@@ -78,7 +82,7 @@ ScenarioRunner::ScenarioRunner(std::ostream *trace, storage::Storage *storage, b
 }
 
 void ScenarioRunner::newHub() {
-    hub_ = std::make_unique<SimHub>(storage_, state_);
+    hub_ = std::make_unique<SimHub>(storage_, state_, realHomeAssistant_);
     if (trace_ == nullptr) return;
     std::ostream *out = trace_;
     hub_->onLog = [out](const char *kind, const LogLine &line) {
@@ -205,6 +209,15 @@ bool ScenarioRunner::runLine(const std::string &raw) {
     }
     if (verb == "ha") {
         if (words.empty()) return fail("usage: ha latency|fail|available|unavailable");
+        if (hub.realHomeAssistant()) {
+            // The real adapter: only the fake server's reachability.
+            if (words[0] != "available" && words[0] != "unavailable") {
+                return fail("only 'ha available|unavailable' with the real HA adapter");
+            }
+            hub.haServer().reachable = words[0] == "available";
+            hub.serviceIntegrations();
+            return true;
+        }
         if (words[0] == "latency") {
             if (!number(1, 0, &ms)) return false;
             hub.homeAssistant().setLatency(ms);

@@ -308,3 +308,244 @@ TEST(SimApi, BootingWithStorageDownRecovers) {
     EXPECT_EQ(runner.hub().configService().state(), config::ConfigState::Ok);
     EXPECT_EQ(runner.hub().activate("act_watch_apple_tv"), ErrorCode::Ok);
 }
+
+TEST(SimApi, RemotePairScanIsDrivenFromSimRoutes) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials);
+    EXPECT_EQ(call(api, http::Method::Post, "/api/v1/admin/remote/pair").status / 100, 2);
+    EXPECT_EQ(runner.hub().remote().status().scan, api::ScanState::Scanning);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/radio/found", "channel=200&address=e7e7e7e7e7").status, 400);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/radio/found", "channel=76&address=e7e7e7e7e7").status, 200);
+    const api::RemoteRadioStatus found = runner.hub().remote().status();
+    EXPECT_EQ(found.scan, api::ScanState::Found);
+    EXPECT_EQ(found.endpoint.channel, 76);
+    EXPECT_EQ(found.endpoint.address, 0xe7e7e7e7e7ull);
+
+    // A scan nobody answers times out on hub time.
+    EXPECT_EQ(call(api, http::Method::Post, "/api/v1/admin/remote/pair").status / 100, 2);
+    const std::string ms = "ms=" + std::to_string(api::kRemoteScanTimeoutMs + 1000);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/advance", ms.c_str()).status, 200);
+    EXPECT_EQ(runner.hub().remote().status().scan, api::ScanState::TimedOut);
+}
+
+TEST(SimApi, TheStoredTokenConnectsTheFakeHomeAssistant) {
+    SimAuth a;
+    ASSERT_TRUE(a.secrets.write(api::kHaTokenKey, "fake-ha-token"));
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials, nullptr, &a.secrets);
+    runner.hub().serviceIntegrations();
+    EXPECT_EQ(runner.hub().haClient().state(), integrations::HaState::Connected);
+    for (const std::string &line : runner.hub().haServer().received()) {
+        EXPECT_EQ(line.find("fake-ha-token"), std::string::npos) << line;
+    }
+    http::Response r = call(api, http::Method::Post, "/sim/ha", "reachable=0");
+    EXPECT_EQ(r.status, 200);
+    EXPECT_NE(runner.hub().haClient().state(), integrations::HaState::Connected);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/ha", "reachable=1").status, 200);
+}
+
+// hub-sim serve's mode: ha_main is the real adapter over the fake HA.
+class RealHa : public ::testing::Test {
+protected:
+    RealHa() {
+        a.secrets.write(api::kHaTokenKey, "fake-ha-token");
+        runner = std::make_unique<ScenarioRunner>(nullptr, nullptr, true, nullptr, nullptr, &a.credentials, true);
+        api = std::make_unique<SimApi>(*runner, false, a.credentials, nullptr, &a.secrets);
+        hub().advance(10);
+    }
+    SimHub &hub() { return runner->hub(); }
+    // An HA discovery through the API, run to its end.
+    void discover() {
+        EXPECT_EQ(call(*api, http::Method::Post, "/api/v1/admin/integrations/ha_main/discover").status, 202);
+        const http::Response r = call(*api, http::Method::Get, "/api/v1/admin/integrations/ha_main/discover");
+        EXPECT_NE(r.body.find("\"done\""), std::string::npos) << r.body;
+    }
+    http::Response volume(const char *level = "0.3") {
+        const std::string body = std::string(R"({"params":{"level":)") + level + "}}";
+        return call(*api, http::Method::Post, "/api/v1/devices/dev_denon/commands/media_player.volume_set/execute", "",
+                    body.c_str());
+    }
+
+    SimAuth a;
+    std::unique_ptr<ScenarioRunner> runner;
+    std::unique_ptr<SimApi> api;
+};
+
+TEST_F(RealHa, ActionsGoThroughTheClientToTheFakeServer) {
+    ASSERT_TRUE(hub().realHomeAssistant());
+    ASSERT_EQ(hub().haClient().state(), integrations::HaState::Connected);
+    EXPECT_STREQ(SimRuntime(hub()).integrationState("ha_main"), "connected");
+    http::Response r = volume();
+    EXPECT_EQ(r.status, 200) << r.body;
+    EXPECT_NE(r.body.find("\"accepted\""), std::string::npos) << r.body;
+    ASSERT_FALSE(hub().haServer().calls().empty());
+    EXPECT_EQ(hub().haServer().calls().back(), "media_player.volume_set media_player.denon volume_level=0.3");
+
+    // An activity: its HA steps complete on HA's answers.
+    ASSERT_TRUE(runner->runLine("activate act_watch_apple_tv")) << runner->error();
+    hub().advance(1000);
+    EXPECT_STREQ(hub().engine().activeActivityId(), "act_watch_apple_tv");
+    EXPECT_EQ(hub().engine().executor().stats().rejected, 0u);
+}
+
+TEST_F(RealHa, DownRefusedAndUnansweredCallsFail) {
+    // HA refuses: adapter_failed.
+    call(*api, http::Method::Post, "/sim/ha", "fail=media_player.volume_set");
+    http::Response r = volume();
+    EXPECT_NE(r.body.find("adapter_failed"), std::string::npos) << r.body;
+    call(*api, http::Method::Post, "/sim/ha", "fail=none");
+
+    // No answer: the action times out (5 s), not hangs.
+    call(*api, http::Method::Post, "/sim/ha", "commands=0");
+    r = volume();
+    EXPECT_NE(r.body.find("\"status\":\"timeout\""), std::string::npos) << r.body;
+    EXPECT_NE(r.body.find("adapter_timeout"), std::string::npos) << r.body;
+    call(*api, http::Method::Post, "/sim/ha", "commands=1");
+
+    // HA down: adapter_unavailable at once, and the integration says so.
+    call(*api, http::Method::Post, "/sim/ha", "reachable=0");
+    EXPECT_STRNE(SimRuntime(hub()).integrationState("ha_main"), "connected");
+    const uint32_t before = hub().nowMs();
+    r = volume();
+    EXPECT_NE(r.body.find("adapter_unavailable"), std::string::npos) << r.body;
+    EXPECT_LT(hub().nowMs() - before, 100u);
+    const DeviceSpec *denon = hub().configService().findDevice("dev_denon");
+    ASSERT_NE(denon, nullptr);
+    EXPECT_STREQ(SimRuntime(hub()).deviceAvailability(*denon), "unavailable");
+}
+
+TEST_F(RealHa, AnEntityHaForgotIsStale) {
+    const DeviceSpec *denon = hub().configService().findDevice("dev_denon");
+    ASSERT_NE(denon, nullptr);
+    ASSERT_TRUE(denon->haCapabilities.has_value());  // seeded from the fake HA
+    EXPECT_STREQ(SimRuntime(hub()).deviceAvailability(*denon), "available");
+    call(*api, http::Method::Post, "/sim/ha", "remove=media_player.denon");
+    EXPECT_STREQ(SimRuntime(hub()).deviceAvailability(*denon), "available");  // not known until a discovery
+    discover();
+    EXPECT_STREQ(SimRuntime(hub()).deviceAvailability(*denon), "stale");
+    // Refused before HA: real HA would answer success for a missing entity.
+    const size_t calls = hub().haServer().calls().size();
+    http::Response r = volume();
+    EXPECT_NE(r.body.find("entity_not_found"), std::string::npos) << r.body;
+    EXPECT_EQ(hub().haServer().calls().size(), calls);
+    // A device whose entity HA never had has no commands at all.
+    EXPECT_EQ(hub().adapters().at(hub().adapters().find("ha_main"))->commandsFor(sim::haDevice("dev_x", "X", "light", "light.nope")).count,
+              0u);
+}
+
+TEST_F(RealHa, ADisabledHaMainSaysDisabled) {
+    // Disabled, the client has no URL (not_configured); the status says why.
+    const std::string body =
+        R"({"enabled":false,"revision":)" + std::to_string(hub().configService().findIntegration("ha_main")->revision) + "}";
+    http::Response r = call(*api, http::Method::Put, "/api/v1/admin/integrations/ha_main", "", body.c_str());
+    ASSERT_EQ(r.status, 200) << r.body;
+    hub().advance(10);
+    EXPECT_EQ(hub().haClient().state(), integrations::HaState::NotConfigured);
+    r = call(*api, http::Method::Get, "/api/v1/status");
+    EXPECT_NE(r.body.find(R"({"id":"ha_main","type":"home_assistant","state":"disabled")"), std::string::npos) << r.body;
+}
+
+TEST_F(RealHa, VerifyTlsReachesTheTransport) {
+    EXPECT_TRUE(hub().haTransport().lastOptions.verifyTls);
+    const int before = hub().haTransport().connectAttempts;
+    const std::string body = R"({"settings":{"type":"home_assistant","verify_tls":false},"revision":)" +
+                             std::to_string(hub().configService().findIntegration("ha_main")->revision) + "}";
+    http::Response r = call(*api, http::Method::Put, "/api/v1/admin/integrations/ha_main", "", body.c_str());
+    ASSERT_EQ(r.status, 200) << r.body;
+    hub().advance(10);
+    EXPECT_EQ(hub().haClient().state(), integrations::HaState::Connected);
+    EXPECT_FALSE(hub().haTransport().lastOptions.verifyTls);
+    EXPECT_GT(hub().haTransport().connectAttempts, before);
+}
+
+namespace {
+
+// A Phase 2 config: only the system and ble integrations, no HA devices.
+ConfigSpec phase2Config() {
+    ConfigSpec c;
+    c.revision = 1;
+    c.globalBindingsRevision = 1;
+    c.integrations = {integration("system", "system", "System"), integration("ble", "ble_hid", "Bluetooth")};
+    c.devices = {bleDevice("dev_apple_tv", "Apple TV", "streamer")};
+    return c;
+}
+
+// ha_main exists, isn't configured, and takes its settings.
+void expectHaMainUsable(ScenarioRunner &runner, SimApi &api) {
+    const IntegrationSpec *ha = runner.hub().configService().findIntegration("ha_main");
+    ASSERT_NE(ha, nullptr);
+    EXPECT_EQ(ha->type, kHomeAssistantType);
+    EXPECT_TRUE(ha->enabled);
+    EXPECT_TRUE(ha->url.empty());
+    http::Response r = call(api, http::Method::Get, "/api/v1/admin/integrations/ha_main");
+    ASSERT_EQ(r.status, 200) << r.body;
+    r = call(api, http::Method::Get, "/api/v1/status");
+    EXPECT_NE(r.body.find(R"({"id":"ha_main","type":"home_assistant","state":"not_configured")"), std::string::npos)
+        << r.body;
+    const std::string body = R"({"settings":{"type":"home_assistant","url":"http://ha.local:8123","access_token":")"
+                             "fake-ha-token\"},\"revision\":" + std::to_string(ha->revision) + "}";
+    r = call(api, http::Method::Put, "/api/v1/admin/integrations/ha_main", "", body.c_str());
+    EXPECT_EQ(r.status, 200) << r.body;
+    EXPECT_EQ(runner.hub().configService().findIntegration("ha_main")->url, "http://ha.local:8123");
+}
+
+}  // namespace
+
+TEST(BuiltinHomeAssistant, AFreshHubHasHaMain) {
+    SimAuth a;
+    const ConfigSpec seed = phase2Config();
+    ScenarioRunner runner(nullptr, nullptr, true, &seed, nullptr, &a.credentials, /*realHomeAssistant=*/true);
+    SimApi api(runner, false, a.credentials, nullptr, &a.secrets);
+    expectHaMainUsable(runner, api);
+}
+
+TEST(BuiltinHomeAssistant, ASavedConfigWithoutItGetsIt) {
+    SimAuth a;
+    storage::MemoryStorage disk;
+    {
+        // As Phase 2 firmware saved it.
+        storage::SlotRecordStore records(disk, config::kMaxConfigFileBytes);
+        uint64_t generation = 0;
+        ASSERT_EQ(records.nextGeneration(config::ConfigService::kRecordName, &generation), ErrorCode::Ok);
+        ASSERT_EQ(records.save(config::ConfigService::kRecordName, generation, config::serializeConfig(phase2Config())),
+                  ErrorCode::Ok);
+    }
+    ScenarioRunner runner(nullptr, &disk, true, nullptr, nullptr, &a.credentials, /*realHomeAssistant=*/true);
+    const config::LoadReport &boot = runner.hub().lastBoot().config;
+    ASSERT_EQ(boot.state, config::ConfigState::Ok)
+        << errorCodeName(boot.reason) << " " << (boot.issues.ok() ? "" : boot.issues.issues()[0].path);
+    EXPECT_EQ(runner.hub().configService().findDevice("dev_apple_tv")->name, "Apple TV");  // the saved one
+    SimApi api(runner, false, a.credentials, nullptr, &a.secrets);
+    expectHaMainUsable(runner, api);
+}
+
+TEST(BuiltinHomeAssistant, ARestoreWithoutItKeepsIt) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, true, nullptr, nullptr, &a.credentials, /*realHomeAssistant=*/true);
+    ASSERT_TRUE(runner.hub().load(phase2Config()).ok());
+    SimApi api(runner, false, a.credentials, nullptr, &a.secrets);
+    expectHaMainUsable(runner, api);
+}
+
+TEST_F(RealHa, ResetRestoresTheFakeHomeAssistant) {
+    call(*api, http::Method::Post, "/sim/ha", "remove=media_player.denon");
+    discover();
+    EXPECT_NE(volume().body.find("entity_not_found"), std::string::npos);
+    call(*api, http::Method::Post, "/sim/ha", "fail=light.turn_on&commands=0&reachable=0");
+    ASSERT_NE(hub().haClient().state(), integrations::HaState::Connected);
+
+    ASSERT_EQ(call(*api, http::Method::Post, "/sim/reset").status, 200);
+    FakeHaServer &server = hub().haServer();
+    EXPECT_TRUE(server.reachable);
+    EXPECT_TRUE(server.answerCommands);
+    EXPECT_TRUE(server.failing.empty());
+    EXPECT_EQ(server.entities().size(), FakeHaServer().entities().size());
+    hub().advance(10);  // reconnects at once, not after the backoff
+    EXPECT_EQ(hub().haClient().state(), integrations::HaState::Connected);
+    const DeviceSpec *denon = hub().configService().findDevice("dev_denon");
+    ASSERT_NE(denon, nullptr);
+    EXPECT_STREQ(SimRuntime(hub()).deviceAvailability(*denon), "available");
+    const http::Response r = volume();
+    EXPECT_NE(r.body.find("\"accepted\""), std::string::npos) << r.body;
+}

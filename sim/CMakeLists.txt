@@ -6,6 +6,7 @@
 # one: hubbo_core (unit tests) or hubbo_core_sim (no-auth simulator).
 
 add_library(hubbo_sim_support STATIC
+    src/fake_ha.cpp
     src/fakes.cpp
     src/fixtures.cpp
     src/hub.cpp

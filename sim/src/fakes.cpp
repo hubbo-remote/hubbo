@@ -17,6 +17,8 @@ constexpr CommandSpec kIr[] = {
     {"send", kIrCode, 1},
 };
 
+}  // namespace
+
 std::string formatNumber(double v) {
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%g", v);
@@ -26,8 +28,6 @@ std::string formatNumber(double v) {
 std::string quoteIfSpaced(const std::string &s) {
     return s.find(' ') == std::string::npos ? s : "\"" + s + "\"";
 }
-
-}  // namespace
 
 std::string formatParams(const CommandSpec &command, const ParamValue *params, uint8_t present) {
     std::string out;
@@ -132,10 +132,14 @@ ExecResult FakeIr::execute(const ExecRequest &request) {
     return ExecResult::failed(ErrorCode::NotImplemented);
 }
 
-FakeAdapters::FakeAdapters() {
+FakeAdapters::FakeAdapters(IntegrationAdapter *realHomeAssistant) {
     for (const auto &entity : fixtureEntities()) homeAssistant.addEntity(entity);
     set.add(ble);
-    set.add(homeAssistant);
+    if (realHomeAssistant != nullptr) {
+        set.add(*realHomeAssistant);
+    } else {
+        set.add(homeAssistant);
+    }
     set.add(ir);
 }
 
