@@ -1,9 +1,15 @@
 // Ported from Harmonizer src/bluetooth.cpp (soaresbrun0/Harmonizer, AGPL-3.0).
+// NimBLEStream's availableForWrite() hides Print's (library code, not ours).
+// GCC reports it at Print.h, so the pragma must cover Print.h's first include.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Woverloaded-virtual="
 #include "ble_hid.h"
+#include "console.h"
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <NimBLEHIDDevice.h>
+#pragma GCC diagnostic pop
 
 
 namespace hubbo::fw {
@@ -128,7 +134,7 @@ bool BleHid::begin(const char *name) {
         return true;
     }
     if (!NimBLEDevice::init(name)) {
-        Serial.println("ble: NimBLE init failed");
+        con.println("ble: NimBLE init failed");
         return false;
     }
     NimBLEDevice::setPower(kTxPowerDbm);
@@ -160,7 +166,7 @@ bool BleHid::begin(const char *name) {
     bondCount_ = NimBLEDevice::getNumBonds();
     started_ = true;
     updateAdvertising();
-    Serial.printf("ble: started as \"%s\", %d bonded host(s)\n", name, bondCount_);
+    con.printf("ble: started as \"%s\", %d bonded host(s)\n", name, bondCount_);
     return true;
 }
 
@@ -170,7 +176,7 @@ void BleHid::loop(uint32_t nowMs) {
     }
 
     if (pairing_ && nowMs - pairingStartedMs_ >= pairingWindowMs_) {
-        Serial.println("ble: pairing window closed");
+        con.println("ble: pairing window closed");
         stopPairing();
     }
 
@@ -188,7 +194,7 @@ void BleHid::loop(uint32_t nowMs) {
                     }
                 }
             });
-            Serial.printf("ble: paired with %s\n", keep.toString().c_str());
+            con.printf("ble: paired with %s\n", keep.toString().c_str());
             stopPairing();
         }
         bondCount_ = NimBLEDevice::getNumBonds();
@@ -283,7 +289,7 @@ bool BleHid::startPairing(uint32_t nowMs, uint32_t windowMs) {
     pairingStartedMs_ = nowMs;
     pairingWindowMs_ = windowMs;
     updateAdvertising();
-    Serial.printf("ble: pairing window open for %lu s\n",
+    con.printf("ble: pairing window open for %lu s\n",
                   static_cast<unsigned long>(windowMs / 1000));
     return true;
 }
@@ -310,7 +316,7 @@ void BleHid::forget() {
     if (!started_) {
         return;
     }
-    Serial.println("ble: forgetting bonded hosts");
+    con.println("ble: forgetting bonded hosts");
     stopPairing();
     releaseAll();
     const uint16_t handle = connHandle;

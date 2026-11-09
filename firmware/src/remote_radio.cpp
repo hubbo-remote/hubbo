@@ -8,6 +8,7 @@
 #include <SPI.h>
 
 #include "board.h"
+#include "console.h"
 
 namespace hubbo::fw {
 
@@ -114,7 +115,7 @@ bool RemoteRadio::begin() {
     }
     SPI.begin(board::nrf24::kSck, board::nrf24::kMiso, board::nrf24::kMosi, board::nrf24::kCsn);
     if (!radio.begin(&SPI)) {
-        Serial.println("radio: nRF24L01+ not responding");
+        con.println("radio: nRF24L01+ not responding");
         return false;
     }
     radio.setDataRate(RF24_2MBPS);
@@ -122,13 +123,13 @@ bool RemoteRadio::begin() {
     radio.enableAckPayload();
     radio.setCRCLength(RF24_CRC_16);
     state_ = State::Idle;
-    Serial.printf("radio: nRF24L01+ ready (%s)\n", radio.isPVariant() ? "+ variant" : "non-+");
+    con.printf("radio: nRF24L01+ ready (%s)\n", radio.isPVariant() ? "+ variant" : "non-+");
 
     RadioEndpoint saved;
     if (loadEndpoint(&saved)) {
         listen(saved);
     } else {
-        Serial.println("radio: no Hub endpoint saved; send `scan` and press the Hub's pair button");
+        con.println("radio: no Hub endpoint saved; send `scan` and press the Hub's pair button");
     }
     return true;
 }
@@ -157,7 +158,7 @@ void RemoteRadio::listen(const RadioEndpoint &endpoint) {
     radio.startListening();
     endpoint_ = endpoint;
     state_ = State::Listening;
-    Serial.printf("radio: listening on channel %u, address 0x%010llX\n",
+    con.printf("radio: listening on channel %u, address 0x%010llX\n",
                   static_cast<unsigned>(endpoint.channel),
                   static_cast<unsigned long long>(endpoint.address));
 }
@@ -198,7 +199,22 @@ void RemoteRadio::forgetEndpoint() {
     if (state_ != State::NotReady) {
         persist(endpoint_, true);
     }
-    Serial.println("radio: Hub endpoint forgotten");
+    con.println("radio: Hub endpoint forgotten");
+}
+
+bool RemoteRadio::setEndpoint(const RadioEndpoint &endpoint) {
+    if (state_ == State::NotReady || !endpoint.isValid()) {
+        return false;
+    }
+    if (state_ == State::Scanning) {
+        stopScan();
+    }
+    if (state_ == State::Listening) {
+        stopListening();  // releases held buttons (PayloadSink::onListeningStopped)
+    }
+    persist(endpoint, false);
+    listen(endpoint);
+    return true;
 }
 
 // --- Scanning --------------------------------------------------------------
@@ -219,7 +235,7 @@ bool RemoteRadio::startScan(uint32_t nowMs, uint32_t timeoutMs) {
     scanTimeoutMs_ = timeoutMs;
     lastScanStepMs_ = nowMs - kScanStepMs;
     state_ = State::Scanning;
-    Serial.println("radio: scanning for a Harmony Hub; press its pair button");
+    con.println("radio: scanning for a Harmony Hub; press its pair button");
     return true;
 }
 
@@ -233,8 +249,8 @@ void RemoteRadio::finishScan(ScanResult result) {
     lastScanResult_ = result;
     state_ = State::Idle;
     switch (result) {
-        case ScanResult::TimedOut: Serial.println("radio: scan timed out, no Hub found"); break;
-        case ScanResult::Stopped: Serial.println("radio: scan stopped"); break;
+        case ScanResult::TimedOut: con.println("radio: scan timed out, no Hub found"); break;
+        case ScanResult::Stopped: con.println("radio: scan stopped"); break;
         default: break;
     }
     if (endpoint_.isValid()) {
@@ -267,13 +283,13 @@ void RemoteRadio::scanStep(uint32_t nowMs) {
                             static_cast<uint64_t>(reply[6]) << 8 |
                             static_cast<uint64_t>(static_cast<uint8_t>(reply[7] - 1));
             if (found.isValid()) {
-                Serial.println("radio: found Harmony Hub");
+                con.println("radio: found Harmony Hub");
                 endpoint_ = found;
                 persist(found, false);
                 finishScan(ScanResult::Found);
                 return;
             }
-            Serial.println("radio: Hub reply had an invalid address, still scanning");
+            con.println("radio: Hub reply had an invalid address, still scanning");
         }
     }
 

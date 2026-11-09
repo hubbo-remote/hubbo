@@ -74,6 +74,12 @@ public:
     // Stops listening and erases the saved endpoint.
     void forgetEndpoint();
 
+    // Uses a known endpoint instead of scanning (e.g. a Hub that's gone, its
+    // channel and address noted earlier). Saved like a scanned one and
+    // listened on at once; held buttons are released first. False if the
+    // radio isn't ready or the endpoint is invalid.
+    bool setEndpoint(const RadioEndpoint &endpoint);
+
     State state() const { return state_; }
     static const char *stateName(State state);
     RadioEndpoint endpoint() const { return endpoint_; }

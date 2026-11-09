@@ -2,7 +2,8 @@
 
 // ArduinoOTA, compiled in only when HUBBO_OTA_PASSWORD was set in the
 // environment at build time (same pattern as Harmonizer's OTA_PASSWORD).
-// An empty password means OTA is off. The password is never printed.
+// Only its SHA-256 is compiled in (scripts/ota_password_hash.py), never the
+// password. Empty means OTA is off. Neither is ever printed.
 //
 // ArduinoOTA receives and writes the whole image inside handle(), on the
 // main loop, for many seconds. So:

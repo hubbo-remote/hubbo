@@ -5,6 +5,7 @@
 
 #include "ble_hid.h"
 #include "hubbo/domain/config.h"
+#include "console.h"
 
 namespace hubbo::fw {
 
@@ -56,7 +57,7 @@ bool EngineRuntime::run(hubbo::EngineRequest &request) {
         vTaskDelay(1);
         if (!reported && millis() - startedMs >= kSlowRequestMs) {
             reported = true;
-            Serial.println("runtime: engine request still running after 2 s");
+            con.println("runtime: engine request still running after 2 s");
         }
     }
     return true;
