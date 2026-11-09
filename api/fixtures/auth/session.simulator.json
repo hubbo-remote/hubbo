@@ -3,5 +3,7 @@
   "role": "admin",
   "username": "simulator",
   "setup_required": false,
+  "auth_state": "ok",
+  "config_state": "ok",
   "auth_mode": "simulator_no_auth"
 }

@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "key_down holds a key; use key_tap",
+    "details": [
+      {
+        "path": "/command_id",
+        "code": "hold_not_allowed",
+        "message": "key_down/key_up are for bindings; execute key_tap instead"
+      }
+    ]
+  }
+}

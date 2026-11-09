@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "config_blocked",
+    "message": "The saved configuration can't be used; restore a backup or reset"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "storage_unavailable",
+    "message": "The configuration store can't be read right now; try again later"
+  }
+}

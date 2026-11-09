@@ -1,0 +1,12 @@
+{
+  "format": "hubbo-config",
+  "schema_version": 2,
+  "revision": 41,
+  "integrations": [],
+  "devices": [],
+  "global_bindings": {
+    "bindings": {},
+    "revision": 1
+  },
+  "activities": []
+}

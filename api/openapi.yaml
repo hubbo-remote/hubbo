@@ -20,15 +20,27 @@ info:
       The table is mirrored in `core/src/auth/policy.cpp`; `api/lint.sh` fails if
       the two disagree. Cookie-authenticated POST/PUT/DELETE need the CSRF
       header except where `x-hubbo-csrf-exempt: true` (login, setup).
+    * **Config state.** Every edit (activities, global bindings, devices) is
+      refused with `409 config_blocked` while `/status` `config.state` is
+      `blocked`, and with `503 storage_unavailable` while it is
+      `storage_unavailable`. Restore and reset are the way out.
+    * **Not implemented yet:** operations marked `x-hubbo-not-implemented: true`
+      answer `501 not_implemented` and do nothing.
     * **Credentials.** Browser: `hubbo_session` cookie from `POST /auth/login`
       plus the `X-Hubbo-CSRF` header on every unsafe request (POST/PUT/DELETE).
       Agents: `Authorization: Bearer hbt_...`. Bearer requests need no CSRF header.
     * **Bodies.** Requests with a body must be `Content-Type: application/json`
       (except firmware upload), otherwise `415 unsupported_media_type`. Unknown fields
       are rejected. Default body limit
-      is 16 KiB; activity bodies 32 KiB; restore 256 KiB (`x-hubbo-max-body`).
+      is 16 KiB; activity bodies 32 KiB; restore 640 KiB, the largest saved config
+      (512 KiB) plus headroom for the backup wrapper and pretty-printing
+      (`x-hubbo-max-body`).
       JSON nesting deeper than 8 levels is rejected.
-    * **Errors.** Every non-2xx response has the `Error` body.
+    * **Errors.** Every non-2xx response has the `Error` body. Any request can
+      also get `405 method_not_allowed` or, when its `Host` header is not one of
+      the hub's names (DNS-rebinding defence), `421 host_not_allowed`. A
+      body larger than the operation accepts (any body, for operations that
+      take none) is refused with `413 payload_too_large` before it is read.
     * **Optimistic concurrency.** Editable documents (activities, devices,
       integration settings) carry an integer `revision`. Replace/delete must send
       the revision they were based on; a stale one gets `409 revision_conflict`
@@ -52,7 +64,7 @@ info:
     max_sequence_actions: 32
     max_binding_actions: 32
     max_params_per_action: 4
-    max_param_string_length: 32
+    max_param_string_length: 64
     max_api_tokens: 16
     max_sessions: 8
     max_wait_ms: 60000
@@ -78,6 +90,7 @@ paths:
       x-hubbo-role: token
       summary: Hub status and diagnostics
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
         '200':
           description: Status
           content:
@@ -92,6 +105,7 @@ paths:
       x-hubbo-role: token
       summary: Remote pairing and radio status
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
         '200':
           description: Remote status
           content:
@@ -106,6 +120,7 @@ paths:
       x-hubbo-role: token
       summary: Buttons and trigger event kinds of the remote
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
         '200':
           description: Buttons
           content:
@@ -131,6 +146,12 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetupRequest'}
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
         '201':
           description: Admin created and logged in
           headers:
@@ -163,6 +184,12 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/LoginRequest'}
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
         '200':
           description: Logged in
           headers:
@@ -194,6 +221,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       responses:
+        '403': {$ref: '#/components/responses/Forbidden'}
         '204':
           description: Logged out
           headers:
@@ -224,6 +252,7 @@ paths:
       x-hubbo-role: token
       summary: Registered devices
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
         '200':
           description: Devices
           content:
@@ -240,6 +269,7 @@ paths:
       x-hubbo-role: token
       summary: One registered device
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
         '200':
           description: Device
           content:
@@ -257,6 +287,7 @@ paths:
       x-hubbo-role: token
       summary: Commands this device accepts, with parameter schemas
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
         '200':
           description: Capabilities
           content:
@@ -283,6 +314,11 @@ paths:
         device; the body holds only typed params checked against the command's
         parameter schema. `200` means the command reached the adapter; read
         `status`. `4xx` means nothing was sent.
+
+        Only `momentary` commands (see `effect` in capabilities). A `hold`
+        command such as `key_down` would leave a key held with nothing to
+        release it, so it gets `422` with detail code `hold_not_allowed`;
+        use the momentary form (`key_tap`). Bindings may use holds.
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
@@ -291,6 +327,9 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ExecuteRequest'}
       responses:
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '200':
           description: Handed to the adapter
           content:
@@ -309,6 +348,7 @@ paths:
       x-hubbo-role: token
       summary: All activities and the active one
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
         '200':
           description: Activities
           content:
@@ -330,6 +370,10 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ActivityInput'}
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/InternalError'}
         '201':
           description: Created
           headers:
@@ -364,6 +408,10 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ActivityReplace'}
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '200':
           description: Validation outcome
           content:
@@ -381,13 +429,23 @@ paths:
       summary: Run the active activity's shutdown and clear it
       description: |
         Same as the remote's Off button. Runs only the current activity's
-        shutdown sequence. With no active activity it does nothing and returns
-        `shutdown_actions: 0`.
+        shutdown sequence. With no active activity it does nothing
+        (`switched: false`, shutdown `none`).
+
+        `200` means it happened; read `shutdown` for whether the sequence was
+        queued. Never retry a `switched: true` result. `503 busy` means the
+        request never reached the engine, so nothing changed and a retry is
+        safe.
+        While the config is `blocked` (nothing runs) this answers `409
+        config_blocked`. With the store unavailable, switching still works;
+        the active activity just isn't saved.
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       responses:
-        '202':
-          description: Shutdown queued
+        '409': {$ref: '#/components/responses/Conflict'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '200':
+          description: Done (see `switched` and `shutdown`)
           content:
             application/json:
               schema: {$ref: '#/components/schemas/TransitionResult'}
@@ -403,6 +461,7 @@ paths:
       x-hubbo-role: token
       summary: One activity
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
         '200':
           description: Activity
           content:
@@ -429,6 +488,10 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ActivityReplace'}
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/InternalError'}
         '200':
           description: Replaced
           content:
@@ -450,6 +513,9 @@ paths:
         - $ref: '#/components/parameters/CsrfHeader'
         - $ref: '#/components/parameters/RevisionQuery'
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
         '204': {description: Deleted}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -468,11 +534,22 @@ paths:
         Selects the activity's mapping atomically and queues its startup
         sequence. Never runs the previous activity's shutdown. Activating the
         already active activity re-runs its startup.
+
+        `200` means the hub switched (`switched: true`), even if the startup
+        sequence could not be queued (`startup.status: rejected` with a
+        reason): don't retry it, that would run a second full transition.
+        `503 busy` means the request never reached the engine, so nothing
+        changed and a retry is safe.
+        While the config is `blocked` (nothing runs) this answers `409
+        config_blocked`. With the store unavailable, switching still works;
+        the active activity just isn't saved.
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       responses:
-        '202':
-          description: Switched; startup queued
+        '409': {$ref: '#/components/responses/Conflict'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '200':
+          description: Switched (see `startup`)
           content:
             application/json:
               schema: {$ref: '#/components/schemas/TransitionResult'}
@@ -491,6 +568,7 @@ paths:
         trigger. This is where activity buttons live, e.g.
         `"tv:tap": [system/activate {activity_id}]` and `"off:tap": [system/off]`.
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
         '200':
           description: Global bindings
           content:
@@ -511,6 +589,10 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/GlobalBindings'}
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/InternalError'}
         '200':
           description: Replaced
           content:
@@ -529,6 +611,7 @@ paths:
       x-hubbo-role: token
       summary: Integration instances (safe summaries, no settings or secrets)
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
         '200':
           description: Integrations
           content:
@@ -542,9 +625,12 @@ paths:
     get:
       tags: [admin]
       operationId: getIntegrationConfig
+      x-hubbo-not-implemented: true
       x-hubbo-role: admin
       summary: Integration settings (secrets reported only as `has_*` flags)
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
         '200':
           description: Settings
           content:
@@ -556,6 +642,7 @@ paths:
     put:
       tags: [admin]
       operationId: configureIntegration
+      x-hubbo-not-implemented: true
       x-hubbo-role: admin
       x-hubbo-max-body: 8192
       summary: Change integration settings
@@ -572,6 +659,11 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/IntegrationConfigUpdate'}
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
         '200':
           description: Saved
           content:
@@ -589,6 +681,7 @@ paths:
     post:
       tags: [admin]
       operationId: discoverIntegration
+      x-hubbo-not-implemented: true
       x-hubbo-role: admin
       x-hubbo-max-body: 1024
       summary: Browse candidate devices of an integration
@@ -604,6 +697,10 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/DiscoverRequest'}
       responses:
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
         '200':
           description: Candidates
           content:
@@ -620,12 +717,15 @@ paths:
     post:
       tags: [admin]
       operationId: startIntegrationPairing
+      x-hubbo-not-implemented: true
       x-hubbo-role: admin
       summary: Open a pairing window (BLE HID)
       description: Advertises and accepts a new bond for `window_s` seconds; a new bond replaces the old one.
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
         '202':
           description: Pairing window open
           content:
@@ -638,11 +738,14 @@ paths:
     delete:
       tags: [admin]
       operationId: forgetIntegrationPairing
+      x-hubbo-not-implemented: true
       x-hubbo-role: admin
       summary: Forget the bonded host (BLE HID)
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
         '204': {description: Bond removed}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -663,6 +766,11 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/DeviceRegister'}
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/InternalError'}
         '201':
           description: Registered
           headers:
@@ -693,6 +801,11 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/DeviceUpdate'}
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/InternalError'}
         '200':
           description: Updated
           content:
@@ -713,6 +826,9 @@ paths:
         - $ref: '#/components/parameters/CsrfHeader'
         - $ref: '#/components/parameters/RevisionQuery'
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
         '204': {description: Removed}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -723,9 +839,12 @@ paths:
     get:
       tags: [admin]
       operationId: getRemotePairing
+      x-hubbo-not-implemented: true
       x-hubbo-role: admin
       summary: Remote pairing state
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
         '200':
           description: State
           content:
@@ -736,6 +855,7 @@ paths:
     post:
       tags: [admin]
       operationId: startRemotePairing
+      x-hubbo-not-implemented: true
       x-hubbo-role: admin
       summary: Scan for a Harmony Hub's radio address
       description: |
@@ -745,6 +865,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
         '202':
           description: Scanning
           content:
@@ -756,11 +878,14 @@ paths:
     delete:
       tags: [admin]
       operationId: cancelRemotePairing
+      x-hubbo-not-implemented: true
       x-hubbo-role: admin
       summary: Stop scanning (keeps the current pairing)
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
         '204': {description: Stopped}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -781,6 +906,11 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/PasswordChange'}
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/InternalError'}
         '204': {description: Changed}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -794,6 +924,7 @@ paths:
       x-hubbo-role: admin
       summary: API tokens (never the secret)
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
         '200':
           description: Tokens
           content:
@@ -815,6 +946,11 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/TokenCreate'}
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/InternalError'}
         '201':
           description: Created. Store `token` now; it cannot be read again.
           content:
@@ -839,6 +975,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '500': {$ref: '#/components/responses/InternalError'}
         '204': {description: Revoked}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -850,16 +988,48 @@ paths:
       operationId: downloadBackup
       x-hubbo-role: admin
       summary: Download a backup of non-secret configuration
-      description: Excludes the admin password, API tokens, integration secrets and BLE bonds.
+      description: |
+        Excludes the admin password, API tokens, integration secrets and BLE bonds.
+        `X-Hubbo-Backup` says what the download is:
+
+        * `config`: the running configuration as a `Backup` (`application/json`,
+          `hubbo-backup-<date>.json`).
+        * `blocked-raw`: while `/status` `config.state` is `blocked` nothing runs,
+          so there is no configuration to back up. Instead the download is the
+          saved config record's bytes exactly as stored, untouched
+          (`application/octet-stream`, `hubbo-backup-BLOCKED-<date>.json`). It's
+          a `hubbo-config` document, not a `Backup`, and may be from newer
+          firmware. Keep it before a factory reset: `POST /admin/restore` takes it
+          back once the firmware can read it.
+
+        While `config.state` is `storage_unavailable`: if the config loaded
+        (or was last saved) fine and the store failed later, the running config
+        is the last acknowledged save and is exported as usual. Only when the
+        load itself couldn't read the store is there nothing trustworthy to
+        export: `503 storage_unavailable`, never an empty backup.
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
         '200':
-          description: Backup archive
+          description: Backup archive, or the blocked config record (see `X-Hubbo-Backup`)
           headers:
             Content-Disposition:
               schema: {type: string}
+            X-Hubbo-Backup:
+              required: true
+              schema: {type: string, enum: [config, blocked-raw]}
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Backup'}
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '409':
+          description: |
+            `config_blocked`: the config is blocked and there is no intact saved
+            record to export (it's damaged, or was never saved).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
 
@@ -868,13 +1038,31 @@ paths:
       tags: [admin]
       operationId: restoreBackup
       x-hubbo-role: admin
-      x-hubbo-max-body: 262144
+      x-hubbo-max-body: 655360
       summary: Validate and atomically restore a backup
       description: |
         Validates and migrates the whole archive, then replaces devices,
         activities and non-secret integration settings in one commit. On any
-        error nothing changes. `dry_run=true` validates only. The active
-        activity is cleared. Secrets must be entered again afterwards.
+        error nothing changes. `dry_run=true` validates only. Secrets are not
+        in backups: `requires` lists what to re-enter or re-pair.
+
+        A restore never starts or stops an activity. The active activity stays
+        active if the restored config still has an activity with its id;
+        otherwise the hub becomes inactive without running any startup or
+        shutdown commands.
+
+        The body is a `Backup`, or a `blocked-raw` download from
+        `GET /admin/backup` (a `hubbo-config` record). A record is accepted only
+        if this firmware can read it (migrating older versions). One from newer
+        firmware, or one this firmware can't migrate, is refused with
+        `422 validation_failed` (detail `unsupported_schema` at
+        `/schema_version`); one that doesn't parse or compile with
+        `422 validation_failed` and its issues. Either way nothing changes.
+
+        Every restored object is stamped with the new config generation, so
+        revisions in the backup are ignored (missing or 0 is fine) and any
+        client holding an older revision gets 409. Restore works while the
+        config is `blocked`.
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
         - name: dry_run
@@ -885,8 +1073,12 @@ paths:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/Backup'}
+            schema: {$ref: '#/components/schemas/RestoreRequest'}
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
         '200':
           description: Restored (or would restore, for a dry run)
           content:
@@ -897,13 +1089,43 @@ paths:
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
 
+  /admin/reset:
+    post:
+      tags: [admin]
+      operationId: factoryReset
+      x-hubbo-role: admin
+      summary: Reset the configuration to factory defaults
+      description: |
+        Replaces devices, activities, global bindings and integration
+        settings with the defaults, stamped with a new generation (so every
+        client's old revisions get 409). Works while the config is `blocked`.
+        Credentials, tokens and pairings are kept. Like a restore it never
+        starts or stops an activity: the active activity stays active if the
+        defaults have an activity with its id, otherwise the hub becomes
+        inactive without running any startup or shutdown commands.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '200':
+          description: Reset
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConfigState'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
   /admin/firmware:
     get:
       tags: [admin]
       operationId: getFirmwareStatus
+      x-hubbo-not-implemented: true
       x-hubbo-role: admin
       summary: Firmware version and update state
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
         '200':
           description: Firmware status
           content:
@@ -916,6 +1138,7 @@ paths:
     post:
       tags: [admin]
       operationId: updateFirmware
+      x-hubbo-not-implemented: true
       x-hubbo-role: admin
       summary: Upload a signed firmware image
       description: |
@@ -940,6 +1163,10 @@ paths:
           application/octet-stream:
             schema: {type: string, contentEncoding: binary}
       responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
         '202':
           description: Verified; rebooting or ready to reboot
           content:
@@ -1020,7 +1247,7 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
     Conflict:
-      description: '`revision_conflict`, `device_in_use`, `limit_reached`, `busy`, `setup_already_done`'
+      description: '`revision_conflict`, `device_in_use`, `activity_in_use`, `config_blocked`, `limit_reached`, `busy`, `setup_already_done`, `setup_required`'
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
@@ -1034,6 +1261,21 @@ components:
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
+    UnsupportedMediaType:
+      description: Body is not `Content-Type application/json` (`unsupported_media_type`)
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    InternalError:
+      description: Could not save (`internal_error`); nothing changed
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    NotImplemented:
+      description: Not implemented on this firmware yet (`not_implemented`); nothing happened
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
     RateLimited:
       description: Too many attempts (`rate_limited`)
       headers:
@@ -1043,7 +1285,10 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
     Unavailable:
-      description: Integration not connected or not implemented (`integration_unavailable`, `not_implemented`)
+      description: |
+        Integration not connected, the engine is busy, the config store can't
+        be written, or stored credentials can't be read so nobody can be
+        authenticated (`integration_unavailable`, `busy`, `storage_unavailable`).
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
@@ -1116,6 +1361,8 @@ components:
         - validation_failed
         - unsupported_media_type
         - payload_too_large
+        - method_not_allowed
+        - host_not_allowed
         - unauthenticated
         - invalid_credentials
         - forbidden
@@ -1124,6 +1371,10 @@ components:
         - not_found
         - revision_conflict
         - device_in_use
+        - activity_in_use
+        - config_blocked
+        - storage_unavailable
+        - credentials_corrupt
         - limit_reached
         - busy
         - setup_required
@@ -1147,7 +1398,7 @@ components:
             `too_long`, `pattern`, `forbidden_param`, `referenced`, `id_mismatch`,
             `weak_password`).
           type: string
-          enum: [required, unknown_field, wrong_type, too_long, pattern, forbidden_param, referenced, id_mismatch, weak_password, invalid_id, invalid_name, invalid_command_id, duplicate_id, unknown_integration, unknown_device, device_required, device_not_allowed, integration_mismatch, unknown_command, unknown_param, duplicate_param, missing_param, invalid_param_type, param_out_of_range, invalid_enum_value, too_many_params, invalid_trigger, duplicate_trigger, unknown_activity, misplaced_transition, too_many_actions, too_many_activities, too_many_devices, capacity_exceeded]
+          enum: [required, unknown_field, wrong_type, too_long, pattern, forbidden_param, referenced, id_mismatch, weak_password, hold_not_allowed, unpaired_hold, integration_disabled, invalid_id, invalid_name, invalid_command_id, duplicate_id, unknown_integration, unknown_device, device_required, device_not_allowed, integration_mismatch, unknown_command, unknown_param, duplicate_param, missing_param, invalid_param_type, param_out_of_range, invalid_enum_value, too_many_params, invalid_trigger, duplicate_trigger, unknown_activity, misplaced_transition, too_many_actions, too_many_activities, too_many_devices, capacity_exceeded, unsupported_schema]
         message:
           type: string
           maxLength: 200
@@ -1179,6 +1430,41 @@ components:
               minimum: 1
 
     # ---------- status ----------
+    AuthState:
+      description: |
+        What the hub knows about its credentials. "Can't read" is never
+        "doesn't exist": only `fresh` (the store is readable and holds no
+        admin) allows `POST /auth/setup`.
+        `ok`: loaded. `unavailable`: the store can't be read; logins and
+        authenticated requests get `503 storage_unavailable` until it can.
+        `corrupt`: stored credentials are damaged; logins and setup get
+        `409 credentials_corrupt` (recovery needs physical access).
+      type: string
+      enum: [fresh, ok, unavailable, corrupt]
+    ConfigState:
+      description: |
+        Health of the saved configuration.
+        `ok`: loaded and running. `fresh`: nothing was saved yet, the defaults
+        are running. `blocked`: a saved config exists but can't be used
+        (`reason`, human-readable: from newer firmware, a failed migration,
+        not valid JSON, doesn't compile, or damaged: its slots exist but none
+        is intact); nothing is
+        active, every edit is refused with `409 config_blocked`, and only
+        `POST /admin/restore` or `POST /admin/reset` may write. A backup
+        while blocked is the saved record's raw bytes (`blocked-raw`), or
+        `409 config_blocked` when it's damaged.
+        `storage_unavailable`: the store can't be written; edits get
+        `503 storage_unavailable`.
+      type: object
+      additionalProperties: false
+      required: [state, generation]
+      properties:
+        state: {type: string, enum: [ok, fresh, blocked, storage_unavailable]}
+        reason: {type: string, maxLength: 120}
+        generation:
+          description: The saved config generation (0 when nothing is saved).
+          type: integer
+          minimum: 0
     AuthMode:
       description: '`simulator_no_auth` only ever appears on the native simulator; the UI shows AUTH DISABLED — SIMULATOR.'
       type: string
@@ -1189,7 +1475,7 @@ components:
     Status:
       type: object
       additionalProperties: false
-      required: [hubbo, uptime_s, auth_mode, active_activity_id, network, remote, integrations, diagnostics]
+      required: [hubbo, uptime_s, auth_mode, auth_state, config, active_activity_id, network, remote, integrations, diagnostics]
       properties:
         hubbo:
           type: object
@@ -1202,6 +1488,8 @@ components:
         uptime_s: {type: integer, minimum: 0}
         time: {$ref: '#/components/schemas/Timestamp'}
         auth_mode: {$ref: '#/components/schemas/AuthMode'}
+        auth_state: {$ref: '#/components/schemas/AuthState'}
+        config: {$ref: '#/components/schemas/ConfigState'}
         active_activity_id:
           $ref: '#/components/schemas/NullableActivityId'
         network:
@@ -1345,7 +1633,7 @@ components:
     Session:
       type: object
       additionalProperties: false
-      required: [authenticated, role, setup_required, auth_mode]
+      required: [authenticated, role, setup_required, auth_state, auth_mode]
       properties:
         authenticated: {type: boolean}
         role:
@@ -1359,7 +1647,14 @@ components:
         expires_in_s:
           type: integer
           minimum: 0
-        setup_required: {type: boolean}
+        setup_required:
+          description: True only when `auth_state` is `fresh`.
+          type: boolean
+        auth_state: {$ref: '#/components/schemas/AuthState'}
+        config_state:
+          description: '`ConfigState.state`, so the UI can warn before login.'
+          type: string
+          enum: [ok, fresh, blocked, storage_unavailable]
         auth_mode: {$ref: '#/components/schemas/AuthMode'}
     TokenCreate:
       type: object
@@ -1427,14 +1722,22 @@ components:
           description: Allowed values for `enum` (exact match).
           type: array
           maxItems: 128
-          items: {type: string, maxLength: 32}
+          items: {type: string, maxLength: 64}
         default: {type: [number, boolean, string]}
     Command:
       type: object
       additionalProperties: false
-      required: [command_id, label, params]
+      required: [command_id, label, effect, params]
       properties:
         command_id: {$ref: '#/components/schemas/CommandId'}
+        effect:
+          description: |
+            `momentary`: a one-shot command. `hold`: leaves something held
+            that must be released (e.g. `key_down`). Execute accepts only
+            `momentary` (a `hold` gets 422 `hold_not_allowed`); bindings may
+            use `hold` paired with its release (down/up).
+          type: string
+          enum: [momentary, hold]
         label: {type: string, maxLength: 48}
         description: {type: string, maxLength: 200}
         params:
@@ -1470,7 +1773,7 @@ components:
           - type: boolean
           - type: number
           - type: string
-            maxLength: 32
+            maxLength: 64
     Action:
       description: |
         `{integration_id, device_id, command_id, params}`. `device_id` must be a
@@ -1565,6 +1868,28 @@ components:
           items: {$ref: '#/components/schemas/Activity'}
         active_activity_id:
           $ref: '#/components/schemas/NullableActivityId'
+    BackupRevision:
+      description: |
+        Revision as found in a backup. Optional, and 0 is accepted: restore
+        stamps every object with the new config generation anyway.
+      type: integer
+      minimum: 0
+      maximum: 4294967295
+    BackupActivity:
+      allOf: [{$ref: '#/components/schemas/ActivityFields'}]
+      required: [id]
+      properties:
+        id: {$ref: '#/components/schemas/ActivityId'}
+        schema_version: {type: integer, const: 1}
+        revision: {$ref: '#/components/schemas/BackupRevision'}
+      unevaluatedProperties: false
+    BackupGlobalBindings:
+      type: object
+      additionalProperties: false
+      required: [bindings]
+      properties:
+        bindings: {$ref: '#/components/schemas/Bindings'}
+        revision: {$ref: '#/components/schemas/BackupRevision'}
     GlobalBindings:
       type: object
       additionalProperties: false
@@ -1583,10 +1908,14 @@ components:
           maxItems: 32
           items: {$ref: '#/components/schemas/ErrorDetail'}
     TransitionResult:
+      description: What an activate/off did, phase by phase.
       type: object
       additionalProperties: false
-      required: [active_activity_id, previous_activity_id, generation, queued_actions]
+      required: [switched, active_activity_id, previous_activity_id, generation, startup, shutdown]
       properties:
+        switched:
+          description: The active activity changed (or, for activate, was re-selected). Never retry when true.
+          type: boolean
         active_activity_id:
           $ref: '#/components/schemas/NullableActivityId'
         previous_activity_id:
@@ -1595,10 +1924,21 @@ components:
           description: Transition counter; delayed actions from older generations are dropped.
           type: integer
           minimum: 0
-        queued_actions:
-          description: Startup actions (activate) or shutdown actions (off) queued.
-          type: integer
-          minimum: 0
+        startup: {$ref: '#/components/schemas/PhaseResult'}
+        shutdown: {$ref: '#/components/schemas/PhaseResult'}
+    PhaseResult:
+      description: |
+        One sequence of a transition. `none`: the phase doesn't apply (activate
+        has no shutdown, off has no startup, off with nothing active).
+        `rejected`: the hub switched but this sequence did not run; `reason`
+        says why (e.g. `queue_full`).
+      type: object
+      additionalProperties: false
+      required: [status, queued_actions]
+      properties:
+        status: {type: string, enum: [queued, rejected, none]}
+        queued_actions: {type: integer, minimum: 0}
+        reason: {type: string, maxLength: 48}
 
     # ---------- devices ----------
     DeviceKind:
@@ -1639,24 +1979,35 @@ components:
         mapping:
           home_assistant: '#/components/schemas/HomeAssistantProvider'
           ble_hid: '#/components/schemas/BleHidProvider'
-    Device:
+    DeviceFields:
+      description: Shared by Device and StoredDevice (open; each closes it).
       type: object
-      additionalProperties: false
-      required: [id, name, integration_id, kind, provider, availability, schema_version, revision]
+      required: [id, name, integration_id, kind, provider, schema_version]
       properties:
         id: {$ref: '#/components/schemas/DeviceId'}
         name: {$ref: '#/components/schemas/Name'}
         integration_id: {$ref: '#/components/schemas/IntegrationId'}
         kind: {$ref: '#/components/schemas/DeviceKind'}
         provider: {$ref: '#/components/schemas/Provider'}
+        schema_version: {type: integer, const: 1}
+    StoredDevice:
+      description: A device as configured (backups); no runtime state.
+      allOf: [{$ref: '#/components/schemas/DeviceFields'}]
+      properties:
+        revision: {$ref: '#/components/schemas/BackupRevision'}
+      unevaluatedProperties: false
+    Device:
+      allOf: [{$ref: '#/components/schemas/DeviceFields'}]
+      required: [revision, availability]
+      properties:
+        revision: {$ref: '#/components/schemas/Revision'}
         availability:
           description: |
             `stale`: the provider no longer knows this target (HA entity removed
             or renamed, BLE bond gone). Commands fail until an admin re-links it.
           type: string
           enum: [available, unavailable, stale, unknown]
-        schema_version: {type: integer, const: 1}
-        revision: {$ref: '#/components/schemas/Revision'}
+      unevaluatedProperties: false
     DeviceList:
       type: object
       additionalProperties: false
@@ -1916,18 +2267,36 @@ components:
         devices:
           type: array
           maxItems: 64
-          items: {$ref: '#/components/schemas/Device'}
-        global_bindings: {$ref: '#/components/schemas/GlobalBindings'}
+          items: {$ref: '#/components/schemas/StoredDevice'}
+        global_bindings: {$ref: '#/components/schemas/BackupGlobalBindings'}
         activities:
           type: array
           maxItems: 16
-          items: {$ref: '#/components/schemas/Activity'}
+          items: {$ref: '#/components/schemas/BackupActivity'}
         excluded:
           description: What a restore will not bring back.
           type: array
           items:
             type: string
             enum: [admin_password, api_tokens, integration_secrets, ble_bonds]
+    RestoreRequest:
+      description: |
+        A `Backup`, or a saved config record as `GET /admin/backup` exports it
+        while the config is blocked (`X-Hubbo-Backup: blocked-raw`).
+      oneOf:
+        - {$ref: '#/components/schemas/Backup'}
+        - {$ref: '#/components/schemas/BlockedConfigRecord'}
+    BlockedConfigRecord:
+      description: |
+        The saved config record exactly as stored (`format: hubbo-config`).
+        Its layout belongs to the firmware that wrote it, so only the header is
+        described here; the hub checks the rest on restore.
+      type: object
+      required: [format, schema_version]
+      properties:
+        format: {const: hubbo-config}
+        schema_version: {type: integer, minimum: 0}
+        revision: {type: integer, minimum: 0}
     RestoreResult:
       type: object
       additionalProperties: false

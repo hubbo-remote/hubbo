@@ -91,6 +91,11 @@ curl -s -X POST -H "Authorization: Bearer $HUBBO_TOKEN" -H 'Content-Type: applic
 `200` comes back with `status` `accepted`, `failed` or `timeout`, all meaning it was sent. A
 `4xx` means nothing was sent: read `error.details`.
 
+Only `momentary` commands can be executed (each command's `effect` in capabilities says which).
+A `hold` command such as `key_down` would leave a key held with nothing to release it, so execute
+answers `422` with detail code `hold_not_allowed`: send `key_tap` instead. Holds belong in
+bindings, as a `down`/`up` pair (`up:down` → `key_down`, `up:up` → `key_up`).
+
 ## Activities
 
 An activity is a startup sequence, a shutdown sequence, and bindings from remote triggers to
@@ -154,8 +159,43 @@ curl -s -X POST -H "Authorization: Bearer $HUBBO_TOKEN" $HUBBO/activities/act_wa
 curl -s -X POST -H "Authorization: Bearer $HUBBO_TOKEN" $HUBBO/activities/off
 ```
 
-Both return `202` with the number of queued actions. They return immediately; the sequence runs
-in the background.
+Both return `200` once the engine has handled the request; the sequences run in the
+background. The body says what happened, phase by phase:
+
+```json
+{"switched": true, "active_activity_id": "act_watch_apple_tv", "previous_activity_id": null,
+ "generation": 7, "startup": {"status": "queued", "queued_actions": 5},
+ "shutdown": {"status": "none", "queued_actions": 0}}
+```
+
+- `switched: true` means the hub changed activity. **Never retry it**, even when
+  `startup.status` is `rejected` (the sequence queue was full, `reason: "queue_full"`): a retry
+  would run a second full transition. Send the missing commands individually if needed.
+- Off with nothing active is a no-op: `switched: false`, `shutdown.status: none`.
+- `503 busy` means the request never reached the engine; nothing changed and a retry is safe.
+
+## Configuration state
+
+`GET /status` has `config: {state, generation, reason}`:
+
+- `ok`: running the saved configuration. `fresh`: nothing saved yet (first boot), defaults
+  running.
+- `blocked`: the saved configuration can't be used (from newer firmware, a failed migration,
+  it doesn't compile, or every saved copy is damaged; `reason` says which). Nothing is active
+  and every edit gets `409 config_blocked`. Only an admin can fix it: `POST /admin/restore` with a backup, or
+  `POST /admin/reset` (factory defaults). Don't keep retrying edits. A backup taken while
+  blocked is the saved record's raw bytes, marked `X-Hubbo-Backup: blocked-raw`
+  (`application/octet-stream`, `hubbo-backup-BLOCKED-<date>.json`), not a `Backup` document.
+  Keep it before a reset; restore accepts it once the firmware can read it.
+- `storage_unavailable`: the store can't be written; edits get `503 storage_unavailable`.
+  `GET /admin/backup` still exports the running config if it loaded fine before the store
+  failed; it's 503 only when the hub booted without being able to read it.
+
+Every change bumps `generation`, and each object's `revision` is the generation of its last
+change. A restore or reset stamps everything with a new generation, so any revision you read
+before it gets `409 revision_conflict`: GET again. A restore or reset never runs startup or
+shutdown commands: the active activity stays active if its id still exists, otherwise nothing
+is active.
 
 ## Errors
 
@@ -174,6 +214,11 @@ in the background.
 | 409 | `device_in_use`, `limit_reached`, `busy` | Read the message; `busy` can be retried shortly. |
 | 413 | `payload_too_large` | Activity bodies max 32 KiB. |
 | 415 | `unsupported_media_type` | Send `Content-Type: application/json`. |
+| 409 | `activity_in_use` | Another binding activates it; remove that first (see `details`). |
+| 409 | `config_blocked` | The saved config can't be used; ask the admin to restore or reset. |
+| 503 | `storage_unavailable` | The hub can't save right now; nothing changed. |
+| 421 | `host_not_allowed` | Use the hub's own address in the URL. |
+| 501 | `not_implemented` | Not available yet. |
 | 422 | `validation_failed` | Read `details[].path` and `code`. |
 | 429 | `rate_limited` | Wait `Retry-After` seconds. |
 | 503 | `integration_unavailable` | HA or Bluetooth is down. Check `/integrations`. |
@@ -182,6 +227,64 @@ Detail codes include `unknown_device`, `integration_mismatch`, `unknown_command`
 `unknown_param`, `missing_param`, `invalid_param_type`, `param_out_of_range`,
 `invalid_enum_value`, `invalid_trigger`, `misplaced_transition` and `forbidden_param`. The full
 list is in `ErrorDetail` in the spec.
+
+## Walkthrough on the simulator (the Phase 2 gate)
+
+Create, edit, activate and turn off an activity with curl against hub-sim, then restart it and
+see the config survive. Start the simulator with a state directory (in another terminal):
+
+```sh
+bin/hubbo sim serve --port 8780 --data build/sim-state
+```
+
+No-auth mode needs no token:
+
+```sh
+H=http://127.0.0.1:8780/api/v1
+J='Content-Type: application/json'
+
+curl -s $H/devices | jq '.devices[].id'
+curl -s $H/devices/dev_denon/capabilities | jq '.commands[].command_id'
+
+# Validate, then create in one request.
+cat > /tmp/act.json <<'JSON'
+{"name": "Movie Night",
+ "startup": [{"integration_id": "ha_main", "device_id": "dev_lg_tv", "command_id": "media_player.turn_on", "params": {}},
+             {"integration_id": "system", "device_id": null, "command_id": "wait", "params": {"duration_ms": 1000}}],
+ "shutdown": [{"integration_id": "ha_main", "device_id": "dev_lg_tv", "command_id": "media_player.turn_off", "params": {}}],
+ "bindings": {"volume_up:down": [{"integration_id": "ha_main", "device_id": "dev_denon",
+                                  "command_id": "media_player.volume_up", "params": {}}]}}
+JSON
+curl -s -X POST -H "$J" -d @/tmp/act.json $H/activities/validate     # {"valid":true,"errors":[]}
+curl -s -X POST -H "$J" -d @/tmp/act.json $H/activities | tee /tmp/created.json | jq '{id, revision}'
+ID=$(jq -r .id /tmp/created.json)                                     # act_movie_night
+
+# Edit: GET, change, PUT with the revision you read.
+curl -s $H/activities/$ID | jq '.name = "Movie Night (late)"' > /tmp/edit.json
+curl -s -X PUT -H "$J" -d @/tmp/edit.json $H/activities/$ID | jq .revision     # 2
+curl -s -X PUT -H "$J" -d @/tmp/edit.json $H/activities/$ID | jq .error       # revision_conflict, current_revision 2
+
+# Activate, check, turn off.
+curl -s -X POST $H/activities/$ID/activate        # 200 {"switched":true,"active_activity_id":"act_movie_night",...}
+curl -s $H/status | jq .active_activity_id
+curl -s -X POST $H/activities/off                 # 200, shutdown.queued_actions = shutdown length
+```
+
+Stop hub-sim (Ctrl-C) and start it again with the same `--data`: `GET $H/activities/$ID`
+returns the edited activity at revision 2.
+
+With `--auth` the same calls need credentials. First run:
+
+```sh
+curl -s -X POST -H "$J" -d '{"username":"admin","password":"correct horse battery"}' $H/auth/setup
+# later: POST /auth/login with the same body. Both set the hubbo_session cookie and return csrf_token.
+curl -s -c /tmp/jar -X POST -H "$J" -d '{"username":"admin","password":"correct horse battery"}' \
+  $H/auth/login | jq -r .csrf_token > /tmp/csrf
+curl -s -b /tmp/jar -X POST -H "$J" -H "X-Hubbo-CSRF: $(cat /tmp/csrf)" -d '{"name":"agent"}' \
+  $H/admin/tokens | jq -r .token          # hbt_..., shown once
+```
+
+Then use `Authorization: Bearer hbt_...` as above.
 
 ## Troubleshooting
 
@@ -194,8 +297,12 @@ list is in `ErrorDetail` in the spec.
   retry volume steps blindly.
 - **Volume buttons step once per press.** Repeat-while-held isn't implemented yet.
 - **`/status` diagnostics** show recent errors and RF dispatch latency.
+- **`421 host_not_allowed`.** The `Host` header must be one of the hub's names (its IP, mDNS
+  name or hostname; `localhost`/`127.0.0.1` for hub-sim). This blocks DNS-rebinding attacks.
+- **`501 not_implemented`.** Firmware update, integration settings and discovery, and
+  remote/Bluetooth pairing aren't implemented yet. Nothing happened.
 
 ## Limits
 
 16 activities, 64 devices, 32 actions per sequence or binding, 4 params per action, names up to
-64 characters, enum strings up to 32, `wait` up to 60 s.
+64 characters, enum strings up to 64, `wait` up to 60 s.

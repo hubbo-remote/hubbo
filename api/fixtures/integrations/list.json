@@ -11,6 +11,7 @@
         {
           "command_id": "wait",
           "label": "Wait",
+          "effect": "momentary",
           "params": [
             {
               "name": "duration_ms",
@@ -18,31 +19,27 @@
               "required": true,
               "minimum": 0,
               "maximum": 60000,
-              "step": 1,
-              "unit": "ms",
-              "label": "Duration"
+              "step": 1
             }
-          ],
-          "description": "Pause the sequence. Does not block the remote."
+          ]
         },
         {
           "command_id": "activate",
           "label": "Switch activity",
+          "effect": "momentary",
           "params": [
             {
               "name": "activity_id",
               "type": "activity_ref",
-              "required": true,
-              "label": "Activity"
+              "required": true
             }
-          ],
-          "description": "Switch to another activity. Only as the last action of a binding."
+          ]
         },
         {
           "command_id": "off",
           "label": "Off",
-          "params": [],
-          "description": "Run the active activity's shutdown. Only as the last action of a binding."
+          "effect": "momentary",
+          "params": []
         }
       ]
     },

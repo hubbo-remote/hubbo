@@ -2,5 +2,7 @@
   "authenticated": false,
   "role": null,
   "setup_required": false,
+  "auth_state": "ok",
+  "config_state": "ok",
   "auth_mode": "enforced"
 }

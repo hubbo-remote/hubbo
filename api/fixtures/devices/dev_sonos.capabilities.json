@@ -5,73 +5,81 @@
     {
       "command_id": "media_player.volume_up",
       "label": "Volume up",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.volume_down",
       "label": "Volume down",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.volume_set",
       "label": "Set volume",
+      "effect": "momentary",
       "params": [
         {
           "name": "level",
           "type": "number",
           "required": true,
           "minimum": 0,
-          "maximum": 1,
-          "step": 0.01,
-          "label": "Level"
+          "maximum": 1
         }
       ]
     },
     {
       "command_id": "media_player.volume_mute",
       "label": "Mute",
+      "effect": "momentary",
       "params": [
         {
           "name": "muted",
           "type": "bool",
-          "required": true,
-          "label": "Muted"
+          "required": true
         }
       ]
     },
     {
       "command_id": "media_player.media_play_pause",
       "label": "Play/pause",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.media_play",
       "label": "Play",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.media_pause",
       "label": "Pause",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.media_stop",
       "label": "Stop",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.media_next_track",
       "label": "Next track",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.media_previous_track",
       "label": "Previous track",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.select_source",
       "label": "Select source",
+      "effect": "momentary",
       "params": [
         {
           "name": "source",
@@ -79,26 +87,26 @@
           "required": true,
           "options": [
             "TV"
-          ],
-          "label": "Source"
+          ]
         }
       ]
     },
     {
       "command_id": "media_player.shuffle_set",
       "label": "Shuffle",
+      "effect": "momentary",
       "params": [
         {
           "name": "shuffle",
           "type": "bool",
-          "required": true,
-          "label": "Shuffle"
+          "required": true
         }
       ]
     },
     {
       "command_id": "media_player.repeat_set",
       "label": "Repeat",
+      "effect": "momentary",
       "params": [
         {
           "name": "repeat",
@@ -108,8 +116,7 @@
             "off",
             "all",
             "one"
-          ],
-          "label": "Repeat"
+          ]
         }
       ]
     }

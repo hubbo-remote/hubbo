@@ -5,58 +5,67 @@
     {
       "command_id": "media_player.turn_on",
       "label": "Power on",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.turn_off",
       "label": "Power off",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.volume_up",
       "label": "Volume up",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.volume_down",
       "label": "Volume down",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.volume_mute",
       "label": "Mute",
+      "effect": "momentary",
       "params": [
         {
           "name": "muted",
           "type": "bool",
-          "required": true,
-          "label": "Muted"
+          "required": true
         }
       ]
     },
     {
       "command_id": "media_player.media_play_pause",
       "label": "Play/pause",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.media_play",
       "label": "Play",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.media_pause",
       "label": "Pause",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.media_next_track",
       "label": "Next track",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.media_previous_track",
       "label": "Previous track",
+      "effect": "momentary",
       "params": []
     }
   ]

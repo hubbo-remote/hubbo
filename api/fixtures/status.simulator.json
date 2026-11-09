@@ -7,6 +7,11 @@
   "uptime_s": 86400,
   "time": "2026-11-08T20:15:00Z",
   "auth_mode": "simulator_no_auth",
+  "auth_state": "ok",
+  "config": {
+    "state": "ok",
+    "generation": 42
+  },
   "active_activity_id": "act_watch_apple_tv",
   "network": {
     "link": "up",

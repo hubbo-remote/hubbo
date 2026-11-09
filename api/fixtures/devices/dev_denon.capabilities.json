@@ -5,53 +5,57 @@
     {
       "command_id": "media_player.turn_on",
       "label": "Power on",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.turn_off",
       "label": "Power off",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.volume_up",
       "label": "Volume up",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.volume_down",
       "label": "Volume down",
+      "effect": "momentary",
       "params": []
     },
     {
       "command_id": "media_player.volume_set",
       "label": "Set volume",
+      "effect": "momentary",
       "params": [
         {
           "name": "level",
           "type": "number",
           "required": true,
           "minimum": 0,
-          "maximum": 1,
-          "step": 0.01,
-          "label": "Level"
+          "maximum": 1
         }
       ]
     },
     {
       "command_id": "media_player.volume_mute",
       "label": "Mute",
+      "effect": "momentary",
       "params": [
         {
           "name": "muted",
           "type": "bool",
-          "required": true,
-          "label": "Muted"
+          "required": true
         }
       ]
     },
     {
       "command_id": "media_player.select_source",
       "label": "Select source",
+      "effect": "momentary",
       "params": [
         {
           "name": "source",
@@ -66,14 +70,14 @@
             "TV Audio",
             "Tuner",
             "Bluetooth"
-          ],
-          "label": "Source"
+          ]
         }
       ]
     },
     {
       "command_id": "media_player.select_sound_mode",
       "label": "Sound mode",
+      "effect": "momentary",
       "params": [
         {
           "name": "sound_mode",
@@ -86,8 +90,7 @@
             "AUTO",
             "STEREO",
             "DIRECT"
-          ],
-          "label": "Sound mode"
+          ]
         }
       ]
     }

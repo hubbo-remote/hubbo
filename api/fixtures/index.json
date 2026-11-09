@@ -7,6 +7,11 @@
       "kind": "200"
     },
     {
+      "file": "status.blocked.json",
+      "operation": "getStatus",
+      "kind": "200"
+    },
+    {
       "file": "status.simulator.json",
       "operation": "getStatus",
       "kind": "200"
@@ -43,6 +48,11 @@
     },
     {
       "file": "auth/session.setup_required.json",
+      "operation": "getSession",
+      "kind": "200"
+    },
+    {
+      "file": "auth/session.storage_unavailable.json",
       "operation": "getSession",
       "kind": "200"
     },
@@ -184,12 +194,17 @@
     {
       "file": "activities/activate.json",
       "operation": "activateActivity",
-      "kind": "202"
+      "kind": "200"
+    },
+    {
+      "file": "activities/activate.queue_full.json",
+      "operation": "activateActivity",
+      "kind": "200"
     },
     {
       "file": "activities/off.json",
       "operation": "activitiesOff",
-      "kind": "202"
+      "kind": "200"
     },
     {
       "file": "integrations/list.json",
@@ -267,14 +282,54 @@
       "kind": "200"
     },
     {
+      "file": "admin/backup.empty.json",
+      "operation": "downloadBackup",
+      "kind": "200"
+    },
+    {
       "file": "admin/restore.request.json",
       "operation": "restoreBackup",
       "kind": "request"
     },
     {
+      "file": "admin/restore.blocked-raw.request.json",
+      "operation": "restoreBackup",
+      "kind": "request"
+    },
+    {
+      "file": "errors/restore_unsupported_schema.json",
+      "operation": "restoreBackup",
+      "kind": "422"
+    },
+    {
+      "file": "errors/backup_storage_unavailable.json",
+      "operation": "downloadBackup",
+      "kind": "503"
+    },
+    {
+      "file": "errors/backup_blocked_damaged.json",
+      "operation": "downloadBackup",
+      "kind": "409"
+    },
+    {
       "file": "admin/restore.result.json",
       "operation": "restoreBackup",
       "kind": "200"
+    },
+    {
+      "file": "admin/reset.json",
+      "operation": "factoryReset",
+      "kind": "200"
+    },
+    {
+      "file": "errors/config_blocked.json",
+      "operation": "createActivity",
+      "kind": "409"
+    },
+    {
+      "file": "errors/hold_not_allowed.json",
+      "operation": "executeCommand",
+      "kind": "422"
     },
     {
       "file": "admin/firmware.json",

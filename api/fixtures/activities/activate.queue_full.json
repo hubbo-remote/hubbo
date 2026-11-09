@@ -1,0 +1,15 @@
+{
+  "switched": true,
+  "active_activity_id": "act_play_xbox",
+  "previous_activity_id": "act_watch_apple_tv",
+  "generation": 19,
+  "startup": {
+    "status": "rejected",
+    "queued_actions": 0,
+    "reason": "queue_full"
+  },
+  "shutdown": {
+    "status": "none",
+    "queued_actions": 0
+  }
+}

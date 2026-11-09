@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "This saved configuration is from newer firmware; update first",
+    "details": [
+      {
+        "path": "/schema_version",
+        "code": "unsupported_schema",
+        "message": "This saved configuration is from newer firmware; update first"
+      }
+    ]
+  }
+}

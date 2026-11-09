@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "config_blocked",
+    "message": "The saved configuration is damaged; no intact copy to back up"
+  }
+}

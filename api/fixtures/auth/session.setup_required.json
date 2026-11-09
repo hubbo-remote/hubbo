@@ -2,5 +2,6 @@
   "authenticated": false,
   "role": null,
   "setup_required": true,
+  "auth_state": "fresh",
   "auth_mode": "enforced"
 }

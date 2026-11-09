@@ -1,0 +1,8 @@
+{
+  "authenticated": false,
+  "role": null,
+  "setup_required": false,
+  "auth_state": "unavailable",
+  "config_state": "storage_unavailable",
+  "auth_mode": "enforced"
+}

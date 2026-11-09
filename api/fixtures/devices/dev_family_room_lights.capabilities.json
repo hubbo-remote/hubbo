@@ -5,6 +5,7 @@
     {
       "command_id": "light.turn_on",
       "label": "Turn on",
+      "effect": "momentary",
       "params": [
         {
           "name": "brightness",
@@ -12,8 +13,7 @@
           "required": false,
           "minimum": 0,
           "maximum": 255,
-          "step": 1,
-          "label": "Brightness"
+          "step": 1
         },
         {
           "name": "color_temp_kelvin",
@@ -21,41 +21,35 @@
           "required": false,
           "minimum": 2000,
           "maximum": 6535,
-          "step": 1,
-          "unit": "K",
-          "label": "Colour temperature"
+          "step": 1
         },
         {
           "name": "transition",
           "type": "number",
           "required": false,
           "minimum": 0,
-          "maximum": 300,
-          "step": 0.1,
-          "unit": "s",
-          "label": "Transition"
+          "maximum": 300
         }
       ]
     },
     {
       "command_id": "light.turn_off",
       "label": "Turn off",
+      "effect": "momentary",
       "params": [
         {
           "name": "transition",
           "type": "number",
           "required": false,
           "minimum": 0,
-          "maximum": 300,
-          "step": 0.1,
-          "unit": "s",
-          "label": "Transition"
+          "maximum": 300
         }
       ]
     },
     {
       "command_id": "light.brightness_step",
       "label": "Change brightness",
+      "effect": "momentary",
       "params": [
         {
           "name": "step",
@@ -63,21 +57,16 @@
           "required": true,
           "minimum": -255,
           "maximum": 255,
-          "step": 1,
-          "label": "Step"
+          "step": 1
         },
         {
           "name": "transition",
           "type": "number",
           "required": false,
           "minimum": 0,
-          "maximum": 300,
-          "step": 0.1,
-          "unit": "s",
-          "label": "Transition"
+          "maximum": 300
         }
-      ],
-      "description": "Relative brightness change; clamps at 0 and 255."
+      ]
     }
   ]
 }

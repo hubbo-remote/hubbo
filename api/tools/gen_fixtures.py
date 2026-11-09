@@ -8,7 +8,8 @@ tests read the JSON). Edit this file, not the JSON, then run `api/lint.sh gen`.
 HA entity data is realistic: supported_features values are the masks the real
 integrations set (home-assistant/core @ 5a20e53, see docs/ha-capabilities.md),
 and the capability lists are what core/src/ha/capabilities.cpp produces for
-them (core/tests/ha_capabilities_test.cpp checks the same inputs).
+them (core/tests/ha_capabilities_test.cpp checks the same inputs, and
+api/contract.sh checks every capability fixture equals what hub-sim serves).
 """
 import copy
 import json
@@ -19,65 +20,54 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures")
 
 # ---------------------------------------------------------------- commands
 
-def p_enum(name, options, label=None, required=True):
-    d = {"name": name, "type": "enum", "required": required, "options": options}
-    if label:
-        d["label"] = label
-    return d
+# These build exactly what the hub serves (core ParamSpec/CommandSpec):
+# no param labels, units or command descriptions; int params have step 1.
+def p_enum(name, options, required=True):
+    return {"name": name, "type": "enum", "required": required, "options": options}
 
 
-def p_num(name, typ, lo, hi, step=None, unit=None, label=None, required=True):
+def p_num(name, typ, lo, hi, required=True):
     d = {"name": name, "type": typ, "required": required, "minimum": lo, "maximum": hi}
-    if step is not None:
-        d["step"] = step
-    if unit:
-        d["unit"] = unit
-    if label:
-        d["label"] = label
+    if typ == "int":
+        d["step"] = 1
     return d
 
 
-def p_bool(name, label=None, required=True):
-    d = {"name": name, "type": "bool", "required": required}
-    if label:
-        d["label"] = label
-    return d
+def p_bool(name, required=True):
+    return {"name": name, "type": "bool", "required": required}
 
 
-def cmd(command_id, label, params=(), description=None):
-    d = {"command_id": command_id, "label": label, "params": list(params)}
-    if description:
-        d["description"] = description
-    return d
+def cmd(command_id, label, params=(), effect="momentary"):
+    """effect: "momentary", or "hold" for commands that leave state held (key_down)."""
+    return {"command_id": command_id, "label": label, "effect": effect, "params": list(params)}
 
 
-# BLE HID keys offered for the Apple TV. Names are provisional (the BLE adapter
-# owns the final list); usages come from Harmonizer's verified key map.
+# BLE HID keys offered for the Apple TV: the core BLE adapter's key catalog
+# (core/src/integrations/ble_hid.cpp), as hub-sim serves it.
 HID_KEYS = [
-    "ARROW_UP", "ARROW_DOWN", "ARROW_LEFT", "ARROW_RIGHT", "SELECT", "MENU",
-    "AC_HOME", "PLAY_PAUSE", "SCAN_NEXT", "SCAN_PREVIOUS", "VOLUME_UP",
-    "VOLUME_DOWN", "MUTE", "RECORD", "PAGE_UP", "PAGE_DOWN", "ENTER",
-    "KEY_0", "KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5", "KEY_6", "KEY_7",
-    "KEY_8", "KEY_9", "KEY_I", "F1", "F2", "F3", "F4",
+    "ARROW_UP", "ARROW_DOWN", "ARROW_LEFT", "ARROW_RIGHT", "SELECT", "MENU", "AC_HOME",
+    "PLAY_PAUSE", "SCAN_NEXT", "SCAN_PREVIOUS", "RECORD", "VOLUME_UP", "VOLUME_DOWN", "MUTE",
+    "KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5", "KEY_6", "KEY_7", "KEY_8", "KEY_9", "KEY_0",
+    "ENTER", "F1", "F2", "F3", "F4", "PAGE_UP", "PAGE_DOWN", "KEY_A", "KEY_B", "KEY_C", "KEY_D",
+    "KEY_E", "KEY_F", "KEY_G", "KEY_H", "KEY_I", "KEY_J", "KEY_K", "KEY_L", "KEY_M", "KEY_N",
+    "KEY_O", "KEY_P", "KEY_Q", "KEY_R", "KEY_S", "KEY_T", "KEY_U", "KEY_V", "KEY_W", "KEY_X",
+    "KEY_Y", "KEY_Z",
 ]
 
 
 def ble_commands():
-    key = lambda: p_enum("key", HID_KEYS, "Key")
+    key = lambda: p_enum("key", HID_KEYS)
     return [
-        cmd("key_down", "Key down", [key()], "Press and hold a key until key_up."),
-        cmd("key_up", "Key up", [key()], "Release a key."),
-        cmd("key_tap", "Key tap", [key()], "Press and release a key."),
+        cmd("key_down", "Key down", [key()], effect="hold"),
+        cmd("key_up", "Key up", [key()]),
+        cmd("key_tap", "Key tap", [key()]),
     ]
 
 
 SYSTEM_COMMANDS = [
-    cmd("wait", "Wait", [p_num("duration_ms", "int", 0, 60000, 1, "ms", "Duration")],
-        "Pause the sequence. Does not block the remote."),
-    cmd("activate", "Switch activity",
-        [{"name": "activity_id", "type": "activity_ref", "required": True, "label": "Activity"}],
-        "Switch to another activity. Only as the last action of a binding."),
-    cmd("off", "Off", [], "Run the active activity's shutdown. Only as the last action of a binding."),
+    cmd("wait", "Wait", [p_num("duration_ms", "int", 0, 60000)]),
+    cmd("activate", "Switch activity", [{"name": "activity_id", "type": "activity_ref", "required": True}]),
+    cmd("off", "Off"),
 ]
 
 # Mirrors core/src/ha/capabilities.cpp. Order matters (it is the output order).
@@ -102,10 +92,10 @@ def media_player_commands(features, attrs):
         out.append(cmd("media_player.volume_down", "Volume down"))
     if has("VOLUME_SET"):
         out.append(cmd("media_player.volume_set", "Set volume",
-                       [p_num("level", "number", 0, 1, 0.01, None, "Level")]))
+                       [p_num("level", "number", 0, 1)]))
     if has("VOLUME_MUTE"):
         out.append(cmd("media_player.volume_mute", "Mute",
-                       [p_bool("muted", "Muted")]))
+                       [p_bool("muted")]))
     if has("PLAY") and has("PAUSE"):
         out.append(cmd("media_player.media_play_pause", "Play/pause"))
     if has("PLAY"):
@@ -120,15 +110,15 @@ def media_player_commands(features, attrs):
         out.append(cmd("media_player.media_previous_track", "Previous track"))
     if has("SELECT_SOURCE") and attrs.get("source_list"):
         out.append(cmd("media_player.select_source", "Select source",
-                       [p_enum("source", attrs["source_list"], "Source")]))
+                       [p_enum("source", attrs["source_list"])]))
     if has("SELECT_SOUND_MODE") and attrs.get("sound_mode_list"):
         out.append(cmd("media_player.select_sound_mode", "Sound mode",
-                       [p_enum("sound_mode", attrs["sound_mode_list"], "Sound mode")]))
+                       [p_enum("sound_mode", attrs["sound_mode_list"])]))
     if has("SHUFFLE_SET"):
-        out.append(cmd("media_player.shuffle_set", "Shuffle", [p_bool("shuffle", "Shuffle")]))
+        out.append(cmd("media_player.shuffle_set", "Shuffle", [p_bool("shuffle")]))
     if has("REPEAT_SET"):
         out.append(cmd("media_player.repeat_set", "Repeat",
-                       [p_enum("repeat", ["off", "all", "one"], "Repeat")]))
+                       [p_enum("repeat", ["off", "all", "one"])]))
     return out
 
 
@@ -138,27 +128,25 @@ def light_commands(features, attrs):
     brightness = bool(modes & {"brightness", "color_temp", "hs", "xy", "rgb", "rgbw", "rgbww", "white"})
     color_temp = "color_temp" in modes
     transition = features & LIGHT_TRANSITION == LIGHT_TRANSITION
-    tr = lambda: p_num("transition", "number", 0, 300, 0.1, "s", "Transition", required=False)
+    tr = lambda: p_num("transition", "number", 0, 300, required=False)
     on = []
     if brightness:
-        on.append(p_num("brightness", "int", 0, 255, 1, None, "Brightness", required=False))
+        on.append(p_num("brightness", "int", 0, 255, required=False))
     if color_temp:
         lo = attrs.get("min_color_temp_kelvin", 0)
         hi = attrs.get("max_color_temp_kelvin", 0)
         if lo <= 0 or hi <= 0 or lo > hi:  # HA's defaults, as in capabilities.cpp
             lo, hi = 2000, 6535
-        on.append(p_num("color_temp_kelvin", "int", lo, hi, 1, "K",
-                        "Colour temperature", required=False))
+        on.append(p_num("color_temp_kelvin", "int", lo, hi, required=False))
     if transition:
         on.append(tr())
     out = [cmd("light.turn_on", "Turn on", on)]
     out.append(cmd("light.turn_off", "Turn off", [tr()] if transition else []))
     if brightness:
-        step = [p_num("step", "int", -255, 255, 1, None, "Step")]
+        step = [p_num("step", "int", -255, 255)]
         if transition:
             step.append(tr())
-        out.append(cmd("light.brightness_step", "Change brightness", step,
-                       "Relative brightness change; clamps at 0 and 255."))
+        out.append(cmd("light.brightness_step", "Change brightness", step))
     return out
 
 
@@ -384,6 +372,7 @@ INTEGRATIONS = [
 STATUS = {
     "hubbo": {"version": "0.1.0", "build": "0.1.0+g1a2b3c4", "board": "waveshare_esp32_s3_eth"},
     "uptime_s": 86400, "time": "2026-11-08T20:15:00Z", "auth_mode": "enforced",
+    "auth_state": "ok", "config": {"state": "ok", "generation": 42},
     "active_activity_id": "act_watch_apple_tv",
     "network": {"link": "up", "ip": "192.0.2.56", "hostname": "hubbo-d4afab"},
     "remote": REMOTE_STATUS,
@@ -417,6 +406,10 @@ def fx(name, op, kind, content):
 
 
 fx("status.json", "getStatus", "200", STATUS)
+fx("status.blocked.json", "getStatus", "200",
+   dict(copy.deepcopy(STATUS), active_activity_id=None,
+        config={"state": "blocked", "generation": 57,
+                "reason": "config.json schema_version 2 is newer than this firmware (1)"}))
 fx("status.simulator.json", "getStatus", "200",
    dict(copy.deepcopy(STATUS), auth_mode="simulator_no_auth",
         hubbo={"version": "0.1.0", "build": "sim", "board": "hub-sim"}))
@@ -430,16 +423,19 @@ fx("auth/setup.request.json", "setupAdmin", "request", {"username": "admin", "pa
 fx("auth/session.admin.json", "getSession", "200", {
     "authenticated": True, "role": "admin", "username": "admin",
     "csrf_token": "rT5vX8yB2nM4kL7pQ1wE9sD3fG6hJ0aZ_cV-uI8oP2Y", "expires_in_s": 28800,
-    "setup_required": False, "auth_mode": "enforced"})
+    "setup_required": False, "auth_state": "ok", "config_state": "ok", "auth_mode": "enforced"})
 fx("auth/session.anonymous.json", "getSession", "200", {
-    "authenticated": False, "role": None, "setup_required": False, "auth_mode": "enforced"})
+    "authenticated": False, "role": None, "setup_required": False, "auth_state": "ok", "config_state": "ok", "auth_mode": "enforced"})
 fx("auth/session.setup_required.json", "getSession", "200", {
-    "authenticated": False, "role": None, "setup_required": True, "auth_mode": "enforced"})
+    "authenticated": False, "role": None, "setup_required": True, "auth_state": "fresh", "auth_mode": "enforced"})
+fx("auth/session.storage_unavailable.json", "getSession", "200", {
+    "authenticated": False, "role": None, "setup_required": False, "auth_state": "unavailable",
+    "config_state": "storage_unavailable", "auth_mode": "enforced"})
 fx("auth/session.token.json", "getSession", "200", {
-    "authenticated": True, "role": "token", "setup_required": False, "auth_mode": "enforced"})
+    "authenticated": True, "role": "token", "setup_required": False, "auth_state": "ok", "config_state": "ok", "auth_mode": "enforced"})
 fx("auth/session.simulator.json", "getSession", "200", {
     "authenticated": True, "role": "admin", "username": "simulator",
-    "setup_required": False, "auth_mode": "simulator_no_auth"})
+    "setup_required": False, "auth_state": "ok", "config_state": "ok", "auth_mode": "simulator_no_auth"})
 
 fx("devices/list.json", "listDevices", "200", {"devices": DEVICES})
 for d in DEVICES:
@@ -474,12 +470,19 @@ fx("activities/validate.invalid.json", "validateActivity", "200", {"valid": Fals
     {"path": "/bindings/play:tap/0/integration_id", "code": "integration_mismatch",
      "message": "dev_apple_tv belongs to integration ble, not ha_main"},
 ]})
-fx("activities/activate.json", "activateActivity", "202", {
-    "active_activity_id": "act_play_xbox", "previous_activity_id": "act_watch_apple_tv",
-    "generation": 17, "queued_actions": len(PLAY_XBOX["startup"])})
-fx("activities/off.json", "activitiesOff", "202", {
-    "active_activity_id": None, "previous_activity_id": "act_watch_apple_tv",
-    "generation": 18, "queued_actions": len(WATCH["shutdown"])})
+NO_PHASE = {"status": "none", "queued_actions": 0}
+fx("activities/activate.json", "activateActivity", "200", {
+    "switched": True, "active_activity_id": "act_play_xbox", "previous_activity_id": "act_watch_apple_tv",
+    "generation": 17, "startup": {"status": "queued", "queued_actions": len(PLAY_XBOX["startup"])},
+    "shutdown": NO_PHASE})
+fx("activities/activate.queue_full.json", "activateActivity", "200", {
+    "switched": True, "active_activity_id": "act_play_xbox", "previous_activity_id": "act_watch_apple_tv",
+    "generation": 19, "startup": {"status": "rejected", "queued_actions": 0, "reason": "queue_full"},
+    "shutdown": NO_PHASE})
+fx("activities/off.json", "activitiesOff", "200", {
+    "switched": True, "active_activity_id": None, "previous_activity_id": "act_watch_apple_tv",
+    "generation": 18, "startup": NO_PHASE,
+    "shutdown": {"status": "queued", "queued_actions": len(WATCH["shutdown"])}})
 
 fx("integrations/list.json", "listIntegrations", "200", {"integrations": INTEGRATIONS})
 fx("integrations/ha_main.config.json", "getIntegrationConfig", "200", {
@@ -544,14 +547,44 @@ BACKUP = {
         {"id": "ha_main", "type": "home_assistant", "name": "Home Assistant", "enabled": True,
          "settings": {"url": "https://homeassistant.local:8123", "verify_tls": True, "ca_cert_pem": None}},
     ],
-    "devices": DEVICES, "global_bindings": GLOBAL_BINDINGS, "activities": ACTIVITIES,
+    "devices": [{k: x for k, x in d.items() if k != "availability"} for d in DEVICES],
+    "global_bindings": GLOBAL_BINDINGS, "activities": ACTIVITIES,
     "excluded": ["admin_password", "api_tokens", "integration_secrets", "ble_bonds"],
 }
 fx("admin/backup.json", "downloadBackup", "200", BACKUP)
+# A board's first boot: nothing configured. hub-sim --seed uses it, and the
+# contract run's persistence check starts from it.
+fx("admin/backup.empty.json", "downloadBackup", "200", {
+    "format": "hubbo-backup", "format_version": 1, "created_at": None,
+    "firmware_version": "0.1.0", "board": "waveshare_esp32_s3_eth",
+    "integrations": [], "devices": [], "global_bindings": {"bindings": {}, "revision": 1},
+    "activities": [], "excluded": ["admin_password", "api_tokens", "integration_secrets", "ble_bonds"],
+})
 fx("admin/restore.request.json", "restoreBackup", "request", BACKUP)
+# While the config is blocked, GET /admin/backup exports the saved record's
+# raw bytes (X-Hubbo-Backup: blocked-raw); restore takes such a record back
+# if this firmware can read it.
+fx("admin/restore.blocked-raw.request.json", "restoreBackup", "request", {
+    "format": "hubbo-config", "schema_version": 2, "revision": 41,
+    "integrations": [], "devices": [], "global_bindings": {"bindings": {}, "revision": 1}, "activities": []})
+fx("errors/restore_unsupported_schema.json", "restoreBackup", "422", err(
+    "validation_failed", "This saved configuration is from newer firmware; update first", [
+        ("/schema_version", "unsupported_schema", "This saved configuration is from newer firmware; update first"),
+    ]))
+fx("errors/backup_storage_unavailable.json", "downloadBackup", "503",
+   err("storage_unavailable", "The configuration store can't be read right now; try again later"))
+fx("errors/backup_blocked_damaged.json", "downloadBackup", "409",
+   err("config_blocked", "The saved configuration is damaged; no intact copy to back up"))
 fx("admin/restore.result.json", "restoreBackup", "200", {
     "dry_run": False, "devices": len(DEVICES), "activities": len(ACTIVITIES), "integrations": 3,
     "migrated_from": None, "requires": ["home_assistant_token", "ble_pairing", "api_tokens"], "warnings": []})
+fx("admin/reset.json", "factoryReset", "200", {"state": "ok", "generation": 58})
+fx("errors/config_blocked.json", "createActivity", "409",
+   err("config_blocked", "The saved configuration can't be used; restore a backup or reset"))
+fx("errors/hold_not_allowed.json", "executeCommand", "422", err(
+    "validation_failed", "key_down holds a key; use key_tap", [
+        ("/command_id", "hold_not_allowed", "key_down/key_up are for bindings; execute key_tap instead"),
+    ]))
 fx("admin/firmware.json", "getFirmwareStatus", "200", {
     "version": "0.1.0", "board": "waveshare_esp32_s3_eth", "running_partition": "app0",
     "update_state": "idle", "rollback_available": True})

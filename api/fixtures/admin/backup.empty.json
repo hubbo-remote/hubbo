@@ -1,0 +1,20 @@
+{
+  "format": "hubbo-backup",
+  "format_version": 1,
+  "created_at": null,
+  "firmware_version": "0.1.0",
+  "board": "waveshare_esp32_s3_eth",
+  "integrations": [],
+  "devices": [],
+  "global_bindings": {
+    "bindings": {},
+    "revision": 1
+  },
+  "activities": [],
+  "excluded": [
+    "admin_password",
+    "api_tokens",
+    "integration_secrets",
+    "ble_bonds"
+  ]
+}

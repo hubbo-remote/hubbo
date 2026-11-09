@@ -95,26 +95,70 @@ def check_roles(spec):
     return ops
 
 
+DEFAULT_MAX_BODY = 16384  # the spec's default for a JSON body without x-hubbo-max-body
+
+
+def max_body(op):
+    body = op.get("requestBody", {}).get("content", {})
+    return op.get("x-hubbo-max-body", DEFAULT_MAX_BODY) if "application/json" in body else 0
+
+
+def cpp_constant(name, sources):
+    """Value of `constexpr ... name = <integer arithmetic over other constants>;` in `sources`."""
+    for text in sources:
+        m = re.search(r'constexpr\s+[\w:]+\s+' + name + r'\s*=\s*([^;]+);', text)
+        if m:
+            expr = re.sub(r'(?:\w+::)*(k\w+)', lambda k: str(cpp_constant(k.group(1), sources)), m.group(1))
+            if not re.fullmatch(r'[\d\s+*()]+', expr):
+                fail(f"can't evaluate {name} = {m.group(1)}")
+                return -1
+            return int(eval(expr, {"__builtins__": {}}))  # digits, +, * and parentheses only
+    fail(f"constant {name} not found")
+    return -1
+
+
+def policy_limit(limit, policy_source):
+    """A policy row's max body: a literal or a constant (policy.cpp, config/json.h)."""
+    if limit.isdigit():
+        return int(limit)
+    json_h = read(os.path.join(CORE_SRC, "..", "include", "hubbo", "config", "json.h"))
+    return cpp_constant(limit, [policy_source, json_h])
+
+
 def check_policy_table(ops):
+    source = read(os.path.join(CORE_SRC, "auth", "policy.cpp"))
     rows = re.findall(
         r'\{\s*Operation::\w+\s*,\s*"(\w+)"\s*,\s*Method::(\w+)\s*,\s*Requirement::(\w+)\s*,'
-        r'\s*Csrf::(\w+)\s*\}', read(os.path.join(CORE_SRC, "auth", "policy.cpp")))
-    table = {op_id: (method.lower(), req, csrf) for op_id, method, req, csrf in rows}
+        r'\s*Csrf::(\w+)\s*,\s*(\w+)\s*\}', source)
+    table = {op_id: (method.lower(), req, csrf, policy_limit(limit, source))
+             for op_id, method, req, csrf, limit in rows}
     req_to_role = {"Public": "public", "SetupOnly": "setup", "TokenOrAdmin": "token", "AdminOnly": "admin"}
     for op_id, op in ops.items():
         if op_id not in table:
             fail(f"policy.cpp: no entry for {op_id}")
             continue
-        method, req, csrf = table[op_id]
+        method, req, csrf, limit = table[op_id]
         if req_to_role.get(req) != op["x-hubbo-role"]:
             fail(f"policy.cpp: {op_id} is {req}, spec says {op['x-hubbo-role']}")
         if method != op["_method"]:
             fail(f"policy.cpp: {op_id} method {method}, spec says {op['_method']}")
         if (csrf == "Exempt") != bool(op.get("x-hubbo-csrf-exempt")):
             fail(f"policy.cpp: {op_id} Csrf::{csrf} disagrees with x-hubbo-csrf-exempt")
+        if limit != max_body(op):
+            fail(f"policy.cpp: {op_id} max body {limit}, spec says {max_body(op)}")
     for op_id in table:
         if op_id not in ops:
             fail(f"policy.cpp: {op_id} is not an operation in the spec")
+
+
+def check_not_implemented(ops):
+    """The 501 table in core/src/api/api.cpp is exactly the spec's x-hubbo-not-implemented set."""
+    text = read(os.path.join(CORE_SRC, "api", "api.cpp"))
+    table = text[text.index("kPending[]"):]
+    pending = set(re.findall(r'auth::Operation::(\w+)', table[:table.index("};")]))
+    marked = {op_id[0].upper() + op_id[1:] for op_id, op in ops.items() if op.get("x-hubbo-not-implemented")}
+    if pending != marked:
+        fail(f"api.cpp 501 table {sorted(pending)} != spec x-hubbo-not-implemented {sorted(marked)}")
 
 
 def check_core_names(spec):
@@ -173,35 +217,51 @@ def find_secrets(value, path=""):
             yield from find_secrets(v, f"{path}/{i}")
 
 
-def validate_fixtures(spec, ops, index):
+class SpecValidator:
+    """Validates bodies against an operation's request/response schema."""
+
+    def __init__(self, spec):
+        self.spec = spec
+        self.ops = {op["operationId"]: op for _, _, op in operations(spec)}
+        self.registry = Registry().with_resource(SPEC_URI, DRAFT202012.create_resource(spec))
+        self.validators = {}
+
+    def errors(self, op_id, kind, data):
+        """Schema problems for `data` as op_id's request ("request") or a response status ("200")."""
+        op = self.ops.get(op_id)
+        if op is None:
+            return [f"unknown operation {op_id}"]
+        try:
+            ref = schema_ref(self.spec, op, kind)
+        except KeyError:
+            return [f"{op_id} declares no JSON body for {kind}"]
+        return self.ref_errors(ref, data)
+
+    def ref_errors(self, ref, data):
+        """Schema problems for `data` against a `#/components/...` reference."""
+        if ref not in self.validators:
+            self.validators[ref] = Draft202012Validator(
+                {"$ref": SPEC_URI + ref}, registry=self.registry,
+                format_checker=Draft202012Validator.FORMAT_CHECKER)
+        problems = sorted(self.validators[ref].iter_errors(data), key=lambda e: list(e.absolute_path))
+        return [f"/{'/'.join(map(str, p.absolute_path))}: {p.message}" for p in problems]
+
+
+def validate_fixtures(spec, index):
     """Schema-checks every fixture. Returns [(entry, data)]."""
-    registry = Registry().with_resource(SPEC_URI, DRAFT202012.create_resource(spec))
-    validators = {}
+    checker = SpecValidator(spec)
     loaded = []
     for entry in index:
         name, op_id, kind = entry["file"], entry["operation"], entry["kind"]
         data = json.loads(read(os.path.join(FIXTURES, name)))
         loaded.append((entry, data))
-        op = ops.get(op_id)
-        if op is None:
-            fail(f"{name}: unknown operation {op_id}")
-            continue
-        try:
-            ref = schema_ref(spec, op, kind)
-        except KeyError:
-            fail(f"{name}: {op_id} has no JSON schema $ref for {kind}")
-            continue
-        if ref not in validators:
-            validators[ref] = Draft202012Validator(
-                {"$ref": SPEC_URI + ref}, registry=registry,
-                format_checker=Draft202012Validator.FORMAT_CHECKER)
-        problems = sorted(validators[ref].iter_errors(data), key=lambda e: list(e.absolute_path))
+        problems = checker.errors(op_id, "request" if kind.startswith("request") else kind, data)
         if kind == "request-invalid":
             if not problems:
                 fail(f"{name}: malicious request unexpectedly passes the {op_id} schema")
             continue
         for p in problems[:5]:
-            fail(f"{name}: /{'/'.join(map(str, p.absolute_path))}: {p.message}")
+            fail(f"{name}: {p}")
         if not kind.startswith("request"):
             for path in find_secrets(data):
                 fail(f"{name}: response contains secret field {path}")
@@ -303,11 +363,12 @@ def main():
         fail(f"openapi.yaml is not valid OpenAPI 3.1: {e}")
     ops = check_roles(spec)
     check_policy_table(ops)
+    check_not_implemented(ops)
     check_core_names(spec)
     check_secret_props(spec, spec["components"])
 
     index = json.loads(read(os.path.join(FIXTURES, "index.json")))["fixtures"]
-    loaded = validate_fixtures(spec, ops, index)
+    loaded = validate_fixtures(spec, index)
     refs = CrossRefs({entry["file"]: data for entry, data in loaded})
     for entry, data in loaded:
         for act in activities_in(entry, data):
