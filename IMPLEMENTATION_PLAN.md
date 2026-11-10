@@ -177,6 +177,8 @@ Version 0.1 • 2026-11-04
 **Acceptance:** UI served locally from board, no CDN/internet dependency, remote latency unaffected.
 
 ## Phase 5 — Security and appliance management
+**As built:** sized for one home on a trusted LAN (user decisions, 2026-11-09). No HTTPS, secure boot, flash encryption or rollback; the CSRF token and rate limits were removed. See `docs/design/phase5-appliance.md`.
+
 **Important:** Security boundaries and protected API architecture are implemented from Phase 2 onward; this phase completes production hardening. Never ship Phase 2/3 API exposed on an untrusted network without auth.
 
 **5.1 Authentication**
@@ -211,8 +213,8 @@ Version 0.1 • 2026-11-04
 **6.4 Docs:** installation, wiring, first-run, pairing, API/OpenAPI, LLM agent instructions, troubleshooting, backup/OTA recovery, security threat model and explicit MVP limitations.
 **Gate:** new user can flash from browser, configure devices, create an activity, use remote, OTA update, backup/restore, and reproduce tests.
 
-## Polish pass (near the end of the project)
-Visual polish and a redesign were deferred in Phase 4 (user decision, 2026-11-09). Collected from
+## Polish pass (before Phase 6)
+Round 1 (copy and navigation) is `docs/design/polish-ux.md`. Phase 6 comes after the polish pass (user decision, 2026-11-10). Visual polish and a redesign were deferred in Phase 4 (user decision, 2026-11-09). Collected from
 the Phase 4 board gate, where the user set up a wiped board on an iPhone:
 - **Clarity over correctness:** the setup flow worked but felt "a little wonky". Review every screen
   for clear state and feedback: what's saved, what's happening now, what to do next.
