@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "hubbo/api/authenticator.h"
+#include "hubbo/api/ble_pairing_port.h"
 #include "hubbo/api/remote_port.h"
 #include "hubbo/auth/credentials.h"
 #include "hubbo/auth/rate_limit.h"
@@ -135,6 +136,11 @@ struct ApiContext {
     // Internal (Api sets it): the latest HA discovery, shared by the
     // discover and register routes.
     std::shared_ptr<struct DiscoveryCache> discovery;
+
+    // BLE HID pairing for the ble_hid integration (POST/GET/DELETE
+    // /admin/integrations/{id}/pair); null answers 503. Last, so positional
+    // initializers that stop at `discovery` still compile.
+    BlePairingPort *blePairing = nullptr;
 };
 
 // SecretStore key of the "ha_main" access token. Never in config, backups,

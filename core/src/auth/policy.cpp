@@ -51,6 +51,7 @@ constexpr OperationInfo kOperations[] = {
     {Operation::RequestEntityDetails, "requestEntityDetails", Method::Post, Requirement::AdminOnly, Csrf::Check, 0},
     {Operation::GetEntityDetails, "getEntityDetails", Method::Get, Requirement::AdminOnly, Csrf::Check, 0},
     {Operation::StartIntegrationPairing, "startIntegrationPairing", Method::Post, Requirement::AdminOnly, Csrf::Check, 0},
+    {Operation::GetIntegrationPairing, "getIntegrationPairing", Method::Get, Requirement::AdminOnly, Csrf::Check, 0},
     {Operation::ForgetIntegrationPairing, "forgetIntegrationPairing", Method::Delete, Requirement::AdminOnly, Csrf::Check, 0},
     {Operation::RegisterDevice, "registerDevice", Method::Post, Requirement::AdminOnly, Csrf::Check, 4096},
     {Operation::UpdateDevice, "updateDevice", Method::Put, Requirement::AdminOnly, Csrf::Check, 4096},

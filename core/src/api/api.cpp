@@ -19,6 +19,7 @@ void Api::registerRoutes(http::Router &router) {
     addBackupRoutes(sink, ctx_);
     addIntegrationRoutes(sink, ctx_);
     addRemoteRoutes(sink, ctx_);
+    addBleRoutes(sink, ctx_);
     addUnimplementedRoutes(sink);
 }
 
@@ -33,10 +34,6 @@ void addUnimplementedRoutes(RouteSink &sink) {
         const char *message;
     };
     static constexpr Pending kPending[] = {
-        {"/api/v1/admin/integrations/{integration_id}/pair", auth::Operation::StartIntegrationPairing,
-         "Bluetooth pairing is not implemented yet"},
-        {"/api/v1/admin/integrations/{integration_id}/pair", auth::Operation::ForgetIntegrationPairing,
-         "Bluetooth pairing is not implemented yet"},
         {"/api/v1/admin/firmware", auth::Operation::GetFirmwareStatus, "Firmware status is not implemented yet"},
         {"/api/v1/admin/firmware/update", auth::Operation::UpdateFirmware, "Firmware update is not implemented yet"},
     };

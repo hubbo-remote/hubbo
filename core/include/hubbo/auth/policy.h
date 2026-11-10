@@ -71,6 +71,7 @@ enum class Operation : uint8_t {
     RequestEntityDetails,
     GetEntityDetails,
     StartIntegrationPairing,
+    GetIntegrationPairing,
     ForgetIntegrationPairing,
     RegisterDevice,
     UpdateDevice,

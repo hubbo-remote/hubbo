@@ -118,6 +118,7 @@ const EntityDetails *completedDetails(ApiContext &ctx, std::string_view entityId
 const DeviceSpec *registeredDevice(const ApiContext &ctx, std::string_view entityId, std::string_view uniqueId = {},
                                    std::string_view platform = {});
 void addRemoteRoutes(RouteSink &sink, ApiContext &ctx);       // remote endpoint and pair scan
+void addBleRoutes(RouteSink &sink, ApiContext &ctx);          // BLE HID pairing
 void addAuthRoutes(RouteSink &sink, ApiContext &ctx);      // setup, login, logout, session, password, tokens
 void addRegistryRoutes(RouteSink &sink, ApiContext &ctx);  // devices, capabilities, execute, integrations
 void addActivityRoutes(RouteSink &sink, ApiContext &ctx);  // activities, global bindings, activate, off

@@ -192,11 +192,12 @@ protected:
     api::Authenticator authn{creds, sessions, clock};
     // Phase 3 ports: the remote radio and a real HA client against the fake HA.
     api::SimulatedRemote remote;
+    api::SimulatedBlePairing ble;
     sim::FakeHaServer haServer;
     sim::FakeHaTransport haTransport{haServer};
     integrations::HomeAssistantClient haClient{haTransport};
     api::Api api{api::ApiContext{creds, sessions, limiter, clock, hub.configService(), runtime, {}, nullptr, &remote,
-                                 &haClient, &secrets, nullptr}};
+                                 &haClient, &secrets, nullptr, &ble}};
     http::Router router;
 
     bool noAuth = true;  // simulated admin unless a test logs in
@@ -714,6 +715,44 @@ TEST_F(ApiTest, RemoteEndpointAndHubScan) {
 
     remote.ready = false;
     EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/remote/pair").status, 503);
+}
+
+TEST_F(ApiTest, BluetoothPairing) {
+    const std::string pair = "/api/v1/admin/integrations/ble/pair";
+    Reply r = call(http::Method::Get, pair);
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["state"], "idle");
+
+    r = call(http::Method::Post, pair);
+    ASSERT_EQ(r.status, 202) << dump(r);
+    EXPECT_EQ(r.json["state"], "pairing");
+    EXPECT_EQ(r.json["window_s"], 120);
+    r = call(http::Method::Post, pair);
+    EXPECT_EQ(r.status, 409);
+    EXPECT_EQ(r.code(), "busy");
+    ble.advance(119500);
+    EXPECT_EQ(call(http::Method::Get, pair).json["window_s"], 1);
+    ble.advance(500);
+    EXPECT_EQ(call(http::Method::Get, pair).json["state"], "failed") << "the window closed with no bond";
+
+    // A host bonds during the window; a new window replaces it.
+    ASSERT_EQ(call(http::Method::Post, pair + "?window_s=30").json["window_s"], 30);
+    ble.bonded("Living Room");
+    r = call(http::Method::Get, pair);
+    EXPECT_EQ(r.json["state"], "paired");
+    EXPECT_EQ(r.json["peer_name"], "Living Room");
+    EXPECT_EQ(call(http::Method::Delete, pair).status, 204);
+    EXPECT_EQ(call(http::Method::Get, pair).json["state"], "idle");
+
+    for (const char *bad : {"29", "301", "x", "1000", "-5"}) {
+        r = call(http::Method::Post, pair + "?window_s=" + bad);
+        EXPECT_EQ(r.status, 422) << bad;
+    }
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/integrations/ha_main/pair").status, 404);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/nope/pair").status, 404);
+    ble.ready = false;
+    EXPECT_EQ(call(http::Method::Post, pair).status, 503);
+    EXPECT_EQ(call(http::Method::Delete, pair).status, 503);
 }
 
 TEST_F(ApiTest, TheHomeAssistantTokenIsWriteOnly) {
