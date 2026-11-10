@@ -651,9 +651,25 @@ private:
 
 }  // namespace
 
-// HUBBO_ROUNDTRIP_ITERATIONS=N runs more seeds (long runs); default 300.
+// Sanitizer builds run a tenth of the seeds (tsan is ~10x slower); the plain
+// build keeps the full count.
+#if defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__)
+#define HUBBO_SANITIZED 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer) || __has_feature(address_sanitizer)
+#define HUBBO_SANITIZED 1
+#endif
+#endif
+#ifdef HUBBO_SANITIZED
+constexpr uint32_t kRoundTripSeeds = 30;
+#else
+constexpr uint32_t kRoundTripSeeds = 300;
+#endif
+
+// HUBBO_ROUNDTRIP_ITERATIONS=N runs more seeds (long runs); default 300 (30
+// under a sanitizer).
 TEST(RebootRoundTrip, RandomSequences) {
-    uint32_t iterations = 300;
+    uint32_t iterations = kRoundTripSeeds;
     if (const char *env = std::getenv("HUBBO_ROUNDTRIP_ITERATIONS")) iterations = static_cast<uint32_t>(std::atoi(env));
     for (uint32_t seed = 1; seed <= iterations; seed++) {
         RandomRun run(seed);
