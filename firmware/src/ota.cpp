@@ -3,6 +3,11 @@
 
 #include <Arduino.h>
 #include <ArduinoOTA.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <lwip/sockets.h>
+
+#include <atomic>
 
 // SHA-256 of the OTA password, hex, from scripts/ota_password_hash.py. The
 // password itself is never in the image. Empty: OTA off.
@@ -26,6 +31,55 @@ constexpr int kReceiveTimeoutMs = 1000;
 // Ethernet takes seconds.
 constexpr uint32_t kMaxTransferMs = 120000;
 uint32_t transferStartMs = 0;
+
+// The RF loop never polls the OTA socket while idle: every lwIP socket call
+// takes lwIP's global SYS_ARCH_PROTECT mutex, which the network stack and the
+// HA task hold on core 0, so under heavy traffic (an HA discovery) a poll
+// stalled the loop for up to ~6 ms. A core-0 watcher blocks in select() on
+// ArduinoOTA's socket instead and flags the loop, which then runs handle()
+// for a while (the auth reply and the transfer follow the first packet).
+constexpr uint16_t kPort = 3232;  // ArduinoOTA's default, set explicitly
+constexpr uint32_t kActiveMs = 10000;
+constexpr uint32_t kWatcherStackBytes = 2560;
+std::atomic<bool> packetWaiting{false};
+TaskHandle_t watcher = nullptr;
+int otaSocket = -1;
+bool pollAlways = false;   // no socket found: poll every loop, as before
+bool active = false;        // a packet came in the last kActiveMs
+uint32_t lastPacketMs = 0;
+
+int findOtaSocket() {
+    for (int fd = LWIP_SOCKET_OFFSET; fd < LWIP_SOCKET_OFFSET + CONFIG_LWIP_MAX_SOCKETS; fd++) {
+        int type = 0;
+        socklen_t typeLen = sizeof(type);
+        sockaddr_storage addr = {};
+        socklen_t addrLen = sizeof(addr);
+        if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &typeLen) != 0 || type != SOCK_DGRAM ||
+            getsockname(fd, reinterpret_cast<sockaddr *>(&addr), &addrLen) != 0) {
+            continue;
+        }
+        const uint16_t port = addr.ss_family == AF_INET6 ? reinterpret_cast<sockaddr_in6 &>(addr).sin6_port
+                                                         : reinterpret_cast<sockaddr_in &>(addr).sin_port;
+        if (ntohs(port) == kPort) {
+            return fd;
+        }
+    }
+    return -1;
+}
+
+void watch(void *) {
+    for (;;) {
+        fd_set readable;
+        FD_ZERO(&readable);
+        FD_SET(otaSocket, &readable);
+        if (select(otaSocket + 1, &readable, nullptr, nullptr, nullptr) > 0) {
+            packetWaiting.store(true);
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // until the loop has read it
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+}
 }  // namespace
 
 bool enabled() {
@@ -39,6 +93,7 @@ void begin(const char *hostname, void (*onStart)(), void (*onWritten)()) {
     startHook = onStart;
     writtenHook = onWritten;
     ArduinoOTA.setHostname(hostname);
+    ArduinoOTA.setPort(kPort);
     ArduinoOTA.setMdnsEnabled(false);      // main runs mDNS for the whole hub
     ArduinoOTA.setRebootOnSuccess(false);  // onWritten -> the caller's reboot path
     ArduinoOTA.setPasswordHash(HUBBO_OTA_PASSWORD_SHA256);
@@ -68,11 +123,30 @@ void begin(const char *hostname, void (*onStart)(), void (*onWritten)()) {
     });
     ArduinoOTA.begin();
     started = true;
+    otaSocket = findOtaSocket();
+    pollAlways = otaSocket < 0 ||
+                 xTaskCreatePinnedToCoreWithCaps(&watch, "ota_watch", kWatcherStackBytes, nullptr, 1, &watcher, 0,
+                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS;
+    if (pollAlways) {
+        con.println("ota: no socket watcher; polling from the loop");
+    }
     con.printf("ota: enabled as %s.local\n", hostname);
 }
 
 void loop() {
-    if (started) {
+    if (!started) {
+        return;
+    }
+    const uint32_t nowMs = millis();
+    if (packetWaiting.exchange(false)) {
+        active = true;
+        lastPacketMs = nowMs;
+        ArduinoOTA.handle();
+        xTaskNotifyGive(watcher);
+        return;
+    }
+    active = active && nowMs - lastPacketMs < kActiveMs;
+    if (pollAlways || active) {
         ArduinoOTA.handle();
     }
 }
