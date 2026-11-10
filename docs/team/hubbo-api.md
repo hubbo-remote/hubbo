@@ -1,25 +1,59 @@
 # hubbo-api: working notes
 
-Current as of Phase 4 (contract against the web mock). Not a log: rewrite sections as they change.
+Current as of Phase 5 (auth trim, firmware update routes). Not a log: rewrite sections as they change.
 
 ## State
 
-- Gates: `bin/hubbo test`, tsan, asan, `fw run` (build only), `api/lint.sh`, `api/contract.sh`
-  (all four modes: `noauth auth` on hub-sim, `mock mock-auth` on the web mock).
+- Gate: `bin/hubbo gate api` (`api/lint.sh`, then `api/contract.sh` in all four modes: `noauth auth`
+  on hub-sim, `mock mock-auth` on the web mock). Core's gate runs the native tests, tsan and asan.
+  While working, run my own suites with `bin/hubbo test -R <regex>`.
 - Routes in `core/src/api/`, one file per area:
   - `registry_routes.cpp`: devices and registration;
   - `integration_routes.cpp`: HA settings, discovery, entity details, `applyHomeAssistantSettings()`;
   - `remote_routes.cpp` / `ble_routes.cpp`: the remote and BLE pairing, over `RemotePort` /
     `BlePairingPort` (with `SimulatedRemote` / `SimulatedBlePairing`);
+  - `firmware_routes.cpp`: GET /admin/firmware and POST /admin/firmware/update over
+    `FirmwareUpdatePort` (`firmware_update_port.h`, with `SimulatedFirmwareUpdate`);
   - backup, auth, status and activity routes, with shared helpers in `support.h`.
 - `ha/`:
   - `capabilities.*`: the allowlist and `fromSnapshot()`;
   - `services.*`: from `get_services` to the offered services;
   - `snapshot*`: the stored snapshot, its builder and its strict decoder.
-- Still 501 (`x-hubbo-not-implemented`, the `kPending` list in api.cpp): `getFirmwareStatus`,
-  `updateFirmware`.
+- No placeholder routes: the 501 table is gone, and `api/lint.sh` fails if an operation is marked
+  `x-hubbo-not-implemented`. (`ErrorCode::NotImplemented` can still map to 501.)
 
 ## Key decisions (and why)
+
+- **Phase 5 auth trim** (user decisions, docs/design/phase5-appliance.md §1):
+  - Roles are `Public`, `TokenOrAdmin`, `AdminOnly`. Setup is `Public`; its handler checks
+    `fresh` before reading the body (409 `setup_already_done`, 503 when unavailable).
+  - No CSRF token, no rate limiter, no Host allowlist (no 421), no `clientKey`. A foreign Origin
+    is 403 `csrf_failed` from the router.
+  - Credentials are read once at boot: `fresh | ok | unavailable` (corrupt folds in). No
+    `refresh()`; `SecretStore` has no `reload()`/`mediumHealth()`. A medium lost at runtime
+    doesn't log anyone out (cached hash), but writes fail.
+  - Sessions: one absolute lifetime (`kSessionLifetimeMs`, 7 days), no idle timer, the oldest is
+    evicted. `create(now, &id)`, `authenticate(id, now)`.
+  - Username kept, no default: the contract's admin is `hubbo-owner` (`ADMIN` in contract.py).
+- **Firmware update** (§2): the transport buffers the whole image (policy row
+  `Body::Binary`, `kMaxFirmwareImageBytes` = 6400 KiB = the OTA slot). `maxRequestBody()` is the
+  largest JSON body only; transports size reads from `Router::bodyLimit()`. The router checks
+  octet-stream for Binary rows. The handler: 411 without Content-Length, then `install()`.
+  `validateFirmwareImage()` is the one validation rule (core); the firmware port calls it too.
+  No rollback. The sim's target is board `simulator`, 64 KiB slot; writes take 2 s, reboot 1 s
+  of `advance()`. `/sim/firmware?fail=&ready=` is core's control.
+  The reboot drops every session (sim and board): contract.py's `relogin_after_restart()` asserts
+  the old cookie gets 401 and logs in again; `firmware_flow` returns the new cookie.
+- **Factory reset** (§3 end): `POST /admin/factory-reset` (op `factoryReset`) over
+  `FactoryResetPort::requestFactoryReset()` (`factory_reset_port.h`; route in `firmware_routes.cpp`):
+  503 no port, 409 `update_in_progress` while ctx.firmware is Writing/Rebooting, 503 if refused,
+  else 202 empty. `SimulatedFactoryReset` calls `erase` after kRestartMs of advance(); hub-sim's
+  erase (core) uses `auth::eraseAllSecrets()` + `credentials.load()` + sessions, config, BLE,
+  remote. `/sim/factory-reset?ready=` is core's control. `POST /admin/reset` is now op
+  `resetConfiguration`. contract.py's `factory_reset_flow` runs last in each mode's main flow and
+  sets the same admin up again (auth persistence relies on it). Runs in the mock modes too
+  (`/__mock/factory-reset?ready=`; the mock runs with `HUBBO_MOCK_TIME_SCALE=0`, so only advance
+  moves time; mock controls may answer 200 or 204).
 
 - **HA registration only from the entity's loaded details** (Phase 4, §3b). Discovery is lean
   (no `get_services`, no full registry): candidates carry a domain-only command preview, no
@@ -103,12 +137,16 @@ Current as of Phase 4 (contract against the web mock). Not a log: rewrite sectio
 - `-Werror=missing-field-initializers`: `ApiContext` brace-init in tests must list every
   trailing field, and an aggregate with a default member initializer needs a constructor (see
   `ParamDraft` and `SimulatedRemote`).
-- The 501 list is checked twice: `api/lint.sh` compares `kPending` with
-  `x-hubbo-not-implemented`, and policy rows (role, CSRF, max body) with the spec. A new
-  operation needs:
+- `api/lint.sh` compares policy rows (role, method, max body, optional `Body::Binary`) with the
+  spec. A new operation needs:
   - a policy.h enum entry and a policy.cpp row;
   - a row in `auth_policy_test.cpp`'s RoleMatrix (it counts them);
   - a fixture, if the web mock needs one.
+- Fake firmware images: `core/tests/firmware_image_util.h` (`image(ImageSpec)`) and its Python
+  twin `firmware_image()` in contract.py. The marker search skips malformed matches, since the
+  validator's own prefix literal is in every real image.
+- urllib always sends Content-Length (0 for an empty POST): the 411 check uses
+  `Client.no_length()`.
 - Query strings: read values only with `http::queryValue()`, which percent-decodes one
   parameter (`+` and `%XX`). The raw slicer is private to route.cpp. Never decode the whole
   query, or `%26` splits parameters. The firmware console uses `http::percentDecode()`.
@@ -134,9 +172,11 @@ Current as of Phase 4 (contract against the web mock). Not a log: rewrite sectio
 - An address with low byte `0x55` or `0xAA` is invalid (it looks like the preamble), so don't
   use `...55` in tests.
 - `ApiTest`: `pumpHa()`, `connectHa()`, `discover()`; `SimulatedRemote::advance()` times out a scan.
-- Build only with the locked commands (`bin/hubbo test|tsan|asan|fw run`). Run servers and tests
-  in the foreground. If another agent's files are mid-edit, wait and rerun.
-- `contract.sh` runs one at a time (`flock`): runs share container names and ports.
+- Build only with the locked commands (`bin/hubbo ...`). Run servers and tests in the foreground.
+  If another agent's files are mid-edit, wait and rerun.
+- `contract.sh` runs one at a time (`flock`): runs share container names and ports. It builds
+  hub-sim in build/native under `build/native.lock` (like `bin/hubbo sim`) and runs a private copy
+  from build/contract-ctl, so a later rebuild can't swap the binary mid-run.
 - `ble_pairing_flow` uses the `ble/bonded?peer=` and `advance?ms=` controls.
 - Mock modes: see the `contract.sh` header and `contract.py` docstring. Test controls go through
   `Client.control()` (`/sim/` or `/api/v1/__mock/`); what the mock can't do goes through `skip()`.
@@ -150,5 +190,6 @@ Current as of Phase 4 (contract against the web mock). Not a log: rewrite sectio
   it, but it must not run before a restart comparison.
 - **Logs:** there's no check yet that no secret appears in any log line (security.md
   checklist).
-- **Later:** the auth trim; `text` selectors (they'd need a string ParamSpec type in core); the
-  firmware status and update endpoints (still 501).
+- **mock-auth:** the contract's admin username is now `hubbo-owner`; the web mock's seeded
+  admin must match (frontend), or mock-auth's login checks fail.
+- **Later:** `text` selectors (they'd need a string ParamSpec type in core).

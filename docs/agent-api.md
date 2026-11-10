@@ -26,8 +26,7 @@ export HUBBO_TOKEN=hbt_k3x9q2mf_...
 curl -s -H "Authorization: Bearer $HUBBO_TOKEN" $HUBBO/status
 ```
 
-Send `Content-Type: application/json` with every body. With a token you need no cookies and no
-CSRF header.
+Send `Content-Type: application/json` with every body. With a token you need no cookies.
 
 **Local simulator:** it runs in `SIMULATOR_NO_AUTH` mode by default. No token is needed, every
 request acts as admin, and `/status` shows `"auth_mode": "simulator_no_auth"`. Everything goes to
@@ -191,7 +190,7 @@ background. The body says what happened, phase by phase:
 - `blocked`: the saved configuration can't be used (from newer firmware, a failed migration,
   it doesn't compile, or every saved copy is damaged; `reason` says which). Nothing is active
   and every edit gets `409 config_blocked`. Only an admin can fix it: `POST /admin/restore` with a backup, or
-  `POST /admin/reset` (factory defaults). Don't keep retrying edits. A backup taken while
+  `POST /admin/reset` (reset configuration to the defaults). Don't keep retrying edits. A backup taken while
   blocked is the saved record's raw bytes, marked `X-Hubbo-Backup: blocked-raw`
   (`application/octet-stream`, `hubbo-backup-BLOCKED-<date>.json`), not a `Backup` document.
   Keep it before a reset; restore accepts it once the firmware can read it.
@@ -225,10 +224,8 @@ is active.
 | 409 | `activity_in_use` | Another binding activates it; remove that first (see `details`). |
 | 409 | `config_blocked` | The saved config can't be used; ask the admin to restore or reset. |
 | 503 | `storage_unavailable` | The hub can't save right now; nothing changed. |
-| 421 | `host_not_allowed` | Use the hub's own address in the URL. |
 | 501 | `not_implemented` | Not available yet. |
 | 422 | `validation_failed` | Read `details[].path` and `code`. |
-| 429 | `rate_limited` | Wait `Retry-After` seconds. |
 | 503 | `integration_unavailable` | HA or Bluetooth is down. Check `/integrations`. |
 
 Detail codes include `unknown_device`, `integration_mismatch`, `unknown_command`,
@@ -284,11 +281,11 @@ returns the edited activity at revision 2.
 With `--auth` the same calls need credentials. First run:
 
 ```sh
-curl -s -X POST -H "$J" -d '{"username":"admin","password":"correct horse battery"}' $H/auth/setup
-# later: POST /auth/login with the same body. Both set the hubbo_session cookie and return csrf_token.
-curl -s -c /tmp/jar -X POST -H "$J" -d '{"username":"admin","password":"correct horse battery"}' \
-  $H/auth/login | jq -r .csrf_token > /tmp/csrf
-curl -s -b /tmp/jar -X POST -H "$J" -H "X-Hubbo-CSRF: $(cat /tmp/csrf)" -d '{"name":"agent"}' \
+# Pick your own username (there's no default).
+curl -s -X POST -H "$J" -d '{"username":"jon","password":"correct horse battery"}' $H/auth/setup
+# later: POST /auth/login with the same body. Both set the hubbo_session cookie (7 days).
+curl -s -c /tmp/jar -X POST -H "$J" -d '{"username":"jon","password":"correct horse battery"}' $H/auth/login
+curl -s -b /tmp/jar -X POST -H "$J" -d '{"name":"agent"}' \
   $H/admin/tokens | jq -r .token          # hbt_..., shown once
 ```
 
@@ -307,10 +304,6 @@ Then use `Authorization: Bearer hbt_...` as above.
   retry volume steps blindly.
 - **Volume buttons step once per press.** Repeat-while-held isn't implemented yet.
 - **`/status` diagnostics** show recent errors and RF dispatch latency.
-- **`421 host_not_allowed`.** The `Host` header must be one of the hub's names (its IP, mDNS
-  name or hostname; `localhost`/`127.0.0.1` for hub-sim). This blocks DNS-rebinding attacks.
-- **`501 not_implemented`.** Firmware status and update aren't implemented yet. Nothing
-  happened.
 
 ## Limits
 
