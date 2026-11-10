@@ -18,9 +18,9 @@
 #include "hubbo/integrations/websocket_transport.h"
 
 // Home Assistant WebSocket API client (docs/design/phase3-home-assistant.md,
-// section 1): the auth handshake, numbered commands (get_states,
-// get_services, config/entity_registry/list, call_service), liveness pings
-// and reconnects with backoff.
+// section 1; phase4-web-admin.md 3b): the auth handshake, numbered commands
+// (call_service, discovery, entity details), liveness pings and reconnects
+// with backoff.
 //
 // Threading: poll(), callService() and discover() run on the integration
 // task, as do the transport callbacks and every `done` callback. state(),
@@ -32,12 +32,18 @@
 // every kPingIntervalMs while Connected; no pong within kPongTimeoutMs
 // closes the connection (Unreachable, then the backoff).
 //
-// Discovery never parses a big message in one go (a 2 MB get_states would
-// hold the task for seconds): the result array is walked element by
-// element, at most kParseStepEntities per poll(), so the integration task
-// yields between steps (hasWork() tells its loop not to sleep meanwhile).
-// The registry is fetched first and only allowlisted domains are kept;
-// states are then read only for those entities.
+// Discovery reads what the add-device picker shows, and as little else as
+// it can (on the board the time is per byte): the compact entity registry
+// (config/entity_registry/list_for_display: enabled entities, platform,
+// name), then every current state (subscribe_entities, then unsubscribe;
+// YAML-only entities have a state but no registry entry). Actions
+// (get_services) aren't part of it: entity details fetch them for the one
+// entity being registered or refreshed.
+//
+// Neither big message is parsed in one go (it would hold the task for
+// seconds): it is walked element by element, at most kParseStepEntities per
+// poll(), so the integration task yields between steps (hasWork() tells its
+// loop not to sleep meanwhile). Only allowlisted domains are kept.
 //
 // The access token is used only in the auth message. It never appears in
 // logs, errors or anything this class returns.
@@ -57,16 +63,15 @@ const char *haStateName(HaState state);
 // One discovered entity (an add-device candidate).
 struct HaCandidate {
     std::string entityId;
-    std::string uniqueId;  // entity registry; "" if the entity isn't in the registry
-    std::string name;      // registry name, else original_name, else friendly_name, else ""
+    std::string name;      // friendly_name, else the registry name, else ""
     std::string domain;    // "media_player"
-    std::string platform;  // the integration behind it ("sonos"); registry, else ""
+    std::string platform;  // the integration behind it ("sonos"); "" for a YAML-only entity
+    std::string state;     // "on", "playing", "unavailable"...
     ha::EntityInfo info;   // supported_features and the attributes that shape params
 };
 
 struct HaDiscovery {
     std::vector<HaCandidate> candidates;  // allowlisted domains only, sorted by entity_id
-    size_t skipped = 0;                   // disabled in the registry
     // Allowlisted entities left out because kMaxCandidates were already
     // found (0: the list is complete). Shown, never silent.
     size_t truncated = 0;
@@ -74,10 +79,19 @@ struct HaDiscovery {
     // The mailbox request this answers (discoveryGeneration() when it was
     // requested); 0 from discover().
     uint32_t generation = 0;
+};
+
+// One entity as registration and refresh need it, fetched fresh.
+struct HaEntityDetails {
+    std::string entityId;
+    std::string uniqueId;  // registry unique_id; "" for a YAML-only entity
+    std::string platform;  // registry platform; "" for YAML-only (no integration services)
+    std::string name;      // as HaCandidate::name
+    ha::EntityInfo info;   // from its current state
     // get_services' result as HA sent it (JSON object, domain -> services),
-    // for integration-specific services (ha/). Not interpreted here. Can be
-    // a few hundred KB (large allocations go to PSRAM on the board); free it
-    // once normalized.
+    // for integration-specific services (ha/). Not interpreted here. A few
+    // hundred KB (large allocations go to PSRAM on the board); free it once
+    // normalized.
     std::string services;
 };
 
@@ -145,12 +159,23 @@ public:
     // any discovery, and after new settings.
     bool entityStale(std::string_view entityId) const;
 
-    // Integration task: fetch the registry, states and services and build
-    // the candidates. Ok (started; `done` is called exactly once: Ok, or
+    // Integration task: fetch the registry and states and build the
+    // candidates. Ok (started; `done` is called exactly once: Ok, or
     // AdapterUnavailable / AdapterTimeout / AdapterFailed / MalformedJson),
     // Busy (one is running) or AdapterUnavailable (not Connected).
     using DiscoverDone = std::function<void(ErrorCode result, HaDiscovery discovery)>;
     ErrorCode discover(DiscoverDone done);
+
+    // Integration task: one entity's registry entry (none: YAML-only), its
+    // state and get_services. Ok (started; `done` is called exactly once:
+    // Ok, or AdapterUnavailable / AdapterTimeout / AdapterFailed /
+    // EntityNotFound (HA has no state for it) / MalformedJson), Busy (one is
+    // running; a discovery may run alongside), AdapterUnavailable (not
+    // Connected) or InvalidId (not a valid, allowlisted entity id). A
+    // completed fetch also proves the entity exists: it isn't stale until
+    // the next discovery says otherwise.
+    using DetailsDone = std::function<void(ErrorCode result, HaEntityDetails details)>;
+    ErrorCode entityDetails(const std::string &entityId, DetailsDone done);
 
     // Any task (the admin API, like the pair scan: POST starts, GET polls).
     // requestDiscovery(): Ok (the integration task starts it at its next
@@ -162,6 +187,15 @@ public:
     // Any task: drop a requested or running discovery (its result is thrown
     // away; the status goes back to Idle). No-op if none.
     void cancelDiscovery();
+    // Any task, the same model for one entity's details (registration and
+    // refresh): request (Ok, Busy, AdapterUnavailable, InvalidId), take
+    // (Idle, Running, Done hands over `out`, Failed gives `error`), cancel.
+    // A cancel frees the slot at once: a request right after it is Ok. New
+    // settings drop a requested, running or finished fetch.
+    ErrorCode requestEntityDetails(std::string_view entityId);
+    DiscoveryStatus takeEntityDetails(HaEntityDetails *out, ErrorCode *error);
+    void cancelEntityDetails();
+
     // Any task. Bumped by requestDiscovery(), cancelDiscovery() (of a
     // running one), configure() with changed settings and reconnect(); a
     // result from an older generation is never published (a finished one
@@ -170,7 +204,16 @@ public:
     uint32_t discoveryGeneration() const;
 
 private:
-    enum class Kind : uint8_t { CallService, EntityRegistry, GetStates, GetServices };
+    enum class Kind : uint8_t {
+        CallService,
+        Registry,         // discovery: list_for_display
+        States,           // discovery: subscribe_entities (all), a subscription
+        DetailsRegistry,  // details: config/entity_registry/get
+        DetailsState,     // details: subscribe_entities (one), a subscription
+        DetailsServices,  // details: get_services
+    };
+    static bool isSubscription(Kind k) { return k == Kind::States || k == Kind::DetailsState; }
+    static bool isDiscovery(Kind k) { return k == Kind::Registry || k == Kind::States; }
     struct Pending {
         bool used = false;
         uint32_t id = 0;
@@ -184,11 +227,66 @@ private:
         bool verifyTls = true;
     };
     struct RegistryEntry {
-        std::string uniqueId;
         std::string platform;
         std::string name;
     };
-    enum class Phase : uint8_t { None, Registry, States, Services };
+    enum class Phase : uint8_t { None, Registry, States };
+
+    // A cross-task request slot (discovery, details), under mailboxMutex_.
+    // A result is published only if no cancel, newer request or new
+    // settings bumped the generation since its request.
+    template <typename T>
+    struct Mailbox {
+        bool requested = false;
+        bool cancelRequested = false;
+        uint32_t generation = 0;
+        DiscoveryStatus status = DiscoveryStatus::Idle;
+        T result;
+        ErrorCode error = ErrorCode::Ok;
+
+        ErrorCode request() {
+            if (status == DiscoveryStatus::Running) return ErrorCode::Busy;  // also while requested
+            requested = true;
+            generation++;
+            status = DiscoveryStatus::Running;
+            result = T();
+            error = ErrorCode::Ok;
+            return ErrorCode::Ok;
+        }
+        void cancel() {
+            if (status != DiscoveryStatus::Running) return;
+            generation++;  // its result, if it still comes, is dropped
+            if (requested) {
+                requested = false;  // never started
+            } else {
+                cancelRequested = true;  // the integration task stops it
+            }
+            status = DiscoveryStatus::Idle;
+            result = T();
+        }
+        void forget() {  // new settings
+            generation++;
+            requested = false;
+            status = DiscoveryStatus::Idle;
+            result = T();
+        }
+        void publish(uint32_t requestGeneration, ErrorCode e, T value) {
+            if (requestGeneration != generation) return;
+            status = e == ErrorCode::Ok ? DiscoveryStatus::Done : DiscoveryStatus::Failed;
+            error = e;
+            result = std::move(value);
+        }
+        DiscoveryStatus take(T *out, ErrorCode *e) {
+            const DiscoveryStatus s = status;
+            if (s == DiscoveryStatus::Done && out != nullptr) *out = std::move(result);
+            if (s == DiscoveryStatus::Failed && e != nullptr) *e = error;
+            if (s == DiscoveryStatus::Done || s == DiscoveryStatus::Failed) {
+                status = DiscoveryStatus::Idle;
+                result = T();
+            }
+            return s;
+        }
+    };
 
     // WebSocketTransport::Listener
     void onConnected() override;
@@ -200,22 +298,29 @@ private:
         if (clock_) nowMs_ = clock_();
     }
     void applySettings();
-    void forgetDiscovery();  // settings changed: bump the generation, reset the mailbox
+    void forgetRequests();  // settings changed: drop discovery and details requests and results
     void scheduleRetry();
-    void failInFlight();  // the connection is gone: fail calls and discovery
+    void failInFlight();  // the connection is gone: fail calls, discovery and details
+    void serviceMailboxes();
     // `body`: the command's JSON object without "id" (e.g. {"type":"get_states"}).
     ErrorCode sendCommand(Kind kind, const std::string &body, uint32_t timeoutMs, CallDone done);
+    void unsubscribe(uint32_t subscriptionId);
+    void release(Pending &p);  // free a slot without an answer (ends a subscription)
+    void forgetPending(bool discovery);  // a finished job's commands still in flight
     void handleAuth(std::string_view text);
     void handleMessage(std::string text);
     void failAll(ErrorCode error);
     void expire();
     // Discovery (integration task).
-    void discoveryResult(Kind kind, bool success, std::string text, json::Span result);
+    void discoveryResult(bool success, std::string text);
     void parseStep();
     void parseRegistryEntry(std::string_view element);
-    void parseStateEntry(std::string_view element);
+    void parseStateEntry(std::string_view entityId, std::string_view element);
     void nextPhase();
     void finishDiscovery(ErrorCode result);
+    // Entity details (integration task).
+    void detailsResult(Kind kind, bool success, std::string text);
+    void finishDetails(ErrorCode result);
 
     WebSocketTransport &transport_;
     Clock clock_;
@@ -238,32 +343,34 @@ private:
     uint32_t nextId_ = 1;
     Pending pending_[kMaxPendingCommands];
 
-    // Discovery in progress (integration task).
-    bool discovering_ = false;
+    // Discovery in progress (integration task): phase_ != None.
     Phase phase_ = Phase::None;
     DiscoverDone discoverDone_;
     HaDiscovery discovery_;
     std::map<std::string, RegistryEntry, std::less<>> registry_;  // allowlisted, enabled
     uint64_t discoveryStartMs_ = 0;
     std::set<std::string, std::less<>> seen_;  // every allowlisted entity in states (for entityStale())
-    std::string text_;            // the message being parsed
-    json::ArrayCursor cursor_;    // over its result array
+    std::string text_;      // the message being parsed
+    json::Cursor cursor_;   // over its list
     bool parsing_ = false;
+
+    // Entity details in progress (integration task).
+    bool detailing_ = false;
+    DetailsDone detailsDone_;
+    HaEntityDetails details_;
 
     // Stale entities (any task reads them).
     mutable std::mutex staleMutex_;
-    // Every allowlisted entity in the latest completed discovery (none yet:
-    // nothing is stale for missing from it).
+    // Every allowlisted entity in the latest completed discovery, plus any
+    // whose details were fetched since (none yet: nothing is stale for
+    // missing from it).
     std::optional<std::set<std::string, std::less<>>> discovered_;
 
-    // The cross-task discovery mailbox.
+    // The cross-task mailboxes.
     mutable std::mutex mailboxMutex_;
-    bool requested_ = false;
-    bool cancelRequested_ = false;
-    uint32_t generation_ = 0;
-    DiscoveryStatus mailboxStatus_ = DiscoveryStatus::Idle;
-    HaDiscovery mailboxResult_;
-    ErrorCode mailboxError_ = ErrorCode::Ok;
+    Mailbox<HaDiscovery> discoveryBox_;
+    Mailbox<HaEntityDetails> detailsBox_;
+    std::string detailsEntityId_;  // what detailsBox_ asks for
 };
 
 }  // namespace hubbo::integrations

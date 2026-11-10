@@ -4,8 +4,8 @@
 #include <string_view>
 
 // A small JSON structure scanner for messages too big to parse in one go
-// (HA discovery results): find a top-level member's value and walk an array
-// element by element without building a document. It only finds value
+// (HA discovery results): find a member's value and walk an array or an
+// object element by element without building a document. It only finds value
 // boundaries (strings, escapes, nesting); each element is then parsed on its
 // own (ArduinoJson). Malformed input is reported, never trusted.
 namespace hubbo::integrations::json {
@@ -27,19 +27,29 @@ size_t skipValue(std::string_view text, size_t pos);
 // The value of top-level member `key` of the object `text` (keys compared
 // raw: fine for ASCII keys without escapes). Not found / malformed: !found().
 Span member(std::string_view text, std::string_view key);
+// The same, for the object at `within` of `text`; offsets are into `text`.
+Span member(std::string_view text, Span within, std::string_view key);
+// Where member `key`'s value begins in the object starting at `object` (an
+// offset into `text`), or npos. Skips only the members before it, never the
+// value itself: the way into a big value without scanning it twice.
+size_t valueStart(std::string_view text, size_t object, std::string_view key);
 
-// Walks the elements of the array at `span` of `text`.
-class ArrayCursor {
+// Walks the elements of the array, or the members of the object, starting
+// at `begin` of `text`, up to its closing bracket. One pass: the value's end
+// isn't needed up front.
+class Cursor {
 public:
-    ArrayCursor() = default;
-    ArrayCursor(std::string_view text, Span array);
-    // Next element (its text), false at the end or on malformed input (ok()).
-    bool next(std::string_view text, std::string_view *element);
+    Cursor() = default;
+    Cursor(std::string_view text, size_t begin);
+    // Next element (its text; for an object the member's value, and its key
+    // without quotes in `key` if given), false at the end or on malformed
+    // input (ok()).
+    bool next(std::string_view text, std::string_view *element, std::string_view *key = nullptr);
     bool ok() const { return ok_; }
 
 private:
     size_t pos_ = 0;
-    size_t end_ = 0;
+    bool object_ = false;
     bool ok_ = false;
     bool done_ = true;
     bool first_ = true;

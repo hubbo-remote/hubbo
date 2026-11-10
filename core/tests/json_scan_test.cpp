@@ -22,7 +22,7 @@ TEST(JsonScan, StringsWithBracketsAndEscapesDontConfuseIt) {
     const std::string text = R"({"a":"x}]\"{[","b":[{"s":"]\\"},{"t":"[["}],"c":null})";
     EXPECT_EQ(json::member(text, "c").in(text), "null");
     std::vector<std::string> elements;
-    json::ArrayCursor cursor(text, json::member(text, "b"));
+    json::Cursor cursor(text, json::valueStart(text, 0, "b"));
     std::string_view e;
     while (cursor.next(text, &e)) elements.emplace_back(e);
     EXPECT_TRUE(cursor.ok());
@@ -32,7 +32,7 @@ TEST(JsonScan, StringsWithBracketsAndEscapesDontConfuseIt) {
 TEST(JsonScan, WalksArraysAndRejectsMalformedOnes) {
     auto walk = [](const std::string &text, bool *ok) {
         std::vector<std::string> out;
-        json::ArrayCursor cursor(text, json::Span{text.find('['), text.rfind(']') + 1});
+        json::Cursor cursor(text, text.find('['));
         std::string_view e;
         while (cursor.next(text, &e)) out.emplace_back(e);
         *ok = cursor.ok();
@@ -49,5 +49,31 @@ TEST(JsonScan, WalksArraysAndRejectsMalformedOnes) {
     EXPECT_FALSE(ok);
     walk("[\"unterminated]", &ok);
     EXPECT_FALSE(ok);
-    EXPECT_FALSE(json::ArrayCursor("{}", json::Span{0, 2}).ok());  // not an array
+    EXPECT_FALSE(json::Cursor("12", 0).ok());  // not an array or object
+}
+
+TEST(JsonScan, WalksObjectMembersWithTheirKeys) {
+    // HA's compressed states (subscribe_entities): entity id -> state.
+    const std::string text = R"({"id":3,"event":{"a":{"light.x":{"s":"on","a":{"k":"}"}}, "switch.y" : {"s":"off"}}}})";
+    const json::Span a = json::member(text, json::member(text, "event"), "a");
+    ASSERT_TRUE(a.found());
+    json::Cursor cursor(text, a.begin);
+    std::string_view key, value;
+    std::vector<std::string> keys, values;
+    while (cursor.next(text, &value, &key)) {
+        keys.emplace_back(key);
+        values.emplace_back(value);
+    }
+    EXPECT_TRUE(cursor.ok());
+    EXPECT_EQ(keys, (std::vector<std::string>{"light.x", "switch.y"}));
+    EXPECT_EQ(values, (std::vector<std::string>{R"({"s":"on","a":{"k":"}"}})", R"({"s":"off"})"}));
+    EXPECT_EQ(json::member(text, a, "switch.y").in(text), R"({"s":"off"})");
+    // The way in without scanning the big value: where it starts.
+    EXPECT_EQ(json::valueStart(text, json::valueStart(text, 0, "event"), "a"), a.begin);
+    EXPECT_EQ(json::valueStart(text, 0, "missing"), json::npos);
+
+    const std::string bad = R"({"k" 1})";
+    json::Cursor broken(bad, 0);
+    EXPECT_FALSE(broken.next(bad, &value, &key));
+    EXPECT_FALSE(broken.ok());
 }

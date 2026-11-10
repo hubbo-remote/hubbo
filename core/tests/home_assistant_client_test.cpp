@@ -268,28 +268,32 @@ TEST_F(ClientTest, DiscoveryWalksTheResultsInStepsAndKeepsOnlySupportedDomains) 
     EXPECT_EQ(std::count(ids.begin(), ids.end(), "light.attic"), 0);
     EXPECT_EQ(std::count_if(ids.begin(), ids.end(), [](const std::string &s) { return s.rfind("sensor.", 0) == 0; }), 0);
     EXPECT_EQ(discovery.candidates.size(), server.entities().size() - 1);  // all but the disabled one
-    EXPECT_GE(discovery.skipped, 1u);
     EXPECT_EQ(discovery.truncated, 0u);
     EXPECT_GT(discovery.elapsedMs, 0u);
     for (const HaCandidate &c : discovery.candidates) {
         if (c.entityId == "media_player.den") {
-            EXPECT_EQ(c.name, "Den");
+            EXPECT_EQ(c.name, "Den speaker");  // friendly_name first
             EXPECT_EQ(c.platform, "sonos");
-            EXPECT_EQ(c.uniqueId, "RINCON_1");
             EXPECT_EQ(c.domain, "media_player");
+            EXPECT_EQ(c.state, "on");
         }
-        if (c.entityId == "switch.porch") {
-            EXPECT_EQ(c.uniqueId, "");
+        if (c.entityId == "switch.porch") {  // YAML-only: no registry entry
+            EXPECT_EQ(c.platform, "");
             EXPECT_EQ(c.name, "Porch");
         }
         if (c.entityId == "media_player.family_room_lg_tv") {
             EXPECT_FALSE(c.info.sourceList.empty());
             EXPECT_NE(c.info.supportedFeatures, 0u);
-            EXPECT_EQ(c.platform, "demo");
+            EXPECT_EQ(c.platform, "webostv");
         }
     }
-    EXPECT_NE(discovery.services.find("\"media_player\""), std::string::npos);
-    EXPECT_EQ(discovery.services.front(), '{');
+    EXPECT_EQ(server.subscriptions(), 0u);  // the state snapshot's subscription was ended
+    // What it asked for: the compact registry and the states, no services.
+    std::string asked;
+    for (const std::string &m : server.received()) asked += m;
+    EXPECT_NE(asked.find("list_for_display"), std::string::npos);
+    EXPECT_NE(asked.find("subscribe_entities"), std::string::npos);
+    EXPECT_EQ(asked.find("get_services"), std::string::npos);
 }
 
 TEST_F(ClientTest, AnOversizedMessageFailsTheDiscoveryAndTheClientRecovers) {
@@ -356,7 +360,7 @@ TEST_F(ClientTest, OnlyTheCurrentGenerationIsPublished) {
     ASSERT_EQ(client.requestDiscovery(), ErrorCode::Ok);
     EXPECT_NE(client.discoveryGeneration(), first);
     // Run up to the last command: its answer is queued, not yet delivered.
-    const auto servicesSent = [&] { return server.received().back().find("get_services") != std::string::npos; };
+    const auto servicesSent = [&] { return server.received().back().find("subscribe_entities") != std::string::npos; };
     for (int i = 0; i < 400 && !servicesSent(); i++) {
         now += 100;
         transport.poll(0);
@@ -387,6 +391,100 @@ TEST_F(ClientTest, OnlyTheCurrentGenerationIsPublished) {
     client.reconnect();
     run(2000);
     EXPECT_EQ(client.takeDiscovery(&out, &error), DiscoveryStatus::Idle);
+}
+
+TEST_F(ClientTest, EntityDetailsAreFetchedForOneEntity) {
+    connect();
+    const auto fetch = [&](const char *entityId, HaEntityDetails *out) {
+        ErrorCode result = ErrorCode::Busy;
+        EXPECT_EQ(client.entityDetails(entityId, [&](ErrorCode e, HaEntityDetails d) {
+                      result = e;
+                      *out = std::move(d);
+                  }),
+                  ErrorCode::Ok);
+        for (int i = 0; i < 100 && result == ErrorCode::Busy; i++) tick();
+        return result;
+    };
+    HaEntityDetails d;
+    ASSERT_EQ(fetch("media_player.family_room_sonos", &d), ErrorCode::Ok);
+    EXPECT_EQ(d.entityId, "media_player.family_room_sonos");
+    EXPECT_EQ(d.uniqueId, "uid_media_player.family_room_sonos");
+    EXPECT_EQ(d.platform, "sonos");
+    EXPECT_EQ(d.name, "Family Room Sonos");
+    EXPECT_NE(d.info.supportedFeatures, 0u);
+    EXPECT_EQ(d.info.sourceList, std::vector<std::string>{"TV"});
+    EXPECT_EQ(d.services.front(), '{');
+    EXPECT_NE(d.services.find("\"sonos\""), std::string::npos);
+    EXPECT_EQ(server.subscriptions(), 0u);
+
+    // YAML-only: no registry entry, so no unique_id or platform.
+    ASSERT_EQ(fetch(FakeHaServer::kYamlOnlyEntity, &d), ErrorCode::Ok);
+    EXPECT_EQ(d.uniqueId, "");
+    EXPECT_EQ(d.platform, "");
+    EXPECT_EQ(d.name, "Patio Fountain");
+    EXPECT_FALSE(d.services.empty());
+
+    EXPECT_EQ(fetch("light.nowhere", &d), ErrorCode::EntityNotFound);
+    EXPECT_EQ(client.entityDetails("sensor.temperature", nullptr), ErrorCode::InvalidId);
+    EXPECT_EQ(client.entityDetails("not an id", nullptr), ErrorCode::InvalidId);
+    server.answerCommands = false;
+    ErrorCode late = ErrorCode::Busy;
+    ASSERT_EQ(client.entityDetails("light.family_room", [&](ErrorCode e, HaEntityDetails) { late = e; }), ErrorCode::Ok);
+    run(HomeAssistantClient::kDiscoveryTimeoutMs + 200);
+    EXPECT_EQ(late, ErrorCode::AdapterTimeout);
+}
+
+TEST_F(ClientTest, TheEntityDetailsMailboxWorksFromAnyTask) {
+    HaEntityDetails out;
+    ErrorCode error = ErrorCode::Ok;
+    EXPECT_EQ(client.requestEntityDetails("light.family_room"), ErrorCode::AdapterUnavailable);
+    connect();
+    EXPECT_EQ(client.requestEntityDetails("sensor.x"), ErrorCode::InvalidId);
+    server.answerCommands = false;  // so it stays in flight
+    ASSERT_EQ(client.requestEntityDetails("light.family_room"), ErrorCode::Ok);
+    EXPECT_EQ(client.requestEntityDetails("light.family_room"), ErrorCode::Busy);
+    EXPECT_EQ(client.takeEntityDetails(&out, &error), DiscoveryStatus::Running);
+    run(500);
+    EXPECT_EQ(client.takeEntityDetails(&out, &error), DiscoveryStatus::Running);  // in flight
+    // A new pick replaces it at once.
+    server.answerCommands = true;
+    client.cancelEntityDetails();
+    ASSERT_EQ(client.requestEntityDetails("media_player.denon"), ErrorCode::Ok);
+    run(1000);
+    ASSERT_EQ(client.takeEntityDetails(&out, &error), DiscoveryStatus::Done);
+    EXPECT_EQ(out.entityId, "media_player.denon");
+    EXPECT_EQ(out.platform, "denonavr");
+    EXPECT_EQ(client.takeEntityDetails(&out, &error), DiscoveryStatus::Idle);
+    EXPECT_EQ(server.subscriptions(), 0u);
+
+    ASSERT_EQ(client.requestEntityDetails("light.nowhere"), ErrorCode::Ok);
+    run(1000);
+    EXPECT_EQ(client.takeEntityDetails(&out, &error), DiscoveryStatus::Failed);
+    EXPECT_EQ(error, ErrorCode::EntityNotFound);
+
+    // New settings drop a finished fetch.
+    ASSERT_EQ(client.requestEntityDetails("light.family_room"), ErrorCode::Ok);
+    run(1000);
+    client.reconnect();
+    EXPECT_EQ(client.takeEntityDetails(&out, &error), DiscoveryStatus::Idle);
+}
+
+TEST_F(ClientTest, FetchedDetailsProveAnEntityIsntStale) {
+    connect();
+    ASSERT_EQ(discoverNow(), ErrorCode::Ok);
+    sim::FakeHaEntity added;
+    added.info.entityId = "light.new_lamp";
+    added.friendlyName = "New lamp";
+    server.addEntity(added);
+    EXPECT_TRUE(client.entityStale("light.new_lamp"));  // not in that discovery
+    ErrorCode result = ErrorCode::Busy;
+    ASSERT_EQ(client.entityDetails("light.new_lamp", [&](ErrorCode e, HaEntityDetails) { result = e; }), ErrorCode::Ok);
+    run(1000);
+    ASSERT_EQ(result, ErrorCode::Ok);
+    EXPECT_FALSE(client.entityStale("light.new_lamp"));  // registered from details: usable at once
+    server.removeEntity("light.new_lamp");
+    ASSERT_EQ(discoverNow(), ErrorCode::Ok);
+    EXPECT_TRUE(client.entityStale("light.new_lamp"));  // until a discovery says otherwise
 }
 
 TEST_F(ClientTest, AnEntityMissingFromDiscoveryIsStale) {
