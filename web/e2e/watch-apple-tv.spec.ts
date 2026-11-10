@@ -60,12 +60,12 @@ test('build Watch Apple TV from scratch, then use it from the remote', async ({ 
   await shutdown.nth(1).dragTo(shutdown.nth(0))
   await expect(shutdown.nth(0)).toContainText(DENON)
 
-  await page.getByRole('button', { name: 'Validate' }).click()
-  await expect(page.getByText('The hub accepts this activity')).toBeVisible()
+  await page.getByRole('button', { name: 'Check' }).click()
+  await expect(page.getByText('No problems found')).toBeVisible()
   await page.getByRole('button', { name: /^Create/ }).click()
   const id = await activityIdFromUrl(page)
 
-  // Activate it from the dashboard; the startup runs in order, waiting out its wait.
+  // Start it from the home page; the startup runs in order, waiting out its wait.
   let t = await simNow(page)
   await open(page, '/')
   const tile = page.getByRole('main').getByRole('button', { name: /^E2E Watch Apple TV/ })

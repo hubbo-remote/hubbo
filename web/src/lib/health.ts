@@ -1,5 +1,5 @@
 import { Bluetooth, Cpu, Home, type LucideIcon } from 'lucide-react'
-import type { IntegrationState, IntegrationType } from '@/api/types'
+import type { DeviceKind, IntegrationState, IntegrationType } from '@/api/types'
 
 export const HEALTH: Record<IntegrationState, [dotClass: string, label: string]> = {
   connected: ['bg-success', 'Connected'],
@@ -23,4 +23,9 @@ export const INTEGRATION_ICON: Record<IntegrationType, LucideIcon> = {
 }
 
 export const providerRef = (p: { type: string; entity_id?: string; peer_name?: string }) =>
-  p.type === 'home_assistant' ? (p.entity_id ?? '') : p.peer_name ? `Bluetooth host: ${p.peer_name}` : 'Bluetooth host'
+  p.type === 'home_assistant' ? (p.entity_id ?? '') : (p.peer_name ?? 'Bluetooth device')
+
+/** Integrations the admin sets up: everything but the built-in system one. */
+export const isUserIntegration = (i: { type: string }) => i.type !== 'system'
+
+export const KIND_LABEL: Record<DeviceKind, string> = { tv: 'TV', receiver: 'Receiver', speaker: 'Speaker', streamer: 'Streamer', console: 'Game console', light: 'Light', switch: 'Switch', other: 'Other' }

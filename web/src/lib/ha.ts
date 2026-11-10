@@ -9,9 +9,9 @@ import { buttonLabel } from '@/lib/buttons'
  */
 export async function haDeviceError(e: unknown): Promise<string> {
   const err = toApiError(e)
-  if (err.code === 'details_required') return 'Home Assistant’s answer about this entity is out of date (its settings changed, or another entity was loaded since). Try again.'
-  if (err.code === 'integration_unavailable') return 'Home Assistant isn’t connected right now, so Hubbo can’t read this entity. Check its state under Integrations and try again.'
-  if (err.details.some((d) => d.code === 'unknown_device' && d.path === '/provider/entity_id')) return 'Hubbo offers no commands for this entity, so it can’t be a device.'
+  if (err.code === 'details_required') return 'Something changed. Try again.'
+  if (err.code === 'integration_unavailable') return 'Home Assistant isn’t connected. Try again once it is.'
+  if (err.details.some((d) => d.code === 'unknown_device' && d.path === '/provider/entity_id')) return 'Hubbo has no commands for this device.'
   // A re-link the hub refused because an activity's steps no longer fit: name those activities
   // (the hub reports them by index, so read the list only now).
   const refs = err.details.filter((d) => /^\/(activities\/\d+|global_bindings)\//.test(d.path))
@@ -20,7 +20,7 @@ export async function haDeviceError(e: unknown): Promise<string> {
     const where = usedAt(d.path, names)
     return where ? [`• ${where}: ${d.message}`] : []
   })
-  if (broken.length) return `That entity doesn’t offer what your activities use from this device:\n${broken.join('\n')}\nPick an entity with the same commands, or change those steps first.`
+  if (broken.length) return `It’s missing commands your activities use:\n${broken.join('\n')}\nPick another, or change those steps first.`
   return errorMessage(e, { details: true })
 }
 
@@ -36,14 +36,14 @@ export async function loadEntityDetails(integration: string, entityId: string, s
   let st = await api.entityDetailsStart(integration, entityId)
   const until = Date.now() + 60_000
   while (st.state === 'running') {
-    if (Date.now() > until) throw new Error('Home Assistant is taking too long to describe this entity; try again')
+    if (Date.now() > until) throw new Error('Home Assistant is taking too long. Try again.')
     await new Promise((r) => setTimeout(r, 500))
     if (stale()) return null
     st = await api.entityDetails(integration, entityId)
   }
   if (stale()) return null
   if (st.state === 'done') return st as EntityDetails
-  throw new Error(st.state === 'failed' ? (st.error ?? 'Home Assistant couldn’t describe this entity') : 'Another entity was loaded meanwhile; try again')
+  throw new Error(st.state === 'failed' ? (st.error ?? 'Home Assistant couldn’t load this device') : 'Something changed. Try again.')
 }
 
 /**

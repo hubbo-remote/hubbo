@@ -10,17 +10,18 @@ import { cn } from '@/lib/utils'
 import { ConfigBanner } from './ConfigBanner'
 import { Logo } from './Logo'
 
-const NAV: { href: string; label: string; icon: LucideIcon }[] = [
-  { href: '/', label: 'Dashboard', icon: Gauge },
-  { href: '/activities', label: 'Activities', icon: Activity },
+/** `prefix`: where the section's other pages live, when not under `href` (home's editors are under /activities). */
+const NAV: { href: string; prefix?: string; label: string; icon: LucideIcon }[] = [
+  { href: '/', prefix: '/activities', label: 'Activities', icon: Activity },
   { href: '/devices', label: 'Devices', icon: Tv2 },
   { href: '/integrations', label: 'Integrations', icon: Plug },
+  { href: '/status', label: 'Status', icon: Gauge },
   { href: '/settings', label: 'Settings', icon: Settings },
 ]
 
 function useActive() {
   const [loc] = useLocation()
-  return (href: string) => (href === '/' ? loc === '/' : loc === href || loc.startsWith(href + '/'))
+  return (n: (typeof NAV)[number]) => loc === n.href || loc.startsWith((n.prefix ?? n.href) + '/')
 }
 
 const THEMES: { id: ThemePref; icon: LucideIcon; label: string }[] = [
@@ -50,12 +51,14 @@ export function ThemeToggle({ className }: { className?: string }) {
   )
 }
 
+/** What's on, linking home. Not on the home page itself, which shows it. */
 function ActiveChip() {
+  const [loc] = useLocation()
   const status = useStatus()
   const acts = useActivities()
   const id = status.data?.active_activity_id
   const name = id ? (acts.data?.activities.find((a) => a.id === id)?.name ?? id) : null
-  if (!status.data) return null
+  if (!status.data || loc === '/') return null
   return (
     <Link href="/" className="inline-flex min-w-0 items-center gap-2 rounded-full border bg-card px-3 py-1 text-xs font-medium shadow-xs hover:bg-accent">
       <span className={cn('size-2 shrink-0 rounded-full', name ? 'bg-success' : 'bg-muted-foreground/40')} aria-hidden />
@@ -98,10 +101,10 @@ export function AppShell({ session, onSignedOut, children }: { session: Session;
             <Link
               key={n.href}
               href={n.href}
-              aria-current={isActive(n.href) ? 'page' : undefined}
+              aria-current={isActive(n) ? 'page' : undefined}
               className={cn(
                 'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors outline-none hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring',
-                isActive(n.href) && 'bg-accent text-accent-foreground',
+                isActive(n) && 'bg-accent text-accent-foreground',
               )}
             >
               <n.icon className="size-4" aria-hidden />
@@ -118,7 +121,6 @@ export function AppShell({ session, onSignedOut, children }: { session: Session;
           </div>
           <p className="truncate text-xs text-muted-foreground">
             Signed in as <span className="font-medium text-foreground">{session.username}</span>
-            {status.data && <> · v{status.data.hubbo.version}</>}
           </p>
         </div>
       </aside>
@@ -154,8 +156,8 @@ export function AppShell({ session, onSignedOut, children }: { session: Session;
           <Link
             key={n.href}
             href={n.href}
-            aria-current={isActive(n.href) ? 'page' : undefined}
-            className={cn('flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium text-muted-foreground outline-none focus-visible:bg-accent', isActive(n.href) && 'text-primary')}
+            aria-current={isActive(n) ? 'page' : undefined}
+            className={cn('flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium text-muted-foreground outline-none focus-visible:bg-accent', isActive(n) && 'text-primary')}
           >
             <n.icon className="size-5" aria-hidden />
             {n.label}

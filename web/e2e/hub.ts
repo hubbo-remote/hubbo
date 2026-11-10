@@ -177,6 +177,11 @@ export const advance = (page: Page, ms: number) => control(page, `advance?ms=${m
 /** Take the hub's config store down or bring it back (hub-sim: POST /sim/storage, an admin host route). */
 export const setStorage = (page: Page, health: 'available' | 'unavailable' | 'read_only') => control(page, `storage?health=${health}`)
 
+/** Pick a firmware file in Status → Firmware. */
+export async function chooseFirmware(page: Page, image: Uint8Array | string) {
+  await page.getByLabel('Firmware file').setInputFiles({ name: 'firmware.bin', mimeType: 'application/octet-stream', buffer: Buffer.from(image) })
+}
+
 export async function open(page: Page, hash: string) {
   await page.goto(`/#${hash}`)
   await expect(page.getByRole('navigation', { name: 'Main' }).first()).toBeVisible()

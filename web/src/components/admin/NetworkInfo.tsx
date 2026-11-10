@@ -1,5 +1,4 @@
-import { Section } from '@/components/common'
-import { Alert } from '@/components/ui/alert'
+import { Facts, Section } from '@/components/common'
 import { Skeleton } from '@/components/ui/misc'
 import { useStatus } from '@/hooks/data'
 
@@ -14,24 +13,20 @@ export function NetworkInfo({ bare }: { bare?: boolean }) {
     <Skeleton className="h-20" />
   ) : (
     <div className="grid gap-4">
-      <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-3">
-        {[
-          ['Link', n.link === 'up' ? 'Up' : 'Down'],
+      <Facts
+        className="sm:grid-cols-3"
+        rows={[
+          ['Status', n.link === 'up' ? 'Connected' : 'Not connected'],
           ['Address', n.ip ?? 'None yet'],
           ['Hostname', n.hostname ? `${n.hostname}.local` : '–'],
-        ].map(([k, v]) => (
-          <div key={k}>
-            <dt className="text-xs text-muted-foreground">{k}</dt>
-            <dd className="truncate font-medium">{v}</dd>
-          </div>
-        ))}
-      </dl>
-      <Alert variant="info">Hubbo gets its address from your router (DHCP). Reserve that address in the router so it doesn’t change. Static addressing comes later.</Alert>
+        ]}
+      />
+      <p className="text-sm text-muted-foreground">Reserve this address in your router so it doesn’t change.</p>
     </div>
   )
   if (bare) return body
   return (
-    <Section title="Ethernet" description="Hubbo uses wired Ethernet only. Don’t expose it to the internet.">
+    <Section title="Ethernet">
       {body}
     </Section>
   )

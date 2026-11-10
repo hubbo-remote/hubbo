@@ -60,7 +60,7 @@ export function FactoryReset() {
   return (
     <Section
       title="Factory reset"
-      description="Erases everything on the hub: the login, API tokens, the Home Assistant token, Bluetooth pairings, the remote and the configuration. The hub restarts into first-run setup. Use it before handing the hub to someone else."
+      description="Erases everything and starts setup again."
     >
       <Button variant="outline" className="text-destructive hover:text-destructive" onClick={() => setConfirm(true)}>
         <Eraser /> Factory reset…
@@ -68,8 +68,8 @@ export function FactoryReset() {
       <Dialog
         open={confirm}
         onClose={close}
-        title="Erase everything on the hub?"
-        description="This can’t be undone. Download a backup first if you might want this configuration again."
+        title="Erase everything?"
+        description="Everything on Hubbo will be erased, including your login."
         footer={
           state === 'erasing' ? undefined : (
             <>
@@ -85,11 +85,10 @@ export function FactoryReset() {
       >
         {state === 'erasing' ? (
           <p className="inline-flex items-center gap-2 text-sm" role="status">
-            <Loader2 className="size-4 animate-spin text-primary" /> Erasing… the hub is restarting. Setup opens when it’s back.
+            <Loader2 className="size-4 animate-spin text-primary" /> Erasing… Setup opens when Hubbo restarts.
           </p>
         ) : (
           <div className="grid gap-4">
-            <p className="text-sm text-muted-foreground">Afterwards, also forget “Hubbo” in the Apple TV’s Bluetooth settings, so it can pair again.</p>
             {error != null && (
               <Alert variant="error" title="Nothing was erased">
                 <p>{errorMessage(error)}</p>

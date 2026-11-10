@@ -56,11 +56,11 @@ function Editor({ initial, catalog }: { initial: GB; catalog: Catalog }) {
       setServerIssues(null)
       setAttempted(false)
       setQueryData('global-bindings', r)
-      toast('Global buttons saved', { variant: 'success' })
+      toast('Saved', { variant: 'success' })
     } catch (e) {
       if (e instanceof ApiError && e.code === 'revision_conflict') setStale(true)
       else if (e instanceof ApiError && e.details.length) setServerIssues(e.details)
-      else toastError('Could not save', e)
+      else toastError('Couldn’t save', e)
     } finally {
       setBusy(false)
     }
@@ -69,11 +69,11 @@ function Editor({ initial, catalog }: { initial: GB; catalog: Catalog }) {
   return (
     <ShowErrors.Provider value={showErrors}>
       <PageHeader
-        back={{ href: '/activities', label: 'Activities' }}
+        back={{ href: '/', label: 'Activities' }}
         title="Global buttons"
         description={
           <span className="flex flex-wrap items-center gap-2">
-            Apply whatever activity is running, unless the activity binds the same trigger. This is where activity buttons and Off live.
+            Work in every activity.
             {dirty && <Badge variant="warning">Unsaved changes</Badge>}
           </span>
         }
@@ -86,7 +86,7 @@ function Editor({ initial, catalog }: { initial: GB; catalog: Catalog }) {
       {stale && (
         <Alert
           variant="warning"
-          title="Global buttons changed elsewhere"
+          title="Changed somewhere else"
           className="mb-4"
           action={
             <Button
@@ -101,11 +101,11 @@ function Editor({ initial, catalog }: { initial: GB; catalog: Catalog }) {
             </Button>
           }
         >
-          Reload to get the latest version. Your unsaved edits here will be lost.
+          Reload to get the latest. Your changes here will be lost.
         </Alert>
       )}
       {errors.length > 0 && (
-        <Alert variant="error" title="Fix these before saving" className="mb-4">
+        <Alert variant="error" title="Fix this to save" className="mb-4">
           {errors[0]!.message}
         </Alert>
       )}

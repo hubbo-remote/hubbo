@@ -1,14 +1,14 @@
 import { connectHa, expect, open, setBle, setHaState, SIM_URL, test } from './hub.ts'
 
-test('the dashboard shows the remote, Bluetooth, Home Assistant and Ethernet as they are', async ({ page }) => {
+test('Status shows the remote, Bluetooth, Home Assistant and Ethernet as they are', async ({ page }) => {
   await connectHa(page)
-  await open(page, '/')
+  await open(page, '/status')
   const tile = (name: string) => page.getByRole('region', { name, exact: true })
   await expect(tile('Remote')).toContainText('Paired')
   await expect(tile('Ethernet')).toContainText(/\d+\.\d+\.\d+\.\d+/)
   await expect(tile('Bluetooth')).toContainText('Connected')
   await expect(tile('Home Assistant')).toContainText('Connected')
-  await expect(page.getByText('RF dispatch latency')).toBeVisible()
+  await expect(page.getByText('Response time')).toBeVisible()
   await expect(page.getByText('Recent errors')).toBeVisible()
 
   await setBle(page, false)

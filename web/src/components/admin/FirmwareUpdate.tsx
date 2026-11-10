@@ -2,7 +2,7 @@ import { Loader2, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api, ApiError, errorMessage, toApiError } from '@/api/client'
 import { invalidate, setQueryData, useQuery } from '@/api/hooks'
-import { ErrorState, Section } from '@/components/common'
+import { ErrorState, Facts, Section } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -112,29 +112,24 @@ export function FirmwareUpdate() {
 
   const busy = inFlight(phase)
   return (
-    <Section title="Firmware" description="Install a new Hubbo firmware.bin from this page. The hub checks the whole file before it writes anything, then restarts into the new version.">
+    <Section title="Firmware">
       <div className="grid gap-5">
         {fw.data ? (
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
-            {[
+          <Facts
+            rows={[
               ['Version', fw.data.version],
               ['Board', fw.data.board],
-            ].map(([k, v]) => (
-              <div key={k}>
-                <dt className="text-xs text-muted-foreground">{k}</dt>
-                <dd className="truncate font-medium">{v}</dd>
-              </div>
-            ))}
-          </dl>
+            ]}
+          />
         ) : fw.error ? (
-          <ErrorState error={fw.error} retry={fw.refetch} what="Firmware updates" />
+          <ErrorState error={fw.error} retry={fw.refetch} />
         ) : (
           <Skeleton className="h-10" />
         )}
         <div className="grid gap-2">
           <div className="flex flex-wrap items-center gap-3">
             <label className="inline-flex">
-              <span className="sr-only">Firmware image</span>
+              <span className="sr-only">Firmware file</span>
               <Input type="file" accept=".bin,application/octet-stream" disabled={busy} onChange={(e) => void choose(e.target.files?.[0])} className="max-w-xs" />
             </label>
             <Button onClick={install} disabled={!file || busy}>
@@ -143,19 +138,17 @@ export function FirmwareUpdate() {
           </div>
           {file && (
             <p className="text-xs text-muted-foreground">
-              {file.marker ? `This file is Hubbo ${file.marker.version} for ${file.marker.board}.` : 'This doesn’t look like a Hubbo firmware.bin; the hub will check it.'}
+              {file.marker ? `Hubbo ${file.marker.version} for ${file.marker.board}` : 'This doesn’t look like a Hubbo update.'}
             </p>
           )}
         </div>
-        <p className="text-xs text-muted-foreground">While the update is written the remote may lag for up to about 30 seconds. Afterwards the hub restarts, and you’ll sign in again.</p>
+        <p className="text-xs text-muted-foreground">The remote may lag while it installs. You’ll sign in again afterwards.</p>
         <Progress phase={phase} />
         {phase.step === 'refused' && <Refused error={phase.error} />}
         {phase.step === 'done' && <Restarted {...phase} />}
         {fw.data?.update.state === 'failed' && phase.step !== 'refused' && (
-          <Alert variant="error" title="The update failed while writing">
-            <p>
-              The hub is still running {fw.data.version} and will keep booting it{fw.data.update.error ? ` (${fw.data.update.error})` : ''}. Try the update again.
-            </p>
+          <Alert variant="error" title="The update failed">
+            <p>Still running {fw.data.version}. Try again.</p>
           </Alert>
         )}
       </div>
@@ -169,8 +162,8 @@ function Progress({ phase }: { phase: Phase }) {
     phase.step === 'uploading'
       ? ['Upload progress', Math.round(phase.fraction * 100), 'Uploading…']
       : phase.step === 'writing'
-        ? ['Write progress', phase.progress, 'Writing the update…']
-        : [null, 100, phase.slow ? 'The hub hasn’t come back yet. Check that it’s powered and connected.' : 'Restarting… waiting for the hub to answer again.']
+        ? ['Write progress', phase.progress, 'Installing…']
+        : [null, 100, phase.slow ? 'Hubbo hasn’t come back. Check that it’s on and connected.' : 'Restarting…']
   return (
     <div className="grid gap-2">
       <span className="inline-flex items-center gap-2 text-sm" aria-live="polite">
@@ -194,14 +187,14 @@ function Restarted({ from, expected, running }: { from: string; expected: string
   return took ? (
     <Alert variant="success" title="Update installed">
       <p>
-        Hubbo restarted and is running {running} (was {from}).
+        Now running {running} (was {from}).
       </p>
     </Alert>
   ) : (
     <Alert variant="error" title="The update didn’t take">
       <p>
-        The hub restarted but is still running {running}
-        {expected && `, not ${expected}`}. Try the update again.
+        Still running {running}
+        {expected && `, not ${expected}`}. Try again.
       </p>
     </Alert>
   )
@@ -211,13 +204,13 @@ function Restarted({ from, expected, running }: { from: string; expected: string
 function Refused({ error }: { error: ApiError }) {
   const title =
     error.code === 'update_in_progress' ? 'An update is already running'
-    : error.status === 503 ? 'The hub can’t take an update right now'
-    : error.status === 0 ? 'The upload didn’t reach the hub'
+    : error.status === 503 ? 'Hubbo can’t update right now'
+    : error.status === 0 ? 'The upload failed'
     : 'This file wasn’t installed'
   return (
     <Alert variant="error" title={title}>
       <p>{errorMessage(error)}</p>
-      <p>Nothing was written; the hub is unchanged.</p>
+      <p>Nothing changed.</p>
     </Alert>
   )
 }

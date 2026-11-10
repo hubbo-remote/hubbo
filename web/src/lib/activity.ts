@@ -45,10 +45,6 @@ export function forEachAction(doc: { startup?: Action[]; shutdown?: Action[]; bi
   for (const [k, list] of Object.entries(doc.bindings)) list.forEach((a, i) => fn(a, `/bindings/${k}/${i}`))
 }
 
-export function bindingCount(bindings: Bindings): number {
-  return Object.values(bindings).filter((a) => (a?.length ?? 0) > 0).length
-}
-
 /** Button that a validation path points at, if any. */
 export function buttonForPath(path: string): ButtonId | null {
   const m = /^\/bindings\/([^/]+)/.exec(path)
@@ -59,7 +55,6 @@ export const systemAction = (command_id: string, params: ActionParams = {}): Act
 export const waitAction = (duration_ms = 1000): Action => systemAction('wait', { duration_ms })
 export const isSystem = (a: Action) => a.integration_id === SYSTEM && a.device_id === null
 export const isWait = (a: Action) => isSystem(a) && a.command_id === 'wait'
-export const isTransition = (a: Action) => isSystem(a) && (a.command_id === 'activate' || a.command_id === 'off')
 
 export type Placement = 'sequence' | 'binding-last' | 'binding-mid'
 /** Where a system command may go: activate/off only as the last action of a binding (spec rule). */

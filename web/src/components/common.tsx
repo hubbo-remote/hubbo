@@ -40,28 +40,26 @@ export function HealthDot({ state, className }: { state: IntegrationState; class
 
 
 /** Calm placeholder for features the connected hub doesn't implement yet (HTTP 501). */
-export function NotAvailable({ what = 'This feature' }: { what?: string }) {
+export function NotAvailable() {
   return (
     <div role="status" className="flex items-start gap-3 rounded-lg border border-dashed bg-muted/40 px-4 py-3 text-sm">
       <Construction className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
       <div className="grid gap-0.5">
         <p className="font-medium">Not available yet</p>
-        <p className="text-muted-foreground">
-          {what}: this hub’s firmware doesn’t support it yet. Nothing is wrong with your setup.
-        </p>
+        <p className="text-muted-foreground">Update Hubbo to use this.</p>
       </div>
     </div>
   )
 }
 
 /** A failed load or action: "not available yet" for 501s, otherwise an error alert (with Retry for loads). */
-export function ErrorState({ error, retry, what }: { error: unknown; retry?: () => void; what?: string }) {
-  if (isNotImplemented(error)) return <NotAvailable what={what} />
+export function ErrorState({ error, retry }: { error: unknown; retry?: () => void }) {
+  if (isNotImplemented(error)) return <NotAvailable />
   const msg = errorMessage(error, { details: true })
   return (
     <Alert
       variant="error"
-      title={error instanceof ApiError && error.status === 0 ? 'Cannot reach the hub' : 'Something went wrong'}
+      title={error instanceof ApiError && error.status === 0 ? 'Can’t reach Hubbo' : 'Something went wrong'}
       action={retry && (
         <Button size="sm" variant="outline" onClick={retry}>
           Retry
@@ -108,5 +106,19 @@ export function TypedWordField({ word, id, value, onChange }: { word: string; id
     <Field label={`Type “${word}” to confirm`} htmlFor={id}>
       <Input id={id} autoComplete="off" autoCapitalize="none" spellCheck={false} value={value} onChange={(e) => onChange(e.target.value)} />
     </Field>
+  )
+}
+
+/** A small grid of labelled values. */
+export function Facts({ rows, className }: { rows: [string, ReactNode][]; className?: string }) {
+  return (
+    <dl className={cn('grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4', className)}>
+      {rows.map(([k, v]) => (
+        <div key={k}>
+          <dt className="text-xs text-muted-foreground">{k}</dt>
+          <dd className="truncate font-medium tabular-nums">{v}</dd>
+        </div>
+      ))}
+    </dl>
   )
 }

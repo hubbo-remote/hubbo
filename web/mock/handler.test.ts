@@ -108,7 +108,7 @@ describe('mock matches hub-sim', () => {
     expect(r.status).toBe(409)
     const e = errorOf(r)
     expect(e.code).toBe('activity_in_use')
-    expect(e.details?.[0]).toMatchObject({ path: '/global_bindings/bindings/music:tap/0', message: 'Referenced by the global bindings' })
+    expect(e.details?.[0]).toMatchObject({ path: '/global_bindings/bindings/music:tap/0', message: 'Used by global buttons' })
   })
 
   it('deleting the active activity switches to the one in its place', async () => {
@@ -312,7 +312,7 @@ describe('mock behaviour', () => {
     const broadcast = errorOf(await m.handle(req('POST', '/admin/devices', { ...backlight, provider: { type: 'home_assistant', entity_id: 'light.all' } })))
     expect(broadcast.details?.[0]).toEqual(expect.objectContaining({ path: '/provider/entity_id', code: 'pattern' }))
     expect(errorOf(await m.handle(req('POST', '/admin/devices', backlight))).code).toBe('details_required') // no discovery needed, just details
-    expect(await loadDetails(m, 'switch.not_in_ha')).toMatchObject({ state: 'failed', error: 'Home Assistant has no entity switch.not_in_ha' })
+    expect(await loadDetails(m, 'switch.not_in_ha')).toMatchObject({ state: 'failed', error: "switch.not_in_ha isn't in Home Assistant" })
     await loadDetails(m, 'media_player.kitchen_display')
     expect(errorOf(await m.handle(req('POST', '/admin/devices', backlight))).code).toBe('details_required') // another entity loaded last
     const noCommands = await m.handle(req('POST', '/admin/devices', { ...backlight, provider: { type: 'home_assistant', entity_id: 'media_player.kitchen_display' } }))

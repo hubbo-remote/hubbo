@@ -17,10 +17,10 @@ test('saving over a newer revision shows the conflict and can overwrite', async 
 
   await page.getByRole('button', { name: /^Save/ }).click()
   const dialog = page.getByRole('dialog')
-  await expect(dialog.getByRole('heading', { name: 'This activity changed on the hub' })).toBeVisible()
+  await expect(dialog.getByRole('heading', { name: 'Changed somewhere else' })).toBeVisible()
   await expect(dialog).toContainText('Play Xbox (theirs)')
 
-  await dialog.getByRole('button', { name: 'Overwrite with mine' }).click()
+  await dialog.getByRole('button', { name: 'Save mine' }).click()
   await expect(dialog).toBeHidden()
   await expect(page.getByRole('main').getByText('Saved', { exact: true })).toBeVisible()
   expect((await hub.get('/activities/act_play_xbox')).name).toBe('Play Xbox (mine)')
@@ -31,7 +31,7 @@ test('conflict: discard mine and load theirs', async ({ page }) => {
   await page.getByLabel('Activity name').fill('Mine')
   await saveElsewhere(page, 'Theirs')
   await page.getByRole('button', { name: /^Save/ }).click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Discard mine, load theirs' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Load theirs' }).click()
   await expect(page.getByLabel('Activity name')).toHaveValue('Theirs')
 })
 
@@ -48,5 +48,5 @@ test('a tab left open across a restore gets the conflict dialog, not a silent ov
   expect((await hub.post('/admin/restore?dry_run=false', backup)).status()).toBe(200)
 
   await page.getByRole('button', { name: /^Save/ }).click()
-  await expect(page.getByRole('dialog').getByRole('heading', { name: 'This activity changed on the hub' })).toBeVisible()
+  await expect(page.getByRole('dialog').getByRole('heading', { name: 'Changed somewhere else' })).toBeVisible()
 })

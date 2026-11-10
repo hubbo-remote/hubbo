@@ -20,9 +20,8 @@ export function CredentialsProblem({ onRetry }: { onRetry: () => void }) {
           <DatabaseZap className="size-6 text-destructive" aria-hidden />
         </div>
         <div className="grid gap-2">
-          <h1 className="text-xl font-semibold">Hubbo can’t read its login data</h1>
-          <p className="text-sm text-muted-foreground">The hub couldn’t read its saved admin account when it started. Nothing has been changed, and sign-in and setup are unavailable.</p>
-          <p className="text-sm text-muted-foreground">Restart the hub. If this keeps happening, wipe it and set it up again (then restore a backup).</p>
+          <h1 className="text-xl font-semibold">Hubbo can’t read its login</h1>
+          <p className="text-sm text-muted-foreground">Restart Hubbo. If this keeps happening, it needs to be erased and set up again.</p>
         </div>
         <Button variant="outline" onClick={onRetry}>
           <RefreshCw /> Check again

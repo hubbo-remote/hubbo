@@ -6,16 +6,16 @@ import { commandLabel, deviceName, paramSummary } from '@/components/actions/des
 import { EV_COLOR, EventLegend, RemoteSvg } from '@/components/remote/RemoteSvg'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { boundEvents, buttonForPath, commandFor, EVENT_ORDER, isSystem, releaseFor, triggerKey, type Catalog } from '@/lib/activity'
 import { BUTTONS, buttonLabel } from '@/lib/buttons'
 import { cn } from '@/lib/utils'
 
 const EVENT_HELP: Record<EventKind, string> = {
-  down: 'Immediately when pressed',
-  up: 'When released',
-  tap: 'Released before the hold threshold',
-  hold: 'Held past the threshold (fires once)',
+  down: 'on press',
+  up: 'on release',
+  tap: 'quick press',
+  hold: 'press and hold',
 }
 
 /**
@@ -31,7 +31,6 @@ export function BindingsEditor({
   selected,
   onSelect,
   fallback,
-  fallbackLabel,
 }: {
   bindings: Bindings
   onChange: (b: Bindings) => void
@@ -43,7 +42,6 @@ export function BindingsEditor({
   onSelect: (id: string) => void
   /** Bindings that apply when this set leaves a trigger unbound (global bindings, shown greyed). */
   fallback?: Bindings
-  fallbackLabel?: string
 }) {
   const bound = useMemo(() => {
     const out: Record<string, EventKind[]> = {}
@@ -56,7 +54,6 @@ export function BindingsEditor({
   // Keyed on the joined ids so a re-validation with the same result keeps the Set (and RemoteSvg's memo) stable.
   const errorKey = [...new Set(errors.map((e) => buttonForPath(e.path)).filter(Boolean))].sort().join(' ')
   const errorButtons = useMemo(() => new Set(errorKey ? errorKey.split(' ') : []), [errorKey])
-  const boundCount = Object.keys(bound).length
 
   const setBinding = (button: string, event: EventKind, action: Action | null) => {
     const next = { ...bindings }
@@ -83,7 +80,7 @@ export function BindingsEditor({
             onSelect={onSelect}
             errors={errorButtons}
             className="mx-auto max-w-[19rem] md:max-h-[calc(100dvh-9rem)] md:max-w-[15rem]" // phones: full width, so keys are big enough to tap
-            label={`Remote. ${boundCount} of ${BUTTONS.length} buttons bound. Use arrow keys to move between buttons, Enter to edit.`}
+            label="Remote"
           />
           <EventLegend className="mt-3 justify-center" />
         </Card>
@@ -94,7 +91,6 @@ export function BindingsEditor({
             button={selected}
             bindings={bindings}
             fallback={fallback}
-            fallbackLabel={fallbackLabel}
             catalog={catalog}
             errors={errors.filter((e) => buttonForPath(e.path) === selected)}
             warnings={warnings.filter((e) => buttonForPath(e.path) === selected)}
@@ -111,7 +107,7 @@ export function BindingsEditor({
   )
 }
 
-function BindingPanel({ button, bindings, fallback, fallbackLabel = 'Global', catalog, errors, warnings, onChange }: { button: string; bindings: Bindings; fallback?: Bindings; fallbackLabel?: string; catalog: Catalog; errors: ValidationIssue[]; warnings: ValidationIssue[]; onChange: (e: EventKind, a: Action | null) => void }) {
+function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, onChange }: { button: string; bindings: Bindings; fallback?: Bindings; catalog: Catalog; errors: ValidationIssue[]; warnings: ValidationIssue[]; onChange: (e: EventKind, a: Action | null) => void }) {
   const [editing, setEditing] = useState<EventKind | null>(null)
   const [pending, setPending] = useState<Action | null>(null)
   useEffect(() => setEditing(null), [button])
@@ -126,9 +122,6 @@ function BindingPanel({ button, bindings, fallback, fallbackLabel = 'Global', ca
       <CardHeader>
         <div>
           <CardTitle className="text-lg">{buttonLabel(button)}</CardTitle>
-          <CardDescription>
-            <code className="font-mono text-xs">{button}</code> · Unbound events {fallback ? `fall through to ${fallbackLabel.toLowerCase()} bindings` : 'do nothing'}.
-          </CardDescription>
         </div>
       </CardHeader>
       <CardContent className="grid gap-2">
@@ -162,10 +155,10 @@ function BindingPanel({ button, bindings, fallback, fallbackLabel = 'Global', ca
                         <ActionText action={action} catalog={catalog} />
                       ) : inherited ? (
                         <span className="italic">
-                          {fallbackLabel}: <ActionText action={inherited} catalog={catalog} />
+                          Global: <ActionText action={inherited} catalog={catalog} />
                         </span>
                       ) : (
-                        'Not bound'
+                        'Nothing'
                       )}
                     </p>
                   )}
@@ -207,15 +200,12 @@ function BindingPanel({ button, bindings, fallback, fallbackLabel = 'Global', ca
                       </div>
                     )}
                   </div>
-                  {pending && commandFor(pending, catalog)?.effect === 'hold' && <p className="text-xs text-muted-foreground">This command holds until released, so the matching release is added to the up event.</p>}
+                  {pending && commandFor(pending, catalog)?.effect === 'hold' && <p className="text-xs text-muted-foreground">The release is added to Up.</p>}
                 </div>
               )}
             </div>
           )
         })}
-        <p className="pt-1 text-xs text-muted-foreground">
-          Bind <b>down</b> + <b>up</b> for key-like behaviour (hold to repeat). Bind <b>tap</b> + <b>hold</b> for click-or-hold.
-        </p>
       </CardContent>
     </Card>
   )
@@ -234,7 +224,7 @@ function ActionText({ action, catalog }: { action: Action; catalog: Catalog }) {
 
 function BoundList({ bound, selected, onSelect, errorButtons }: { bound: Record<string, EventKind[]>; selected: string | null; onSelect: (id: string) => void; errorButtons: Set<string> }) {
   const ids = BUTTONS.filter((b) => bound[b.id]).map((b) => b.id)
-  if (!ids.length) return <p className="text-sm text-muted-foreground">No buttons bound yet. Pick one on the remote to start.</p>
+  if (!ids.length) return <p className="text-sm text-muted-foreground">No buttons set up yet.</p>
   return (
     <div>
       <h3 className="mb-2 text-sm font-medium">Bound buttons ({ids.length})</h3>

@@ -28,13 +28,15 @@ export async function buildFirmwareImage({ board, version = 'v9.9.9-e2e', badHas
   return out
 }
 
+const INVALID = "This isn't a Hubbo update file"
+
 /** Like the hub: the first failed check's 422, or null for an installable image (the version it carries). */
 export async function checkFirmwareImage(bytes: Uint8Array, board: string): Promise<{ code: 'invalid_image' | 'wrong_board'; message: string } | { version: string }> {
-  if (bytes.length < 68 || bytes[0] !== 0xe9) return { code: 'invalid_image', message: 'Not an app image (use firmware.bin, not the merged factory image)' }
+  if (bytes.length < 68 || bytes[0] !== 0xe9) return { code: 'invalid_image', message: INVALID }
   const marker = readMarker(bytes)
-  if (!marker) return { code: 'invalid_image', message: 'Not a Hubbo firmware image' }
-  if (marker.board !== board) return { code: 'wrong_board', message: 'This Hubbo image is for another board' }
+  if (!marker) return { code: 'invalid_image', message: INVALID }
+  if (marker.board !== board) return { code: 'wrong_board', message: 'This update is for a different device' }
   const digest = await sha256(bytes.subarray(0, bytes.length - 32))
-  if (bytes[23] !== 1 || digest.some((b, i) => b !== bytes[bytes.length - 32 + i])) return { code: 'invalid_image', message: 'The image\'s checksum doesn\'t match; download it again' }
+  if (bytes[23] !== 1 || digest.some((b, i) => b !== bytes[bytes.length - 32 + i])) return { code: 'invalid_image', message: 'This update file is damaged; download it again' }
   return { version: marker.version }
 }

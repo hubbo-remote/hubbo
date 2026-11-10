@@ -7,7 +7,7 @@ export function NotFound() {
       <p className="text-5xl font-semibold text-muted-foreground/40">404</p>
       <p className="text-muted-foreground">That page doesn’t exist.</p>
       <Link href="/" className={buttonVariants({ variant: 'outline' })}>
-        Back to dashboard
+        Go to Activities
       </Link>
     </div>
   )

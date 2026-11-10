@@ -6,15 +6,15 @@ import { describeTransition } from './transition'
 const names = (id: string) => ({ act_play_xbox: 'Play Xbox' })[id] ?? id
 
 describe('describeTransition', () => {
-  it('reports a normal switch with its queued startup', () => {
-    expect(describeTransition(fixture<TransitionResult>('activities/activate.json'), names)).toEqual({ variant: 'success', title: 'Switched to Play Xbox', description: '7 steps queued' })
+  it('reports a normal switch', () => {
+    expect(describeTransition(fixture<TransitionResult>('activities/activate.json'), names)).toEqual({ variant: 'success', title: 'Play Xbox is on' })
   })
 
   it('says the switch happened even when startup was rejected (api/fixtures/activities/activate.queue_full.json)', () => {
     const m = describeTransition(fixture<TransitionResult>('activities/activate.queue_full.json'), names)
     expect(m.variant).toBe('warning')
-    expect(m.title).toBe('Switched to Play Xbox, but its startup didn’t run')
-    expect(m.description).toContain('the action queue was full')
+    expect(m.title).toBe('Play Xbox is on, but its startup didn’t run')
+    expect(m.description).toBe('Hubbo was busy. Try again.')
   })
 
   it('reports off with a rejected shutdown', () => {

@@ -14,7 +14,7 @@ export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 export const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
 /** `3 bindings`, `1 binding`. */
-export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+export const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`
 
 export function formatDuration(s: number): string {
   const d = Math.floor(s / 86400)

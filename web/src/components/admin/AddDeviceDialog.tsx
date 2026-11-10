@@ -13,10 +13,9 @@ import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, Select } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { useDevices, useIntegrationConfig, useIntegrations } from '@/hooks/data'
-import { INTEGRATION_ICON } from '@/lib/health'
+import { INTEGRATION_ICON, isUserIntegration, KIND_LABEL } from '@/lib/health'
 
 const KINDS: DeviceKind[] = ['tv', 'receiver', 'speaker', 'streamer', 'console', 'light', 'switch', 'other']
-const KIND_LABEL: Record<DeviceKind, string> = { tv: 'TV', receiver: 'Receiver', speaker: 'Speaker', streamer: 'Streamer', console: 'Game console', light: 'Light', switch: 'Switch', other: 'Other' }
 const guessKind = (c: DiscoverCandidate): DeviceKind => (c.domain === 'light' ? 'light' : c.domain === 'switch' ? 'switch' : /tv|oled|bravia|webos/i.test(c.name) ? 'tv' : /denon|marantz|yamaha|onkyo|receiver|avr/i.test(c.name) ? 'receiver' : /sonos|speaker/i.test(c.name) ? 'speaker' : 'other')
 
 interface Pick {
@@ -30,7 +29,7 @@ interface Pick {
 /** Integration → discovered target → name. Only discovered targets can be registered. */
 export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onClose: () => void; onAdded?: (d: Device) => void }) {
   const integrations = useIntegrations()
-  const options = (integrations.data ?? []).filter((i) => i.type !== 'system' && i.enabled)
+  const options = (integrations.data ?? []).filter((i) => isUserIntegration(i) && i.enabled)
   const [integration, setIntegration] = useState<string | null>(null)
   const [pick, setPick] = useState<Pick | null>(null)
   const loaded = pick?.details?.state === 'done' ? pick.details.d : null
@@ -91,7 +90,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
       open={open}
       onClose={onClose}
       title="Add a device"
-      description={step === 1 ? 'Where does it live?' : step === 2 ? 'Pick what to register. Only registered devices can be used in activities.' : pick?.provider.type === 'home_assistant' ? 'Check what it can do, then give it a name you’ll recognise.' : 'Give it a name you’ll recognise.'}
+      description={step === 1 ? 'How is it connected?' : undefined}
       footer={
         <>
           {step > 1 && (
@@ -105,7 +104,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
           {step === 3 && (
             <Button onClick={submit} disabled={busy || !name.trim() || (!!pick?.details && (!loaded || !loaded.supported || !!loaded.registered_device_id))}>
               {busy && <Loader2 className="animate-spin" />}
-              Register device
+              Add device
             </Button>
           )}
         </>
@@ -121,12 +120,12 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
                 <Icon className="size-5 text-muted-foreground" />
                 <div>
                   <p className="font-medium">{i.name}</p>
-                  <p className="text-xs text-muted-foreground">{i.type === 'home_assistant' ? 'Media players, lights and switches' : 'The host paired over Bluetooth (e.g. Apple TV)'}</p>
+                  <p className="text-xs text-muted-foreground">{i.type === 'home_assistant' ? 'Media players, lights and switches' : 'The paired Bluetooth device'}</p>
                 </div>
               </button>
             )
           })}
-          {integrations.data && options.length === 0 && <p className="text-sm text-muted-foreground">No integrations are enabled. Set one up under Integrations first.</p>}
+          {integrations.data && options.length === 0 && <p className="text-sm text-muted-foreground">Turn on an integration first.</p>}
         </div>
       )}
       {step === 2 && type === 'home_assistant' && (
@@ -144,8 +143,8 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
         <BleCandidate
           integration={integration!}
           onPick={(peer) => {
-            setPick({ provider: { type: 'ble_hid', ...(peer ? { peer_name: peer } : {}) }, label: peer ?? 'Bluetooth host', ref: 'Bonded host' })
-            setName(peer ?? 'Apple TV')
+            setPick({ provider: { type: 'ble_hid', ...(peer ? { peer_name: peer } : {}) }, label: peer ?? 'Bluetooth device', ref: 'Bluetooth' })
+            setName(peer ?? 'Bluetooth device')
             setKind('streamer')
           }}
         />
@@ -158,7 +157,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
           </div>
           {pick.details?.state === 'loading' && (
             <p className="flex items-center gap-2 rounded-lg border px-3 py-3 text-sm" role="status">
-              <Loader2 className="size-4 animate-spin text-primary" /> Loading actions from Home Assistant…
+              <Loader2 className="size-4 animate-spin text-primary" /> Loading commands…
             </p>
           )}
           {loaded?.registered_device_id ? (
@@ -167,7 +166,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
             loaded && <EntityPreview c={loaded} />
           )}
           {pick.details?.state === 'failed' && (
-            <Alert variant="error" title="Couldn’t load this entity’s actions" action={<Button size="sm" variant="outline" onClick={() => void loadDetails(pick.ref)}>Retry</Button>}>
+            <Alert variant="error" title="Couldn’t load its commands" action={<Button size="sm" variant="outline" onClick={() => void loadDetails(pick.ref)}>Retry</Button>}>
               {pick.details.error}
             </Alert>
           )}
@@ -175,7 +174,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
           <Field label="Name" htmlFor="dev-name">
             <Input id="dev-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={64} autoFocus />
           </Field>
-          <Field label="Kind" htmlFor="dev-kind" hint="Only used for icons and grouping.">
+          <Field label="Type" htmlFor="dev-kind">
             <Select id="dev-kind" value={kind} onChange={(e) => setKind(e.target.value as DeviceKind)}>
               {KINDS.map((k) => (
                 <option key={k} value={k}>
@@ -193,16 +192,16 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
 function BleCandidate({ integration, onPick }: { integration: string; onPick: (peer: string | undefined) => void }) {
   const cfg = useIntegrationConfig(integration)
   const s = cfg.data?.settings
-  if (cfg.error) return <ErrorState error={cfg.error} retry={cfg.refetch} what="Bluetooth settings" />
+  if (cfg.error) return <ErrorState error={cfg.error} retry={cfg.refetch} />
   if (!s) return <Skeleton className="h-16" />
   if (s.type !== 'ble_hid' || !s.bonded) {
-    return <Alert variant="info" title="Nothing paired yet">Pair a host from Integrations → Bluetooth keyboard first, then come back.</Alert>
+    return <Alert variant="info" title="Nothing paired">Pair a device under Integrations first.</Alert>
   }
   return (
     <button onClick={() => onPick(s.peer_name)} className="flex w-full items-center gap-3 rounded-lg border p-3 text-left outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 cursor-pointer">
       <div className="min-w-0 flex-1">
-        <p className="font-medium">{s.peer_name ?? 'Bonded host'}</p>
-        <p className="text-xs text-muted-foreground">Bonded with “{s.device_name}”</p>
+        <p className="font-medium">{s.peer_name ?? 'Bluetooth device'}</p>
+        <p className="text-xs text-muted-foreground">Paired</p>
       </div>
     </button>
   )
@@ -212,11 +211,9 @@ function BleCandidate({ integration, onPick }: { integration: string; onPick: (p
 function AlreadyAdded({ id, name, onOpen }: { id: string; name?: string; onOpen: () => void }) {
   return (
     <Alert variant="info" title={`Already added as ${name ?? id}`}>
-      This entity is already a device. To point that device at it again (e.g. after a rename in Home Assistant), use Re-link on{' '}
       <Link href={`/devices/${id}`} onClick={onOpen} className="font-medium text-primary underline underline-offset-2">
-        its page
+        Open it
       </Link>
-      .
     </Alert>
   )
 }
