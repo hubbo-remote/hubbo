@@ -3,8 +3,9 @@
 # container; nothing is installed on the host.
 #
 #   bin/hubbo test            build the native core and run its tests
-#   bin/hubbo fw <pio args>   PlatformIO in firmware/ (e.g. `fw run`)
-#   bin/hubbo ota <ip>        build the dev firmware and upload it over Ethernet
+#   bin/hubbo fw <pio args>   PlatformIO in firmware/ (e.g. `fw run`; builds the web admin first)
+#   bin/hubbo ota <ip> [--wipe]  build the dev firmware and upload it over Ethernet
+#                             (--wipe: erase every setting first, like a new board)
 #   bin/hubbo sim <args>      build and run hub-sim (`sim serve`, `sim run <script>`)
 #   bin/hubbo tsan            core + sim tests under ThreadSanitizer
 #   bin/hubbo asan            core + sim tests under AddressSanitizer + UBSan
@@ -30,6 +31,24 @@ run_in() {  # <service> <command...>
 
 in_toolchain() {
     run_in toolchain "$@"
+}
+
+# Take an exclusive lock on <file> as fd <fd>, held until this script exits.
+lock() {  # <fd> <file>
+    mkdir -p build
+    eval "exec $1>\"\$2\""
+    flock -w 600 "$1" || { echo "hubbo: $2 is still held after 10 min" >&2; exit 1; }
+}
+
+# Rebuild web/dist unless it is newer than every web admin source.
+web_build_if_stale() {
+    if [ -f web/dist/index.html ] && [ -z "$(find web/src web/public web/index.html \
+            web/package.json web/pnpm-lock.yaml web/vite.config.ts web/tsconfig*.json \
+            -newer web/dist/index.html -print -quit)" ]; then
+        echo "fw: web/dist is up to date"
+    else
+        run_in web build
+    fi
 }
 
 # Build a native tree and run ctest. Configures only on first use; after that
@@ -62,34 +81,64 @@ case "$cmd" in
         native_tests toolchain build/native Debug "$@"
         ;;
     fw)
-        # One firmware build at a time: concurrent pio runs share firmware/.pio.
-        # Only `run` (build/upload) takes the lock; `device monitor` etc. don't.
-        in_toolchain bash -c '
-            if [ "${1:-}" = run ]; then
-                mkdir -p build
-                exec 9>build/firmware.lock
-                flock -w 600 9 || { echo "fw: another firmware build is still running (waited 10 min)" >&2; exit 1; }
-            fi
-            cd firmware && pio "$@"' _ "$@"
+        if [ "${1:-}" = run ]; then
+            # One firmware build at a time (concurrent pio runs share
+            # firmware/.pio). `fw run` embeds web/dist (web_assets.py), so it
+            # also holds the web/dist lock, which `web build` takes too: dist
+            # can't be rewritten while it's being packed.
+            lock 9 build/firmware.lock
+            lock 8 build/web-dist.lock
+            web_build_if_stale
+        fi
+        in_toolchain bash -c 'cd firmware && pio "$@"' _ "$@"
         ;;
     ota)
         # Build the dev (_ota) firmware and upload it over Ethernet. Adds only
         # the password handling to `fw`: read from a private file, never
         # printed (any output line containing it is dropped).
-        ip="${1:?usage: bin/hubbo ota <board ip>}"
+        #
+        # `--wipe` first uploads a build that erases every setting at boot
+        # (admin, tokens, HA token, BLE bonds, remote, config), waits for its
+        # WIPE line, then uploads the normal build: the wipe build erases on
+        # every boot, so it must never stay on the board.
+        ip="${1:?usage: bin/hubbo ota <board ip> [--wipe]}"
+        wipe="${2:-}"
+        [ -z "$wipe" ] || [ "$wipe" = --wipe ] || { echo "ota: unknown option $wipe" >&2; exit 1; }
         pwfile="${HUBBO_OTA_PASSWORD_FILE:-$HOME/.config/hubbo/ota-password}"
         [ -r "$pwfile" ] || { echo "ota: no password file at $pwfile" >&2; exit 1; }
         pw="$(<"$pwfile")"
         [ "${#pw}" -ge 12 ] || { echo "ota: password in $pwfile is empty or too short" >&2; exit 1; }
+        upload() {  # [VAR=value...]: build and upload; output to $log, password lines dropped
+            # The filter pattern comes from a file descriptor, so the password
+            # never appears in a process argument list.
+            env "$@" HUBBO_OTA_PASSWORD="$pw" "$self" fw run -e waveshare_esp32_s3_eth_ota -t upload --upload-port "$ip" 2>&1 |
+                grep -vFf <(printf '%s\n' "$pw") | tee "$log"
+            return "${PIPESTATUS[0]}"
+        }
+        log="$(mktemp)"
+        trap 'rm -f "$log"' EXIT
+        if [ -n "$wipe" ]; then
+            echo "ota: uploading the WIPE build to $ip ..."
+            upload HUBBO_WIPE_ON_BOOT=1 || { echo "ota: wipe build FAILED" >&2; exit 1; }
+            grep -q "HUBBO_WIPE_ON_BOOT: this image ERASES" "$log" ||
+                { echo "ota: the build didn't take the wipe flag; uploading the normal build" >&2; wipe=failed; }
+            if [ "$wipe" = --wipe ]; then
+                echo "ota: waiting for the board to wipe itself ..."
+                for _ in $(seq 1 90); do
+                    curl -s -m 2 "http://$ip/debug/log" 2>/dev/null | grep -q "^WIPE:" && break
+                    sleep 2
+                done
+                curl -s -m 2 "http://$ip/debug/log" 2>/dev/null | grep "^WIPE:" ||
+                    echo "ota: no WIPE line seen; uploading the normal build anyway" >&2
+            fi
+        fi
         echo "ota: building and uploading to $ip ..."
         set +e
-        # The filter pattern comes from a file descriptor, so the password never
-        # appears in a process argument list.
-        HUBBO_OTA_PASSWORD="$pw" "$self" fw run -e waveshare_esp32_s3_eth_ota -t upload --upload-port "$ip" 2>&1 |
-            grep -vFf <(printf '%s\n' "$pw")
-        status=${PIPESTATUS[0]}
+        upload
+        status=$?
         set -e
         if [ "$status" -eq 0 ]; then echo "ota: done; the board is rebooting"; else echo "ota: FAILED (exit $status)" >&2; fi
+        [ "$wipe" != failed ] || status=1
         exit "$status"
         ;;
     sim)
@@ -128,6 +177,7 @@ case "$cmd" in
             run_in web exec true  # install/update node_modules first
             run_in web-e2e "$@"
         else
+            [ "$1" = build ] && lock 8 build/web-dist.lock
             run_in web "$@"
         fi
         ;;

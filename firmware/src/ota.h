@@ -18,6 +18,9 @@
 //     written, and the caller restarts the hub its own way (flushing state
 //     first, without the main loop waiting on another task).
 //
+// Idle, the loop doesn't touch the OTA socket (lwIP's lock stalls it under
+// load): a core-0 watcher task select()s on it and flags the loop.
+//
 // Later phases replace this with signed, authenticated updates over the API.
 
 namespace hubbo::fw::ota {

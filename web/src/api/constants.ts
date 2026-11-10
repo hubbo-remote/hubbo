@@ -7,3 +7,7 @@ export const CSRF_HEADER = 'x-hubbo-csrf'
 export const REMOTE_SCAN_TIMEOUT_S = 120
 /** Remote channels are 0–124, like the console's `radio set` (RemoteEndpoint). */
 export const REMOTE_CHANNEL_MAX = 124
+/** A BLE pairing window's default and range in seconds (POST /admin/integrations/{id}/pair?window_s=). */
+export const BLE_PAIR_WINDOW_S = 120
+export const BLE_PAIR_WINDOW_MIN_S = 30
+export const BLE_PAIR_WINDOW_MAX_S = 300

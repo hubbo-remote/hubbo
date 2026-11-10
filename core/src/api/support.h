@@ -38,6 +38,9 @@ void sendIssues(http::Response &out, const ValidationReport &report, std::string
 // (e.g. weak_password, pattern).
 void sendDetail(http::Response &out, std::string_view path, std::string_view code, std::string_view message);
 
+// A query value of 1-10 decimal digits (no sign, no spaces) within `max`.
+bool parseDecimal(std::string_view text, uint64_t max, uint64_t *value);
+
 // The one ErrorCode -> HTTP mapping for config/engine results: 400, 404,
 // 409 revision_conflict / device_in_use / activity_in_use / limit_reached /
 // busy, 422 with details, 500, 501, 503. `what` names the object ("activity").

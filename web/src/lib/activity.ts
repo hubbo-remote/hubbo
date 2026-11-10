@@ -80,7 +80,8 @@ export function defaultParams(params: ParamSpec[]): ActionParams {
     else if (p.type === 'enum') out[p.name] = p.options?.[0] ?? ''
     else if (p.type === 'bool') out[p.name] = false
     else if (p.type === 'int' || p.type === 'number') out[p.name] = p.minimum ?? 0
-    else out[p.name] = ''
+    // Anything else (e.g. an activity_ref) stays unset until picked: an empty string would look
+    // chosen in a select while being invalid.
   }
   return out
 }

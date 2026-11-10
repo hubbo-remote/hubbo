@@ -67,9 +67,14 @@ public:
     void forget();
 
     State state() const;
+    // The latest pairing window timed out with no new host. Cleared by the
+    // next startPairing() or forget().
+    bool pairingFailed() const { return pairingFailed_; }
     static const char *stateName(State state);
     int bondCount() const { return bondCount_; }
     // Connected host's address, else the bonded one's; empty if none.
+    // Allocates (NimBLE's toString), so callers cache it.
+    static constexpr size_t kAddressSize = 18;  // "aa:bb:cc:dd:ee:ff" + NUL
     void peerAddress(char *out, size_t size) const;
 
     uint32_t notifyFailures() const { return notifyFailures_; }
@@ -80,6 +85,7 @@ private:
 
     bool started_ = false;
     bool pairing_ = false;
+    bool pairingFailed_ = false;
     bool bondingOpen_ = false;              // pairing_ and the old bonds are gone
     std::atomic<bool> bondsClearing_{false};  // a bond deletion is queued or running
     Offload offload_;

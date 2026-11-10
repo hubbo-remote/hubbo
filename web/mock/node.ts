@@ -26,21 +26,12 @@ export function mockMiddleware(opts: MockOptions) {
     const chunks: Buffer[] = []
     for await (const c of req) chunks.push(c as Buffer)
     const raw = Buffer.concat(chunks)
-    let body: unknown = undefined
-    if (raw.length && (req.headers['content-type'] ?? '').includes('json')) {
-      try {
-        body = JSON.parse(raw.toString('utf8'))
-      } catch {
-        res.writeHead(400, { 'content-type': 'application/json' })
-        return res.end(JSON.stringify({ error: { code: 'invalid_json', message: 'Body is not valid JSON' } }))
-      }
-    }
     const out = await mock.handle({
       method: req.method ?? 'GET',
       path: url.pathname.slice(API_PREFIX.length),
       query: url.searchParams,
       headers: req.headers as Record<string, string | undefined>,
-      body,
+      body: undefined, // parsed by the handler, after its size and content-type checks
       rawBody: new Uint8Array(raw),
     })
     const headers: Record<string, string> = { 'cache-control': 'no-store', ...out.headers }

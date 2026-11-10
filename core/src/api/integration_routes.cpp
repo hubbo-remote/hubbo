@@ -1,5 +1,6 @@
 // GET/PUT /admin/integrations/{id} (settings; the HA token is write-only)
-// and POST/GET/DELETE /admin/integrations/{id}/discover (HA candidates).
+// and POST/GET/DELETE /admin/integrations/{id}/discover (HA candidates), and
+// POST/GET .../entities/{entity_id}/details (what registering an entity stores).
 //
 // The HA access token lives in the SecretStore under kHaTokenKey. It is
 // read here only to hand it to the client, and never put in a response.
@@ -19,12 +20,28 @@
 
 namespace hubbo::api {
 
-const DiscoveryCache::Candidate *DiscoveryCache::find(std::string_view entityId, uint32_t currentGeneration) const {
-    if (state != State::Done || generation != currentGeneration) return nullptr;
-    for (const Candidate &c : candidates) {
-        if (c.entityId == entityId) return &c;
+const DeviceSpec *registeredDevice(const ApiContext &ctx, std::string_view entityId, std::string_view uniqueId,
+                                   std::string_view platform) {
+    const DeviceSpec *byUniqueId = nullptr;
+    for (const DeviceSpec &d : ctx.config.config().devices) {
+        if (d.integrationId != kHaIntegrationId || d.provider.type != kHomeAssistantType) continue;
+        if (d.provider.entityId == entityId) return &d;
+        if (byUniqueId == nullptr && !uniqueId.empty() && d.provider.uniqueId == uniqueId && d.haCapabilities &&
+            d.haCapabilities->platform == platform) {
+            byUniqueId = &d;
+        }
     }
-    return nullptr;
+    return byUniqueId;
+}
+
+const char *fetchStateName(FetchState state) {
+    switch (state) {
+        case FetchState::Running: return "running";
+        case FetchState::Done: return "done";
+        case FetchState::Failed: return "failed";
+        case FetchState::Idle: break;
+    }
+    return "idle";
 }
 
 namespace {
@@ -227,21 +244,11 @@ const char *discoveryError(ErrorCode code) {
     }
 }
 
-// Normalizes a finished discovery: the snapshot each candidate would be
-// registered with, and the commands it would offer.
+// Normalizes a finished discovery: the commands each candidate would offer
+// from its domain alone (discovery has no services; the details add them).
 void fillCache(DiscoveryCache *cache, integrations::HaDiscovery discovery) {
-    std::vector<std::string> platforms;
-    for (const auto &c : discovery.candidates) {
-        if (c.platform.empty() || c.platform == c.domain) continue;
-        if (std::find(platforms.begin(), platforms.end(), c.platform) == platforms.end()) {
-            platforms.push_back(c.platform);
-        }
-    }
-    const ha::ServiceDirectory services = ha::ServiceDirectory::parse(discovery.services, platforms);
-    std::string().swap(discovery.services);  // can be a few hundred KB
+    const ha::ServiceDirectory noServices;
     const std::function<void()> yield = cache->yield;
-    if (yield) yield();
-
     cache->reset(DiscoveryCache::State::Done);
     cache->candidates.reserve(discovery.candidates.size());
     // About 0.5 ms a candidate on the board: let other tasks run every 32.
@@ -250,17 +257,16 @@ void fillCache(DiscoveryCache *cache, integrations::HaDiscovery discovery) {
         if (yield && ++done % 32 == 0) yield();
         DiscoveryCache::Candidate out;
         ha::ServiceDirectory::Offer offer;
-        out.snapshot = ha::makeSnapshot(c.info, c.platform, services, &offer);
-        const ha::EntityCapabilities caps = ha::EntityCapabilities::fromSnapshot(c.entityId, out.snapshot);
+        const ha::CapabilitySnapshot snapshot = ha::makeSnapshot(c.info, c.platform, noServices, &offer);
+        const ha::EntityCapabilities caps = ha::EntityCapabilities::fromSnapshot(c.entityId, snapshot);
         const CommandCatalog catalog = caps.catalog();
         for (uint16_t i = 0; i < catalog.count; i++) out.commandIds.emplace_back(catalog.items[i].id);
-        out.skipped = std::move(offer.skipped);  // offerFor caps it at kMaxSnapshotServices
         out.droppedOptions = offer.droppedOptions + caps.droppedOptions();
         out.entityId = std::move(c.entityId);
-        out.uniqueId = std::move(c.uniqueId);
         out.name = std::move(c.name);
         out.domain = std::move(c.domain);
         out.platform = std::move(c.platform);
+        out.state = std::move(c.state);
         cache->candidates.push_back(std::move(out));
     }
     cache->truncated = discovery.truncated;
@@ -292,15 +298,6 @@ void syncDiscovery(ApiContext &ctx) {
     }
 }
 
-const char *cacheStateName(DiscoveryCache::State state) {
-    switch (state) {
-        case DiscoveryCache::State::Idle: return "idle";
-        case DiscoveryCache::State::Running: return "running";
-        case DiscoveryCache::State::Done: return "done";
-        case DiscoveryCache::State::Failed: return "failed";
-    }
-    return "idle";
-}
 
 // The HA integration with a client; false after sending 404 / 503.
 bool requireDiscovery(const ApiContext &ctx, std::string_view id, http::Response &out) {
@@ -345,14 +342,9 @@ bool readPage(const http::Request &request, http::Response &out, Page *page) {
         return false;
     }
     auto number = [](std::string_view text, size_t max, size_t *value) {
-        if (text.empty() || text.size() > 6) return false;
-        size_t n = 0;
-        for (char c : text) {
-            if (c < '0' || c > '9') return false;
-            n = n * 10 + static_cast<size_t>(c - '0');
-        }
-        if (n > max) return false;
-        *value = n;
+        uint64_t n = 0;
+        if (!parseDecimal(text, max, &n)) return false;
+        *value = static_cast<size_t>(n);
         return true;
     };
     const std::string limit = http::queryValue(request.query, "limit");
@@ -368,42 +360,108 @@ bool readPage(const http::Request &request, http::Response &out, Page *page) {
     return true;
 }
 
-const DeviceSpec *registeredDevice(const ApiContext &ctx, const DiscoveryCache::Candidate &c) {
-    // entity_id first; else unique_id, which HA keeps unique only per platform.
-    const DeviceSpec *byUniqueId = nullptr;
-    for (const DeviceSpec &d : ctx.config.config().devices) {
-        if (d.integrationId != kHaIntegrationId || d.provider.type != kHomeAssistantType) continue;
-        if (d.provider.entityId == c.entityId) return &d;
-        if (byUniqueId == nullptr && !c.uniqueId.empty() && d.provider.uniqueId == c.uniqueId &&
-            d.haCapabilities && d.haCapabilities->platform == c.platform) {
-            byUniqueId = &d;
-        }
-    }
-    return byUniqueId;
+// The fields a discovery candidate and entity details share.
+void putEntity(JsonObject out, const ApiContext &ctx, const HaEntity &e) {
+    JsonObject provider = out["provider"].to<JsonObject>();
+    provider["type"] = kHomeAssistantType;
+    provider["entity_id"] = e.entityId;
+    if (!e.uniqueId.empty()) provider["unique_id"] = e.uniqueId;
+    out["name"] = e.name.empty() ? e.entityId : e.name;
+    out["domain"] = e.domain;
+    if (!e.platform.empty()) out["platform"] = e.platform;
+    out["supported"] = !e.commandIds.empty();
+    JsonArray ids = out["command_ids"].to<JsonArray>();
+    for (const std::string &id : e.commandIds) ids.add(id);
+    out["dropped_options"] = e.droppedOptions;
+    const DeviceSpec *device = registeredDevice(ctx, e.entityId, e.uniqueId, e.platform);
+    putNullableId(out, "registered_device_id", device != nullptr ? std::string_view(device->id) : std::string_view());
 }
 
 void putCandidate(JsonObject out, const ApiContext &ctx, const DiscoveryCache::Candidate &c) {
-    JsonObject provider = out["provider"].to<JsonObject>();
-    provider["type"] = kHomeAssistantType;
-    provider["entity_id"] = c.entityId;
-    if (!c.uniqueId.empty()) provider["unique_id"] = c.uniqueId;
-    out["name"] = c.name.empty() ? c.entityId : c.name;
-    out["domain"] = c.domain;
-    if (!c.platform.empty()) out["platform"] = c.platform;
-    out["supported"] = !c.commandIds.empty();
-    JsonArray ids = out["command_ids"].to<JsonArray>();
-    for (const std::string &id : c.commandIds) ids.add(id);
-    out["dropped_options"] = c.droppedOptions;
-    JsonArray skipped = out["skipped_services"].to<JsonArray>();
-    for (const std::string &s : c.skipped) skipped.add(s);
-    const DeviceSpec *device = registeredDevice(ctx, c);
-    putNullableId(out, "registered_device_id", device != nullptr ? std::string_view(device->id) : std::string_view());
+    putEntity(out, ctx, c);
+    if (!c.state.empty()) out["state"] = c.state;
+}
+
+// ---- entity details ---------------------------------------------------------
+
+std::string detailsError(ErrorCode code, const std::string &entityId) {
+    switch (code) {
+        case ErrorCode::EntityNotFound: return "Home Assistant has no entity " + entityId;
+        case ErrorCode::AdapterUnavailable: return "Home Assistant disconnected";
+        default: return discoveryError(code);
+    }
+}
+
+// Normalizes fetched details: the snapshot registration stores.
+void fillDetails(EntityDetails *out, integrations::HaEntityDetails in) {
+    const std::vector<std::string> platforms{in.platform};
+    ha::ServiceDirectory::Offer offer;
+    {
+        const ha::ServiceDirectory services = ha::ServiceDirectory::parse(in.services, platforms);
+        std::string().swap(in.services);  // about 230 KB
+        out->snapshot = ha::makeSnapshot(in.info, in.platform, services, &offer);
+    }
+    const ha::EntityCapabilities caps = ha::EntityCapabilities::fromSnapshot(in.entityId, out->snapshot);
+    const CommandCatalog catalog = caps.catalog();
+    for (uint16_t i = 0; i < catalog.count; i++) out->commandIds.emplace_back(catalog.items[i].id);
+    out->skipped = std::move(offer.skipped);
+    out->droppedOptions = offer.droppedOptions + caps.droppedOptions();
+    out->uniqueId = std::move(in.uniqueId);
+    out->name = std::move(in.name);
+    out->domain = std::string(in.entityId.substr(0, in.entityId.find('.')));
+    out->platform = out->snapshot.platform;  // as normalized and stored ("" if invalid)
+}
+
+// Drops the client's details fetch and the cached result.
+void dropDetails(ApiContext &ctx) {
+    ctx.homeAssistant->cancelEntityDetails();
+    ctx.homeAssistant->takeEntityDetails(nullptr, nullptr);
+    ctx.discovery->details.reset(FetchState::Idle);
+}
+
+// Picks up the client's details result for the entity being fetched.
+void syncDetails(ApiContext &ctx) {
+    EntityDetails &details = ctx.discovery->details;
+    integrations::HaEntityDetails result;
+    ErrorCode error = ErrorCode::Ok;
+    const integrations::DiscoveryStatus status = ctx.homeAssistant->takeEntityDetails(&result, &error);
+    if (details.state != FetchState::Running || status == integrations::DiscoveryStatus::Running) return;
+    if (status == integrations::DiscoveryStatus::Done) {
+        if (result.entityId != details.entityId) return;
+        details.reset(FetchState::Done, details.entityId);
+        return fillDetails(&details, std::move(result));
+    }
+    // Failed, or Idle: dropped with the connection or new settings, nothing will come.
+    details.state = FetchState::Failed;
+    details.error =
+        detailsError(status == integrations::DiscoveryStatus::Failed ? error : ErrorCode::AdapterUnavailable,
+                     details.entityId);
+}
+
+// EntityDetailsStatus for `entityId` (idle if the details are another entity's).
+void sendDetails(const ApiContext &ctx, std::string_view entityId, http::Response &out, int status) {
+    const EntityDetails &d = ctx.discovery->details;
+    JsonDocument doc;
+    if (d.state == FetchState::Idle || d.entityId != entityId) {
+        doc["state"] = "idle";
+        return sendJson(out, status, doc);
+    }
+    doc["state"] = fetchStateName(d.state);
+    doc["entity_id"] = d.entityId;
+    if (d.state == FetchState::Failed) doc["error"] = d.error;
+    if (d.state == FetchState::Done) {
+        JsonObject body = doc.as<JsonObject>();
+        putEntity(body, ctx, d);
+        JsonArray skipped = body["skipped_services"].to<JsonArray>();
+        for (const std::string &name : d.skipped) skipped.add(name);
+    }
+    sendJson(out, status, doc);
 }
 
 void sendDiscovery(const ApiContext &ctx, const Page &page, http::Response &out, int status) {
     const DiscoveryCache &cache = *ctx.discovery;
     JsonDocument doc;
-    doc["state"] = cacheStateName(cache.state);
+    doc["state"] = fetchStateName(cache.state);
     if (cache.state == DiscoveryCache::State::Failed) doc["error"] = cache.error;
     if (cache.state == DiscoveryCache::State::Done) {
         doc["total"] = cache.candidates.size();
@@ -443,12 +501,20 @@ bool forgetTokenForNewHaUrl(ApiContext &ctx, const ConfigSpec &next, http::Respo
     return false;
 }
 
+const EntityDetails *completedDetails(ApiContext &ctx, std::string_view entityId) {
+    if (ctx.homeAssistant == nullptr) return nullptr;
+    syncDetails(ctx);
+    const EntityDetails &d = ctx.discovery->details;
+    return d.state == FetchState::Done && d.entityId == entityId ? &d : nullptr;
+}
+
 void reapplyHomeAssistant(ApiContext &ctx, bool haChanged) {
     if (ctx.homeAssistant == nullptr) return;
     if (haChanged) {
         ctx.homeAssistant->cancelDiscovery();
         ctx.homeAssistant->takeDiscovery(nullptr, nullptr);  // an unread result of the old settings
         ctx.discovery->reset(DiscoveryCache::State::Idle);
+        dropDetails(ctx);
     }
     applyHomeAssistantSettings(ctx.config, ctx.secrets, *ctx.homeAssistant);
 }
@@ -540,6 +606,31 @@ void addIntegrationRoutes(RouteSink &sink, ApiContext &ctx) {
                  if (!readPage(request, out, &page)) return;
                  syncDiscovery(ctx);
                  sendDiscovery(ctx, page, out, 200);
+             });
+
+    sink.add("/api/v1/admin/integrations/{integration_id}/entities/{entity_id}/details",
+             auth::Operation::RequestEntityDetails, [&ctx](auto &, auto &p, auto &out) {
+                 if (!requireDiscovery(ctx, p[0], out)) return;
+                 const std::string entityId(p[1]);
+                 if (!ha::isValidEntityId(entityId) || ha::entityDomain(entityId) == ha::EntityDomain::Unsupported) {
+                     return sendDetail(out, "/entity_id", "pattern",
+                                       "entity_id must be one media_player, light or switch entity");
+                 }
+                 // One at a time: a new pick replaces the earlier fetch (the
+                 // cancel frees the slot, and the id is checked above).
+                 dropDetails(ctx);
+                 if (ctx.homeAssistant->requestEntityDetails(entityId) != ErrorCode::Ok) {
+                     return sendError(out, 503, "integration_unavailable", "Home Assistant isn't connected");
+                 }
+                 ctx.discovery->details.reset(FetchState::Running, entityId);
+                 sendDetails(ctx, entityId, out, 202);
+             });
+
+    sink.add("/api/v1/admin/integrations/{integration_id}/entities/{entity_id}/details",
+             auth::Operation::GetEntityDetails, [&ctx](auto &, auto &p, auto &out) {
+                 if (!requireDiscovery(ctx, p[0], out)) return;
+                 syncDetails(ctx);
+                 sendDetails(ctx, p[1], out, 200);
              });
 
     sink.add("/api/v1/admin/integrations/{integration_id}/discover", auth::Operation::CancelDiscovery,

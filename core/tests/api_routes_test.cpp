@@ -169,6 +169,15 @@ protected:
         return call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover" + query);
     }
 
+    // An entity's loaded details (GET's reply), as registering it needs.
+    Reply details(const std::string &entityId) {
+        const std::string path = "/api/v1/admin/integrations/ha_main/entities/" + entityId + "/details";
+        Reply r = call(http::Method::Post, path);
+        EXPECT_EQ(r.status, 202) << dump(r);
+        pumpHa();
+        return call(http::Method::Get, path);
+    }
+
     sim::SimHub hub;
     ValidationReport seeded;
     uint64_t haNow = 0;
@@ -183,11 +192,12 @@ protected:
     api::Authenticator authn{creds, sessions, clock};
     // Phase 3 ports: the remote radio and a real HA client against the fake HA.
     api::SimulatedRemote remote;
+    api::SimulatedBlePairing ble;
     sim::FakeHaServer haServer;
     sim::FakeHaTransport haTransport{haServer};
     integrations::HomeAssistantClient haClient{haTransport};
     api::Api api{api::ApiContext{creds, sessions, limiter, clock, hub.configService(), runtime, {}, nullptr, &remote,
-                                 &haClient, &secrets, nullptr}};
+                                 &haClient, &secrets, nullptr, &ble}};
     http::Router router;
 
     bool noAuth = true;  // simulated admin unless a test logs in
@@ -322,20 +332,28 @@ TEST_F(ApiTest, AdminDeviceRegistry) {
     backlight.info.entityId = "switch.tv_backlight";
     backlight.uniqueId = "uid_backlight";
     haServer.addEntity(backlight);
-    // Registration uses the latest discovery: none yet.
+    // Registration uses the entity's loaded details: none yet.
     Reply r = call(http::Method::Post, "/api/v1/admin/devices",
                    R"({"name":"TV Backlight","integration_id":"ha_main","kind":"switch",
                        "provider":{"type":"home_assistant","entity_id":"switch.tv_backlight"}})");
-    EXPECT_EQ(r.status, 422) << dump(r);
-    EXPECT_EQ(r.json["error"]["details"][0]["code"], "unknown_device");
+    EXPECT_EQ(r.status, 409) << dump(r);
+    EXPECT_EQ(r.code(), "details_required");
     connectHa();
-    ASSERT_EQ(discover().json["state"], "done");
+    r = details("switch.tv_backlight");
+    ASSERT_EQ(r.json["state"], "done") << dump(r);
+    EXPECT_EQ(r.json["provider"]["unique_id"], "uid_backlight");
+    EXPECT_EQ(r.json["supported"], true);
+    EXPECT_TRUE(r.json["skipped_services"].is<JsonArray>());
+    // Another entity's details are idle; registering with them is refused.
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/ha_main/entities/light.family_room/details")
+                  .json["state"],
+              "idle");
     r = call(http::Method::Post, "/api/v1/admin/devices",
                    R"({"name":"TV Backlight","integration_id":"ha_main","kind":"switch",
                        "provider":{"type":"home_assistant","entity_id":"switch.tv_backlight"}})");
     ASSERT_EQ(r.status, 201) << dump(r);
     EXPECT_FALSE(r.json["ha_capabilities"].is<JsonObject>()) << "stored, not part of Device";
-    EXPECT_EQ(r.json["provider"]["unique_id"], "uid_backlight");  // filled from the discovery
+    EXPECT_EQ(r.json["provider"]["unique_id"], "uid_backlight");  // filled from the details
     const std::string id = r.json["id"].as<std::string>();
     const uint32_t created = r.json["revision"];
     const DeviceSpec *stored = hub.configService().findDevice(id);
@@ -348,13 +366,47 @@ TEST_F(ApiTest, AdminDeviceRegistry) {
                  "provider":{"type":"home_assistant","entity_id":"switch.tv_backlight"}})");
     EXPECT_EQ(r.status, 422);
     EXPECT_EQ(r.json["error"]["details"][0]["code"], "unknown_field");
+    // One device per entity, also after HA renames it: the details find the
+    // device by unique_id (within the platform) and registering it again is refused.
+    ASSERT_EQ(details("switch.tv_backlight").json["registered_device_id"], id);
+    r = call(http::Method::Post, "/api/v1/admin/devices",
+             R"({"name":"Again","integration_id":"ha_main",
+                 "provider":{"type":"home_assistant","entity_id":"switch.tv_backlight"}})");
+    EXPECT_EQ(r.status, 422);
+    EXPECT_EQ(r.json["error"]["details"][0]["code"], "duplicate_id");
+    haServer.removeEntity("switch.tv_backlight");
+    sim::FakeHaEntity renamed = backlight;
+    renamed.info.entityId = "switch.tv_glow";
+    haServer.addEntity(renamed);
+    r = details("switch.tv_glow");
+    ASSERT_EQ(r.json["state"], "done") << dump(r);
+    EXPECT_EQ(r.json["registered_device_id"], id) << "a renamed entity is still the registered device";
+    r = call(http::Method::Post, "/api/v1/admin/devices",
+             R"({"name":"Glow","integration_id":"ha_main",
+                 "provider":{"type":"home_assistant","entity_id":"switch.tv_glow"}})");
+    EXPECT_EQ(r.json["error"]["details"][0]["code"], "duplicate_id") << dump(r);
+    // Re-linking the device itself to the new entity_id is the way.
+    r = call(http::Method::Put, "/api/v1/admin/devices/" + id,
+             R"({"provider":{"type":"home_assistant","entity_id":"switch.tv_glow"},"revision":)" +
+                 std::to_string(hub.configService().findDevice(id)->revision) + "}");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["provider"]["entity_id"], "switch.tv_glow");
+
+    r = details("switch.not_in_ha");
+    EXPECT_EQ(r.json["state"], "failed");
+    EXPECT_EQ(r.json["error"], "Home Assistant has no entity switch.not_in_ha");
     r = call(http::Method::Post, "/api/v1/admin/devices",
              R"({"name":"Ghost","integration_id":"ha_main",
                  "provider":{"type":"home_assistant","entity_id":"switch.not_in_ha"}})");
-    EXPECT_EQ(r.status, 422);
-    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/provider/entity_id");
+    EXPECT_EQ(r.code(), "details_required");
+    // Bad details requests.
+    const std::string base = "/api/v1/admin/integrations/";
+    EXPECT_EQ(call(http::Method::Post, base + "ha_main/entities/sensor.temp/details").status, 422);
+    EXPECT_EQ(call(http::Method::Post, base + "ha_main/entities/light.all/details").status, 422);
+    EXPECT_EQ(call(http::Method::Post, base + "ble/entities/light.office/details").status, 404);
     r = call(http::Method::Put, "/api/v1/admin/devices/" + id,
-             R"({"name":"Backlight","revision":)" + std::to_string(created) + "}");
+             R"({"name":"Backlight","revision":)" +
+                 std::to_string(hub.configService().findDevice(id)->revision) + "}");
     ASSERT_EQ(r.status, 200) << dump(r);
     const uint32_t updated = r.json["revision"];
     EXPECT_GT(updated, created);
@@ -665,6 +717,44 @@ TEST_F(ApiTest, RemoteEndpointAndHubScan) {
     EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/remote/pair").status, 503);
 }
 
+TEST_F(ApiTest, BluetoothPairing) {
+    const std::string pair = "/api/v1/admin/integrations/ble/pair";
+    Reply r = call(http::Method::Get, pair);
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["state"], "idle");
+
+    r = call(http::Method::Post, pair);
+    ASSERT_EQ(r.status, 202) << dump(r);
+    EXPECT_EQ(r.json["state"], "pairing");
+    EXPECT_EQ(r.json["window_s"], 120);
+    r = call(http::Method::Post, pair);
+    EXPECT_EQ(r.status, 409);
+    EXPECT_EQ(r.code(), "busy");
+    ble.advance(119500);
+    EXPECT_EQ(call(http::Method::Get, pair).json["window_s"], 1);
+    ble.advance(500);
+    EXPECT_EQ(call(http::Method::Get, pair).json["state"], "failed") << "the window closed with no bond";
+
+    // A host bonds during the window; a new window replaces it.
+    ASSERT_EQ(call(http::Method::Post, pair + "?window_s=30").json["window_s"], 30);
+    ble.bonded("Living Room");
+    r = call(http::Method::Get, pair);
+    EXPECT_EQ(r.json["state"], "paired");
+    EXPECT_EQ(r.json["peer_name"], "Living Room");
+    EXPECT_EQ(call(http::Method::Delete, pair).status, 204);
+    EXPECT_EQ(call(http::Method::Get, pair).json["state"], "idle");
+
+    for (const char *bad : {"29", "301", "x", "1000", "-5"}) {
+        r = call(http::Method::Post, pair + "?window_s=" + bad);
+        EXPECT_EQ(r.status, 422) << bad;
+    }
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/integrations/ha_main/pair").status, 404);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/nope/pair").status, 404);
+    ble.ready = false;
+    EXPECT_EQ(call(http::Method::Post, pair).status, 503);
+    EXPECT_EQ(call(http::Method::Delete, pair).status, 503);
+}
+
 TEST_F(ApiTest, TheHomeAssistantTokenIsWriteOnly) {
     const std::string token = haServer.token;
     Reply r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main");
@@ -829,6 +919,7 @@ TEST_F(ApiTest, DiscoverySearchDecodesTheQuery) {
 TEST_F(ApiTest, NewHomeAssistantSettingsDropTheOldDiscovery) {
     connectHa();
     ASSERT_EQ(discover().json["state"], "done");
+    ASSERT_EQ(details("light.family_room").json["state"], "done");
     ASSERT_NE(hub.configService().findIntegration("ha_main"), nullptr);
     const uint32_t revision = hub.configService().findIntegration("ha_main")->revision;
     // A rename keeps it; another URL (another HA) drops it.
@@ -836,6 +927,9 @@ TEST_F(ApiTest, NewHomeAssistantSettingsDropTheOldDiscovery) {
                    R"({"name":"HA","revision":)" + std::to_string(revision) + "}");
     ASSERT_EQ(r.status, 200) << dump(r);
     EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover").json["state"], "done");
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/ha_main/entities/light.family_room/details")
+                  .json["state"],
+              "done");
     r = call(http::Method::Put, "/api/v1/admin/integrations/ha_main",
              R"({"settings":{"type":"home_assistant","url":"http://other.local:8123"},"revision":)" +
                  std::to_string(r.json["revision"].as<uint32_t>()) + "}");
@@ -844,7 +938,7 @@ TEST_F(ApiTest, NewHomeAssistantSettingsDropTheOldDiscovery) {
     r = call(http::Method::Post, "/api/v1/admin/devices",
              R"({"name":"Old","integration_id":"ha_main",
                  "provider":{"type":"home_assistant","entity_id":"light.family_room"}})");
-    EXPECT_EQ(r.status, 422) << "nothing is registered from the old HA's candidates";
+    EXPECT_EQ(r.code(), "details_required") << "nothing is registered from the old HA's details";
     // ca_cert_pem is gone from the API.
     r = call(http::Method::Put, "/api/v1/admin/integrations/ha_main",
              R"({"settings":{"type":"home_assistant","ca_cert_pem":null},"revision":)" +

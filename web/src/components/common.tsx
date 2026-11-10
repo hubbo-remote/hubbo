@@ -18,7 +18,8 @@ export function PageHeader({ title, description, actions, back }: { title: React
             <ArrowLeft className="size-4" /> {back.label}
           </Link>
         )}
-        <h1 className="truncate text-2xl font-semibold tracking-tight">{title}</h1>
+        {/* Only plain text truncates: `truncate` hides overflow, which would clip a control's focus ring (the activity name). */}
+        <h1 className={cn('text-2xl font-semibold tracking-tight', typeof title === 'string' && 'truncate')}>{title}</h1>
         {description && <p className="text-sm text-muted-foreground">{description}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}

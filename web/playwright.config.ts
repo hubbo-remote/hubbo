@@ -18,11 +18,21 @@ export default defineConfig({
   // hub started in a particular state (blocked config, storage down), so they run
   // before the rest, whose resets replace both.
   projects: [
-    { name: 'first-run', testMatch: /setup\.spec\.ts/ },
-    { name: 'seeded', testMatch: /(blocked|storage-boot|credentials-corrupt)\.spec\.ts/, dependencies: ['first-run'] },
-    { name: 'app', testIgnore: /(setup|blocked|storage-boot|credentials-corrupt|storage-auth)\.spec\.ts/, dependencies: ['seeded'] },
+    { name: 'first-run', testMatch: /(^|\/)setup\.spec\.ts$/ },
+    { name: 'seeded', testMatch: /(^|\/)(blocked|storage-boot|credentials-corrupt)\.spec\.ts$/, dependencies: ['first-run'] },
+    { name: 'app', testIgnore: /(^|\/)(setup|blocked|storage-boot|credentials-corrupt|storage-auth|board)\.spec\.ts$/, dependencies: ['seeded'] },
+    // The main pages again on a phone (touch, 390×844), ordered like `app`.
+    {
+      name: 'phone',
+      testMatch: /(^|\/)(dashboard|activate|activity|devices|remote|ble|a11y)\.spec\.ts$/,
+      dependencies: ['seeded'],
+      use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
+    },
     // Leaves hub-sim --auth with storage down (it can't be brought back without a session), so it runs last.
-    { name: 'last', testMatch: /storage-auth\.spec\.ts/, dependencies: ['app'] },
+    { name: 'last', testMatch: /(^|\/)storage-auth\.spec\.ts$/, dependencies: ['app', 'phone'] },
+    // Read-only checks of a real board serving the UI (HUBBO_E2E_BASE_URL=http://<board>/): `--project board`.
+    // It may type the real admin password, so nothing that records the page is kept.
+    { name: 'board', testMatch: /(^|\/)board\.spec\.ts$/, use: { trace: 'off', screenshot: 'off', video: 'off' } },
   ],
   webServer: process.env.HUBBO_E2E_BASE_URL
     ? undefined

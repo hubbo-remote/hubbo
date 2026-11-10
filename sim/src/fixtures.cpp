@@ -169,7 +169,7 @@ ConfigSpec fixtureConfig() {
     return c;
 }
 
-std::vector<ha::EntityInfo> fixtureEntities() {
+std::vector<FixtureHaEntity> fixtureHaEntities() {
     // The union of the entities behind fixtureConfig() and the shared API
     // dataset (api/fixtures/admin/backup.json); features and source lists
     // match api/fixtures/devices/*.capabilities.json.
@@ -184,32 +184,42 @@ std::vector<ha::EntityInfo> fixtureEntities() {
         return e;
     };
 
-    std::vector<ha::EntityInfo> out;
-    out.push_back(entity("media_player.family_room_lg_tv",
-                         power | mp::kVolumeStep | mp::kVolumeMute | transport | mp::kStop | mp::kSelectSource,
-                         {"HDMI 1", "HDMI 2", "HDMI 3", "Live TV", "Netflix", "YouTube"}));
-    out.push_back(entity("media_player.xbox", power | mp::kVolumeStep | mp::kVolumeMute | transport));
+    std::vector<FixtureHaEntity> out;
+    out.push_back({entity("media_player.family_room_lg_tv",
+                          power | mp::kVolumeStep | mp::kVolumeMute | transport | mp::kStop | mp::kSelectSource,
+                          {"HDMI 1", "HDMI 2", "HDMI 3", "Live TV", "Netflix", "YouTube"}),
+                   "Family Room LG TV", "webostv"});
+    out.push_back({entity("media_player.xbox", power | mp::kVolumeStep | mp::kVolumeMute | transport), "Xbox", "xbox"});
     // fixtureConfig()'s receiver.
-    out.push_back(entity("media_player.denon",
-                         power | mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | mp::kSelectSource,
-                         {"Media Player", "Game", "TV Audio"}));
+    out.push_back({entity("media_player.denon",
+                          power | mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | mp::kSelectSource,
+                          {"Media Player", "Game", "TV Audio"}),
+                   "Denon AVR-X3700H", "denonavr"});
     // The API dataset's receiver and speaker.
     ha::EntityInfo denon = entity("media_player.family_room_denon",
                                   power | mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | mp::kSelectSource |
                                       mp::kSelectSoundMode,
                                   {"Blu-ray", "CBL/SAT", "DVD", "Game", "Media Player", "TV Audio", "Tuner", "Bluetooth"});
     denon.soundModeList = {"MUSIC", "MOVIE", "GAME", "AUTO", "STEREO", "DIRECT"};
-    out.push_back(denon);
-    out.push_back(entity("media_player.family_room_sonos",
-                         mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | transport | mp::kStop |
-                             mp::kSelectSource | mp::kShuffleSet | mp::kRepeatSet,
-                         {"TV"}));
+    out.push_back({denon, "Family Room Denon", "denonavr"});
+    out.push_back({entity("media_player.family_room_sonos",
+                          mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | transport | mp::kStop |
+                              mp::kSelectSource | mp::kShuffleSet | mp::kRepeatSet,
+                          {"TV"}),
+                   "Family Room Sonos", "sonos"});
     // Only used by limit tests: an enum option of the maximum length.
-    out.push_back(entity("media_player.limits_test", power | mp::kSelectSource,
-                         {std::string(limits::kMaxParamStringLength, 's'), "Short"}));
+    out.push_back({entity("media_player.limits_test", power | mp::kSelectSource,
+                          {std::string(limits::kMaxParamStringLength, 's'), "Short"}),
+                   "Limits Test", "demo"});
     ha::EntityInfo lights = entity("light.family_room", ha::light_feature::kTransition);
     lights.supportedColorModes = {"color_temp"};
-    out.push_back(lights);
+    out.push_back({lights, "Family Room Lights", "hue"});
+    return out;
+}
+
+std::vector<ha::EntityInfo> fixtureEntities() {
+    std::vector<ha::EntityInfo> out;
+    for (FixtureHaEntity &e : fixtureHaEntities()) out.push_back(std::move(e.info));
     return out;
 }
 

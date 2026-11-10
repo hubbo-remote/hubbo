@@ -21,7 +21,7 @@
   --accent-foreground: oklch(0.3 0.06 195);
   --destructive: oklch(0.58 0.21 27);
   --destructive-foreground: oklch(0.99 0 0);
-  --success: oklch(0.6 0.14 155);
+  --success: oklch(0.5 0.13 155); /* text on light backgrounds needs 4.5:1 */
   --warning: oklch(0.72 0.15 70);
   --border: oklch(0.91 0.006 250);
   --input: oklch(0.88 0.008 250);

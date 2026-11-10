@@ -1,0 +1,5 @@
+{
+  "state": "failed",
+  "entity_id": "switch.not_in_ha",
+  "error": "Home Assistant has no entity switch.not_in_ha"
+}

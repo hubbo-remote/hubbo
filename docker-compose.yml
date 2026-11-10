@@ -21,6 +21,7 @@ services:
     environment:
       # Read at build and upload time by firmware OTA envs. Unset is fine.
       - HUBBO_OTA_PASSWORD
+      - HUBBO_WIPE_ON_BOOT
 
   # The toolchain set up for ThreadSanitizer (`bin/hubbo tsan`). TSan can't
   # map its shadow memory under the host kernel's full mmap randomization, so
@@ -92,6 +93,8 @@ services:
       - HOME=/tmp
       - HUBBO_API_TARGET
       - HUBBO_E2E_BASE_URL
+      - HUBBO_E2E_BOARD_USER
+      - HUBBO_E2E_BOARD_PASSWORD
 
 volumes:
   platformio:

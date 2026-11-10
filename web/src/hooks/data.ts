@@ -6,14 +6,15 @@ import type { Capabilities } from '@/api/types'
 import type { Catalog } from '@/lib/activity'
 
 export const useSession = () => useQuery('session', () => api.session())
-export const useStatus = (pollMs = 3000) => useQuery('status', () => api.status(), { pollMs })
-export const useDevices = () => useQuery('devices', () => api.devices())
+/** `enabled: false` skips the request (e.g. before there's a session to make it with). */
+export const useStatus = (pollMs = 3000, enabled = true) => useQuery(enabled ? 'status' : null, () => api.status(), { pollMs })
+export const useDevices = (enabled = true) => useQuery(enabled ? 'devices' : null, () => api.devices())
 export const useDevice = (id: string) => useQuery(`devices/${id}`, () => api.device(id))
 export const useCapabilities = (id: string | null) => useQuery(id ? `caps/${id}` : null, () => api.capabilities(id!))
 export const useActivities = () => useQuery('activities', () => api.activities())
 export const useActivity = (id: string | null) => useQuery(id ? `activity/${id}` : null, () => api.activity(id!))
 export const useGlobalBindings = () => useQuery('global-bindings', () => api.globalBindings())
-export const useIntegrations = () => useQuery('integrations', () => api.integrations())
+export const useIntegrations = (enabled = true) => useQuery(enabled ? 'integrations' : null, () => api.integrations())
 export const useIntegrationConfig = (id: string) => useQuery(`integration-config/${id}`, () => api.integrationConfig(id))
 
 /** Everything the binding/sequence editors validate against: devices, their commands, system commands, activities. */

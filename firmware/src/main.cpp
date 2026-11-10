@@ -8,6 +8,9 @@
 #include <ESPmDNS.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#ifdef HUBBO_WIPE_ON_BOOT
+#include <nvs_flash.h>
+#endif
 #include <esp_timer.h>
 #ifdef HUBBO_DEV_CONSOLE
 #include <esp_core_dump.h>
@@ -59,6 +62,7 @@
 #include "nvs_secret_store.h"
 #include "ota.h"
 #include "remote_radio.h"
+#include "ble_pairing_runtime.h"
 #include "remote_runtime.h"
 #include "ws_transport.h"
 
@@ -183,6 +187,7 @@ public:
 InputFeeder feeder;
 RemoteRadio radio(feeder);
 RemoteRuntime remoteRuntime(radio);  // the admin API's view of the radio
+BlePairingRuntime blePairing(ble);   // the admin API's view of BLE pairing
 EthernetLink ethernet;
 
 // --- Config/HTTP side ----------------------------------------------------------
@@ -407,6 +412,21 @@ void printCredentialState() {
     }
 }
 
+#ifdef HUBBO_WIPE_ON_BOOT
+// Gate builds only (scripts/wipe_on_boot.py): factory-fresh state on every
+// boot. Erases all of NVS (admin credentials, API tokens, the HA token, BLE
+// bonds, the Hub endpoint), then requests flash_fs's own format at boot, which
+// mountFilesystem() runs next. OTA keeps working: its password hash is
+// compiled in. Runs before anything opens NVS or the fs.
+void wipeForGate() {
+    const esp_err_t nvs = nvs_flash_erase();
+    const esp_err_t init = nvs_flash_init();
+    const bool format = flash_fs::requestFormatAtBoot();
+    con.printf("WIPE: factory reset build; nvs erase %s, init %s, fs format %s\n",
+               esp_err_to_name(nvs), esp_err_to_name(init), format ? "requested" : "NOT requested");
+}
+#endif
+
 // The one boot path (core's bootHub): config, then credentials, then the
 // active activity, restored without its startup only when the config is Ok
 // and the saved value is readable. Runs in setup(), before the first radio
@@ -476,6 +496,7 @@ void startApi() {
     info.hostname = hostname;
     hubbo::api::ApiContext context{credentials, sessions, loginLimiter, apiClock, *configService, runtime, info};
     context.remote = &remoteRuntime;
+    context.blePairing = &blePairing;
     context.homeAssistant = &haClient;
     context.secrets = &secretStore;
     api = std::make_unique<hubbo::api::Api>(std::move(context));
@@ -494,6 +515,9 @@ void startApi() {
 #ifdef HUBBO_DEV_CONSOLE
     addDevEndpoints();
 #endif
+    if (!httpServer.serveWebAdmin()) {  // last: /api and /debug match first
+        con.println("http: web admin handler failed to register");
+    }
 
     // httpd housekeeping, once a second while there's something to do:
     //  - the active activity, saved 5 s after it settles (on a change or
@@ -574,8 +598,10 @@ void publishRuntime() {
         ble.peerAddress(s.blePeer, sizeof(s.blePeer));  // allocates; only on change
         s.bleState = bleState;
     }
+    const uint32_t nowMs = millis();
     runtime.publish(s);
-    remoteRuntime.publish(millis());
+    remoteRuntime.publish(nowMs);
+    blePairing.publish(nowMs, s.blePeer);
 }
 
 // --- Serial console ------------------------------------------------------------
@@ -1000,6 +1026,9 @@ void setup() {
                   static_cast<unsigned long>(ESP.getPsramSize() >> 10));
     con.printf("sdk %s\n", ESP.getSdkVersion());
 
+#ifdef HUBBO_WIPE_ON_BOOT
+    wipeForGate();
+#endif
     mountFilesystem();
     if (!radio.begin()) {
         con.println("radio: failed; check wiring and the 10 uF capacitor. Continuing without it.");
@@ -1069,6 +1098,9 @@ void loop() {
     if (!stopping) {
         input.poll(nowMs);
         remoteRuntime.poll(nowMs);
+        if (blePairing.poll(nowMs)) {
+            publishRuntime();  // status() shows the effect at once
+        }
     }
     engine.poll(nowMs);
     pollReboot();

@@ -105,27 +105,36 @@ bool checkProvider(const ProviderSpec &provider, http::Response &out, const char
     return true;
 }
 
-// An HA provider's snapshot, from the latest discovery (POST/GET
-// /admin/integrations/ha_main/discover). Fills the provider's unique_id
-// from it. False after sending 503 / 422.
-bool snapshotFor(const ApiContext &ctx, ProviderSpec *provider, ha::CapabilitySnapshot *out, http::Response &res) {
+// An HA provider's snapshot, from that entity's finished details (POST/GET
+// /admin/integrations/ha_main/entities/{entity_id}/details). Fills the
+// provider's unique_id from them. One device per entity: another device on
+// it (also one the entity was renamed from) is 422 duplicate_id; `selfId` is
+// the device being re-linked. False after sending 503 / 409 / 422.
+bool snapshotFor(ApiContext &ctx, ProviderSpec *provider, std::string_view selfId, ha::CapabilitySnapshot *out,
+                 http::Response &res) {
     if (ctx.homeAssistant == nullptr) {
         sendError(res, 503, "integration_unavailable", "This hub has no Home Assistant client");
         return false;
     }
-    const uint32_t generation = ctx.homeAssistant->discoveryGeneration();
-    const DiscoveryCache::Candidate *c = ctx.discovery ? ctx.discovery->find(provider->entityId, generation) : nullptr;
-    if (c == nullptr) {
-        sendDetail(res, "/provider/entity_id", "unknown_device",
-                   "Not in the latest Home Assistant discovery; run discovery first");
+    const EntityDetails *d = completedDetails(ctx, provider->entityId);
+    if (d == nullptr) {
+        sendError(res, 409, "details_required",
+                  "Load this entity's details first (POST /api/v1/admin/integrations/ha_main/entities/" +
+                      provider->entityId + "/details)");
         return false;
     }
-    if (c->commandIds.empty()) {
+    if (d->commandIds.empty()) {
         sendDetail(res, "/provider/entity_id", "unknown_device", "Hubbo offers no commands for this entity");
         return false;
     }
-    if (!c->uniqueId.empty()) provider->uniqueId = c->uniqueId;
-    *out = c->snapshot;
+    const DeviceSpec *existing = registeredDevice(ctx, d->entityId, d->uniqueId, d->platform);
+    if (existing != nullptr && existing->id != selfId) {
+        sendDetail(res, "/provider/entity_id", "duplicate_id",
+                   "Already registered as " + existing->id + "; re-link that device instead");
+        return false;
+    }
+    provider->uniqueId = d->uniqueId;
+    *out = d->snapshot;
     return true;
 }
 
@@ -226,7 +235,7 @@ void addRegistryRoutes(RouteSink &sink, ApiContext &ctx) {
         if (!checkProvider(device.provider, out, "/provider/entity_id")) return;
         if (device.provider.type == kHomeAssistantType) {
             ha::CapabilitySnapshot snapshot;
-            if (!snapshotFor(ctx, &device.provider, &snapshot, out)) return;
+            if (!snapshotFor(ctx, &device.provider, {}, &snapshot, out)) return;
             device.haCapabilities = std::move(snapshot);
         }
         const config::Outcome outcome = ctx.config.createDevice(std::move(device));
@@ -249,7 +258,7 @@ void addRegistryRoutes(RouteSink &sink, ApiContext &ctx) {
                  if (update.provider && !checkProvider(*update.provider, out, "/provider/entity_id")) return;
                  if (update.provider && update.provider->type == kHomeAssistantType) {  // re-link: refresh
                      ha::CapabilitySnapshot snapshot;
-                     if (!snapshotFor(ctx, &*update.provider, &snapshot, out)) return;
+                     if (!snapshotFor(ctx, &*update.provider, p[0], &snapshot, out)) return;
                      update.haCapabilities = std::move(snapshot);
                  }
                  const config::Outcome outcome = ctx.config.updateDevice(p[0], update);

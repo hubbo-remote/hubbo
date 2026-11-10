@@ -26,10 +26,17 @@ export function ParamForm({ params, values, onChange, activities = [], compact }
           case 'enum':
           case 'activity_ref': {
             const opts = p.type === 'enum' ? (p.options ?? []).map((o) => ({ value: o, label: o })) : activities.map((a) => ({ value: a.id, label: a.name }))
+            // What's shown is always what's stored. Unset shows as "Choose…"/"Not set" (never as the first
+            // option, which picking again wouldn't set); a stored value that isn't an option shows as
+            // itself, so it can be seen and changed or cleared. Refs aren't judged before the list loads.
+            const stored = v === undefined ? '' : String(v)
+            const unknown = stored !== '' && !opts.some((o) => o.value === stored)
+            const loading = p.type === 'activity_ref' && activities.length === 0
             return (
               <Field key={p.name} label={label} htmlFor={id} error={error}>
-                <Select id={id} value={v === undefined ? '' : String(v)} onChange={(e) => set(p.name, e.target.value)} aria-invalid={!!error}>
-                  {(!p.required || v === undefined) && <option value="">{p.required ? 'Choose…' : 'Not set'}</option>}
+                <Select id={id} value={stored} onChange={(e) => set(p.name, e.target.value)} aria-invalid={!!error}>
+                  {(!p.required || stored === '') && <option value="">{p.required ? 'Choose…' : 'Not set'}</option>}
+                  {unknown && <option value={stored}>{loading ? stored : `${stored} (not available)`}</option>}
                   {opts.map((o) => (
                     <option key={o.value} value={o.value}>
                       {o.label}

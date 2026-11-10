@@ -27,6 +27,8 @@ SimHub::SimHub(storage::Storage *storage, storage::StateStore *state, bool realH
       state_(state != nullptr ? *state : recordState_),
       persister_(state_) {
     engine_.setObserver(this);
+    fakes_.hid.pairing = &blePairing_;
+    resetBle();
 }
 
 config::LoadReport SimHub::boot(const ConfigSpec &defaults, auth::Credentials *credentials) {
@@ -42,14 +44,23 @@ ValidationReport SimHub::load(const ConfigSpec &config) {
 }
 
 ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
+    // The simulated thumb lets go: nothing stays held across a reset.
+    held_ = 0;
+    input_.releaseAll(nowMs_);
     if (engine_.hasActiveActivity()) engine_.off(nowMs_);
     fakes_.homeAssistant.resetFaults();
     ha_.server.reset();
     ha_.client.reconnect();  // at once, not after the backoff; stale entities forgotten
     remote_ = api::SimulatedRemote();
+    resetBle();
     fakes_.hid.setConnected(true);
     forgetActive();
     return load(config);
+}
+
+void SimHub::resetBle() {
+    blePairing_ = api::SimulatedBlePairing();
+    blePairing_.bonded(kBondedHost);  // the fixture world: the Apple TV is paired
 }
 
 void SimHub::press(remote::Button button) {
@@ -73,7 +84,14 @@ void SimHub::sendGroup(uint8_t group) {
     remote::encodePacket(group, held_ & remote::groupMask(group), packet);
     input_.onPayload(packet, sizeof(packet), nowMs_);
     lastPacketMs_ = nowMs_;
+    anyPacket_ = true;
     engine_.poll(nowMs_);
+}
+
+void SimHub::onRemoteEvent(const remote::RemoteEvent &event) {
+    lastEvent_ = event;
+    hasLastEvent_ = true;
+    engine_.onRemoteEvent(event);
 }
 
 void SimHub::advance(uint32_t ms, bool silent) {
@@ -94,7 +112,8 @@ void SimHub::advance(uint32_t ms, bool silent) {
                             service_.state() == config::ConfigState::Ok);
         }
     }
-    remote_.advance(ms);  // scan timeout
+    remote_.advance(ms);      // scan timeout
+    blePairing_.advance(ms);  // pairing window timeout
     // The radio gave up on them; the simulated thumb lets go too.
     if (silent && input_.held() == 0) held_ = 0;
 }

@@ -101,20 +101,45 @@ export async function connectHa(page: Page, token = FAKE_HA.token) {
   await settleHa(page, token === FAKE_HA.token ? 'connected' : 'auth_failed')
 }
 
-/** POST a test control: hub-sim's /sim/<path> or the mock's /__mock/<path>. */
-async function control(page: Page, path: string) {
+/** POST a test control (with the session's CSRF token): hub-sim's /sim/<path> or the mock's /__mock/<path>. */
+export async function control(page: Page, path: string) {
   const r = await page.request.post(`${SIM_URL ? `${SIM_URL}/sim` : `${API_BASE}/__mock`}/${path}`, { headers: csrf(await session(page)) })
   expect(r.ok(), `control ${path} -> ${r.status()}`).toBeTruthy()
+  return r.status() === 204 ? undefined : r.json()
 }
 
-/** Put the HA client in a state: on hub-sim by dropping the fake HA or sending a wrong token; on the mock directly. */
-export async function setHaState(page: Page, state: 'connected' | 'unreachable' | 'auth_failed' | 'authenticating') {
+/** hub-sim's fake-HA settings for each state (it can't hold HA in authenticating). */
+const SIM_HA_STATE: Partial<Record<HaState, string>> = {
+  connecting: 'reachable=1&connect=stall',
+  connected: 'reachable=1&connect=ok&auth=ok',
+  auth_failed: 'reachable=1&connect=ok&auth=reject',
+  unreachable: 'reachable=0',
+}
+type HaState = 'connected' | 'connecting' | 'unreachable' | 'auth_failed' | 'authenticating'
+
+/** Put the HA client in a state: on hub-sim through its fake HA (/sim/ha); on the mock directly. */
+export async function setHaState(page: Page, state: HaState) {
   if (!SIM_URL) return control(page, `ha?state=${state}`)
-  if (state === 'auth_failed') return connectHa(page, 'e2e-wrong-token')
-  expect(state, 'hub-sim can’t hold HA in authenticating').not.toBe('authenticating')
-  await control(page, `ha?reachable=${state === 'connected' ? 1 : 0}`)
+  const fakeHa = SIM_HA_STATE[state]
+  expect(fakeHa, `hub-sim can’t hold HA in ${state}`).toBeDefined()
+  await control(page, `ha?${fakeHa}`)
   await settleHa(page, state)
 }
+
+/**
+ * How the fake HA answers the next connect, after the settings are saved: accept, reject the token,
+ * or stall (never answer). hub-sim: /sim/ha; the mock: /__mock/ha, which takes the same parameters.
+ */
+export const fakeHaNextConnect = (page: Page, how: 'ok' | 'reject' | 'stall') =>
+  control(page, `ha?${SIM_HA_STATE[({ ok: 'connected', reject: 'auth_failed', stall: 'connecting' } as const)[how]]}`)
+
+/** Let the HA client connect after a save (hub-sim runs on sim time; the mock answers at once). */
+export const letHaConnect = async (page: Page) => {
+  if (SIM_URL) await advance(page, 2_000)
+}
+
+/** Drop or restore the Bluetooth host connection (hub-sim: /sim/ble). */
+export const setBle = (page: Page, connected: boolean) => control(page, `ble?connected=${connected ? 1 : 0}`)
 
 /** Run a discovery and wait for it to finish (register and re-link use the latest one). */
 export async function discoverHa(page: Page) {
@@ -123,9 +148,24 @@ export async function discoverHa(page: Page) {
   await expect.poll(async () => (await hub.get('/admin/integrations/ha_main/discover')).state).toBe('done')
 }
 
-/** HA forgets an entity, and a discovery runs so the hub notices: its device goes stale. */
-export async function removeHaEntity(page: Page, entityId: string) {
-  await control(page, `ha?remove=${encodeURIComponent(entityId)}`)
+/** Register an HA entity as a device through the API: its details first (§3b), then POST /admin/devices. */
+export async function registerHa(page: Page, entityId: string, name: string, kind = 'other') {
+  const hub = api(page)
+  const path = `/admin/integrations/ha_main/entities/${entityId}/details`
+  expect((await hub.post(path)).status()).toBe(202)
+  await expect.poll(async () => (await hub.get(path)).state).toBe('done')
+  const r = await hub.post('/admin/devices', { integration_id: 'ha_main', provider: { type: 'home_assistant', entity_id: entityId }, name, kind })
+  expect(r.status(), await r.text()).toBe(201)
+  return (await r.json()) as { id: string }
+}
+
+/**
+ * HA forgets an entity, and a discovery runs so the hub notices: its device goes stale.
+ * `renamedTo` (mock only): the entity comes back under a new id, as after a rename in HA.
+ */
+export async function removeHaEntity(page: Page, entityId: string, renamedTo?: string) {
+  expect(!SIM_URL || !renamedTo, 'hub-sim can’t rename an entity').toBeTruthy()
+  await control(page, renamedTo ? `ha?rename=${encodeURIComponent(entityId)}&to=${encodeURIComponent(renamedTo)}` : `ha?remove=${encodeURIComponent(entityId)}`)
   await discoverHa(page)
 }
 

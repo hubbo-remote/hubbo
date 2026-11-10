@@ -149,7 +149,7 @@ function ActivityCard({ status, className }: { status: Status | undefined; class
 
 function StatusTile({ icon: Icon, title, state, value, detail }: { icon: LucideIcon; title: string; state: IntegrationState | null; value: ReactNode; detail: ReactNode }) {
   return (
-    <Card>
+    <Card aria-label={title}>
       <CardContent className="grid gap-2 py-4">
         <div className="flex items-center justify-between">
           <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">

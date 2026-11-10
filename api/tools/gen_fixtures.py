@@ -519,25 +519,45 @@ fx("integrations/ha_main.configure.request.json", "configureIntegration", "reque
     "settings": {"type": "home_assistant", "url": "https://homeassistant.local:8123",
                  "verify_tls": True, "access_token": "eyJhbGciOiJIUzI1NiJ9.example-not-a-real-token"},
     "revision": 2})
+# Discovery candidates: domain commands only (a preview), no unique_id; the
+# details add the integration's services and the unique_id.
 cands = []
 for dev_id, e in HA_ENTITIES.items():
-    cands.append({"provider": ha_provider(e["entity_id"], e["unique_id"]),
+    cands.append({"provider": ha_provider(e["entity_id"]),
                   "name": e["name"], "domain": e["domain"], "platform": e.get("platform", "demo"),
                   "supported": True, "command_ids": [c["command_id"] for c in ha_commands(e)],
-                  "dropped_options": 0, "skipped_services": [], "registered_device_id": dev_id})
-cands.append({"provider": ha_provider("switch.tv_backlight", "0x00158d0001a2b3c4-switch"),
+                  "dropped_options": 0, "registered_device_id": dev_id})
+cands.append({"provider": ha_provider("switch.tv_backlight"),
               "name": "TV Backlight", "domain": "switch", "platform": "zha", "supported": True,
               "command_ids": [c["command_id"] for c in switch_commands()], "dropped_options": 0,
-              "skipped_services": [], "registered_device_id": None})
+              "registered_device_id": None})
+cands.append({"provider": ha_provider("switch.porch_light"),  # YAML-only: no registry entry, no platform
+              "name": "Porch Light", "domain": "switch", "supported": True,
+              "command_ids": [c["command_id"] for c in switch_commands()], "dropped_options": 0,
+              "registered_device_id": None})
 cands.append({"provider": ha_provider("media_player.kitchen_display"),
               "name": "Kitchen Display", "domain": "media_player", "platform": "cast", "supported": False,
-              "command_ids": [], "dropped_options": 0, "skipped_services": [], "registered_device_id": None})
+              "command_ids": [], "dropped_options": 0, "registered_device_id": None})
 fx("integrations/ha_main.discover.json", "discoverIntegration", "202", {"state": "running"})
 fx("integrations/ha_main.discovery.json", "getDiscovery", "200",
    {"state": "done", "total": len(cands), "truncated": 0, "elapsed_ms": 1840, "candidates": cands, "next_cursor": None})
 fx("integrations/ha_main.discovery_failed.json", "getDiscovery", "200",
    {"state": "failed", "error": "Home Assistant didn't answer in time"})
+fx("integrations/ha_main.entity_details.running.json", "requestEntityDetails", "202",
+   {"state": "running", "entity_id": "switch.tv_backlight"})
+fx("integrations/ha_main.entity_details.done.json", "getEntityDetails", "200", {
+    "state": "done", "entity_id": "switch.tv_backlight",
+    "provider": ha_provider("switch.tv_backlight", "0x00158d0001a2b3c4-switch"),
+    "name": "TV Backlight", "domain": "switch", "platform": "zha", "supported": True,
+    "command_ids": [c["command_id"] for c in switch_commands()], "dropped_options": 0,
+    "skipped_services": ["zha.issue_zigbee_cluster_command"], "registered_device_id": None})
+fx("integrations/ha_main.entity_details.failed.json", "getEntityDetails", "200",
+   {"state": "failed", "entity_id": "switch.not_in_ha", "error": "Home Assistant has no entity switch.not_in_ha"})
+fx("errors/details_required.json", "registerDevice", "409", err(
+    "details_required", "Load this entity's details first "
+    "(POST /api/v1/admin/integrations/ha_main/entities/switch.tv_backlight/details)"))
 fx("integrations/ble.pair.json", "startIntegrationPairing", "202", {"state": "pairing", "window_s": 120})
+fx("integrations/ble.pair.paired.json", "getIntegrationPairing", "200", {"state": "paired", "peer_name": "Living Room"})
 
 fx("admin/register_device.request.json", "registerDevice", "request", {
     "name": "TV Backlight", "integration_id": "ha_main", "kind": "switch",

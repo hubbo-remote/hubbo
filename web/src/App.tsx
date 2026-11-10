@@ -99,10 +99,11 @@ export function App() {
 function SignedIn({ session, onSignedOut, onSetupDone }: { session: Session; onSignedOut: () => void; onSetupDone: () => void }) {
   const [loc] = useLocation()
   // Re-running the wizard is full-screen, like first run.
-  if (loc === '/setup') {
+  const setup = /^\/setup(?:\/([a-z]+))?$/.exec(loc)
+  if (setup) {
     return (
       <Suspense fallback={<Loading />}>
-        <Setup onDone={onSetupDone} />
+        <Setup onDone={onSetupDone} start={setup[1]} />
       </Suspense>
     )
   }

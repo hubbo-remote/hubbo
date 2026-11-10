@@ -80,29 +80,27 @@ void HomeAssistantClient::configure(std::string url, std::string token, bool ver
     next_.token = std::move(token);
     next_.verifyTls = verifyTls;
     nextChanged_ = true;
-    forgetDiscovery();
+    forgetRequests();
 }
 
 void HomeAssistantClient::reconnect() {
     std::lock_guard<std::mutex> lock(settingsMutex_);
     nextChanged_ = true;
-    forgetDiscovery();
+    forgetRequests();
 }
 
-void HomeAssistantClient::forgetDiscovery() {
+void HomeAssistantClient::forgetRequests() {
     // Results from the old settings (maybe another HA) are never published:
-    // the running one is dropped when it ends (failInFlight() in
+    // a running job is dropped when it ends (failInFlight() in
     // applySettings()), a finished one is thrown away now.
     std::lock_guard<std::mutex> lock(mailboxMutex_);
-    generation_++;
-    requested_ = false;
-    mailboxStatus_ = DiscoveryStatus::Idle;
-    mailboxResult_ = HaDiscovery();
+    discoveryBox_.forget();
+    detailsBox_.forget();
 }
 
 uint32_t HomeAssistantClient::discoveryGeneration() const {
     std::lock_guard<std::mutex> lock(mailboxMutex_);
-    return generation_;
+    return discoveryBox_.generation;
 }
 
 void HomeAssistantClient::applySettings() {
@@ -126,7 +124,8 @@ void HomeAssistantClient::applySettings() {
 
 void HomeAssistantClient::failInFlight() {
     failAll(ErrorCode::AdapterUnavailable);
-    if (discovering_) finishDiscovery(ErrorCode::AdapterUnavailable);
+    if (phase_ != Phase::None) finishDiscovery(ErrorCode::AdapterUnavailable);
+    if (detailing_) finishDetails(ErrorCode::AdapterUnavailable);
     pingId_ = 0;
 }
 
@@ -167,46 +166,62 @@ void HomeAssistantClient::poll(uint64_t nowMs) {
     }
     expire();
 
-    bool cancel = false;
+    serviceMailboxes();
+    if (parsing_) parseStep();
+}
+
+void HomeAssistantClient::serviceMailboxes() {
+    // Cancels first, so a cancel followed by a new request starts the new one.
+    bool cancelDiscovery = false;
+    bool cancelDetails = false;
     {
         std::lock_guard<std::mutex> lock(mailboxMutex_);
-        cancel = cancelRequested_;
-        cancelRequested_ = false;
+        std::swap(cancelDiscovery, discoveryBox_.cancelRequested);
+        std::swap(cancelDetails, detailsBox_.cancelRequested);
     }
-    if (cancel) finishDiscovery(ErrorCode::Cancelled);
+    if (cancelDiscovery) finishDiscovery(ErrorCode::Cancelled);
+    if (cancelDetails) finishDetails(ErrorCode::Cancelled);
 
-    if (parsing_) {
-        parseStep();
-    } else {
-        bool start = false;
-        uint32_t generation = 0;
-        {
+    // A cancel or new settings since a request bumped its generation (and
+    // reset its mailbox): that result is dropped by publish().
+    bool startDiscovery = false;
+    bool startDetails = false;
+    uint32_t discoveryGeneration = 0;
+    uint32_t detailsGeneration = 0;
+    std::string entityId;
+    {
+        std::lock_guard<std::mutex> lock(mailboxMutex_);
+        // One of each at a time (a direct discover() may be running): a
+        // request waits for it.
+        if (phase_ == Phase::None) std::swap(startDiscovery, discoveryBox_.requested);
+        if (!detailing_) std::swap(startDetails, detailsBox_.requested);
+        discoveryGeneration = discoveryBox_.generation;
+        detailsGeneration = detailsBox_.generation;
+        entityId = detailsEntityId_;
+    }
+    if (startDiscovery) {
+        const auto publish = [this, discoveryGeneration](ErrorCode result, HaDiscovery discovery) {
+            discovery.generation = discoveryGeneration;
             std::lock_guard<std::mutex> lock(mailboxMutex_);
-            start = requested_;
-            requested_ = false;
-            generation = generation_;
-        }
-        if (start) {
-            // A cancel or new settings since the request bumped the
-            // generation (and reset the mailbox): that result is dropped.
-            const auto publish = [this, generation](ErrorCode result, HaDiscovery discovery) {
-                std::lock_guard<std::mutex> lock(mailboxMutex_);
-                if (generation != generation_) return;
-                mailboxStatus_ = result == ErrorCode::Ok ? DiscoveryStatus::Done : DiscoveryStatus::Failed;
-                mailboxError_ = result;
-                discovery.generation = generation;
-                mailboxResult_ = std::move(discovery);
-            };
-            const ErrorCode started = discover(publish);
-            if (started != ErrorCode::Ok) publish(started, HaDiscovery());
-        }
+            discoveryBox_.publish(discoveryGeneration, result, std::move(discovery));
+        };
+        const ErrorCode started = discover(publish);
+        if (started != ErrorCode::Ok) publish(started, HaDiscovery());
+    }
+    if (startDetails) {
+        const auto publish = [this, detailsGeneration](ErrorCode result, HaEntityDetails details) {
+            std::lock_guard<std::mutex> lock(mailboxMutex_);
+            detailsBox_.publish(detailsGeneration, result, std::move(details));
+        };
+        const ErrorCode started = entityDetails(entityId, publish);
+        if (started != ErrorCode::Ok) publish(started, HaEntityDetails());
     }
 }
 
 bool HomeAssistantClient::hasWork() const {
     if (parsing_) return true;
     std::lock_guard<std::mutex> lock(mailboxMutex_);
-    return requested_;
+    return discoveryBox_.requested || detailsBox_.requested;
 }
 
 void HomeAssistantClient::onConnected() {
@@ -316,18 +331,39 @@ void HomeAssistantClient::failAll(ErrorCode error) {
 void HomeAssistantClient::expire() {
     for (auto &p : pending_) {
         if (!p.used || nowMs_ < p.deadlineMs) continue;
-        p.used = false;
+        release(p);
         CallDone done = std::move(p.done);
-        if (done) {
-            done(ErrorCode::AdapterTimeout);
-        } else if (discovering_) {
+        if (p.kind == Kind::CallService) {
+            if (done) done(ErrorCode::AdapterTimeout);
+        } else if (isDiscovery(p.kind)) {
             finishDiscovery(ErrorCode::AdapterTimeout);
+        } else {
+            finishDetails(ErrorCode::AdapterTimeout);
         }
     }
 }
 
+void HomeAssistantClient::unsubscribe(uint32_t subscriptionId) {
+    const uint32_t id = nextId_++;  // its result is ignored (unknown id)
+    transport_.send("{\"id\":" + std::to_string(id) + ",\"type\":\"unsubscribe_events\",\"subscription\":" +
+                    std::to_string(subscriptionId) + "}");
+}
+
+void HomeAssistantClient::release(Pending &p) {
+    p.used = false;
+    if (isSubscription(p.kind) && state() == HaState::Connected) unsubscribe(p.id);  // HA stops sending
+}
+
+void HomeAssistantClient::forgetPending(bool discovery) {
+    // A job ended (or was cancelled) with commands still in flight: their
+    // results are ignored, and a subscription is ended so HA stops sending.
+    for (auto &p : pending_) {
+        if (p.used && p.kind != Kind::CallService && isDiscovery(p.kind) == discovery) release(p);
+    }
+}
+
 void HomeAssistantClient::handleMessage(std::string text) {
-    // Only the structure is scanned here: a discovery result can be MBs.
+    // Only the structure is scanned here: a discovery message can be MBs.
     const std::string_view view(text);
     const json::Span idSpan = json::member(view, "id");
     const json::Span typeSpan = json::member(view, "type");
@@ -341,32 +377,61 @@ void HomeAssistantClient::handleMessage(std::string text) {
         }
         return;
     }
-    if (type != "\"result\"") return;  // events: we don't subscribe
-    const bool success = json::member(view, "success").in(view) == "true";
+    const bool event = type == "\"event\"";
+    if (!event && type != "\"result\"") return;
+    const bool success = event || json::member(view, "success").in(view) == "true";
     for (auto &p : pending_) {
         if (!p.used || p.id != id) continue;
+        // A subscription's result comes first; its first event carries the data.
+        if (isSubscription(p.kind) && !event && success) return;
+        if (event && !isSubscription(p.kind)) return;
         p.used = false;
+        if (event) unsubscribe(id);  // one snapshot is all we want
         if (p.kind == Kind::CallService) {
             CallDone done = std::move(p.done);
             if (done) done(success ? ErrorCode::Ok : ErrorCode::AdapterFailed);
-        } else if (discovering_) {
-            const json::Span result = json::member(view, "result");
-            discoveryResult(p.kind, success, std::move(text), result);
+        } else if (isDiscovery(p.kind)) {
+            discoveryResult(success, std::move(text));
+        } else {
+            detailsResult(p.kind, success, std::move(text));
         }
         return;
     }
-    // Unknown id (timed out already): ignored.
+    // Unknown id (timed out already, or a subscription we ended): ignored.
 }
+
+namespace {
+
+// A JSON member's string value (without quotes), or "". Cheap: no parse.
+// Fine for the ids HA uses as keys and values here (no escapes).
+std::string_view stringMember(std::string_view element, std::string_view key) {
+    const std::string_view quoted = json::member(element, key).in(element);
+    return quoted.size() < 2 || quoted.front() != '"' ? std::string_view() : quoted.substr(1, quoted.size() - 2);
+}
+
+// An entity's EntityInfo from its compressed-state attributes ("a").
+ha::EntityInfo entityInfo(const std::string &entityId, JsonVariantConst attrs) {
+    ha::EntityInfo info;
+    info.entityId = entityId;
+    info.supportedFeatures = static_cast<uint32_t>(intOr(attrs["supported_features"]));
+    stringList(attrs["source_list"], &info.sourceList);
+    stringList(attrs["sound_mode_list"], &info.soundModeList);
+    stringList(attrs["supported_color_modes"], &info.supportedColorModes);
+    info.minColorTempKelvin = intOr(attrs["min_color_temp_kelvin"]);
+    info.maxColorTempKelvin = intOr(attrs["max_color_temp_kelvin"]);
+    return info;
+}
+
+}  // namespace
 
 // ---- discovery -------------------------------------------------------------
 
 ErrorCode HomeAssistantClient::discover(DiscoverDone done) {
-    if (discovering_) return ErrorCode::Busy;
+    if (phase_ != Phase::None) return ErrorCode::Busy;
     if (state() != HaState::Connected) return ErrorCode::AdapterUnavailable;
-    const ErrorCode sent =
-        sendCommand(Kind::EntityRegistry, "{\"type\":\"config/entity_registry/list\"}", kDiscoveryTimeoutMs, nullptr);
+    const ErrorCode sent = sendCommand(Kind::Registry, "{\"type\":\"config/entity_registry/list_for_display\"}",
+                                       kDiscoveryTimeoutMs, nullptr);
     if (sent != ErrorCode::Ok) return sent;
-    discovering_ = true;
     phase_ = Phase::Registry;
     discoverDone_ = std::move(done);
     discovery_ = HaDiscovery();
@@ -376,25 +441,24 @@ ErrorCode HomeAssistantClient::discover(DiscoverDone done) {
     return ErrorCode::Ok;
 }
 
-void HomeAssistantClient::discoveryResult(Kind kind, bool success, std::string text, json::Span result) {
+void HomeAssistantClient::discoveryResult(bool success, std::string text) {
     if (!success) return finishDiscovery(ErrorCode::AdapterFailed);
-    if (kind == Kind::GetServices) {
-        if (!result.found() || text[result.begin] != '{') return finishDiscovery(ErrorCode::MalformedJson);
-        text.erase(result.end);  // keep only the result, without a second copy
-        text.erase(0, result.begin);
-        discovery_.services = std::move(text);
-        return finishDiscovery(ErrorCode::Ok);
-    }
     text_ = std::move(text);
-    cursor_ = json::ArrayCursor(text_, result);
+    // Straight to the list (list_for_display's "entities", the event's "a"):
+    // the big value is scanned once, by the walk.
+    const bool registry = phase_ == Phase::Registry;
+    const size_t list =
+        json::valueStart(text_, json::valueStart(text_, 0, registry ? "result" : "event"), registry ? "entities" : "a");
+    cursor_ = json::Cursor(text_, list);
     if (!cursor_.ok()) return finishDiscovery(ErrorCode::MalformedJson);
     parsing_ = true;  // parsed in steps by poll()
 }
 
 void HomeAssistantClient::parseStep() {
     std::string_view element;
+    std::string_view key;
     for (size_t n = 0; n < kParseStepEntities; n++) {
-        if (!cursor_.next(text_, &element)) {
+        if (!cursor_.next(text_, &element, &key)) {
             parsing_ = false;
             if (!cursor_.ok()) return finishDiscovery(ErrorCode::MalformedJson);
             return nextPhase();
@@ -402,47 +466,29 @@ void HomeAssistantClient::parseStep() {
         if (phase_ == Phase::Registry) {
             parseRegistryEntry(element);
         } else {
-            parseStateEntry(element);
+            parseStateEntry(key, element);
         }
     }
     if (yield_) yield_();
 }
 
-namespace {
-
-// The element's "entity_id" (without quotes) or "". Cheap: no parse.
-std::string_view entityIdOf(std::string_view element) {
-    const std::string_view quoted = json::member(element, "entity_id").in(element);
-    return quoted.size() < 2 ? std::string_view() : quoted.substr(1, quoted.size() - 2);
-}
-
-}  // namespace
-
 void HomeAssistantClient::parseRegistryEntry(std::string_view element) {
-    // Prefilter on the id: most of a registry is unsupported domains.
-    if (!supportedDomain(entityIdOf(element))) return;
+    // Prefilter on the id: most of a registry is unsupported domains. Only
+    // enabled entities are listed.
+    const std::string_view id = stringMember(element, "ei");
+    if (!supportedDomain(id)) return;
     JsonDocument doc;
     if (deserializeJson(doc, element.data(), element.size())) return;  // skip a malformed entry
-    const std::string entityId = stringOr(doc["entity_id"]);
-    if (!doc["disabled_by"].isNull()) {
-        discovery_.skipped++;
-        return;
-    }
     RegistryEntry entry;
-    entry.uniqueId = stringOr(doc["unique_id"]);
-    entry.platform = stringOr(doc["platform"]);
-    entry.name = stringOr(doc["name"]);
-    if (entry.name.empty()) entry.name = stringOr(doc["original_name"]);
-    registry_[entityId] = std::move(entry);
+    entry.platform = stringOr(doc["pl"]);
+    entry.name = stringOr(doc["en"]);
+    registry_[std::string(id)] = std::move(entry);
 }
 
-void HomeAssistantClient::parseStateEntry(std::string_view element) {
+void HomeAssistantClient::parseStateEntry(std::string_view id, std::string_view element) {
     // Cheap prefilter: the entity id decides whether this element matters.
-    const std::string_view id = entityIdOf(element);
     if (!supportedDomain(id)) return;
     const std::string entityId(id);
-    // An entity without a registry entry is still offered (no unique_id).
-    const auto reg = registry_.find(entityId);
     seen_.insert(entityId);
     if (discovery_.candidates.size() >= kMaxCandidates) {
         discovery_.truncated++;
@@ -450,53 +496,39 @@ void HomeAssistantClient::parseStateEntry(std::string_view element) {
     }
     JsonDocument doc;
     if (deserializeJson(doc, element.data(), element.size())) return;
-    JsonVariantConst attrs = doc["attributes"];
+    JsonVariantConst attrs = doc["a"];
     HaCandidate c;
     c.entityId = entityId;
     c.domain = domainOf(entityId);
-    c.info.entityId = entityId;
-    c.info.supportedFeatures = static_cast<uint32_t>(intOr(attrs["supported_features"]));
-    stringList(attrs["source_list"], &c.info.sourceList);
-    stringList(attrs["sound_mode_list"], &c.info.soundModeList);
-    stringList(attrs["supported_color_modes"], &c.info.supportedColorModes);
-    c.info.minColorTempKelvin = intOr(attrs["min_color_temp_kelvin"]);
-    c.info.maxColorTempKelvin = intOr(attrs["max_color_temp_kelvin"]);
+    c.state = stringOr(doc["s"]);
+    c.info = entityInfo(entityId, attrs);
+    c.name = stringOr(attrs["friendly_name"]);
+    // An entity without a registry entry (YAML-only) is still offered.
+    const auto reg = registry_.find(entityId);
     if (reg != registry_.end()) {
-        c.uniqueId = reg->second.uniqueId;
         c.platform = reg->second.platform;
-        c.name = reg->second.name;
+        if (c.name.empty()) c.name = reg->second.name;
     }
-    if (c.name.empty()) c.name = stringOr(attrs["friendly_name"]);
     discovery_.candidates.push_back(std::move(c));
 }
 
 void HomeAssistantClient::nextPhase() {
     text_ = std::string();  // free the big message before asking for the next
-    cursor_ = json::ArrayCursor();
-    ErrorCode sent = ErrorCode::Ok;
-    if (phase_ == Phase::Registry) {
-        phase_ = Phase::States;
-        sent = sendCommand(Kind::GetStates, "{\"type\":\"get_states\"}", kDiscoveryTimeoutMs, nullptr);
-    } else {
-        registry_.clear();
-        phase_ = Phase::Services;
-        sent = sendCommand(Kind::GetServices, "{\"type\":\"get_services\"}", kDiscoveryTimeoutMs, nullptr);
-    }
+    cursor_ = json::Cursor();
+    if (phase_ == Phase::States) return finishDiscovery(ErrorCode::Ok);
+    phase_ = Phase::States;
+    const ErrorCode sent = sendCommand(Kind::States, "{\"type\":\"subscribe_entities\"}", kDiscoveryTimeoutMs, nullptr);
     if (sent != ErrorCode::Ok) finishDiscovery(sent);
 }
 
 void HomeAssistantClient::finishDiscovery(ErrorCode result) {
-    if (!discovering_) return;
-    discovering_ = false;
+    if (phase_ == Phase::None) return;
     parsing_ = false;
     phase_ = Phase::None;
     text_ = std::string();
-    cursor_ = json::ArrayCursor();
+    cursor_ = json::Cursor();
     registry_.clear();
-    // A discovery command still in flight is forgotten (its result is ignored).
-    for (auto &p : pending_) {
-        if (p.used && p.kind != Kind::CallService) p.used = false;
-    }
+    forgetPending(true);
     HaDiscovery out;
     if (result == ErrorCode::Ok) {
         out = std::move(discovery_);
@@ -513,41 +545,117 @@ void HomeAssistantClient::finishDiscovery(ErrorCode result) {
     if (done) done(result, std::move(out));
 }
 
+// ---- entity details --------------------------------------------------------
+
+ErrorCode HomeAssistantClient::entityDetails(const std::string &entityId, DetailsDone done) {
+    if (detailing_) return ErrorCode::Busy;
+    if (state() != HaState::Connected) return ErrorCode::AdapterUnavailable;
+    if (!supportedDomain(entityId)) return ErrorCode::InvalidId;  // also an invalid id
+    JsonDocument doc;
+    doc["type"] = "config/entity_registry/get";
+    doc["entity_id"] = entityId;
+    const ErrorCode sent = sendCommand(Kind::DetailsRegistry, serialize(doc), kDiscoveryTimeoutMs, nullptr);
+    if (sent != ErrorCode::Ok) return sent;
+    detailing_ = true;
+    detailsDone_ = std::move(done);
+    details_ = HaEntityDetails();
+    details_.entityId = entityId;
+    return ErrorCode::Ok;
+}
+
+void HomeAssistantClient::detailsResult(Kind kind, bool success, std::string text) {
+    const json::Span body = json::member(text, kind == Kind::DetailsState ? "event" : "result");
+    // A registry lookup's not_found is an answer: YAML-only, no registry entry.
+    const bool noEntry = !success && kind == Kind::DetailsRegistry &&
+                         json::member(text, json::member(text, "error"), "code").in(text) == "\"not_found\"";
+    if (!success && !noEntry) return finishDetails(ErrorCode::AdapterFailed);
+    ErrorCode sent = ErrorCode::Ok;
+    if (kind == Kind::DetailsRegistry) {
+        if (body.found()) {  // else YAML-only: no registry entry
+            JsonDocument doc;
+            const std::string_view entry = body.in(text);
+            if (deserializeJson(doc, entry.data(), entry.size())) return finishDetails(ErrorCode::MalformedJson);
+            details_.uniqueId = stringOr(doc["unique_id"]);
+            details_.platform = stringOr(doc["platform"]);
+            details_.name = stringOr(doc["name"]);
+            if (details_.name.empty()) details_.name = stringOr(doc["original_name"]);
+        }
+        JsonDocument request;
+        request["type"] = "subscribe_entities";
+        request["entity_ids"].add(details_.entityId);
+        sent = sendCommand(Kind::DetailsState, serialize(request), kDiscoveryTimeoutMs, nullptr);
+    } else if (kind == Kind::DetailsState) {
+        const json::Span state = json::member(text, json::member(text, body, "a"), details_.entityId);
+        if (!state.found()) return finishDetails(ErrorCode::EntityNotFound);
+        JsonDocument doc;
+        const std::string_view element = state.in(text);
+        if (deserializeJson(doc, element.data(), element.size())) return finishDetails(ErrorCode::MalformedJson);
+        details_.info = entityInfo(details_.entityId, doc["a"]);
+        const std::string friendly = stringOr(doc["a"]["friendly_name"]);
+        if (!friendly.empty()) details_.name = friendly;
+        sent = sendCommand(Kind::DetailsServices, "{\"type\":\"get_services\"}", kDiscoveryTimeoutMs, nullptr);
+    } else {
+        if (!body.found() || text[body.begin] != '{') return finishDetails(ErrorCode::MalformedJson);
+        text.erase(body.end);  // keep only the result, without a second copy
+        text.erase(0, body.begin);
+        details_.services = std::move(text);
+        return finishDetails(ErrorCode::Ok);
+    }
+    if (sent != ErrorCode::Ok) finishDetails(sent);
+}
+
+void HomeAssistantClient::finishDetails(ErrorCode result) {
+    if (!detailing_) return;
+    detailing_ = false;
+    forgetPending(false);
+    HaEntityDetails out;
+    if (result == ErrorCode::Ok) {
+        out = std::move(details_);
+        // Proof HA has it: not stale until the next discovery says otherwise.
+        std::lock_guard<std::mutex> lock(staleMutex_);
+        if (discovered_) discovered_->insert(out.entityId);
+    }
+    details_ = HaEntityDetails();
+    DetailsDone done = std::move(detailsDone_);
+    detailsDone_ = nullptr;
+    if (done) done(result, std::move(out));
+}
+
+// ---- cross-task mailboxes --------------------------------------------------
+
 ErrorCode HomeAssistantClient::requestDiscovery() {
     if (state() != HaState::Connected) return ErrorCode::AdapterUnavailable;
     std::lock_guard<std::mutex> lock(mailboxMutex_);
-    if (requested_ || mailboxStatus_ == DiscoveryStatus::Running) return ErrorCode::Busy;
-    requested_ = true;
-    generation_++;
-    mailboxStatus_ = DiscoveryStatus::Running;
-    mailboxResult_ = HaDiscovery();
-    mailboxError_ = ErrorCode::Ok;
-    return ErrorCode::Ok;
+    return discoveryBox_.request();
 }
 
 void HomeAssistantClient::cancelDiscovery() {
     std::lock_guard<std::mutex> lock(mailboxMutex_);
-    if (mailboxStatus_ != DiscoveryStatus::Running) return;
-    generation_++;  // its result, if it still comes, is dropped
-    if (requested_) {
-        requested_ = false;  // never started
-    } else {
-        cancelRequested_ = true;  // the integration task stops it
-    }
-    mailboxStatus_ = DiscoveryStatus::Idle;
-    mailboxResult_ = HaDiscovery();
+    discoveryBox_.cancel();
 }
 
 DiscoveryStatus HomeAssistantClient::takeDiscovery(HaDiscovery *out, ErrorCode *error) {
     std::lock_guard<std::mutex> lock(mailboxMutex_);
-    const DiscoveryStatus status = mailboxStatus_;
-    if (status == DiscoveryStatus::Done && out != nullptr) *out = std::move(mailboxResult_);
-    if (status == DiscoveryStatus::Failed && error != nullptr) *error = mailboxError_;
-    if (status == DiscoveryStatus::Done || status == DiscoveryStatus::Failed) {
-        mailboxStatus_ = DiscoveryStatus::Idle;
-        mailboxResult_ = HaDiscovery();
-    }
-    return status;
+    return discoveryBox_.take(out, error);
+}
+
+ErrorCode HomeAssistantClient::requestEntityDetails(std::string_view entityId) {
+    if (state() != HaState::Connected) return ErrorCode::AdapterUnavailable;
+    if (!supportedDomain(entityId)) return ErrorCode::InvalidId;  // also an invalid id
+    std::lock_guard<std::mutex> lock(mailboxMutex_);
+    const ErrorCode result = detailsBox_.request();
+    if (result == ErrorCode::Ok) detailsEntityId_.assign(entityId);
+    return result;
+}
+
+void HomeAssistantClient::cancelEntityDetails() {
+    std::lock_guard<std::mutex> lock(mailboxMutex_);
+    detailsBox_.cancel();
+}
+
+DiscoveryStatus HomeAssistantClient::takeEntityDetails(HaEntityDetails *out, ErrorCode *error) {
+    std::lock_guard<std::mutex> lock(mailboxMutex_);
+    return detailsBox_.take(out, error);
 }
 
 }  // namespace hubbo::integrations

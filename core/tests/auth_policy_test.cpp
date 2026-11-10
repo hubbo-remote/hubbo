@@ -56,7 +56,8 @@ TEST(AuthPolicy, RoleMatrix) {
     };
     const char *adminOnly[] = {
         "getIntegrationConfig", "configureIntegration", "discoverIntegration", "getDiscovery", "cancelDiscovery",
-        "startIntegrationPairing", "forgetIntegrationPairing", "registerDevice", "updateDevice",
+        "requestEntityDetails", "getEntityDetails",
+        "startIntegrationPairing", "getIntegrationPairing", "forgetIntegrationPairing", "registerDevice", "updateDevice",
         "deleteDevice", "getRemoteConfig", "setRemoteEndpoint", "getRemotePairing", "startRemotePairing", "cancelRemotePairing",
         "changeAdminPassword", "listTokens", "createToken", "revokeToken", "downloadBackup",
         "restoreBackup", "factoryReset", "getFirmwareStatus", "updateFirmware",

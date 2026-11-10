@@ -67,11 +67,21 @@ public:
     bool addDebugGet(const char *uri, DebugGet handler);
 #endif
 
+    // The embedded web admin (web_assets.h) on GET /*. Register it last:
+    // httpd matches in registration order, so /api/* and /debug/* win.
+    // Same Host allowlist as the API. Hashed /a/ files are immutable;
+    // everything else is revalidated with the build's ETag (304). A path
+    // that isn't a file gets index.html when the client wants HTML (the
+    // SPA's routes), else 404 (always under /a/). Bodies are sent gzipped,
+    // straight from flash.
+    bool serveWebAdmin();
+
     uint32_t requestCount() const { return requests_; }
 
 private:
     friend struct HttpServerAccess;
     int serve(void *req);  // esp_err_t (httpd_req_t *)
+    int serveStatic(void *req);
 
     struct Periodic {
         HttpServer *server;

@@ -309,15 +309,22 @@ bool checkObject(JsonVariantConst value, std::initializer_list<Field> fields, Va
     return ok;
 }
 
+bool parseDecimal(std::string_view text, uint64_t max, uint64_t *value) {
+    if (text.empty() || text.size() > 10) return false;
+    uint64_t n = 0;
+    for (char c : text) {
+        if (c < '0' || c > '9') return false;
+        n = n * 10 + static_cast<uint64_t>(c - '0');
+    }
+    if (n > max) return false;
+    *value = n;
+    return true;
+}
+
 bool queryRevision(const http::Request &request, http::Response &out, uint32_t *revision) {
     const std::string text = http::queryValue(request.query, "revision");
     uint64_t value = 0;
-    bool ok = !text.empty() && text.size() <= 10 && text[0] != '0';
-    for (char c : text) {
-        if (c < '0' || c > '9') ok = false;
-        value = value * 10 + static_cast<uint64_t>(c - '0');
-    }
-    if (!ok || value == 0 || value > 0xFFFFFFFFu) {
+    if (!parseDecimal(text, 0xFFFFFFFFu, &value) || text[0] == '0') {
         ValidationReport report;
         report.add(ErrorCode::Required, "/revision");
         sendIssues(out, report, "Send ?revision=N (the revision you last read)");

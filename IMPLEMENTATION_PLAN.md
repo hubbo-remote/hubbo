@@ -211,6 +211,15 @@ Version 0.1 • 2026-11-04
 **6.4 Docs:** installation, wiring, first-run, pairing, API/OpenAPI, LLM agent instructions, troubleshooting, backup/OTA recovery, security threat model and explicit MVP limitations.
 **Gate:** new user can flash from browser, configure devices, create an activity, use remote, OTA update, backup/restore, and reproduce tests.
 
+## Polish pass (near the end of the project)
+Visual polish and a redesign were deferred in Phase 4 (user decision, 2026-11-09). Collected from
+the Phase 4 board gate, where the user set up a wiped board on an iPhone:
+- **Clarity over correctness:** the setup flow worked but felt "a little wonky". Review every screen
+  for clear state and feedback: what's saved, what's happening now, what to do next.
+- **Device kind:** it's stored but nothing uses it yet. Give it icons and grouping, or hide the field.
+- **Remote setup:** make the pair-by-scan vs. type-the-code choice and the live press check obvious.
+- **Mobile:** a full pass on a phone (layout, tap targets, keyboards, focus rings).
+
 ## Post-MVP backlog
 - **Discover an unknown remote's address without a Hub:** nRF24 promiscuous sniffing (research).
 - **HA `text` selector params:** a bounded string parameter type, so HA services with free-text fields can be bound. These services are skipped in Phase 3.

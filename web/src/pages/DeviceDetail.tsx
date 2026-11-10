@@ -13,13 +13,13 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
-import { Field, Input } from '@/components/ui/input'
+import { Field, Input, ShowErrors } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { toast, toastError } from '@/components/ui/toast'
 import { useCapabilities, useConfigLock, useDevice, useIntegrations } from '@/hooks/data'
 import { providerRef } from '@/lib/health'
 import { defaultParams } from '@/lib/activity'
-import { haDeviceError, runDiscovery } from '@/lib/ha'
+import { haDeviceError, loadEntityDetails } from '@/lib/ha'
 import { cn } from '@/lib/utils'
 
 export default function DeviceDetail({ id }: { id: string }) {
@@ -71,6 +71,7 @@ export default function DeviceDetail({ id }: { id: string }) {
 
 function CommandRow({ deviceId, command, open, onToggle }: { deviceId: string; command: Command; open: boolean; onToggle: () => void }) {
   const [params, setParams] = useState(() => defaultParams(command.params))
+  const [tried, setTried] = useState(false) // param errors show once Test is pressed
   // A hold (e.g. key down) needs its release on a button's up event, so the hub
   // refuses it here; it can only be used in a binding.
   const hold = command.effect === 'hold'
@@ -96,8 +97,10 @@ function CommandRow({ deviceId, command, open, onToggle }: { deviceId: string; c
             </p>
           ) : (
             <>
-              <ParamForm params={command.params} values={params} onChange={setParams} compact />
-              <TestButton action={{ integration_id: '', device_id: deviceId, command_id: command.command_id, params }} />
+              <ShowErrors.Provider value={tried}>
+                <ParamForm params={command.params} values={params} onChange={setParams} compact />
+              </ShowErrors.Provider>
+              <TestButton action={{ integration_id: '', device_id: deviceId, command_id: command.command_id, params }} onRun={() => setTried(true)} />
             </>
           )}
         </div>
@@ -118,12 +121,14 @@ function HaRelink({ device }: { device: Device }) {
     setBusy(true)
     setError(null)
     try {
+      // The hub snapshots the entity's loaded details, so load them first (about 2 s).
+      await loadEntityDetails(device.integration_id, c.provider.entity_id)
       await api.updateDevice(device.id, { provider: c.provider, revision: device.revision })
       refreshDevice(device.id)
       toast(`Linked to ${c.provider.entity_id}`, { variant: 'success' })
       setOpen(false)
     } catch (e) {
-      setError(haDeviceError(e))
+      setError(await haDeviceError(e))
     } finally {
       setBusy(false)
     }
@@ -137,7 +142,7 @@ function HaRelink({ device }: { device: Device }) {
         <div className="grid gap-3">
           {error && <Alert variant="error"><p className="whitespace-pre-line">{error}</p></Alert>}
           {busy ? (
-            <p className="flex items-center gap-2 text-sm"><Loader2 className="size-4 animate-spin" /> Re-linking…</p>
+            <p className="flex items-center gap-2 text-sm"><Loader2 className="size-4 animate-spin" /> Loading the entity’s actions and re-linking…</p>
           ) : (
             <HaCandidates
               integration={device.integration_id}
@@ -158,13 +163,13 @@ function HaRefresh({ device }: { device: Device }) {
   const refresh = async () => {
     setBusy(true)
     try {
-      // The hub reads the entity from its latest discovery, so take a fresh one first.
-      await runDiscovery(device.integration_id)
+      // The hub snapshots the entity's loaded details, so load them first (about 2 s).
+      if (device.provider.type === 'home_assistant') await loadEntityDetails(device.integration_id, device.provider.entity_id)
       await api.updateDevice(device.id, { provider: device.provider, revision: device.revision })
       refreshDevice(device.id)
       toast('Commands refreshed from Home Assistant', { variant: 'success' })
     } catch (e) {
-      toast('Could not refresh', { variant: 'error', description: haDeviceError(e) })
+      toast('Could not refresh', { variant: 'error', description: await haDeviceError(e) })
     } finally {
       setBusy(false)
     }

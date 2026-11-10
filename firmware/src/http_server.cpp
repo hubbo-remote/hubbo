@@ -2,6 +2,7 @@
 
 #include "hubbo/auth/policy.h"
 #include "console.h"
+#include "web_assets.h"
 
 #include <Arduino.h>
 #include <esp_heap_caps.h>
@@ -161,7 +162,66 @@ struct HttpServerAccess {
     static esp_err_t onRequest(httpd_req_t *req) {
         return static_cast<HttpServer *>(req->user_ctx)->serve(req);
     }
+    static esp_err_t onStatic(httpd_req_t *req) {
+        return static_cast<HttpServer *>(req->user_ctx)->serveStatic(req);
+    }
 };
+
+bool HttpServer::serveWebAdmin() {
+    if (handle_ == nullptr) {
+        return false;
+    }
+    httpd_uri_t uri = {};
+    uri.uri = "/*";
+    uri.method = HTTP_GET;
+    uri.handler = &HttpServerAccess::onStatic;
+    uri.user_ctx = this;
+    return httpd_register_uri_handler(static_cast<httpd_handle_t>(handle_), &uri) == ESP_OK;
+}
+
+int HttpServer::serveStatic(void *raw) {
+    auto *req = static_cast<httpd_req_t *>(raw);
+    requests_ = requests_ + 1;
+
+    const EspHeaders headers(req);
+    if (!router_->hostAllowed(headers.header("Host"))) {
+        return sendError(req, 421, "host_not_allowed", "Host header is not one of this hub's names");
+    }
+    std::string_view path(req->uri);
+    path = path.substr(0, path.find('?'));
+    if (path == "/") {
+        path = "/index.html";
+    }
+    const web::Asset *asset = web::find(path);
+    if (asset == nullptr) {
+        // An SPA route (a page reload on /devices/...) gets the app; a
+        // missing file or hashed asset doesn't. (/api/* and /debug/* never
+        // get here: their handlers are registered first.)
+        const bool wantsHtml = headers.header("Accept").find("text/html") != std::string_view::npos;
+        if (!wantsHtml || path.substr(0, 3) == "/a/") {
+            return sendError(req, 404, "not_found", "Not found");
+        }
+        asset = web::find("/index.html");
+    }
+
+    if (asset->immutable) {
+        httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=31536000, immutable");
+    } else {
+        httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+        httpd_resp_set_hdr(req, "ETag", web::kEtag);
+        if (headers.header("If-None-Match") == web::kEtag) {
+            httpd_resp_set_status(req, "304 Not Modified");
+            return httpd_resp_send(req, nullptr, 0);
+        }
+    }
+    httpd_resp_set_type(req, asset->contentType);
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+    httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
+    httpd_resp_set_hdr(req, "Content-Security-Policy", web::kCsp);  // only matters on index.html
+    // From flash: lwIP copies as it sends, nothing is staged in RAM.
+    return httpd_resp_send(req, reinterpret_cast<const char *>(asset->gzip), static_cast<ssize_t>(asset->size));
+}
 
 bool HttpServer::begin(const http::Router &router, http::RequestAuthenticator *authenticator) {
     if (handle_ != nullptr) {
@@ -175,8 +235,11 @@ bool HttpServer::begin(const http::Router &router, http::RequestAuthenticator *a
     config.core_id = kCore;
     config.task_priority = kPriority;
     config.stack_size = kStackBytes;
-    config.max_open_sockets = 4;
-    config.max_uri_handlers = 12;  // the API (one per method) and the dev console
+    // A browser's cold load opens about 6 connections; with 4, LRU purging
+    // dropped some mid-load. lwIP has 16 sockets: httpd adds 3 internally,
+    // plus the HA WebSocket, OTA and mDNS.
+    config.max_open_sockets = 7;
+    config.max_uri_handlers = 12;  // the API (one per method), the dev console and the web admin
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
 

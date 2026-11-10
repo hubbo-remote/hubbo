@@ -55,63 +55,70 @@ size_t skipValue(std::string_view text, size_t pos) {
     return i == pos ? npos : i;
 }
 
-Span member(std::string_view text, std::string_view key) {
-    size_t pos = skipSpace(text, 0);
-    if (pos >= text.size() || text[pos] != '{') return {};
+size_t valueStart(std::string_view text, size_t object, std::string_view key) {
+    size_t pos = skipSpace(text, object);
+    if (pos >= text.size() || text[pos] != '{') return npos;
     pos++;
     for (;;) {
         pos = skipSpace(text, pos);
-        if (pos >= text.size()) return {};
-        if (text[pos] == '}') return {};
-        if (text[pos] != '"') return {};
+        if (pos >= text.size() || text[pos] != '"') return npos;  // also '}': not found
         const size_t keyEnd = skipString(text, pos);
-        if (keyEnd == npos) return {};
+        if (keyEnd == npos) return npos;
         const std::string_view name = text.substr(pos + 1, keyEnd - pos - 2);
         pos = skipSpace(text, keyEnd);
-        if (pos >= text.size() || text[pos] != ':') return {};
+        if (pos >= text.size() || text[pos] != ':') return npos;
         const size_t valueBegin = skipSpace(text, pos + 1);
+        if (name == key) return valueBegin < text.size() ? valueBegin : npos;
         const size_t valueEnd = skipValue(text, valueBegin);
-        if (valueEnd == npos) return {};
-        if (name == key) return {valueBegin, valueEnd};
+        if (valueEnd == npos) return npos;
         pos = skipSpace(text, valueEnd);
         if (pos < text.size() && text[pos] == ',') pos++;
     }
 }
 
-ArrayCursor::ArrayCursor(std::string_view text, Span array) {
-    if (!array.found() || array.end > text.size() || array.end - array.begin < 2 || text[array.begin] != '[') {
-        ok_ = false;
-        done_ = true;
-        return;
-    }
-    pos_ = array.begin + 1;
-    end_ = array.end - 1;  // the closing ']'
+Span member(std::string_view text, std::string_view key) { return member(text, Span{0, text.size()}, key); }
+
+Span member(std::string_view text, Span within, std::string_view key) {
+    const size_t begin = within.found() ? valueStart(text, within.begin, key) : npos;
+    const size_t end = begin == npos ? npos : skipValue(text, begin);
+    return end == npos ? Span{} : Span{begin, end};
+}
+
+Cursor::Cursor(std::string_view text, size_t begin) {
+    if (begin >= text.size() || (text[begin] != '[' && text[begin] != '{')) return;
+    object_ = text[begin] == '{';
+    pos_ = begin + 1;
     ok_ = true;
     done_ = false;
 }
 
-bool ArrayCursor::next(std::string_view text, std::string_view *element) {
+bool Cursor::next(std::string_view text, std::string_view *element, std::string_view *key) {
     if (done_) return false;
-    size_t pos = skipSpace(text, pos_);
-    if (!first_) {
-        if (pos < end_ && text[pos] == ',') {
-            pos = skipSpace(text, pos + 1);
-        } else if (pos != end_) {
-            ok_ = false;
-            done_ = true;
-            return false;
-        }
-    }
-    if (pos >= end_) {
-        done_ = true;
-        return false;
-    }
-    const size_t valueEnd = skipValue(text, pos);
-    if (valueEnd == npos || valueEnd > end_) {
+    const auto fail = [this] {
         ok_ = false;
         done_ = true;
         return false;
+    };
+    size_t pos = skipSpace(text, pos_);
+    if (pos >= text.size()) return fail();  // unterminated
+    if (text[pos] == (object_ ? '}' : ']')) {
+        done_ = true;
+        return false;
     }
+    if (!first_) {
+        if (text[pos] != ',') return fail();
+        pos = skipSpace(text, pos + 1);
+    }
+    if (object_) {
+        // "key": value
+        const size_t keyEnd = pos < text.size() && text[pos] == '"' ? skipString(text, pos) : npos;
+        const size_t colon = keyEnd == npos ? npos : skipSpace(text, keyEnd);
+        if (colon == npos || colon >= text.size() || text[colon] != ':') return fail();
+        if (key != nullptr) *key = text.substr(pos + 1, keyEnd - pos - 2);
+        pos = skipSpace(text, colon + 1);
+    }
+    const size_t valueEnd = skipValue(text, pos);
+    if (valueEnd == npos) return fail();
     first_ = false;
     pos_ = valueEnd;
     *element = text.substr(pos, valueEnd - pos);

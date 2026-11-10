@@ -1,21 +1,20 @@
-import { Check, ChevronRight, Loader2, Plus } from 'lucide-react'
-import { useState, type FormEvent } from 'react'
+import { Check, ChevronRight, Loader2 } from 'lucide-react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useLocation } from 'wouter'
 import { api, errorMessage } from '@/api/client'
-import { useSession } from '@/hooks/data'
-import { AddDeviceDialog } from '@/components/admin/AddDeviceDialog'
 import { HomeAssistantSettings } from '@/components/admin/HomeAssistantForm'
 import { NetworkInfo } from '@/components/admin/NetworkInfo'
 import { PairRemote } from '@/components/admin/PairRemote'
+import { RemoteEndpoint } from '@/components/admin/RemoteEndpoint'
 import { ThemeToggle } from '@/components/AppShell'
 import { ConfigBanner } from '@/components/ConfigBanner'
 import { Logo } from '@/components/Logo'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Field, Input } from '@/components/ui/input'
+import { Field, Input, ShowErrors } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
-import { useDevices, useIntegrations } from '@/hooks/data'
-import { providerRef } from '@/lib/health'
+import { useIntegrations, useSession, useStatus } from '@/hooks/data'
+import { healthLabel } from '@/lib/health'
 import { cn } from '@/lib/utils'
 
 const STEPS = [
@@ -23,20 +22,56 @@ const STEPS = [
   { id: 'network', title: 'Network', blurb: 'Hubbo uses wired Ethernet and gets its address from your router.' },
   { id: 'remote', title: 'Pair the remote', blurb: 'Hubbo takes over from your existing Hub by listening on its address.' },
   { id: 'ha', title: 'Home Assistant', blurb: 'Optional. Lets Hubbo control receivers, TVs, lights and switches through Home Assistant.' },
-  { id: 'devices', title: 'Devices', blurb: 'Register the things your activities will control. You can add more later.' },
+  { id: 'done', title: 'Done', blurb: 'Hubbo is set up. You can change any of this later.' },
 ] as const
+type StepId = (typeof STEPS)[number]['id']
+const stepIndex = (id: StepId | string | undefined) => STEPS.findIndex((s) => s.id === id)
 
-export default function Setup({ onDone }: { onDone: () => void }) {
-  const session = useSession()
+/**
+ * Where to pick up after a reload, from what the hub already has (never from browser storage):
+ * the first thing that isn't done yet. Skipped optional steps (pairing, HA) come back until done.
+ */
+function useResumeStep(needed: boolean): number | null {
+  const session = useSession().data
+  // Only when the step isn't already known, and once signed in (before the admin exists these are 401s).
+  const ask = needed && !!session && !session.setup_required
+  const status = useStatus(3000, ask).data
+  if (!session) return null
+  if (session.setup_required) return stepIndex('admin')
+  if (!status) return null
+  if (!status.remote.paired) return stepIndex('remote')
+  if (status.integrations.find((i) => i.type === 'home_assistant')?.state === 'not_configured') return stepIndex('ha')
+  return stepIndex('done')
+}
+
+/** The wizard. `start` (from `#/setup/<step>`) opens a given step; otherwise it resumes from hub state. */
+export default function Setup({ onDone, start }: { onDone: () => void; start?: string }) {
+  const startAt = stepIndex(start)
   const [step, setStep] = useState<number | null>(null)
+  const resume = useResumeStep(step === null && startAt <= 0)
   const [, navigate] = useLocation()
-  const current = step ?? (session.data ? (session.data.setup_required ? 0 : 1) : null)
+  // Resume once, then stay put: pairing at the resumed step mustn't jump the wizard ahead by itself.
+  useEffect(() => {
+    if (step === null && startAt <= 0 && resume !== null && resume > 0) setStep(resume)
+  }, [step, startAt, resume])
+  const current = step ?? (startAt > 0 ? startAt : resume)
 
   const finish = () => {
     navigate('/')
     onDone()
   }
-  const next = () => (current !== null && current < STEPS.length - 1 ? setStep(current + 1) : finish())
+  // Once the admin exists, a reload (or App remounting this as signed in) comes back here instead of
+  // the dashboard. Network is in the URL because resuming from hub state never picks it; after it,
+  // `#/setup` resumes from the hub.
+  const adminCreated = () => {
+    navigate('/setup/network')
+    setStep(stepIndex('network'))
+  }
+  const next = () => {
+    if (current === stepIndex('network')) navigate('/setup')
+    if (current !== null && current < STEPS.length - 1) setStep(current + 1)
+    else finish()
+  }
 
   return (
     <div className="min-h-dvh bg-muted/40">
@@ -76,11 +111,15 @@ export default function Setup({ onDone }: { onDone: () => void }) {
                 {STEPS[current]!.title}
               </h2>
               <p className="mb-6 text-sm text-muted-foreground">{STEPS[current]!.blurb}</p>
-              {current === 0 && <AdminStep onCreated={next} />}
-              {current === 1 && <NetworkStep />}
-              {current === 2 && <PairRemote />}
-              {current === 3 && <HaStep onSaved={next} />}
-              {current === 4 && <DevicesStep />}
+              {
+                {
+                  admin: <AdminStep onCreated={adminCreated} />,
+                  network: <NetworkStep />,
+                  remote: <RemoteStep />,
+                  ha: <HaStep />,
+                  done: <DoneStep />,
+                }[STEPS[current]!.id]
+              }
             </>
           )}
         </section>
@@ -97,7 +136,7 @@ export default function Setup({ onDone }: { onDone: () => void }) {
                 </Button>
               )}
               <Button onClick={next}>
-                {current === STEPS.length - 1 ? 'Finish' : 'Continue'}
+                {current === STEPS.length - 1 ? 'Go to the dashboard' : 'Continue'}
                 <ChevronRight />
               </Button>
             </div>
@@ -115,9 +154,11 @@ function AdminStep({ onCreated }: { onCreated: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const mismatch = confirm.length > 0 && confirm !== password
+  const [attempted, setAttempted] = useState(false) // errors show from the first submit on
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
+    setAttempted(true)
     if (mismatch) return
     setBusy(true)
     setError(null)
@@ -134,6 +175,7 @@ function AdminStep({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
+    <ShowErrors.Provider value={attempted}>
     <form onSubmit={submit} className="grid max-w-sm gap-4">
       {error && <Alert variant="error">{error}</Alert>}
       <Field label="Username" htmlFor="su">
@@ -146,11 +188,12 @@ function AdminStep({ onCreated }: { onCreated: () => void }) {
         <Input id="sp2" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} aria-invalid={mismatch} required />
       </Field>
       <div>
-        <Button type="submit" disabled={busy || mismatch}>
+        <Button type="submit" disabled={busy}>
           {busy && <Loader2 className="animate-spin" />} Create account
         </Button>
       </div>
     </form>
+    </ShowErrors.Provider>
   )
 }
 
@@ -158,37 +201,45 @@ function NetworkStep() {
   return <NetworkInfo bare />
 }
 
-function HaStep({ onSaved }: { onSaved: () => void }) {
+function RemoteStep() {
+  return (
+    <div className="grid gap-6">
+      <PairRemote />
+      <div className="grid gap-3 border-t pt-5">
+        <h3 className="text-sm font-medium">Or enter a known endpoint</h3>
+        <RemoteEndpoint />
+      </div>
+    </div>
+  )
+}
+
+/** Saving connects (and shows the result); Continue or Skip move on. */
+function HaStep() {
   const integrations = useIntegrations()
   const ha = integrations.data?.find((i) => i.type === 'home_assistant')
   if (!integrations.data) return <Skeleton className="h-40" />
   if (!ha) return <p className="text-sm text-muted-foreground">This hub has no Home Assistant integration.</p>
-  return <HomeAssistantSettings id={ha.id} onSaved={onSaved} />
+  return <HomeAssistantSettings id={ha.id} />
 }
 
-function DevicesStep() {
-  const devices = useDevices()
-  const [adding, setAdding] = useState(false)
+/** What's set up, from the hub. */
+function DoneStep() {
+  const status = useStatus().data
+  const ha = status?.integrations.find((i) => i.type === 'home_assistant')
+  if (!status) return <Skeleton className="h-24" />
+  const rows: [string, string][] = [
+    ['Admin account', 'Created'],
+    ['Remote', status.remote.paired ? `Paired (channel ${status.remote.channel ?? '?'})` : 'Not paired yet: Settings → Remote'],
+    ['Home Assistant', ha ? (ha.state === 'not_configured' ? 'Not set up: Integrations' : healthLabel(ha.state)) : 'Not available'],
+  ]
   return (
-    <div className="grid gap-4">
-      {devices.data && devices.data.length > 0 ? (
-        <ul className="divide-y rounded-lg border">
-          {devices.data.map((d) => (
-            <li key={d.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
-              <span className="font-medium">{d.name}</span>
-              <span className="truncate font-mono text-xs text-muted-foreground">{providerRef(d.provider)}</span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-sm text-muted-foreground">No devices yet.</p>
-      )}
-      <div>
-        <Button variant="outline" onClick={() => setAdding(true)}>
-          <Plus /> Add device
-        </Button>
-      </div>
-      <AddDeviceDialog open={adding} onClose={() => setAdding(false)} />
-    </div>
+    <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm" aria-label="Setup summary">
+      {rows.map(([k, v]) => (
+        <div key={k} className="contents">
+          <dt className="text-muted-foreground">{k}</dt>
+          <dd>{v}</dd>
+        </div>
+      ))}
+    </dl>
   )
 }

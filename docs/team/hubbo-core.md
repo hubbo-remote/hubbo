@@ -1,38 +1,41 @@
 # hubbo-core: working notes
 
-Current as of Phase 3 (Home Assistant), on branch `phase-2`, not yet committed. See
-`docs/design/phase3-home-assistant.md` for the design. This file covers state, decisions and traps only.
+Current as of Phase 4, on branch `phase-4`, not yet committed (Phase 3 is merged). Design:
+`docs/design/phase3-home-assistant.md`. This file covers state, decisions and traps only.
 
 ## State
 
-- Phase 2 (persistence, ConfigService pipeline, bootHub, hold ledger) is committed.
-- Phase 3 core work is done and green on `bin/hubbo test`, `tsan` and `asan`:
+- Phases 2 and 3 are committed. Phase 4 core work is green on `bin/hubbo test`, `tsan` and `asan`:
   - `integrations/websocket_transport.h`: the port (connect, send, close, `poll(timeout)`, and
     callbacks only from inside poll). Firmware implements it with esp_transport_ws, ws:// or wss://.
-  - `integrations/json_scan.*`: a structure-only JSON scanner (member lookup, ArrayCursor) for walking
-    multi-MB discovery results element by element.
+  - `integrations/json_scan.*`: a structure-only JSON scanner (member lookup; `valueStart()`, which
+    finds where a value begins without scanning it; a one-pass Cursor over array elements or object
+    members) for walking big results element by element. A big message is scanned once, by the
+    walk; get_services is trimmed in place, never copied.
   - `integrations/ha_client.*`: the HomeAssistantClient.
     - auth, command ids and ping/pong;
-    - backoff from 1 s doubling to 60 s;
-    - call_service;
-    - chunked discovery: registry, then states, then services;
-    - an any-task discovery mailbox (request, take, cancel) with a generation: results from an older
-      generation (cancelled, or from before new settings) are never published;
-    - `entityStale()`;
-    - an optional Clock, read fresh in poll() and every transport callback, so deadlines set after a
-      slow transport.poll() (a TLS connect) count from the real time;
-    - `verifyTls` goes through configure() to `transport.connect(url, ConnectOptions)`.
-  - `integrations/ha_adapter.*`: the HomeAssistantAdapter for `ha_main`.
-    - Catalogs come from `DeviceSpec::haCapabilities`.
-    - `execute` pushes into an SPSC ring and returns Pending, or AdapterUnavailable at once.
-    - `service()` runs on the integration task.
-    - Results come back through a second ring.
+    - backoff from 1 s doubling to 60 s; call_service;
+    - discovery (design 3b): `config/entity_registry/list_for_display`, then every state through
+      `subscribe_entities` (first event, then `unsubscribe_events`), both walked in steps. No
+      services. Candidates are every allowlisted state, joined with the registry (YAML-only
+      entities have platform "");
+    - entity details for one entity (registration, refresh): `config/entity_registry/get`
+      (not_found means YAML-only), `subscribe_entities` for that id, then `get_services` (moved out
+      unparsed). Runs alongside a discovery. A completed fetch adds the entity to the stale set's
+      "known" list until the next discovery;
+    - any-task mailboxes for both (`Mailbox<T>`: request, take, cancel, publish by generation).
+      Results from an older generation (cancelled, or from before new settings) are never
+      published. A cancel frees the slot at once;
+    - `entityStale()`; an optional Clock, read fresh in poll() and every transport callback (a slow
+      TLS connect doesn't eat deadlines); `verifyTls` reaches `transport.connect(url, ConnectOptions)`.
+  - `integrations/ha_adapter.*`: the HomeAssistantAdapter for `ha_main`. Catalogs come from
+    `DeviceSpec::haCapabilities`; `execute` pushes into an SPSC ring (Pending, or AdapterUnavailable
+    at once); `service()` runs on the integration task; results come back through a second ring.
   - `ErrorCode::EntityNotFound` ("entity_not_found"): HA doesn't know the target entity.
   - `ca_cert_pem` is retired: the stored and backup decoders accept and drop it (old boards' records
     must load, or the hub boots Blocked), and it's never written. `verify_tls` stays.
-  - `DeviceSpec::haCapabilities` is stored as `ha_capabilities` (json.cpp).
-    - The ConfigService drops it for non-HA devices.
-    - The backup `remote` block is checked with `api::isValidRemoteEndpoint` (channels 0–124).
+  - `DeviceSpec::haCapabilities` is stored as `ha_capabilities` (json.cpp); the ConfigService drops
+    it for non-HA devices. The backup `remote` block is checked with `api::isValidRemoteEndpoint`.
 - hub-sim:
   - `sim/src/fake_ha.*`: FakeHaServer and FakeHaTransport, in-process. They never touch a real HA.
     The token is "fake-ha-token" and is redacted in `received()`.
@@ -46,17 +49,35 @@ Current as of Phase 3 (Home Assistant), on branch `phase-2`, not yet committed. 
   - HA is `not_configured` until a token is set. `--ha-token` stores the fake token at boot if no
     `ha_token` is stored.
   - The serve clock adds real elapsed time on each pass, so a `/sim/advance` jump never freezes it.
-  - `/sim/reset` also resets the SimulatedRemote (the scan stops and the endpoint is cleared) and the
-    fake HA (`FakeHaServer::reset()`: fixture entities, no faults). The client gets `reconnect()`, which
-    goes through applySettings(): it reconnects at once and forgets stale entities. The
-    SimulatedRemote lives in SimHub: `advance()` drives its scan clock and factoryReset() resets it.
+  - Simulated presses are real button packets into RemoteInput. SimHub is its EventSink (like the
+    firmware's EventTap): it keeps the last event, then hands it to the engine, so /remote/status
+    has `last_event` and `last_packet_age_ms` as on the board. A press without a release holds (the
+    thumb stays down, keepalives sent) until a release or /sim/reset, which releases everything.
+  - `/sim/reset` also resets the SimulatedRemote (in SimHub; `advance()` drives its scan clock), the
+    fake HA (`FakeHaServer::reset()`: fixture entities, no faults) and BLE (bonded, connected). The
+    client gets `reconnect()`: it reconnects at once and forgets stale entities.
   - The fake transport drops an open link once `server.reachable` is false. Callers only flip the flag.
-  - SimRuntime in real mode:
-    - `integrationState("ha_main")` is the client's state;
-    - `deviceAvailability()` is stale, available or unavailable.
+  - SimRuntime in real mode: `integrationState("ha_main")` is the client's state;
+    `deviceAvailability()` is stale, available or unavailable.
   - /sim routes:
     - `/sim/radio/found?channel=&address=`
-    - `/sim/ha?reachable=&commands=&fail=&remove=`
+    - `/sim/ha?reachable=&commands=&fail=&remove=&auth=reject|ok&connect=stall|ok`. With auth or
+      connect, the client reconnects at once: auth_failed, or held in connecting.
+    - `/sim/ble?connected=0|1` runs the scenario verb `ble connected|disconnected`.
+    - `/sim/ble/bonded?peer=` completes an open BLE pairing window (`api::SimulatedBlePairing`, in
+      SimHub as `blePairing()`, passed as `ApiContext::blePairing`). `advance()` runs the window
+      timeout on the hub clock, like the remote scan.
+    - The pairing port is the one source of the bond: RecordingHidTransport::connected() needs
+      Paired, and SimRuntime's BLE state follows the board's (`not_configured`, `connecting`,
+      `connected`, `disconnected`, `error`). `/sim/ble?connected=` is only the host link. The hub
+      starts bonded to `SimHub::kBondedHost`, and factoryReset() bonds it again.
+  - The fake HA answers the lean protocol (list_for_display, entity_registry/get,
+    subscribe_entities in HA's compressed form, unsubscribe_events, get_services) and has one
+    YAML-only entity, `switch.patio_fountain` (`FakeHaServer::kYamlOnlyEntity`).
+  - Real names and platforms (denonavr, sonos, webostv, xbox, hue) live with the entities in
+    `fixtureHaEntities()` (fixtures.cpp). get_services has one integration service per selector
+    kind: `denonavr.set_dynamic_eq`, `sonos.set_option` (bool), `sonos.set_sleep_timer` (int),
+    `webostv.select_sound_output` (enum); `denonavr.get_command` is text, so it's skipped.
   - SimApi passes a SimulatedRemote, the hub's client and the secret store into ApiContext. It calls
     `api::applyHomeAssistantSettings` at construction.
 
@@ -77,10 +98,15 @@ Current as of Phase 3 (Home Assistant), on branch `phase-2`, not yet committed. 
   This is a small, bounded leak per edit, accepted at hobby scale.
 - **Discovery parses in steps** of kParseStepEntities (25) per poll, with a yield hook between steps.
   `hasWork()` tells the loop not to sleep. Big texts are freed between phases. Registry entries are
-  allowlisted by domain and disabled ones skipped; states are prefiltered by the registry. Candidates
+  allowlisted by domain (list_for_display has no disabled ones); states are prefiltered by id. Candidates
   are capped at 2048 (a real house overflowed 256). Over the cap, entities are counted in
   `HaDiscovery::truncated`, never dropped silently. Stale checks use every allowlisted entity seen, not
-  only the capped list. `elapsedMs` is there for the board log (the real house took about 28 s). The raw services JSON is handed to the API, which frees it after normalizing.
+  only the capped list. The old 3 MB discovery took about 28 s on the board (about 9 ms per KB); the
+  lean one is about 0.8 MB (list_for_display 276 KB, all states 515 KB), so about 7 s expected. HA
+  itself answers each in under 0.1 s. Details' services JSON (about 230 KB) goes to the API.
+- **Subscriptions are always ended.** A subscription's result comes first and its first event
+  carries the data; the client then unsubscribes. A job that ends early (cancel, timeout, new
+  settings) unsubscribes what it still has open. The fake counts open ones (`subscriptions()`).
 - **Stale is runtime only, never saved, and discovery is the only source.** Real HA answers
   call_service on a nonexistent entity with success (`[]`), not an error, so a call result can't
   detect it. Stale means missing from the latest completed discovery (`entityStale()`). It's cleared
@@ -125,18 +151,11 @@ Current as of Phase 3 (Home Assistant), on branch `phase-2`, not yet committed. 
 
 ## Open items
 
-- e2e `storage.spec.ts` "backup is refused with a clear 503" fails against hub-sim. By the spec, storage
-  failing after a good load exports the running config (200); only a load that couldn't read storage
-  gives 503. The mock answers 503 for any storage_unavailable. That's the frontend's or a spec decision,
-  not core.
-- Firmware: pass the client a millis Clock and use `haIntegrationState()` in EngineRuntime.
-- API: pass `integration->verifyTls` to `client.configure()`. Until then, the sim test
-  RealHa.VerifyTlsReachesTheTransport fails. Check `HaDiscovery::generation` against
-  `discoveryGeneration()` in the DiscoveryCache.
-- The API can drop `rejectSnapshot` and the strip in `putDevice`, and pass `withCapabilities=false`
-  to `encodeDevice`.
-- Remote addresses are parsed with `api::parseRemoteAddress`, in both json.cpp (backup: exactly 10
-  digits) and sim_api.cpp.
+- Measure the lean discovery and an entity-details fetch on the board (expected about 7 s and about
+  2 s). The firmware logs `elapsedMs`.
+- Firmware: pass the client a millis Clock and use `haIntegrationState()` in EngineRuntime (check).
 - In real mode, `ha latency` and `ha fail` scenario verbs are refused; only `ha available|unavailable`
   works. Use /sim/ha for faults.
-- At the phase commit: run /simplify, then /commits with only this area's files, staged by path.
+- The sim's BLE state names (runtime.cpp) copy the firmware's `bleText` table by hand. A shared core
+  `bleIntegrationState()` would keep them in step; it needs a firmware change, so it waits for the lead.
+- At the phase commit: /commits with only this area's files, staged by path.

@@ -42,8 +42,16 @@ IntegrationSpec integration(std::string id, std::string type, std::string name);
 ConfigSpec fixtureConfig();
 
 // The Home Assistant entities behind the fixture's ha_main devices, as HA
-// would describe them (feature bits, source lists). FakeHomeAssistant builds
-// their command catalogs with the real ha::EntityCapabilities.
-std::vector<ha::EntityInfo> fixtureEntities();
+// would describe them (feature bits, source lists), with the name and
+// integration (registry platform) HA reports. FakeHomeAssistant builds their
+// command catalogs with the real ha::EntityCapabilities; the fake HA server
+// serves all of it.
+struct FixtureHaEntity {
+    ha::EntityInfo info;
+    std::string name;
+    std::string platform;
+};
+std::vector<FixtureHaEntity> fixtureHaEntities();
+std::vector<ha::EntityInfo> fixtureEntities();  // fixtureHaEntities()' infos
 
 }  // namespace hubbo::sim

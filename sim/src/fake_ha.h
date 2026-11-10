@@ -2,18 +2,13 @@
 
 // A fake Home Assistant WebSocket server and the in-process transport that
 // talks to it, so the HA client, the adapter, contract and e2e tests run
-// without a real HA. Host-only. Speaks the subset the client uses: the auth
-// handshake, ping/pong, call_service, get_states, get_services and
-// config/entity_registry/list.
-//
-// As real HA, a call_service for an entity it doesn't have (removed from
-// entities()) still answers success. Replies are delivered on the transport's next poll() (as the real
-// transport delivers them on the integration task).
+// without a real HA. Host-only. Speaks the subset the client uses (see
+// FakeHaServer). Replies are delivered on the transport's next poll(), as the
+// real transport delivers them on the integration task.
 
 #include <cstdint>
 #include <deque>
 #include <functional>
-#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -38,17 +33,27 @@ struct FakeHaEntity {
 
 class FakeHaServer {
 public:
-    // The fixture entities (fixtureEntities()), registered, platform "demo".
+    // The fixture entities (fixtureHaEntities()), registered, with realistic
+    // names, platforms (denonavr, sonos, webostv, xbox, hue) and attributes,
+    // plus kYamlOnlyEntity, which has a state but no registry entry.
+    // Answers what the client sends: list_for_display, entity_registry/get,
+    // subscribe_entities (one compressed event) and unsubscribe_events,
+    // get_services, call_service, ping.
     FakeHaServer();
+    static constexpr const char *kYamlOnlyEntity = "switch.patio_fountain";
 
     std::string token = "fake-ha-token";
     bool reachable = true;       // false: connect() fails and an open link drops
     bool answerPings = true;     // false: pings get no pong (dead connection)
     bool answerCommands = true;  // false: commands get no result (timeouts)
+    bool rejectAuth = false;     // true: every token gets auth_invalid (auth_failed)
+    // true: a connect() never completes (the client stays connecting) until
+    // it's set back to false.
+    bool stallConnect = false;
     // "domain.service" calls that HA refuses (success: false).
     std::set<std::string> failing;
-    // Extra registry-only and state-only filler entities, for big discovery
-    // payloads (e.g. hundreds of sensors).
+    // Extra registry and state filler entities (sensors), for big discovery
+    // payloads.
     size_t fillerEntities = 0;
 
     void addEntity(FakeHaEntity entity);
@@ -65,17 +70,22 @@ public:
     int authAttempts() const { return authAttempts_; }
     // Every message received, with any access token replaced by "<redacted>".
     const std::vector<std::string> &received() const { return received_; }
+    // Open subscribe_entities subscriptions (the client should end each one).
+    size_t subscriptions() const { return subscriptions_.size(); }
 
     // Server side of one connection (FakeHaTransport): the replies to send.
     std::vector<std::string> onOpen();
     std::vector<std::string> onMessage(const std::string &text);
 
-    // get_services' result, as discovery receives it.
+    // get_services' result, as entity details receive it.
     std::string servicesJson() const;
 
 private:
-    std::string statesJson() const;
-    std::string registryJson() const;
+    // subscribe_entities' first event, "a": entity id -> compressed state
+    // ({"s","a","c","lc"}); only `ids` if any are given.
+    std::string compressedStates(const std::vector<std::string> &ids) const;
+    std::string displayJson() const;                           // list_for_display's result
+    std::string registryEntry(const FakeHaEntity &e) const;    // entity_registry/get's result
 
     std::vector<FakeHaEntity> entities_;
     std::vector<std::string> calls_;
@@ -83,6 +93,7 @@ private:
     int connections_ = 0;
     int authAttempts_ = 0;
     bool authed_ = false;
+    std::set<uint32_t> subscriptions_;
 };
 
 // Gives every home_assistant device in `config` without a snapshot the one
@@ -116,6 +127,7 @@ public:
 
 private:
     enum class Event { Connected, Text, Closed };
+    void openLink();  // queue Connected and the server's greeting
     struct Queued {
         Event event;
         std::string text;
@@ -127,6 +139,7 @@ private:
     std::string url_;
     bool open_ = false;     // between connect() and the Closed event
     bool closing_ = false;  // a Closed event is queued
+    bool stalled_ = false;  // connected, held back while server_.stallConnect
 };
 
 }  // namespace hubbo::sim

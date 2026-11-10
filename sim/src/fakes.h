@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "hubbo/api/ble_pairing_port.h"
 #include "hubbo/domain/adapter.h"
 #include "hubbo/ha/capabilities.h"
 #include "hubbo/integrations/ble_hid.h"
@@ -28,12 +29,18 @@ namespace hubbo::sim {
 
 class RecordingHidTransport : public integrations::HidTransport {
 public:
-    bool connected() const override { return connected_; }
+    // Connected needs a bond, as on the board (BleHid): `pairing` (if set)
+    // is the one source of that; setConnected() is only the host's link.
+    bool connected() const override {
+        return connected_ && (pairing == nullptr || pairing->status().state == api::BlePairState::Paired);
+    }
     bool sendKeyboard(const uint8_t report[8]) override;
     bool sendConsumer(uint16_t usage) override;
 
     void setConnected(bool connected) { connected_ = connected; }
     std::vector<std::string> &reports() { return reports_; }
+
+    const api::BlePairingPort *pairing = nullptr;
 
 private:
     bool connected_ = true;

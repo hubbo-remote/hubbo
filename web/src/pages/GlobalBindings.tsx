@@ -6,6 +6,7 @@ import type { GlobalBindings as GB, ValidationIssue } from '@/api/types'
 import { BindingsEditor } from '@/components/bindings/BindingsEditor'
 import { ErrorState, PageHeader } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
+import { ShowErrors } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/misc'
@@ -39,15 +40,21 @@ function Editor({ initial, catalog }: { initial: GB; catalog: Catalog }) {
     validateBindings(bindings, catalog, errors, warnings)
     return { errors, warnings }
   }, [bindings, catalog])
-  const errors = serverIssues ?? local.errors
+  // Errors show from the first Save on, then update live; never before.
+  const [attempted, setAttempted] = useState(false)
+  const showErrors = attempted || serverIssues !== null
+  const errors = showErrors ? (serverIssues ?? local.errors) : []
 
   const save = async () => {
+    setAttempted(true)
+    if (local.errors.length) return
     setBusy(true)
     try {
       const r = await api.replaceGlobalBindings({ bindings, revision: saved.revision })
       setSaved(r)
       setBindings(r.bindings)
       setServerIssues(null)
+      setAttempted(false)
       setQueryData('global-bindings', r)
       toast('Global buttons saved', { variant: 'success' })
     } catch (e) {
@@ -60,7 +67,7 @@ function Editor({ initial, catalog }: { initial: GB; catalog: Catalog }) {
   }
 
   return (
-    <>
+    <ShowErrors.Provider value={showErrors}>
       <PageHeader
         back={{ href: '/activities', label: 'Activities' }}
         title="Global buttons"
@@ -71,7 +78,7 @@ function Editor({ initial, catalog }: { initial: GB; catalog: Catalog }) {
           </span>
         }
         actions={
-          <Button onClick={save} disabled={busy || !dirty || errors.length > 0 || lock.locked} title={lock.title}>
+          <Button onClick={save} disabled={busy || !dirty || lock.locked} title={lock.title}>
             {busy ? <Loader2 className="animate-spin" /> : <Save />} Save
           </Button>
         }
@@ -114,6 +121,6 @@ function Editor({ initial, catalog }: { initial: GB; catalog: Catalog }) {
         selected={selected}
         onSelect={setSelected}
       />
-    </>
+    </ShowErrors.Provider>
   )
 }

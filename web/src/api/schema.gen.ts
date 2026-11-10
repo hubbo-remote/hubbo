@@ -449,6 +449,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/integrations/{integration_id}/entities/{entity_id}/details": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                integration_id: components["parameters"]["IntegrationIdPath"];
+                entity_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * An entity's loaded details (HA)
+         * @description Kept until the next request, an HA settings change, a restore or
+         *     reset, or a reboot; `idle` for any other entity.
+         */
+        get: operations["getEntityDetails"];
+        put?: never;
+        /**
+         * Load an entity's details (HA)
+         * @description Starts loading the entity's attributes and its integration's
+         *     services from Home Assistant (about 2 s on the hub), which
+         *     registering it needs. One at a time: a new request replaces the
+         *     earlier one. Poll the GET until `done` or `failed`. `home_assistant`
+         *     integrations only (404 for others); `422` if `entity_id` isn't one
+         *     `media_player`, `light` or `switch` entity; `503
+         *     integration_unavailable` if HA isn't connected.
+         */
+        post: operations["requestEntityDetails"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/integrations/{integration_id}/discover": {
         parameters: {
             query?: never;
@@ -494,14 +528,23 @@ export interface paths {
             };
             cookie?: never;
         };
-        get?: never;
+        /** Pairing state (BLE HID) */
+        get: operations["getIntegrationPairing"];
         put?: never;
         /**
          * Open a pairing window (BLE HID)
-         * @description Advertises and accepts a new bond for `window_s` seconds; a new bond replaces the old one.
+         * @description Forgets the bonded host, then advertises and accepts a new bond for
+         *     `window_s` seconds: a new bond replaces the old one. Poll
+         *     `GET .../pair` until it's `paired` or `failed` (the window closed with
+         *     no bond). `ble_hid` integrations only (404 for others); 409 `busy`
+         *     while a window is open; 503 `integration_unavailable` when Bluetooth
+         *     isn't running.
          */
         post: operations["startIntegrationPairing"];
-        /** Forget the bonded host (BLE HID) */
+        /**
+         * Forget the bonded host (BLE HID)
+         * @description Closes any open window and deletes the bond. Remove Hubbo on the host too.
+         */
         delete: operations["forgetIntegrationPairing"];
         options?: never;
         head?: never;
@@ -519,16 +562,21 @@ export interface paths {
         put?: never;
         /**
          * Register a device
-         * @description Home Assistant (`provider: {type: home_assistant, entity_id, unique_id}`):
-         *     run a discovery first (`POST /admin/integrations/ha_main/discover`).
-         *     The hub takes the entity's capabilities (attributes and integration
-         *     services) from the latest discovery and stores them with the device,
-         *     so its commands work (and configs compile) while HA is offline;
-         *     `unique_id` is filled in from it. They're never accepted from the
-         *     client (`ha_capabilities` is `unknown_field`) and never returned.
-         *     `422` (detail `unknown_device` at `/provider/entity_id`) if the entity
-         *     isn't in the latest discovery, or Hubbo offers no commands for it;
-         *     `503 integration_unavailable` on a hub without an HA client. An
+         * @description Home Assistant (`provider: {type: home_assistant, entity_id}`): load
+         *     the entity's details first (`POST
+         *     /admin/integrations/ha_main/entities/{entity_id}/details`, then poll
+         *     its GET until `done`). The hub takes the entity's capabilities
+         *     (attributes and integration services) from those details and stores
+         *     them with the device, so its commands work (and configs compile)
+         *     while HA is offline; `unique_id` is filled in from them. They're
+         *     never accepted from the client (`ha_capabilities` is `unknown_field`)
+         *     and never returned. `409 details_required` if this entity's details
+         *     aren't loaded (none, another entity's, still running, failed, or from
+         *     earlier HA settings); `422` (detail at `/provider/entity_id`)
+         *     `unknown_device` if Hubbo offers no commands for it, `duplicate_id`
+         *     if a device already uses the entity (also one HA renamed: the
+         *     details match it by `unique_id`; re-link that device instead); `503
+         *     integration_unavailable` on a hub without an HA client. An
          *     entity that HA later renames or removes shows as `availability:
          *     stale` once a discovery runs without it; its commands and actions
          *     then fail as `status: failed`, `message: entity_not_found` (not
@@ -556,9 +604,9 @@ export interface paths {
         /**
          * Rename a device or re-link its provider reference
          * @description Re-linking a Home Assistant device (`provider` with the entity's new
-         *     `entity_id`) takes its capabilities from the latest discovery, as
-         *     registration does (`422 unknown_device` if it isn't there), and
-         *     clears `availability: stale`. Until then a stale device's commands
+         *     `entity_id`, or the same one to refresh) takes its capabilities from
+         *     that entity's loaded details, as registration does (`409
+         *     details_required` without them), and clears `availability: stale`. Until then a stale device's commands
          *     fail as `status: failed`, `message: entity_not_found`.
          *     `ha_capabilities` is never accepted (`unknown_field`).
          */
@@ -889,7 +937,7 @@ export interface components {
          */
         Trigger: string;
         /** @enum {string} */
-        ErrorCode: "malformed_json" | "validation_failed" | "unsupported_media_type" | "payload_too_large" | "method_not_allowed" | "host_not_allowed" | "unauthenticated" | "invalid_credentials" | "forbidden" | "csrf_failed" | "rate_limited" | "not_found" | "revision_conflict" | "device_in_use" | "activity_in_use" | "config_blocked" | "storage_unavailable" | "credentials_corrupt" | "limit_reached" | "busy" | "setup_required" | "setup_already_done" | "integration_unavailable" | "not_implemented" | "internal_error";
+        ErrorCode: "malformed_json" | "validation_failed" | "unsupported_media_type" | "payload_too_large" | "method_not_allowed" | "host_not_allowed" | "unauthenticated" | "invalid_credentials" | "forbidden" | "csrf_failed" | "rate_limited" | "not_found" | "revision_conflict" | "device_in_use" | "activity_in_use" | "config_blocked" | "storage_unavailable" | "credentials_corrupt" | "limit_reached" | "busy" | "setup_required" | "setup_already_done" | "details_required" | "integration_unavailable" | "not_implemented" | "internal_error";
         ErrorDetail: {
             /** @description JSON Pointer into the request body ('' for the whole body). */
             path: string;
@@ -1447,18 +1495,51 @@ export interface components {
             provider: components["schemas"]["HomeAssistantProvider"];
             name: string;
             domain: string;
-            /** @description The HA integration that provides the entity (e.g. `sonos`), from the entity registry. */
+            /** @description The HA integration that provides the entity (e.g. `sonos`), from the entity registry. Absent for YAML-only entities. */
             platform?: string;
             state?: string;
             /** @description False when Hubbo offers no commands for it (unsupported domain or features). */
             supported: boolean;
+            /**
+             * @description A preview: the domain's commands only. The integration's own
+             *     services come with the entity's details (`EntityDetailsStatus`).
+             */
+            command_ids?: components["schemas"]["CommandId"][];
+            /** @description Enum options left out (too long, or too many); the commands still work with the rest. */
+            dropped_options?: number;
+            registered_device_id: components["schemas"]["NullableDeviceId"];
+        };
+        /**
+         * @description One entity's details, loaded from Home Assistant for registering it:
+         *     `running`, then `done` (everything a discovery candidate has, plus
+         *     the integration's services in `command_ids`, `skipped_services` and
+         *     `provider.unique_id`) or `failed` (`error`). `idle`: nothing loaded
+         *     for this entity.
+         */
+        EntityDetailsStatus: {
+            /** @enum {string} */
+            state: "idle" | "running" | "done" | "failed";
+            entity_id?: string;
+            /** @description Why it failed. Never secrets or URLs with credentials. */
+            error?: string;
+            provider?: components["schemas"]["HomeAssistantProvider"];
+            name?: string;
+            domain?: string;
+            /** @description Absent for YAML-only entities (no integration services). */
+            platform?: string;
+            /** @description False when Hubbo offers no commands for it; registering it is then `422 unknown_device`. */
+            supported?: boolean;
             command_ids?: components["schemas"]["CommandId"][];
             /** @description Enum options left out (too long, or too many); the commands still work with the rest. */
             dropped_options?: number;
             /** @description Integration services that match the entity but aren't offered (a field Hubbo can't type, more than 4 fields, or no entity target). */
             skipped_services?: string[];
-            registered_device_id: components["schemas"]["NullableDeviceId"];
-        };
+            registered_device_id?: components["schemas"]["NullableDeviceId"];
+        } & (unknown & unknown & unknown);
+        /**
+         * @description `done` carries the page and its totals, `failed` the reason; `idle`
+         *     and `running` carry only the state.
+         */
         DiscoverStatus: {
             /** @enum {string} */
             state: "idle" | "running" | "done" | "failed";
@@ -1478,7 +1559,12 @@ export interface components {
             /** @description `done` only: the page matching `q` and `domain`. */
             candidates?: components["schemas"]["DiscoverCandidate"][];
             next_cursor?: string | null;
-        };
+        } & (unknown & unknown);
+        /**
+         * @description `idle` (no bond), `pairing` (window open, `window_s` left), `paired`
+         *     (a bonded host, `peer_name` if known) or `failed` (the latest window
+         *     closed with no bond; until the next pair or forget).
+         */
         PairingStatus: {
             /** @enum {string} */
             state: "idle" | "pairing" | "paired" | "failed";
@@ -1629,7 +1715,7 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description `revision_conflict`, `device_in_use`, `activity_in_use`, `config_blocked`, `limit_reached`, `busy`, `setup_already_done`, `setup_required` */
+        /** @description `revision_conflict`, `device_in_use`, `activity_in_use`, `config_blocked`, `limit_reached`, `busy`, `setup_already_done`, `setup_required`, `details_required` */
         Conflict: {
             headers: {
                 [name: string]: unknown;
@@ -2422,6 +2508,63 @@ export interface operations {
             503: components["responses"]["Unavailable"];
         };
     };
+    getEntityDetails: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                integration_id: components["parameters"]["IntegrationIdPath"];
+                entity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The details' state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityDetailsStatus"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    requestEntityDetails: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
+                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
+            };
+            path: {
+                integration_id: components["parameters"]["IntegrationIdPath"];
+                entity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Loading */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityDetailsStatus"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationFailed"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
     getDiscovery: {
         parameters: {
             query?: {
@@ -2511,9 +2654,37 @@ export interface operations {
             503: components["responses"]["Unavailable"];
         };
     };
-    startIntegrationPairing: {
+    getIntegrationPairing: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                integration_id: components["parameters"]["IntegrationIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The bond and any open window */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PairingStatus"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    startIntegrationPairing: {
+        parameters: {
+            query?: {
+                window_s?: number;
+            };
             header?: {
                 /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
                 "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
@@ -2538,7 +2709,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
-            501: components["responses"]["NotImplemented"];
+            422: components["responses"]["ValidationFailed"];
             503: components["responses"]["Unavailable"];
         };
     };
@@ -2566,7 +2737,6 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            501: components["responses"]["NotImplemented"];
             503: components["responses"]["Unavailable"];
         };
     };

@@ -7,6 +7,7 @@ import type { RemotePairStatus } from '@/api/types'
 import { ErrorState } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { PressCheck } from './PressCheck'
 
 /** RF pairing by learning an existing Hub's address while its pair button is pressed. */
 export function PairRemote({ paired, channel, onPaired }: { paired?: boolean; channel?: number; onPaired?: () => void }) {
@@ -75,9 +76,12 @@ export function PairRemote({ paired, channel, onPaired }: { paired?: boolean; ch
       <p className="text-xs text-muted-foreground">You only need the old Hub once per remote. Pairing a remote without a Hub isn’t supported yet.</p>
       {error != null && <ErrorState error={error} what="Remote pairing" />}
       {st?.state === 'found' ? (
-        <Alert variant="success" title="Remote paired">
-          Listening on channel {st.channel}. {st.message}
-        </Alert>
+        <>
+          <Alert variant="success" title="Remote paired">
+            Listening on channel {st.channel}. {st.message}
+          </Alert>
+          <PressCheck />
+        </>
       ) : st?.state === 'timeout' ? (
         <Alert variant="error" title="No Hub found">
           {st.message ?? `Nothing answered in ${REMOTE_SCAN_TIMEOUT_S / 60} minutes.`} Make sure the Hub is powered and press its pair button right after starting the scan.
