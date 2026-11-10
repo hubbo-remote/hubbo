@@ -168,6 +168,7 @@ TEST_F(ServiceTest, DeleteActivityRefusedWhileActivatedByAButton) {
     ASSERT_EQ(refused.referrers.size(), 1u);
     EXPECT_EQ(refused.referrers[0].activityId, "");  // global bindings
     EXPECT_EQ(refused.referrers[0].path, "/bindings/music:tap/0");
+    EXPECT_EQ(refused.referrers[0].activityName, "");
 
     auto globals = service->config().globalBindings;
     globals.erase(globals.begin() + 3);  // music:tap
@@ -204,6 +205,7 @@ TEST_F(ServiceTest, DeviceLifecycle) {
     EXPECT_GE(inUse.referrers.size(), 4u);
     EXPECT_EQ(inUse.referrers[0].activityId, "act_watch_apple_tv");
     EXPECT_EQ(inUse.referrers[0].path, "/startup/1");
+    EXPECT_EQ(inUse.referrers[0].activityName, "Watch Apple TV");
 
     EXPECT_TRUE(service->deleteDevice("dev_bedroom_tv", renamed.revision).ok());
     EXPECT_EQ(service->findDevice("dev_bedroom_tv"), nullptr);

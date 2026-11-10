@@ -60,11 +60,13 @@ enum class ConfigState : uint8_t { Fresh, Ok, Blocked, StorageUnavailable };
 const char *configStateName(ConfigState state);  // "fresh", "ok", "blocked", "storage_unavailable"
 
 // Where something refers to a device or activity: the activity id ("" for
-// the global bindings) and a JSON Pointer inside that document, e.g.
-// {"act_watch_apple_tv", "/bindings/volume_up:down/0"}.
+// the global bindings), a JSON Pointer inside that document and the
+// activity's name, e.g.
+// {"act_watch_apple_tv", "/bindings/volume_up:down/0", "Watch Apple TV"}.
 struct Referrer {
     std::string activityId;
     std::string path;
+    std::string activityName;  // "" for the global bindings
 };
 
 struct Outcome {
