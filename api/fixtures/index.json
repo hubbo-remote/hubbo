@@ -242,9 +242,34 @@
       "kind": "200"
     },
     {
+      "file": "integrations/ha_main.entity_details.running.json",
+      "operation": "requestEntityDetails",
+      "kind": "202"
+    },
+    {
+      "file": "integrations/ha_main.entity_details.done.json",
+      "operation": "getEntityDetails",
+      "kind": "200"
+    },
+    {
+      "file": "integrations/ha_main.entity_details.failed.json",
+      "operation": "getEntityDetails",
+      "kind": "200"
+    },
+    {
+      "file": "errors/details_required.json",
+      "operation": "registerDevice",
+      "kind": "409"
+    },
+    {
       "file": "integrations/ble.pair.json",
       "operation": "startIntegrationPairing",
       "kind": "202"
+    },
+    {
+      "file": "integrations/ble.pair.paired.json",
+      "operation": "getIntegrationPairing",
+      "kind": "200"
     },
     {
       "file": "admin/register_device.request.json",

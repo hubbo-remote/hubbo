@@ -690,6 +690,57 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
 
+  /admin/integrations/{integration_id}/entities/{entity_id}/details:
+    parameters:
+      - $ref: '#/components/parameters/IntegrationIdPath'
+      - name: entity_id
+        in: path
+        required: true
+        schema: {type: string, pattern: '^[a-z0-9_]+\.[a-z0-9_]+$', maxLength: 96}
+    post:
+      tags: [admin]
+      operationId: requestEntityDetails
+      x-hubbo-role: admin
+      summary: Load an entity's details (HA)
+      description: |
+        Starts loading the entity's attributes and its integration's
+        services from Home Assistant (about 2 s on the hub), which
+        registering it needs. One at a time: a new request replaces the
+        earlier one. Poll the GET until `done` or `failed`. `home_assistant`
+        integrations only (404 for others); `422` if `entity_id` isn't one
+        `media_player`, `light` or `switch` entity; `503
+        integration_unavailable` if HA isn't connected.
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '202':
+          description: Loading
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EntityDetailsStatus'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    get:
+      tags: [admin]
+      operationId: getEntityDetails
+      x-hubbo-role: admin
+      summary: An entity's loaded details (HA)
+      description: |
+        Kept until the next request, an HA settings change, a restore or
+        reset, or a reboot; `idle` for any other entity.
+      responses:
+        '200':
+          description: The details' state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EntityDetailsStatus'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
   /admin/integrations/{integration_id}/discover:
     parameters:
       - $ref: '#/components/parameters/IntegrationIdPath'
@@ -777,15 +828,22 @@ paths:
     post:
       tags: [admin]
       operationId: startIntegrationPairing
-      x-hubbo-not-implemented: true
       x-hubbo-role: admin
       summary: Open a pairing window (BLE HID)
-      description: Advertises and accepts a new bond for `window_s` seconds; a new bond replaces the old one.
+      description: |
+        Forgets the bonded host, then advertises and accepts a new bond for
+        `window_s` seconds: a new bond replaces the old one. Poll
+        `GET .../pair` until it's `paired` or `failed` (the window closed with
+        no bond). `ble_hid` integrations only (404 for others); 409 `busy`
+        while a window is open; 503 `integration_unavailable` when Bluetooth
+        isn't running.
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
+        - name: window_s
+          in: query
+          required: false
+          schema: {type: integer, minimum: 30, maximum: 300, default: 120}
       responses:
-        '503': {$ref: '#/components/responses/Unavailable'}
-        '501': {$ref: '#/components/responses/NotImplemented'}
         '202':
           description: Pairing window open
           content:
@@ -795,21 +853,37 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    get:
+      tags: [admin]
+      operationId: getIntegrationPairing
+      x-hubbo-role: admin
+      summary: Pairing state (BLE HID)
+      responses:
+        '200':
+          description: The bond and any open window
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PairingStatus'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/Unavailable'}
     delete:
       tags: [admin]
       operationId: forgetIntegrationPairing
-      x-hubbo-not-implemented: true
       x-hubbo-role: admin
       summary: Forget the bonded host (BLE HID)
+      description: Closes any open window and deletes the bond. Remove Hubbo on the host too.
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       responses:
-        '503': {$ref: '#/components/responses/Unavailable'}
-        '501': {$ref: '#/components/responses/NotImplemented'}
         '204': {description: Bond removed}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/Unavailable'}
 
   /admin/devices:
     post:
@@ -819,16 +893,21 @@ paths:
       x-hubbo-max-body: 4096
       summary: Register a device
       description: |
-        Home Assistant (`provider: {type: home_assistant, entity_id, unique_id}`):
-        run a discovery first (`POST /admin/integrations/ha_main/discover`).
-        The hub takes the entity's capabilities (attributes and integration
-        services) from the latest discovery and stores them with the device,
-        so its commands work (and configs compile) while HA is offline;
-        `unique_id` is filled in from it. They're never accepted from the
-        client (`ha_capabilities` is `unknown_field`) and never returned.
-        `422` (detail `unknown_device` at `/provider/entity_id`) if the entity
-        isn't in the latest discovery, or Hubbo offers no commands for it;
-        `503 integration_unavailable` on a hub without an HA client. An
+        Home Assistant (`provider: {type: home_assistant, entity_id}`): load
+        the entity's details first (`POST
+        /admin/integrations/ha_main/entities/{entity_id}/details`, then poll
+        its GET until `done`). The hub takes the entity's capabilities
+        (attributes and integration services) from those details and stores
+        them with the device, so its commands work (and configs compile)
+        while HA is offline; `unique_id` is filled in from them. They're
+        never accepted from the client (`ha_capabilities` is `unknown_field`)
+        and never returned. `409 details_required` if this entity's details
+        aren't loaded (none, another entity's, still running, failed, or from
+        earlier HA settings); `422` (detail at `/provider/entity_id`)
+        `unknown_device` if Hubbo offers no commands for it, `duplicate_id`
+        if a device already uses the entity (also one HA renamed: the
+        details match it by `unique_id`; re-link that device instead); `503
+        integration_unavailable` on a hub without an HA client. An
         entity that HA later renames or removes shows as `availability:
         stale` once a discovery runs without it; its commands and actions
         then fail as `status: failed`, `message: entity_not_found` (not
@@ -872,9 +951,9 @@ paths:
       summary: Rename a device or re-link its provider reference
       description: |
         Re-linking a Home Assistant device (`provider` with the entity's new
-        `entity_id`) takes its capabilities from the latest discovery, as
-        registration does (`422 unknown_device` if it isn't there), and
-        clears `availability: stale`. Until then a stale device's commands
+        `entity_id`, or the same one to refresh) takes its capabilities from
+        that entity's loaded details, as registration does (`409
+        details_required` without them), and clears `availability: stale`. Until then a stale device's commands
         fail as `status: failed`, `message: entity_not_found`.
         `ha_capabilities` is never accepted (`unknown_field`).
       parameters:
@@ -1379,7 +1458,7 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
     Conflict:
-      description: '`revision_conflict`, `device_in_use`, `activity_in_use`, `config_blocked`, `limit_reached`, `busy`, `setup_already_done`, `setup_required`'
+      description: '`revision_conflict`, `device_in_use`, `activity_in_use`, `config_blocked`, `limit_reached`, `busy`, `setup_already_done`, `setup_required`, `details_required`'
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
@@ -1511,6 +1590,7 @@ components:
         - busy
         - setup_required
         - setup_already_done
+        - details_required
         - integration_unavailable
         - not_implemented
         - internal_error
@@ -2379,12 +2459,58 @@ components:
         name: {type: string, maxLength: 100}
         domain: {type: string, maxLength: 32}
         platform:
-          description: The HA integration that provides the entity (e.g. `sonos`), from the entity registry.
+          description: The HA integration that provides the entity (e.g. `sonos`), from the entity registry. Absent for YAML-only entities.
           type: string
           maxLength: 32
         state: {type: string, maxLength: 32}
         supported:
           description: False when Hubbo offers no commands for it (unsupported domain or features).
+          type: boolean
+        command_ids:
+          description: |
+            A preview: the domain's commands only. The integration's own
+            services come with the entity's details (`EntityDetailsStatus`).
+          type: array
+          items: {$ref: '#/components/schemas/CommandId'}
+        dropped_options:
+          description: Enum options left out (too long, or too many); the commands still work with the rest.
+          type: integer
+          minimum: 0
+        registered_device_id:
+          $ref: '#/components/schemas/NullableDeviceId'
+    EntityDetailsStatus:
+      description: |
+        One entity's details, loaded from Home Assistant for registering it:
+        `running`, then `done` (everything a discovery candidate has, plus
+        the integration's services in `command_ids`, `skipped_services` and
+        `provider.unique_id`) or `failed` (`error`). `idle`: nothing loaded
+        for this entity.
+      type: object
+      additionalProperties: false
+      required: [state]
+      allOf:
+        - if: {properties: {state: {const: done}}}
+          then: {required: [entity_id, provider, name, domain, supported, command_ids, dropped_options, skipped_services, registered_device_id]}
+        - if: {properties: {state: {const: failed}}}
+          then: {required: [entity_id, error]}
+        - if: {properties: {state: {const: running}}}
+          then: {required: [entity_id]}
+      properties:
+        state: {type: string, enum: [idle, running, done, failed]}
+        entity_id: {type: string, pattern: '^[a-z0-9_]+\.[a-z0-9_]+$', maxLength: 96}
+        error:
+          description: Why it failed. Never secrets or URLs with credentials.
+          type: string
+          maxLength: 120
+        provider: {$ref: '#/components/schemas/HomeAssistantProvider'}
+        name: {type: string, maxLength: 100}
+        domain: {type: string, maxLength: 32}
+        platform:
+          description: Absent for YAML-only entities (no integration services).
+          type: string
+          maxLength: 32
+        supported:
+          description: False when Hubbo offers no commands for it; registering it is then `422 unknown_device`.
           type: boolean
         command_ids:
           type: array
@@ -2401,9 +2527,17 @@ components:
         registered_device_id:
           $ref: '#/components/schemas/NullableDeviceId'
     DiscoverStatus:
+      description: |
+        `done` carries the page and its totals, `failed` the reason; `idle`
+        and `running` carry only the state.
       type: object
       additionalProperties: false
       required: [state]
+      allOf:
+        - if: {properties: {state: {const: done}}}
+          then: {required: [total, truncated, elapsed_ms, candidates, next_cursor]}
+        - if: {properties: {state: {const: failed}}}
+          then: {required: [error]}
       properties:
         state: {type: string, enum: [idle, running, done, failed]}
         error:
@@ -2433,6 +2567,10 @@ components:
           items: {$ref: '#/components/schemas/DiscoverCandidate'}
         next_cursor: {type: [string, 'null'], maxLength: 64}
     PairingStatus:
+      description: |
+        `idle` (no bond), `pairing` (window open, `window_s` left), `paired`
+        (a bonded host, `peer_name` if known) or `failed` (the latest window
+        closed with no bond; until the next pair or forget).
       type: object
       additionalProperties: false
       required: [state]

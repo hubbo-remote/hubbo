@@ -12,7 +12,12 @@ noauth: SIMULATOR_NO_AUTH, every request is a simulated admin. Walks the
 auth:   production auth policy. First-run setup, login, cookies + CSRF,
         tokens, the full role matrix over HTTP, Host allowlist, rate limit.
 
-Both modes then restart hub-sim (same --data, i.e. a reboot) after a first
+mock:   the web admin's mock API (web/mock, signed in as the dev admin) gets
+        the noauth flows; mock-auth gets the auth flows from first run.
+        Checks the mock can't support are skipped and listed as
+        "SKIPPED (<mode>)" at the end (see skip()).
+
+Both hub modes then restart hub-sim (same --data, i.e. a reboot) after a first
 boot, the default seed, every kind of edit and restores, and require the
 whole observable state (activities, devices, capabilities, global bindings,
 integrations, active activity, backup) to be identical across the restart.
@@ -42,7 +47,9 @@ HA_TOKEN = "fake-ha-token"
 TRANSPORT_ERRORS = (405, 421)  # any request may get these (api/openapi.yaml conventions)
 
 failures = []
+skips = []  # (what, why): checks this target can't support, printed at the end
 checked = 0
+MOCK = False  # the target is web/mock, not hub-sim (--mode mock / mock-auth)
 sent_secrets = set()  # write-only values sent so far (see HA_TOKEN)
 
 
@@ -56,6 +63,11 @@ def remember_secrets(value):
     elif isinstance(value, list):
         for x in value:
             remember_secrets(x)
+
+
+def skip(what, why):
+    """A check this target can't run: recorded and printed, never silently dropped."""
+    skips.append((what, why))
 
 
 def fixture(name):
@@ -93,6 +105,10 @@ class Client:
                 status, text, resp_headers = r.status, r.read().decode(), r.headers
         except urllib.error.HTTPError as e:
             status, text, resp_headers = e.code, e.read().decode(), e.headers
+        except (urllib.error.URLError, OSError) as e:  # no answer at all: a failure, not a crash
+            checked += 1
+            failures.append(f"{label or op_id} {method} {path}: no response ({e})")
+            return 0, None, http.client.HTTPMessage()
         where = f"{label or op_id} {method} {path} -> {status}"
         checked += 1
         for secret in sent_secrets:
@@ -143,8 +159,8 @@ class Client:
                     failures.append(f"{where}: session cookie must be HttpOnly and SameSite=Strict")
         return status, body_json, resp_headers
 
-    def host_call(self, method, path):
-        """A hub-sim tool route outside /api/v1 (e.g. /sim/storage); returns (status, json)."""
+    def host_call(self, method, path, body=None):
+        """A test-control route outside the spec (e.g. /sim/storage); returns (status, json)."""
         h = {"Host": "127.0.0.1"}
         if self.token:
             h["Authorization"] = "Bearer " + self.token
@@ -152,16 +168,30 @@ class Client:
             h["Cookie"] = "hubbo_session=" + self.cookie
             if self.csrf:
                 h["X-Hubbo-CSRF"] = self.csrf
-        req = urllib.request.Request(self.base + path, method=method, headers=h)
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            h["Content-Type"] = "application/json"
+        req = urllib.request.Request(self.base + path, data=data, method=method, headers=h)
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 status, text = r.status, r.read().decode()
         except urllib.error.HTTPError as e:
             status, text = e.code, e.read().decode()
+        except (urllib.error.URLError, OSError) as e:
+            return 0, {"error": str(e)}
         try:
             return status, json.loads(text) if text else None
         except ValueError:
             return status, None
+
+    def control(self, path, body=None):
+        """POST a test control: hub-sim's /sim/<path> (200) or the mock's /api/v1/__mock/<path>
+        (204). Anything else is a failure. Returns whether it worked."""
+        url, ok = ("/api/v1/__mock/", 204) if MOCK else ("/sim/", 200)
+        status, reply = self.host_call("POST", url + path, body)
+        expect(status == ok, f"control {path}: {status} {reply}")
+        return status == ok
 
     def headers_only(self, method, path, content_length):
         """Send a request's headers announcing `content_length` body bytes but
@@ -226,13 +256,14 @@ def wait_for(base, seconds=10):
             return
         except (urllib.error.URLError, OSError):
             if time.monotonic() > deadline:
-                raise SystemExit(f"hub-sim at {base} did not come up")
+                raise SystemExit(f"the API at {base} did not come up")
             time.sleep(0.2)
 
 
 def concrete(path, token_id="tok_00000000"):
     return (path.replace("{integration_id}", "ha_main").replace("{device_id}", "dev_denon")
-            .replace("{activity_id}", "act_watch_apple_tv").replace("{token_id}", token_id))
+            .replace("{activity_id}", "act_watch_apple_tv").replace("{token_id}", token_id)
+            .replace("{entity_id}", "light.family_room"))
 
 
 def operations(checker, **marker):
@@ -375,7 +406,7 @@ def activity_flow(c):
 
 def admin_flow(c, checker, candidate=None):
     reg = fixture("admin/register_device.request.json")
-    reg = registration_from(reg, candidate)  # an HA device is registered from the latest discovery
+    reg = registration_from(c, reg, candidate)  # an HA device is registered from its loaded details
     status, dev, _ = c.call("registerDevice", "POST", "/admin/devices", reg, expect=201)
     if status == 201:
         dev_id = dev["id"]
@@ -417,8 +448,12 @@ def admin_flow(c, checker, candidate=None):
         c.call("restoreBackup", "POST", "/admin/restore", fixture("admin/restore.request.json"), expect=200,
                label="restore fixture")
 
+    if MOCK:  # the responses are still checked against the spec
+        skip("the 501s (x-hubbo-not-implemented)", "the mock implements them ahead of the hub")
     for op_id, method, path in operations(checker, **{"x-hubbo-not-implemented": True}):
         status, reply, _ = c.call(op_id, method, concrete(path), empty_body(checker, op_id))
+        if MOCK:
+            continue
         expect(status == 501 and reply and reply["error"]["code"] == "not_implemented",
                f"{op_id}: expected 501 not_implemented, got {status}")
 
@@ -502,12 +537,40 @@ def ha_flow(c):
     c.call("getDiscovery", "GET", "/admin/integrations/ha_main/discover?domain=sensor", expect=422,
            label="bad domain")
 
+    # One device per entity: a registered entity's details name its device, and registering it again is refused.
+    taken = [x for x in done["candidates"] if x["registered_device_id"] and x["supported"]]
+    expect(taken, "discovery should show a registered entity")
+    if taken:
+        d = load_details(c, taken[0]["provider"]["entity_id"])
+        expect(d.get("registered_device_id") == taken[0]["registered_device_id"], f"registered details: {d}")
+        _, e, _ = c.call("registerDevice", "POST", "/admin/devices",
+                         registration_from(c, {"name": "Twin", "integration_id": "ha_main"}, taken[0]),
+                         expect=422, label="register a registered entity")
+        codes = [x["code"] for x in (e or {}).get("error", {}).get("details", [])]
+        expect("duplicate_id" in codes, f"register a registered entity: {codes}")
+    # A YAML-only entity (no registry entry) stays pickable: no platform, no unique_id.
+    yaml_only = [x for x in done["candidates"] if "platform" not in x and x["supported"]]
+    expect(yaml_only, "discovery should list a YAML-only entity (no platform)")
+    if yaml_only:
+        d = load_details(c, yaml_only[0]["provider"]["entity_id"])
+        expect(d.get("state") == "done" and "platform" not in d and "unique_id" not in d.get("provider", {})
+               and d.get("supported"), f"YAML-only details: {d}")
+    # Registering needs the entity's details; an entity HA doesn't have fails to load them.
     reg = {"name": "Not in HA", "integration_id": "ha_main",
            "provider": {"type": "home_assistant", "entity_id": "switch.not_in_ha"}}
-    _, e, _ = c.call("registerDevice", "POST", "/admin/devices", reg, expect=422, label="register unknown entity")
-    expect(e and e["error"].get("details", [{}])[0].get("code") == "unknown_device", f"unknown entity: {e}")
+    _, e, _ = c.call("registerDevice", "POST", "/admin/devices", reg, expect=409, label="register without details")
+    expect((e or {}).get("error", {}).get("code") == "details_required", f"without details: {e}")
+    failed = load_details(c, "switch.not_in_ha")
+    expect(failed.get("state") == "failed" and failed.get("error"), f"details of an unknown entity: {failed}")
+    c.call("registerDevice", "POST", "/admin/devices", reg, expect=409, label="register unknown entity")
+    details = "/admin/integrations/ha_main/entities/{}/details"
+    c.call("requestEntityDetails", "POST", details.format("sensor.outside"), expect=422, label="details of a sensor")
+    c.call("requestEntityDetails", "POST", "/admin/integrations/ble/entities/light.x/details", expect=404,
+           label="details from BLE")
+    # An unregistered entity, so only the client-sent snapshot can be the reason for the 422.
+    fresh = pick_candidate(done)
     snap = {"name": "Spoof", "integration_id": "ha_main", "ha_capabilities": {},
-            "provider": {"type": "home_assistant", "entity_id": "light.family_room"}}
+            "provider": fresh["provider"] if fresh else {"type": "home_assistant", "entity_id": "light.family_room"}}
     c.call("registerDevice", "POST", "/admin/devices", snap, expect=422, label="client ha_capabilities")
     return pick_candidate(done, registered_too=True)
 
@@ -530,9 +593,29 @@ def pick_candidate(done, registered_too=False):
     return supported[0] if registered_too and supported else None
 
 
-def registration_from(reg, candidate):
-    """A register request for this discovery candidate (or `reg` unchanged)."""
-    return dict(reg, name=candidate["name"][:64], provider=candidate["provider"]) if candidate else reg
+def load_details(c, entity_id):
+    """Loads an entity's details (POST, then GET until done or failed); the last body, or {}."""
+    path = f"/admin/integrations/ha_main/entities/{entity_id}/details"
+    _, started, _ = c.call("requestEntityDetails", "POST", path, expect=202)
+    expect((started or {}).get("state") in ("running", "done", "failed"), f"details request: {started}")
+
+    def finished():
+        _, d, _ = c.call("getEntityDetails", "GET", path, expect=200, label="poll details")
+        return d if d and d.get("state") in ("done", "failed") else None
+    return until(finished) or {}
+
+
+def registration_from(c, reg, candidate):
+    """A register request for this discovery candidate, its details loaded
+    (or `reg` unchanged without one)."""
+    if not candidate:
+        return reg
+    details = load_details(c, candidate["provider"]["entity_id"])
+    expect(details.get("state") == "done", f"details of {candidate['provider']['entity_id']}: {details}")
+    if details.get("state") == "done":
+        expect(set(candidate["command_ids"]) <= set(details["command_ids"]),
+               "the details offer at least the discovery's domain commands")
+    return dict(reg, name=candidate["name"][:64], provider=details.get("provider", candidate["provider"]))
 
 
 def discover_candidate(c):
@@ -612,8 +695,7 @@ def remote_flow(c):
     expect(scan and scan["state"] == "scanning", f"scan: {scan}")
     c.call("setRemoteEndpoint", "PUT", "/admin/remote/endpoint", {"channel": 5, "address": "AB12CD34EF"},
            expect=409, label="endpoint while scanning")
-    status, _ = c.host_call("POST", "/sim/radio/found?channel=40&address=1122334466")
-    expect(status == 200, f"/sim/radio/found: {status}")
+    c.control("radio/found?channel=40&address=1122334466")
     _, found, _ = c.call("getRemotePairing", "GET", "/admin/remote/pair", expect=200)
     expect(found and found["state"] == "found" and found["channel"] == 40, f"found: {found}")
     c.call("startRemotePairing", "POST", "/admin/remote/pair", expect=202, label="scan again")
@@ -625,13 +707,38 @@ def remote_flow(c):
            expect=200, label="endpoint back")
 
 
+def ble_pairing_flow(c):
+    """BLE HID pairing: a window that a host bonds in (the `ble/bonded` control),
+    one that runs out, and forgetting the bond."""
+    pair = "/admin/integrations/ble/pair"
+    c.call("getIntegrationPairing", "GET", pair, expect=200)
+    c.call("startIntegrationPairing", "POST", pair + "?window_s=29", expect=422, label="pair window too short")
+    c.call("startIntegrationPairing", "POST", "/admin/integrations/ha_main/pair", expect=404, label="pair HA")
+    _, opened, _ = c.call("startIntegrationPairing", "POST", pair, expect=202)
+    expect((opened or {}).get("state") == "pairing" and opened.get("window_s") == 120, f"pair: {opened}")
+    c.call("startIntegrationPairing", "POST", pair, expect=409, label="pair while pairing")
+    c.control("ble/bonded?peer=Living%20Room")
+    _, paired, _ = c.call("getIntegrationPairing", "GET", pair, expect=200, label="after bonding")
+    expect((paired or {}).get("state") == "paired" and paired.get("peer_name") == "Living Room", f"bonded: {paired}")
+    # A window nobody bonds in ends `failed`; the new window already dropped the old bond.
+    c.call("startIntegrationPairing", "POST", pair + "?window_s=30", expect=202, label="short window")
+    c.control("advance?ms=30000")
+    _, failed, _ = c.call("getIntegrationPairing", "GET", pair, expect=200, label="window ran out")
+    expect((failed or {}).get("state") == "failed", f"window ran out: {failed}")
+    c.call("forgetIntegrationPairing", "DELETE", pair, expect=204)
+    _, idle, _ = c.call("getIntegrationPairing", "GET", pair, expect=200, label="after forget")
+    expect((idle or {}).get("state") == "idle", f"after forget: {idle}")
+
+
 def noauth(c, checker):
     _, s, _ = c.call("getSession", "GET", "/auth/session", expect=200)
-    expect(s and s["auth_mode"] == "simulator_no_auth" and s["role"] == "admin", f"session: {s}")
+    mode = "enforced" if MOCK else "simulator_no_auth"  # the mock: its dev admin (see main)
+    expect(s and s["auth_mode"] == mode and s["role"] == "admin", f"session: {s}")
     registry_flow(c)
     execute_flow(c)
     activity_flow(c)
     remote_flow(c)
+    ble_pairing_flow(c)
     candidate = ha_flow(c)
     admin_flow(c, checker, candidate)
     ha_unlink_flow(c)
@@ -646,6 +753,7 @@ def setup_and_login(c):
     if s and s["setup_required"]:
         c.call("login", "POST", "/auth/login", {"username": "admin", "password": PASSWORD}, expect=409,
                label="login before setup")
+        c.call("listDevices", "GET", "/devices", expect=401, label="request before setup")
         c.call("setupAdmin", "POST", "/auth/setup", {"username": "admin", "password": PASSWORD}, expect=201)
     c.call("setupAdmin", "POST", "/auth/setup", {"username": "x", "password": PASSWORD}, expect=409,
            label="setup twice")
@@ -691,20 +799,28 @@ def auth_mode(c, checker):
         registry_flow(c)
         activity_flow(c)
         remote_flow(c)
+        ble_pairing_flow(c)
         ha_flow(c)
         ha_unlink_flow(c)
     if not token:
         return
-    token_role_matrix(c, checker, token)
+    if MOCK:
+        skip("token role matrix, revoked token, Host allowlist", "the mock takes no bearer tokens and no Host check")
+    else:
+        token_role_matrix(c, checker, token)
 
     # Revoke: the token stops working at once. Logout ends the session.
     with c.acting_as(cookie=cookie, csrf=csrf):
         c.call("revokeToken", "DELETE", f"/admin/tokens/{token['id']}", expect=204)
-    with c.acting_as(token=token["token"]):
-        c.call("listDevices", "GET", "/devices", expect=401, label="revoked token")
+    if not MOCK:
+        with c.acting_as(token=token["token"]):
+            c.call("listDevices", "GET", "/devices", expect=401, label="revoked token")
     with c.acting_as(cookie=cookie, csrf=csrf):
         c.call("logout", "POST", "/auth/logout", expect=204)
         c.call("listDevices", "GET", "/devices", expect=401, label="after logout")
+    if MOCK:
+        skip("login rate limit", "the mock doesn't rate-limit")
+        return
 
     # Rate limit: enough wrong passwords lock the client out.
     seen = None
@@ -908,7 +1024,7 @@ def persistence_flow(c, hub, relogin=None):
     # (never in the API's Device) must survive the restart too.
     reg = fixture("admin/register_device.request.json")
     candidate = discover_candidate(c)
-    reg = registration_from(reg, candidate)
+    reg = registration_from(c, reg, candidate)
     status, dev, _ = c.call("registerDevice", "POST", "/admin/devices", reg, expect=201, label="persist register")
     if status != 201:
         dev = None
@@ -1386,22 +1502,45 @@ def credential_state_flow(c, hub, login):
                label="login, secrets corrupt")
 
 
+def mock_first_run(c):
+    """The mock's first run (no admin, no devices): the same setup checks as
+    hub-sim's auth mode, which runs them on a seeded hub the mock can't be."""
+    c.control("reset", {"firstRun": True, "requireAuth": True})
+    _, s, _ = c.call("getSession", "GET", "/auth/session", expect=200, label="first-run session")
+    expect(s and s["setup_required"] is True and s["auth_state"] == "fresh", f"mock first run: {s}")
+    setup_and_login(c)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True)
-    ap.add_argument("--mode", choices=("noauth", "auth"), required=True)
+    ap.add_argument("--mode", choices=("noauth", "auth", "mock", "mock-auth"), required=True)
     ap.add_argument("--ctl", help="contract.sh supervisor directory (enables the restart checks)")
     args = ap.parse_args()
-    wait_for(args.base)
+    global MOCK
+    MOCK = args.mode.startswith("mock")
+    wait_for(args.base, 90 if MOCK else 10)  # the mock's container installs node_modules first
     checker = v.SpecValidator(v.yaml.safe_load(v.read(v.SPEC_PATH)))
     client = Client(args.base, checker)
-    (noauth if args.mode == "noauth" else auth_mode)(client, checker)
+    if MOCK:
+        if args.mode == "mock-auth":
+            mock_first_run(client)
+            client.control("reset", {"requireAuth": True})  # the seed, login required
+        else:  # the seed, signed in as the dev admin: same cookie-and-CSRF rules as the hub
+            client.control("reset")
+            _, s, _ = client.call("getSession", "GET", "/auth/session", expect=200, label="dev session")
+            client.cookie, client.csrf = "dev", (s or {}).get("csrf_token")
+        skip("restart persistence, blocked config, storage faults, damaged credentials",
+             "need hub-sim restarts and its storage (contract.sh's supervisor)")
+    (noauth if args.mode in ("noauth", "mock") else auth_mode)(client, checker)
     if args.ctl:
         hub = Hub(args.base, args.ctl)
         if args.mode == "noauth":
             persistence_flow(client, hub)
         else:
             auth_persistence(client, hub)
+    for what, why in skips:
+        print(f"SKIPPED ({args.mode}): {what}: {why}")
     if failures:
         print(f"CONTRACT FAILED [{args.mode}] ({len(failures)} of {checked} checks):")
         for f in failures:

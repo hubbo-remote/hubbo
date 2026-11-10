@@ -1,0 +1,22 @@
+{
+  "state": "done",
+  "entity_id": "switch.tv_backlight",
+  "provider": {
+    "type": "home_assistant",
+    "entity_id": "switch.tv_backlight",
+    "unique_id": "0x00158d0001a2b3c4-switch"
+  },
+  "name": "TV Backlight",
+  "domain": "switch",
+  "platform": "zha",
+  "supported": true,
+  "command_ids": [
+    "switch.turn_on",
+    "switch.turn_off"
+  ],
+  "dropped_options": 0,
+  "skipped_services": [
+    "zha.issue_zigbee_cluster_command"
+  ],
+  "registered_device_id": null
+}

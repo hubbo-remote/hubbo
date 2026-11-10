@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "details_required",
+    "message": "Load this entity's details first (POST /api/v1/admin/integrations/ha_main/entities/switch.tv_backlight/details)"
+  }
+}
