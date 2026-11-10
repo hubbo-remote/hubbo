@@ -64,7 +64,8 @@ Param types: `bool`, `int`, `number`, `enum` (pick from `options`, exact match),
 from sending a default; for example `light.turn_on` without `brightness` keeps the last brightness.
 
 Home Assistant devices can also have their integration's own services (e.g.
-`webostv.button {button: enum}`), typed from HA's metadata when the device was registered. Their
+`webostv.button {button: enum}`), typed from HA's metadata when the device was registered (or
+last refreshed) by an admin. Their
 labels are HA's. A device whose entity is missing from the latest discovery shows
 `availability: stale`, and its commands fail (`status: failed`, `message: entity_not_found`)
 until an admin re-links it. Until a discovery runs, a renamed or removed entity's commands are
@@ -298,7 +299,8 @@ Then use `Authorization: Bearer hbt_...` as above.
 - **A command is missing from capabilities.** Hubbo only offers commands the entity supports
   (HA `supported_features`) and that are on its allowlist (docs/ha-capabilities.md). Toggles,
   `play_media` are deliberately absent, and an integration service appears only if HA describes
-  every field in a way Hubbo can type (discovery lists the rest as `skipped_services`).
+  every field in a way Hubbo can type (the admin's entity details list the rest as
+  `skipped_services`).
 - **A device shows `availability: stale`.** Its HA entity wasn't in the latest discovery
   (removed or renamed). Only the admin can re-link it.
 - **`timeout` on HA commands.** Hubbo waited and gave up; the device may still have acted. Don't
@@ -307,8 +309,8 @@ Then use `Authorization: Bearer hbt_...` as above.
 - **`/status` diagnostics** show recent errors and RF dispatch latency.
 - **`421 host_not_allowed`.** The `Host` header must be one of the hub's names (its IP, mDNS
   name or hostname; `localhost`/`127.0.0.1` for hub-sim). This blocks DNS-rebinding attacks.
-- **`501 not_implemented`.** Firmware update, integration settings and discovery, and
-  remote/Bluetooth pairing aren't implemented yet. Nothing happened.
+- **`501 not_implemented`.** Firmware status and update aren't implemented yet. Nothing
+  happened.
 
 ## Limits
 

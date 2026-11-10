@@ -176,7 +176,9 @@ that as a fallback, but HA's metadata covers the need.
 - `get_services` (WebSocket) returns every service with its `target` filter and its `fields`
   with selectors. For example, `webostv.button` targets `entity: {integration: webostv, domain:
   media_player}`, and its `button` field is a `select` selector listing `INFO`, `HOME`, ....
-- `config/entity_registry/list` gives each entity's `platform` (integration), e.g. `webostv`.
+- The entity registry gives each entity's `platform` (integration), e.g. `webostv`. A YAML-only
+  entity has no registry entry, so no platform and no integration services; its domain commands
+  still work.
 - For an entity of platform P, a service `P.S` is offered when its `target` has an `entity`
   filter matching the entity: the filter's integration (if any) is P, its domain list (if any)
   has the entity's domain, and one of its `supported_features` entries (if any) is fully
@@ -194,15 +196,21 @@ that as a fallback, but HA's metadata covers the need.
     `target`, `time`, multiple selects, ...) → the whole service is skipped, as it is for more
     than 4 fields, a field name that isn't a valid param name or names a target (`entity_id`,
     `area_id`, `device_id`, ...), or a service/platform name outside `^[a-z][a-z0-9_]{0,31}$`.
-    Skipped services are listed in the discovery candidate's `skipped_services`.
+    Skipped services are listed in the entity details' `skipped_services`.
 - Same safety rules as the allowlist: the target is always the registered entity, only declared
   fields can be sent, and nothing can override `entity_id`, `area_id` or `device_id`.
-- **The capabilities snapshot.** Discovery (`POST`/`GET /admin/integrations/ha_main/discover`)
-  normalizes every candidate: its attributes (supported features, source and sound mode lists,
-  colour modes, kelvin range), platform and offered services (at most 32). Registering
-  (`POST /admin/devices`) or re-linking (`PUT /admin/devices/{id}` with a `provider`) copies the
-  candidate's snapshot into the device (`DeviceSpec.haCapabilities`, stored and backed up as
-  `ha_capabilities`). The device's commands are compiled from it, so they work offline and HA is
+- **Discovery is lean** (Phase 4, decided 2026-11-09): `POST`/`GET
+  /admin/integrations/ha_main/discover` reads the compact entity registry and all current states
+  (about 0.8 MB, ~7 s on the board), never `get_services` (about 230 KB) or the full registry.
+  Each candidate's `command_ids` is a preview from its domain alone.
+- **The capabilities snapshot comes from the entity's details.** Picking an entity loads its
+  details (`POST`/`GET /admin/integrations/ha_main/entities/{entity_id}/details`, about 2 s):
+  fresh attributes (supported features, source and sound mode lists, colour modes, kelvin
+  range), platform, `unique_id` and `get_services`, normalized into the snapshot with the offered
+  services (at most 32). Registering (`POST /admin/devices`) or re-linking/refreshing (`PUT
+  /admin/devices/{id}` with a `provider`) copies that snapshot into the device
+  (`DeviceSpec.haCapabilities`, stored and backed up as `ha_capabilities`); without finished
+  details for that entity from the current HA settings it's `409 details_required`. The device's commands are compiled from it, so they work offline and HA is
   never asked on the hot path. The API never accepts a snapshot from a client and never returns
   one; a stored snapshot is re-validated when it's loaded (`ha/snapshot_json.h`), so a
   hand-edited backup can't smuggle in a service of another integration or a target param.
