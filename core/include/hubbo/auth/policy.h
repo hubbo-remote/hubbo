@@ -68,6 +68,8 @@ enum class Operation : uint8_t {
     DiscoverIntegration,
     GetDiscovery,
     CancelDiscovery,
+    RequestEntityDetails,
+    GetEntityDetails,
     StartIntegrationPairing,
     ForgetIntegrationPairing,
     RegisterDevice,

@@ -42,17 +42,41 @@ struct RouteSink {
     }
 };
 
-// The latest Home Assistant discovery, kept in memory (HTTP task only)
-// until the next discovery or a reboot. The register route takes a new
-// device's capabilities snapshot from here: the HTTP task never calls HA.
+// The state of an async HA fetch (a discovery, an entity's details).
+enum class FetchState : uint8_t { Idle, Running, Done, Failed };
+const char *fetchStateName(FetchState state);  // "idle", "running", "done", "failed"
+
+// What a discovery candidate and an entity's details both show.
+struct HaEntity {
+    std::string entityId, uniqueId, name, domain;  // uniqueId: details only, "" if YAML-only
+    std::string platform;                          // "" if YAML-only
+    std::vector<std::string> commandIds;           // what it offers
+    size_t droppedOptions = 0;
+};
+
+// One HA entity's details (POST/GET .../entities/{entity_id}/details): what
+// registering it stores. Fetched per entity, since discovery has no services.
+struct EntityDetails : HaEntity {  // entityId: the requested entity (all but Idle)
+    FetchState state = FetchState::Idle;
+    std::string error;                 // Failed
+    ha::CapabilitySnapshot snapshot;   // Done: what registration stores
+    std::vector<std::string> skipped;  // Done: services matching but not offered
+
+    void reset(FetchState next, std::string entity = {}) {
+        *this = EntityDetails{};
+        state = next;
+        entityId = std::move(entity);
+    }
+};
+
+// The latest Home Assistant discovery and entity details, kept in memory
+// (HTTP task only) until the next request, an HA settings change or a
+// reboot. The register route takes a device's snapshot from `details`: the
+// HTTP task never calls HA.
 struct DiscoveryCache {
-    enum class State : uint8_t { Idle, Running, Done, Failed };
-    struct Candidate {
-        std::string entityId, uniqueId, name, domain, platform;
-        ha::CapabilitySnapshot snapshot;      // what registration stores
-        std::vector<std::string> commandIds;  // what the snapshot offers
-        std::vector<std::string> skipped;     // services matching but not offered
-        size_t droppedOptions = 0;
+    using State = FetchState;
+    struct Candidate : HaEntity {  // commandIds: a preview, domain commands only
+        std::string state;         // HA's current state ("on")
     };
     State state = State::Idle;
     std::string error;  // Failed
@@ -61,8 +85,9 @@ struct DiscoveryCache {
     uint32_t elapsedMs = 0;  // how long the discovery took (Done)
     uint32_t generation = 0; // the client's discovery generation it came from (Done)
     std::function<void()> yield;  // Api::setYield (kept across resets)
+    EntityDetails details;        // not touched by reset()
 
-    // `state` with nothing from an earlier discovery (yield stays).
+    // `state` with nothing from an earlier discovery (yield and details stay).
     void reset(State next) {
         state = next;
         error.clear();
@@ -71,10 +96,6 @@ struct DiscoveryCache {
         elapsedMs = 0;
         generation = 0;
     }
-    // A Done candidate, only while `currentGeneration` (the client's
-    // discoveryGeneration()) is still the one it came from: other settings,
-    // a reconnect or a newer discovery make the cache stale.
-    const Candidate *find(std::string_view entityId, uint32_t currentGeneration) const;
 };
 
 void addIntegrationRoutes(RouteSink &sink, ApiContext &ctx);
@@ -87,6 +108,15 @@ bool forgetTokenForNewHaUrl(ApiContext &ctx, const ConfigSpec &next, http::Respo
 // discovery of the old settings is cancelled and its candidates dropped, so
 // nothing is registered from a different Home Assistant.
 void reapplyHomeAssistant(ApiContext &ctx, bool haChanged);
+// The finished details of `entityId` from the current HA settings (what
+// registering or re-linking it stores), or null: fetch them first.
+const EntityDetails *completedDetails(ApiContext &ctx, std::string_view entityId);
+// The HA device registered for this entity: by entity_id, else (an entity
+// renamed in HA) by unique_id within its platform, since HA keeps unique_id
+// unique only per platform. Discovery candidates have no unique_id, so they
+// match by entity_id only; the details find a renamed one.
+const DeviceSpec *registeredDevice(const ApiContext &ctx, std::string_view entityId, std::string_view uniqueId = {},
+                                   std::string_view platform = {});
 void addRemoteRoutes(RouteSink &sink, ApiContext &ctx);       // remote endpoint and pair scan
 void addAuthRoutes(RouteSink &sink, ApiContext &ctx);      // setup, login, logout, session, password, tokens
 void addRegistryRoutes(RouteSink &sink, ApiContext &ctx);  // devices, capabilities, execute, integrations
