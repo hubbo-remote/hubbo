@@ -9,6 +9,7 @@ import type {
   ActionParams,
   ApiErrorBody,
   BlePairingStatus,
+  EntityDetailsStatus,
   Capabilities,
   ConfigState,
   Device,
@@ -24,6 +25,7 @@ import type {
   RemoteConfig,
   RemoteEndpointUpdate,
   RemotePairStatus,
+  RemoteStatus,
   RestoreResult,
   Session,
   Status,
@@ -200,6 +202,9 @@ export const api = {
     return get<DiscoverStatus>(`/admin/integrations/${enc(id)}/discover${qs ? `?${qs}` : ''}`)
   },
   discoverCancel: (id: string) => del(`/admin/integrations/${enc(id)}/discover`),
+  entityDetailsStart: (integration: string, entityId: string) => post<EntityDetailsStatus>(`/admin/integrations/${enc(integration)}/entities/${enc(entityId)}/details`),
+  entityDetails: (integration: string, entityId: string) => get<EntityDetailsStatus>(`/admin/integrations/${enc(integration)}/entities/${enc(entityId)}/details`),
+  blePairStatus: (id: string) => get<BlePairingStatus>(`/admin/integrations/${enc(id)}/pair`),
   blePairStart: (id: string) => post<BlePairingStatus>(`/admin/integrations/${enc(id)}/pair`),
   bleForget: (id: string) => del(`/admin/integrations/${enc(id)}/pair`),
 
@@ -208,6 +213,7 @@ export const api = {
   remotePairStart: () => post<RemotePairStatus>('/admin/remote/pair'),
   remotePairCancel: () => del('/admin/remote/pair'),
   remote: () => get<RemoteConfig>('/admin/remote'),
+  remoteStatus: () => get<RemoteStatus>('/remote/status'),
   setRemoteEndpoint: (b: RemoteEndpointUpdate) => put<RemoteConfig>('/admin/remote/endpoint', b),
 
   // admin

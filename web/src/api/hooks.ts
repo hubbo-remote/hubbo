@@ -2,7 +2,7 @@
 // shared subscribers, stale-while-revalidate, one poll timer per key, eviction
 // of unwatched keys, and invalidation by key path ("devices" also covers
 // "devices/dev_x", but not "devices-foo").
-import { useCallback, useEffect, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import { toApiError, type ApiError } from './client'
 
 export interface QueryState<T> {
@@ -76,7 +76,11 @@ function schedule(key: string) {
   }, ms)
 }
 
-export function useQuery<T>(key: string | null, fn: () => Promise<T>, opts: { pollMs?: number } = {}) {
+/**
+ * `keepPrevious`: while a new key (e.g. a search) loads, return the last key's data instead of
+ * nothing, so the UI around it (the search box) stays put.
+ */
+export function useQuery<T>(key: string | null, fn: () => Promise<T>, opts: { pollMs?: number; keepPrevious?: boolean } = {}) {
   const k = key ?? '__none__'
   if (key) entry(k).fn = fn
   const subscribe = useCallback(
@@ -107,8 +111,12 @@ export function useQuery<T>(key: string | null, fn: () => Promise<T>, opts: { po
     }
   }, [key, pollMs])
 
+  const [previous, setPrevious] = useState<T | undefined>(undefined)
+  if (opts.keepPrevious && key && state.data !== undefined && state.data !== previous) setPrevious(state.data)
+
   const refetch = useCallback(() => (key ? run(key) : Promise.resolve()), [key])
-  return key ? { ...state, refetch } : { data: undefined, error: undefined, loading: false, refetch }
+  if (!key) return { data: undefined, error: undefined, loading: false, refetch }
+  return { ...state, data: state.data ?? (opts.keepPrevious ? previous : undefined), refetch }
 }
 
 const matches = (key: string, p: string) => key === p || key.startsWith(p + '/')
