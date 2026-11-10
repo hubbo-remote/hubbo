@@ -8,6 +8,9 @@
 #include <ESPmDNS.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#ifdef HUBBO_WIPE_ON_BOOT
+#include <nvs_flash.h>
+#endif
 #include <esp_timer.h>
 #ifdef HUBBO_DEV_CONSOLE
 #include <esp_core_dump.h>
@@ -408,6 +411,21 @@ void printCredentialState() {
             break;
     }
 }
+
+#ifdef HUBBO_WIPE_ON_BOOT
+// Gate builds only (scripts/wipe_on_boot.py): factory-fresh state on every
+// boot. Erases all of NVS (admin credentials, API tokens, the HA token, BLE
+// bonds, the Hub endpoint), then requests flash_fs's own format at boot, which
+// mountFilesystem() runs next. OTA keeps working: its password hash is
+// compiled in. Runs before anything opens NVS or the fs.
+void wipeForGate() {
+    const esp_err_t nvs = nvs_flash_erase();
+    const esp_err_t init = nvs_flash_init();
+    const bool format = flash_fs::requestFormatAtBoot();
+    con.printf("WIPE: factory reset build; nvs erase %s, init %s, fs format %s\n",
+               esp_err_to_name(nvs), esp_err_to_name(init), format ? "requested" : "NOT requested");
+}
+#endif
 
 // The one boot path (core's bootHub): config, then credentials, then the
 // active activity, restored without its startup only when the config is Ok
@@ -1008,6 +1026,9 @@ void setup() {
                   static_cast<unsigned long>(ESP.getPsramSize() >> 10));
     con.printf("sdk %s\n", ESP.getSdkVersion());
 
+#ifdef HUBBO_WIPE_ON_BOOT
+    wipeForGate();
+#endif
     mountFilesystem();
     if (!radio.begin()) {
         con.println("radio: failed; check wiring and the 10 uF capacitor. Continuing without it.");
