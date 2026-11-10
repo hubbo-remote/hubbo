@@ -31,15 +31,22 @@ api::HubInfo hubInfo(bool authEnabled) {
     return info;
 }
 
-api::ApiContext context(auth::Credentials &credentials, auth::SessionStore &sessions,
-                        auth::LoginRateLimiter &limiter, const api::Clock &clock, config::ConfigService &config,
-                        api::Runtime &runtime, bool authEnabled, api::RemotePort *remote,
-                        api::BlePairingPort *blePairing, integrations::HomeAssistantClient *homeAssistant,
-                        auth::SecretStore *secrets) {
-    api::ApiContext c{credentials, sessions, limiter, clock, config, runtime, hubInfo(authEnabled), nullptr, remote,
-                      homeAssistant, secrets, nullptr};
-    c.blePairing = blePairing;
-    return c;
+api::ApiContext context(auth::Credentials &credentials, auth::SessionStore &sessions, const api::Clock &clock,
+                        api::Runtime &runtime, bool authEnabled, SimHub &hub, auth::SecretStore *secrets) {
+    return api::ApiContext{credentials,
+                           sessions,
+                           clock,
+                           hub.configService(),
+                           runtime,
+                           hubInfo(authEnabled),
+                           nullptr,
+                           &hub.remote(),
+                           &hub.haClient(),
+                           secrets,
+                           nullptr,
+                           &hub.blePairing(),
+                           &hub.firmware(),
+                           &hub.factoryResetPort()};
 }
 
 // "channel=76&address=e7e7e7e7e7" (hex, 40 bits).
@@ -65,11 +72,11 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
       sessions_(random_),
       clock_(runner.hub()),
       runtime_(runner.hub()),
-      api_(context(credentials_, sessions_, loginLimiter_, clock_, runner.hub().configService(), runtime_, authEnabled,
-                   &runner.hub().remote(), &runner.hub().blePairing(), &runner.hub().haClient(), secrets)),
-      productionAuth_(credentials_, sessions_, clock_),
-      noAuth_(credentials_) {
-    router_.setAllowedHosts({"localhost", "127.0.0.1", "[::1]"});
+      secrets_(secrets),
+      api_(context(credentials_, sessions_, clock_, runtime_, authEnabled, runner.hub(), secrets)),
+      productionAuth_(credentials_, sessions_, clock_) {
+    runner.hub().onFirmwareRebooted = [this] { sessions_.clear(); };  // as the board's restart
+    runner.hub().onFactoryReset = [this] { eraseEverything(); };
     api::registerApiRoutes(router_, api_);
 
     // As the firmware does at boot: the "ha_main" URL and the stored token.
@@ -131,6 +138,35 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
     host(Method::Post, "/sim/ble/bonded", [this](auto &r, auto &, auto &out) {
         runner_.hub().blePairing().bonded(http::queryValue(r.query, "peer"));
         out.json(200, "{}");
+    });
+
+    // Firmware update faults: ?fail=1|0 (writes end in Failed) and/or
+    // ?ready=0|1 (install answers Unavailable). /sim/reset restores both.
+    host(Method::Post, "/sim/firmware", [this](auto &r, auto &, auto &out) {
+        const std::string fail = http::queryValue(r.query, "fail");
+        const std::string ready = http::queryValue(r.query, "ready");
+        const auto flag = [](const std::string &v) { return v.empty() || v == "0" || v == "1"; };
+        if (!flag(fail) || !flag(ready) || (fail.empty() && ready.empty())) {
+            http::jsonError(out, 400, "bad_request", "fail and ready must be 0 or 1 (at least one)");
+            return;
+        }
+        api::SimulatedFirmwareUpdate &firmware = runner_.hub().firmware();
+        if (!fail.empty()) firmware.failWrites = fail == "1";
+        if (!ready.empty()) firmware.ready = ready == "1";
+        out.json(200, std::string("{\"fail\":") + (firmware.failWrites ? "true" : "false") +
+                          ",\"ready\":" + (firmware.ready ? "true" : "false") + "}");
+    });
+
+    // Factory reset availability: ?ready=0|1 (0: POST /admin/factory-reset
+    // answers 503). /sim/reset restores it.
+    host(Method::Post, "/sim/factory-reset", [this](auto &r, auto &, auto &out) {
+        const std::string ready = http::queryValue(r.query, "ready");
+        if (ready != "0" && ready != "1") {
+            http::jsonError(out, 400, "bad_request", "ready must be 0 or 1");
+            return;
+        }
+        runner_.hub().factoryResetPort().ready = ready == "1";
+        out.json(200, std::string("{\"ready\":") + (ready == "1" ? "true" : "false") + "}");
     });
 
     host(Method::Post, "/sim/remote/{button}/{action}", [this](auto &, auto &p, auto &out) {
@@ -209,6 +245,16 @@ http::RequestAuthenticator &SimApi::authenticator() {
 void SimApi::host(Method method, const char *pattern, Fn::F f) {
     handlers_.push_back(std::make_unique<Fn>(std::move(f)));
     router_.addHostRoute(method, pattern, *handlers_.back());
+}
+
+// The board's wiped restart: every secret (the login, tokens, the HA token)
+// and session goes, the hub wipes and boots (reloading the credentials), and
+// the HA client is set up again from the now tokenless settings.
+void SimApi::eraseEverything() {
+    if (secrets_ != nullptr) (void)auth::eraseAllSecrets(*secrets_);
+    sessions_.clear();
+    runner_.hub().wipe(&credentials_);
+    api::applyHomeAssistantSettings(runner_.hub().configService(), secrets_, runner_.hub().haClient());
 }
 
 std::string SimApi::simTime() const {

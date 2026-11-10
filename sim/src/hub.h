@@ -32,6 +32,8 @@
 #include "hubbo/domain/config.h"
 #include "hubbo/engine/compiler.h"
 #include "hubbo/api/ble_pairing_port.h"
+#include "hubbo/api/factory_reset_port.h"
+#include "hubbo/api/firmware_update_port.h"
 #include "hubbo/api/remote_port.h"
 #include "hubbo/engine/engine.h"
 #include "hubbo/integrations/ha_adapter.h"
@@ -79,6 +81,12 @@ public:
     // held.
     // Persisted like any edit. References to the hub stay valid.
     ValidationReport factoryReset(const ConfigSpec &config);
+    // The hub side of a real factory reset (POST /admin/factory-reset), as a
+    // wiped board's restart: no key held, nothing active, the remote endpoint
+    // and the BLE bond forgotten, the config record gone, then boot() with
+    // the firmware's defaults (an empty config plus the built-ins), saved as
+    // generation 1. Erase the secrets first: boot() reloads `credentials`.
+    void wipe(auth::Credentials *credentials);
     config::ConfigService &configService() { return service_; }
     storage::Storage &storage() { return *storage_; }
     storage::RecordStore &records() { return records_; }
@@ -108,6 +116,17 @@ public:
     api::SimulatedRemote &remote() { return remote_; }
     api::SimulatedBlePairing &blePairing() { return blePairing_; }
     static constexpr const char *kBondedHost = "Apple TV";  // BLE's bond at start and after a reset
+    // Firmware updates (the API's FirmwareUpdatePort); writes and the
+    // simulated reboot run on hub time. A reset gives a fresh one.
+    api::SimulatedFirmwareUpdate &firmware() { return firmware_; }
+    // Called when a simulated reboot into a new image finishes (the board
+    // restarts: SimApi drops every session).
+    std::function<void()> onFirmwareRebooted;
+    // The API's FactoryResetPort: the restart comes kRestartMs of hub time
+    // after the request and calls onFactoryReset (SimApi: erase everything).
+    // /sim/reset gives a fresh port (ready, nothing pending).
+    api::SimulatedFactoryReset &factoryResetPort() { return factoryReset_; }
+    std::function<void()> onFactoryReset;
     // One turn of the integration task (transport, client, adapter) at the
     // current time, repeated while the client has work (discovery parse
     // steps). advance() runs it every ms.
@@ -140,6 +159,9 @@ public:
 private:
     void sendGroup(uint8_t group);
     void resetBle();  // a fresh pairing port, bonded to kBondedHost
+    void stopEverything();  // keys released, nothing active or saved active, remote unpaired
+    api::SimulatedFactoryReset freshFactoryResetPort();  // erase calls onFactoryReset
+    void advanceFirmware(uint32_t ms);
     void logCommand(std::string text);
     void logEvent(std::string text);
 
@@ -155,6 +177,8 @@ private:
     RealHa ha_;
     api::SimulatedRemote remote_;
     api::SimulatedBlePairing blePairing_;
+    api::SimulatedFirmwareUpdate firmware_;
+    api::SimulatedFactoryReset factoryReset_;
     FakeAdapters fakes_;
     Engine::Store store_;
     Engine engine_{store_, fakes_.set};

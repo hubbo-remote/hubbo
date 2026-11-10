@@ -44,18 +44,37 @@ struct Headers : http::HeaderSource {
 };
 
 http::Response call(SimApi &api, http::Method method, const char *path, const char *query = "",
-                    const char *body = "") {
-    static const Headers headers;
+                    const char *body = "", const http::HeaderSource *headers = nullptr) {
+    static const Headers defaultHeaders;
     http::Request r;
     r.method = method;
     r.path = path;
     r.query = query;
     r.body = body;
-    r.headers = &headers;
+    r.headers = headers != nullptr ? headers : &defaultHeaders;
     r.context = api.authenticator().authenticate(r);
     http::Response out;
     api.handle(r, out);
     return out;
+}
+
+// Headers carrying a session cookie (Cookie: hubbo_session=...).
+struct WithCookie : Headers {
+    std::string cookie;
+    std::string_view header(std::string_view name) const override {
+        return name == "Cookie" || name == "cookie" ? std::string_view(cookie) : Headers::header(name);
+    }
+};
+
+// First-run setup through the API; the session cookie it sets ("" if none).
+WithCookie setUpAdmin(SimApi &api) {
+    WithCookie headers;
+    const http::Response setup = call(api, http::Method::Post, "/api/v1/auth/setup", "",
+                                      R"({"username":"admin","password":"correct horse battery"})");
+    for (const auto &[name, value] : setup.headers) {
+        if (name == "Set-Cookie") headers.cookie = value.substr(0, value.find(';'));
+    }
+    return headers;
 }
 
 }  // namespace
@@ -137,17 +156,25 @@ TEST(SimApi, AuthEnabledModeUsesProductionAuth) {
     EXPECT_FALSE(runner.hub().engine().hasActiveActivity());
 }
 
-TEST(SimApi, WrongHostIsRefused) {
+// No Host allowlist (any name or address reaches the hub), but a foreign
+// Origin on an unsafe method is refused, even with auth off.
+TEST(SimApi, ForeignOriginIsRefused) {
     SimAuth a;
     ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
     SimApi api(runner, false, a.credentials);
-    http::Request r;
-    r.method = http::Method::Get;
-    r.path = "/api/v1/status";
-    r.context = api.authenticator().authenticate(r);
-    http::Response out;
-    api.handle(r, out);
-    EXPECT_NE(out.status, 200);
+    struct ForeignOrigin : http::HeaderSource {
+        std::string_view header(std::string_view name) const override {
+            if (name == "Host" || name == "host") return "hubbo.lan";
+            if (name == "Origin" || name == "origin") return "http://evil.example";
+            return {};
+        }
+    } headers;
+    EXPECT_EQ(call(api, http::Method::Get, "/api/v1/status", "", "", &headers).status, 200);
+    const http::Response refused =
+        call(api, http::Method::Post, "/api/v1/activities/act_watch_apple_tv/activate", "", "", &headers);
+    EXPECT_EQ(refused.status, 403) << refused.body;
+    EXPECT_NE(refused.body.find("csrf_failed"), std::string::npos) << refused.body;
+    EXPECT_FALSE(runner.hub().engine().hasActiveActivity());
 }
 
 TEST(SimSeed, ApiBackupFixtureIsAValidConfig) {
@@ -390,7 +417,15 @@ TEST(SimApi, BlePairingIsDrivenFromSimRoutes) {
     EXPECT_EQ(call(api, http::Method::Post, "/sim/ble", "connected=0").status, 200);  // only the link
     EXPECT_EQ(state(), "disconnected");
     EXPECT_EQ(ble.status().state, api::BlePairState::Paired);
+    // Detail and device availability come from the same shared mapping.
+    const SimRuntime runtime(runner.hub());
+    const DeviceSpec *appleTv = runner.hub().configService().findDevice("dev_apple_tv");
+    ASSERT_NE(appleTv, nullptr);
+    EXPECT_EQ(runtime.integrationDetail("ble"), "Waiting for AppleTV");
+    EXPECT_STREQ(runtime.deviceAvailability(*appleTv), "unavailable");
     EXPECT_EQ(call(api, http::Method::Post, "/sim/ble", "connected=1").status, 200);
+    EXPECT_EQ(runtime.integrationDetail("ble"), "Connected to AppleTV");
+    EXPECT_STREQ(runtime.deviceAvailability(*appleTv), "available");
 
     // No host: the window runs out on the hub clock.
     ASSERT_EQ(ble.startPairing(api::kBlePairingMinWindowMs), api::BlePairingResult::Accepted);
@@ -401,6 +436,150 @@ TEST(SimApi, BlePairingIsDrivenFromSimRoutes) {
     EXPECT_EQ(call(api, http::Method::Post, "/sim/reset").status, 200);
     EXPECT_EQ(runner.hub().blePairing().status().state, api::BlePairState::Paired);
     EXPECT_EQ(state(), "connected");
+}
+
+TEST(SimApi, FirmwareFaultsAreDrivenFromSimRoutes) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials);
+    api::SimulatedFirmwareUpdate &firmware = runner.hub().firmware();
+    EXPECT_TRUE(firmware.ready);
+    EXPECT_FALSE(firmware.failWrites);
+
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/firmware", "fail=1").status, 200);
+    EXPECT_TRUE(firmware.failWrites);
+    EXPECT_TRUE(firmware.ready);  // untouched
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/firmware", "ready=0").status, 200);
+    EXPECT_FALSE(firmware.ready);
+    EXPECT_EQ(firmware.install("anything"), api::FirmwareInstallResult::Unavailable);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/firmware").status, 400);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/firmware", "fail=yes").status, 400);
+
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/reset").status, 200);
+    EXPECT_TRUE(runner.hub().firmware().ready);
+    EXPECT_FALSE(runner.hub().firmware().failWrites);
+    EXPECT_EQ(runner.hub().firmware().status().state, api::FirmwareUpdateState::Idle);
+}
+
+// The smallest app image SimulatedFirmwareUpdate accepts (the layout
+// core/tests/firmware_update_test.cpp documents): image header, app desc,
+// the Hubbo marker, padding and the appended SHA-256.
+namespace {
+std::string simFirmwareImage(const std::string &version) {
+    std::string b(32, '\0');
+    b[0] = '\xE9';
+    b[12] = static_cast<char>(api::kEsp32S3ChipId);
+    b[23] = 1;  // hash appended
+    std::string desc(256, '\0');
+    desc[0] = '\x32';
+    desc[1] = '\x54';
+    desc[2] = '\xCD';
+    desc[3] = '\xAB';  // app desc magic 0xABCD5432
+    b += desc;
+    b += "HUBBO-IMAGE/1 board=simulator layout=1 version=" + version;
+    b += '\0';
+    b.resize(512, '\xFF');
+    uint8_t digest[auth::kSha256Size];
+    auth::SoftwareHash().sha256(reinterpret_cast<const uint8_t *>(b.data()), b.size(), digest);
+    b.append(reinterpret_cast<const char *>(digest), sizeof(digest));
+    return b;
+}
+}  // namespace
+
+// As the board: the reboot that finishes an update forgets every session.
+TEST(SimApi, FirmwareRebootDropsSessions) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, /*authEnabled=*/true, a.credentials);
+    const WithCookie headers = setUpAdmin(api);
+    ASSERT_FALSE(headers.cookie.empty());
+    const auto status = [&] { return call(api, http::Method::Get, "/api/v1/status", "", "", &headers).status; };
+    ASSERT_EQ(status(), 200);
+
+    SimHub &hub = runner.hub();
+    ASSERT_EQ(hub.firmware().install(simFirmwareImage("v9.9.9")), api::FirmwareInstallResult::Accepted);
+    hub.advance(api::SimulatedFirmwareUpdate::kWriteMs);
+    EXPECT_EQ(hub.firmware().status().state, api::FirmwareUpdateState::Rebooting);
+    EXPECT_EQ(status(), 200);  // not until the reboot
+    hub.advance(api::SimulatedFirmwareUpdate::kRebootMs);
+    EXPECT_EQ(hub.firmware().status().state, api::FirmwareUpdateState::Idle);
+    EXPECT_EQ(status(), 401);  // logged out by the restart
+}
+
+// A failed write never reboots, so sessions survive it.
+TEST(SimApi, FailedFirmwareWriteKeepsSessions) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials);
+    int reboots = 0;
+    runner.hub().onFirmwareRebooted = [&] { reboots++; };
+    runner.hub().firmware().failWrites = true;
+    ASSERT_EQ(runner.hub().firmware().install(simFirmwareImage("v1.0.0")), api::FirmwareInstallResult::Accepted);
+    runner.hub().advance(api::SimulatedFirmwareUpdate::kWriteMs + api::SimulatedFirmwareUpdate::kRebootMs);
+    EXPECT_EQ(runner.hub().firmware().status().state, api::FirmwareUpdateState::Failed);
+    EXPECT_EQ(reboots, 0);
+}
+
+// POST /admin/factory-reset: the simulated restart erases everything, like a
+// wiped board, and the hub comes back in first-run setup.
+TEST(SimApi, FactoryResetErasesEverythingAfterTheRestart) {
+    SimAuth a;
+    ASSERT_TRUE(a.secrets.write(api::kHaTokenKey, "fake-ha-token"));
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, /*authEnabled=*/true, a.credentials, nullptr, &a.secrets);
+    SimHub &hub = runner.hub();
+    const WithCookie headers = setUpAdmin(api);
+    ASSERT_FALSE(headers.cookie.empty());
+    const auto as = [&](http::Method method, const char *path, const char *query = "") {
+        return call(api, method, path, query, "", &headers);
+    };
+    ASSERT_EQ(hub.remote().setEndpoint({76, 0xE7E7E7E7E7}), api::RemoteResult::Accepted);
+    hub.activate("act_watch_apple_tv");
+    ASSERT_FALSE(hub.config().devices.empty());
+
+    // Not now: 503, nothing pending.
+    EXPECT_EQ(as(http::Method::Post, "/sim/factory-reset", "ready=0").status, 200);
+    EXPECT_EQ(as(http::Method::Post, "/api/v1/admin/factory-reset").status, 503);
+    EXPECT_EQ(as(http::Method::Post, "/sim/factory-reset", "ready=2").status, 400);
+    EXPECT_EQ(as(http::Method::Post, "/sim/factory-reset", "ready=1").status, 200);
+
+    const http::Response accepted = as(http::Method::Post, "/api/v1/admin/factory-reset");
+    ASSERT_EQ(accepted.status, 202) << accepted.body;
+    hub.advance(api::SimulatedFactoryReset::kRestartMs - 1);
+    EXPECT_EQ(a.credentials.state(), auth::CredentialState::Ok);  // not before the restart
+    hub.advance(1);
+    EXPECT_FALSE(hub.factoryResetPort().pending());
+
+    EXPECT_EQ(a.credentials.state(), auth::CredentialState::Fresh);
+    EXPECT_EQ(as(http::Method::Get, "/api/v1/integrations").status, 401);  // the old cookie
+    std::string token;
+    EXPECT_EQ(a.secrets.read(api::kHaTokenKey, &token), auth::SecretRead::NotFound);
+    EXPECT_EQ(hub.haClient().state(), integrations::HaState::NotConfigured);
+    EXPECT_FALSE(hub.remote().status().hasEndpoint);
+    EXPECT_EQ(hub.blePairing().status().state, api::BlePairState::Idle);
+    EXPECT_FALSE(hub.engine().hasActiveActivity());
+    // The board's first boot, through bootHub(): its defaults (only the
+    // built-ins), saved as generation 1, nothing saved active.
+    EXPECT_EQ(hub.lastBoot().config.state, config::ConfigState::Fresh);
+    EXPECT_EQ(hub.lastBoot().credentials, auth::CredentialState::Fresh);
+    EXPECT_EQ(hub.lastBoot().active, ActiveRestore::NoneSaved);
+    EXPECT_EQ(hub.configService().state(), config::ConfigState::Ok);
+    EXPECT_EQ(hub.configService().generation(), 1u);
+    EXPECT_TRUE(hub.config().devices.empty());
+    EXPECT_TRUE(hub.config().activities.empty());
+    EXPECT_NE(hub.configService().findIntegration("ha_main"), nullptr);
+    const http::Response again = call(api, http::Method::Post, "/api/v1/auth/setup", "",
+                                      R"({"username":"newowner","password":"another horse battery"})");
+    EXPECT_EQ(again.status, 201) << again.body;
+
+    // /sim/reset: ready again, nothing pending, and a reset still erases.
+    hub.factoryResetPort().ready = false;
+    ASSERT_TRUE(runner.runLine("reset"));
+    EXPECT_TRUE(hub.factoryResetPort().ready);
+    EXPECT_FALSE(hub.factoryResetPort().pending());
+    ASSERT_TRUE(hub.factoryResetPort().requestFactoryReset());
+    hub.advance(api::SimulatedFactoryReset::kRestartMs);
+    EXPECT_TRUE(hub.config().devices.empty());
 }
 
 TEST(SimApi, TheStoredTokenConnectsTheFakeHomeAssistant) {

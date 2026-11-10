@@ -111,9 +111,7 @@ bool HttpServer::listen(const ListenOptions &options, std::string *error) {
 void HttpServer::serveOnce(int timeoutMs, const BodyLimit &bodyLimit, const Handler &handler) {
     pollfd pfd{fd_, POLLIN, 0};
     if (::poll(&pfd, 1, timeoutMs) <= 0) return;
-    sockaddr_in peer{};
-    socklen_t peerLength = sizeof(peer);
-    const int client = ::accept(fd_, reinterpret_cast<sockaddr *>(&peer), &peerLength);
+    const int client = ::accept(fd_, nullptr, nullptr);
     if (client < 0) return;
     timeval tv{2, 0};
     ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -195,12 +193,10 @@ void HttpServer::serveOnce(int timeoutMs, const BodyLimit &bodyLimit, const Hand
     }
     body.resize(std::min(body.size(), contentLength));
 
-
     request.path = path;
     request.query = query;
     request.body = body;
     request.headers = &headers;
-    request.clientKey = ntohl(peer.sin_addr.s_addr);  // login rate limiting per address
     handler(request, response);
     respond(client, response);
     ::close(client);
