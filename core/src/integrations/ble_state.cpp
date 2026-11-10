@@ -18,17 +18,17 @@ const char *bleIntegrationState(const IntegrationSpec &integration, BlePairState
 
 std::string bleIntegrationDetail(BlePairState pairing, bool hostConnected, std::string_view peerName) {
     switch (pairing) {
-        case BlePairState::NotReady: return "Bluetooth failed to start";
-        case BlePairState::Pairing: return "Pairing window open";
+        case BlePairState::NotReady: return "Bluetooth isn't working";
+        case BlePairState::Pairing: return "Ready to pair";
         case BlePairState::Paired: {
             std::string detail = hostConnected ? "Connected to " : "Waiting for ";
-            detail.append(peerName.empty() ? std::string_view("the paired host") : peerName);
+            detail.append(peerName.empty() ? std::string_view("your device") : peerName);
             return detail;
         }
         case BlePairState::Idle:
         case BlePairState::Failed: break;
     }
-    return "No host paired";
+    return "Not paired";
 }
 
 const char *bleDeviceAvailability(BlePairState pairing, bool hostConnected) {
