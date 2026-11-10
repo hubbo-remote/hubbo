@@ -1,12 +1,11 @@
 import { readFile } from 'node:fs/promises'
-import { api, expect, onAuthSim, open, setStorage, test } from './hub.ts'
+import { api, expect, open, setStorage, test } from './hub.ts'
 
 // Never leave the store down for the specs after this one (resets don't touch storage health).
 test.afterEach(async ({ page }) => setStorage(page, 'available'))
 
 test('storage goes down: banner, edits disabled, switching still works; it comes back: edits work again', async ({ page }) => {
-  // Under --auth nobody can authenticate while storage is down, so the storage screen takes over instead (storage-auth.spec).
-  test.skip(await onAuthSim(page), 'hub-sim --auth: covered by storage-auth.spec')
+  // The credentials are read once at boot, so a session (under --auth too) outlives the store going down.
   const hub = api(page)
   await open(page, '/activities')
   await setStorage(page, 'unavailable')
@@ -31,7 +30,6 @@ test('storage goes down: banner, edits disabled, switching still works; it comes
 })
 
 test('storage failing after a good load: a backup still exports the running config (the last acknowledged save)', async ({ page }) => {
-  test.skip(await onAuthSim(page), 'hub-sim --auth: nobody can authenticate while storage is down (storage-auth.spec)')
   await open(page, '/settings/backup')
   await setStorage(page, 'unavailable')
   await expect(page.getByText('A backup still works: it’s the configuration that’s running')).toBeVisible()

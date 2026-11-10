@@ -11,6 +11,7 @@ export function optionsFromEnv(env: NodeJS.ProcessEnv = process.env): MockOption
     requireAuth: env.HUBBO_MOCK_AUTH === '1',
     pairDelayMs: env.HUBBO_MOCK_PAIR_MS === undefined ? undefined : Number(env.HUBBO_MOCK_PAIR_MS),
     discoverDelayMs: env.HUBBO_MOCK_DISCOVER_MS === undefined ? undefined : Number(env.HUBBO_MOCK_DISCOVER_MS),
+    timeScale: env.HUBBO_MOCK_TIME_SCALE === undefined ? undefined : Number(env.HUBBO_MOCK_TIME_SCALE),
   }
 }
 
@@ -34,6 +35,7 @@ export function mockMiddleware(opts: MockOptions) {
       body: undefined, // parsed by the handler, after its size and content-type checks
       rawBody: new Uint8Array(raw),
     })
+    if (out.status === 0) return void req.socket.destroy() // the hub is rebooting
     const headers: Record<string, string> = { 'cache-control': 'no-store', ...out.headers }
     // Bytes (a blocked-raw backup) go out exactly as they are, with the handler's content-type.
     if (out.body instanceof Uint8Array) {

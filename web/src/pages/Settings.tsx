@@ -1,24 +1,26 @@
 import { Check, Copy, Download, KeyRound, Loader2, Plus, RefreshCw, RotateCcw, Trash2, Upload } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { useLocation } from 'wouter'
+import { Link, useLocation } from 'wouter'
 import { api, errorMessage, toApiError, type BackupKind } from '@/api/client'
 import { invalidate, invalidateAll, useQuery } from '@/api/hooks'
 import type { RestoreResult, TokenCreated } from '@/api/types'
+import { FactoryReset } from '@/components/admin/FactoryReset'
+import { FirmwareUpdate } from '@/components/admin/FirmwareUpdate'
 import { PairRemote } from '@/components/admin/PairRemote'
 import { RemoteEndpoint } from '@/components/admin/RemoteEndpoint'
 import { RemoteSvg } from '@/components/remote/RemoteSvg'
 import { NetworkInfo } from '@/components/admin/NetworkInfo'
-import { ErrorState, PageHeader, Section } from '@/components/common'
+import { ErrorState, PageHeader, Section, TypedWordField } from '@/components/common'
 import { ThemeToggle } from '@/components/AppShell'
 import { Alert } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, ShowErrors } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { Tabs } from '@/components/ui/tabs'
 import { toast, toastError } from '@/components/ui/toast'
 import { useConfigLock, useStatus } from '@/hooks/data'
-import { agoMs, timeAgo } from '@/lib/utils'
+import { agoMs, timeAgo, typedMatches } from '@/lib/utils'
 
 const TABS = [
   { id: 'account', label: 'Account' },
@@ -48,7 +50,7 @@ export default function Settings({ tab }: { tab: string }) {
         {value === 'remote' && <RemoteTab />}
         {value === 'network' && <Network />}
         {value === 'backup' && <Backup />}
-        {value === 'firmware' && <Firmware />}
+        {value === 'firmware' && <FirmwareUpdate />}
         {value === 'diagnostics' && <Diagnostics />}
       </Tabs>
     </>
@@ -254,7 +256,7 @@ function DownloadError({ error }: { error: unknown }) {
   if (e.code === 'config_blocked')
     return (
       <Alert variant="error" title="Nothing intact to download">
-        <p>The saved configuration is damaged and the hub has no intact copy to export, so there’s no backup to download. Restore a backup or reset to factory defaults to continue.</p>
+        <p>The saved configuration is damaged and the hub has no intact copy to export, so there’s no backup to download. Restore a backup or reset the configuration to continue.</p>
         <p className="mt-1 text-muted-foreground">The hub said: {e.message}</p>
       </Alert>
     )
@@ -303,6 +305,8 @@ function Backup() {
   const [downloaded, setDownloaded] = useState<{ kind: BackupKind; filename: string } | null>(null)
   const [downloadError, setDownloadError] = useState<unknown>(null)
   const [busy, setBusy] = useState<'download' | 'check' | 'restore' | null>(null)
+  /** After a restore: Home Assistant has a URL but no token (backups never carry it). */
+  const [haTokenMissing, setHaTokenMissing] = useState(false)
 
   const download = async () => {
     setBusy('download')
@@ -323,6 +327,7 @@ function Backup() {
   const pick = async (f: File | undefined) => {
     setPreview(null)
     setError(null)
+    setHaTokenMissing(false)
     if (!f) return setFile(null)
     try {
       const text = await f.text()
@@ -346,6 +351,8 @@ function Backup() {
       toast('Backup restored', { variant: 'success' })
       setFile(null)
       setPreview(null)
+      const ha = await api.integrationConfig('ha_main').catch(() => null)
+      setHaTokenMissing(ha?.settings.type === 'home_assistant' && !!ha.settings.url && !ha.settings.has_access_token)
     } catch (e) {
       setError(e)
     } finally {
@@ -391,6 +398,19 @@ function Backup() {
             <input type="file" accept="application/json,.json" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
           </label>
           {busy === 'check' && <p className="text-sm text-muted-foreground">Checking…</p>}
+          {haTokenMissing && (
+            <Alert
+              variant="warning"
+              title="Enter the Home Assistant token again"
+              action={
+                <Link href="/integrations" className={buttonVariants({ size: 'sm', variant: 'outline' })}>
+                  Integrations
+                </Link>
+              }
+            >
+              <p>Backups never include the Home Assistant token, so the restored settings have none. Home Assistant stays disconnected until you enter it under Integrations.</p>
+            </Alert>
+          )}
           {error != null && <RestoreError error={error} />}
           {preview && (
             <Alert variant="warning" title="Ready to restore">
@@ -407,107 +427,59 @@ function Backup() {
           </div>
         </div>
       </Section>
+      <ResetConfiguration />
       <FactoryReset />
     </div>
   )
 }
 
-function FactoryReset() {
+/** The word typed to confirm a configuration reset. */
+const RESET_WORD = 'reset'
+
+function ResetConfiguration() {
   const [confirm, setConfirm] = useState(false)
+  const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
+  const close = () => {
+    setConfirm(false)
+    setTyped('')
+  }
   const reset = async () => {
     setBusy(true)
     try {
-      await api.factoryReset()
+      await api.resetConfiguration()
       invalidateAll() // every object has a new revision now
-      toast('Reset to factory defaults', { variant: 'success', description: 'Devices, activities and global buttons were removed. Your password and API tokens are unchanged.' })
-      setConfirm(false)
+      toast('Configuration reset', { variant: 'success', description: 'Devices, activities, global buttons and integration settings were removed. Your login, API tokens and pairings are unchanged.' })
+      close()
     } catch (e) {
-      toastError('Factory reset failed', e)
+      toastError('Resetting the configuration failed', e)
     } finally {
       setBusy(false)
     }
   }
   return (
-    <Section title="Factory reset" description="Removes every device, activity and global button and resets integration settings. Your admin password, API tokens and pairings are kept. Works even when the saved configuration can’t be used.">
+    <Section title="Reset configuration" description="Removes every device, activity and global button and resets integration settings. Your login, API tokens and pairings are kept. Works even when the saved configuration can’t be used.">
       <Button variant="outline" className="text-destructive hover:text-destructive" onClick={() => setConfirm(true)}>
-        <RotateCcw /> Factory reset…
+        <RotateCcw /> Reset configuration…
       </Button>
       <Dialog
         open={confirm}
-        onClose={() => setConfirm(false)}
-        title="Reset to factory defaults?"
+        onClose={close}
+        title="Reset the configuration?"
         description="This can’t be undone. Download a backup first if you might want this configuration again."
         footer={
           <>
-            <Button variant="ghost" onClick={() => setConfirm(false)}>
+            <Button variant="ghost" onClick={close}>
               Cancel
             </Button>
-            <Button variant="destructive" onClick={reset} disabled={busy}>
-              {busy && <Loader2 className="animate-spin" />} Reset everything
+            <Button variant="destructive" onClick={reset} disabled={busy || !typedMatches(typed, RESET_WORD)}>
+              {busy && <Loader2 className="animate-spin" />} Reset configuration
             </Button>
           </>
         }
-      />
-    </Section>
-  )
-}
-
-function Firmware() {
-  const fw = useQuery('firmware', () => api.firmware())
-  const [file, setFile] = useState<File | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<{ ok: true; message: string } | { ok: false; error: unknown } | null>(null)
-
-  const upload = async () => {
-    if (!file) return
-    setBusy(true)
-    setResult(null)
-    try {
-      const r = await api.uploadFirmware(file)
-      const message = r.message ?? (r.update_state === 'rebooting' ? 'Verified. The hub is rebooting into the new version.' : `Update state: ${r.update_state}`)
-      setResult(r.update_state === 'failed' ? { ok: false, error: new Error(message) } : { ok: true, message })
-    } catch (e) {
-      setResult({ ok: false, error: e })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <Section title="Firmware" description="Updates are verified for this board before flashing, and the hub rolls back if the new version fails to boot.">
-      <div className="grid gap-5">
-        {fw.data ? (
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
-            {[
-              ['Version', fw.data.version],
-              ['Board', fw.data.board],
-              ['Running slot', fw.data.running_partition ?? '–'],
-              ['Rollback', fw.data.rollback_available ? 'Available' : 'None'],
-            ].map(([k, v]) => (
-              <div key={k}>
-                <dt className="text-xs text-muted-foreground">{k}</dt>
-                <dd className="truncate font-medium">{v}</dd>
-              </div>
-            ))}
-          </dl>
-        ) : fw.error ? (
-          <ErrorState error={fw.error} retry={fw.refetch} what="Firmware updates" />
-        ) : (
-          <Skeleton className="h-10" />
-        )}
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="inline-flex">
-            <span className="sr-only">Firmware image</span>
-            <Input type="file" accept=".bin" onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="max-w-xs" />
-          </label>
-          <Button onClick={upload} disabled={!file || busy}>
-            {busy ? <Loader2 className="animate-spin" /> : <Upload />} Install update
-          </Button>
-        </div>
-        <p className="text-xs text-muted-foreground">Remote response may pause briefly while the image is written.</p>
-        {result && (result.ok ? <Alert variant="success">{result.message}</Alert> : <ErrorState error={result.error} what="Firmware updates" />)}
-      </div>
+      >
+        <TypedWordField word={RESET_WORD} id="reset-confirm" value={typed} onChange={setTyped} />
+      </Dialog>
     </Section>
   )
 }

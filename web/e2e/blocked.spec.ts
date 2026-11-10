@@ -5,7 +5,7 @@ test.use({ reset: { configState: 'blocked' } })
 
 const RAW_NOTE = 'This is the hub’s saved configuration exactly as stored, exported while the hub is blocked. It may only be restorable on firmware that can read it.'
 
-// Runs before the factory reset below: on hub-sim (seeded with `hub-sim write-record`) the blocked state is real and a reset ends it.
+// Runs before the configuration reset below: on hub-sim (seeded with `hub-sim write-record`) the blocked state is real and a reset ends it.
 test('blocked: download the saved configuration raw; restoring it here needs newer firmware', async ({ page }) => {
   await open(page, '/activities')
   const banner = page.getByRole('alert').filter({ hasText: 'The saved configuration can’t be used' })
@@ -31,7 +31,7 @@ test('blocked: download the saved configuration raw; restoring it here needs new
   await expect(banner).toBeVisible()
 })
 
-test('a blocked config: persistent banner, edits disabled, factory reset is the way out', async ({ page }) => {
+test('a blocked config: persistent banner, edits disabled, resetting the configuration is the way out', async ({ page }) => {
   await open(page, '/activities')
   const banner = page.getByRole('alert').filter({ hasText: 'The saved configuration can’t be used' })
   await expect(banner).toBeVisible()
@@ -45,10 +45,11 @@ test('a blocked config: persistent banner, edits disabled, factory reset is the 
   for (const b of await addButtons.all()) await expect(b).toBeDisabled()
 
   await banner.getByRole('link', { name: 'Download raw, restore or reset…' }).click()
-  await page.getByRole('button', { name: 'Factory reset…' }).click()
+  await page.getByRole('button', { name: 'Reset configuration…' }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toContainText('can’t be undone')
-  await dialog.getByRole('button', { name: 'Reset everything' }).click()
+  await dialog.getByLabel('Type “reset” to confirm').fill('reset')
+  await dialog.getByRole('button', { name: 'Reset configuration' }).click()
   await expect(banner).toBeHidden()
 
   await open(page, '/devices')

@@ -1,13 +1,12 @@
 import { expect, notAvailable, open, SIM_URL, stubUnimplemented, test } from './hub.ts'
 
 // Endpoints a hub answers with 501: calm "not available yet", no error toasts. hub-sim
-// implements remote pairing and the HA settings now, so those parts are stubbed on the mock only.
+// implements every route now, so the 501s are stubbed on the mock only.
 test('features the hub does not implement yet show "Not available yet"', async ({ page }) => {
+  test.skip(!!SIM_URL, 'hub-sim answers no 501s')
   await stubUnimplemented(page)
   await open(page, '/settings/firmware')
   await expect(notAvailable(page)).toBeVisible()
-
-  if (SIM_URL) return expect(page.getByText('Something went wrong')).toHaveCount(0)
 
   await open(page, '/settings/remote')
   await page.getByRole('button', { name: /Scan from Hub|Re-pair/ }).click()

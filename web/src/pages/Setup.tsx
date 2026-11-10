@@ -148,7 +148,7 @@ export default function Setup({ onDone, start }: { onDone: () => void; start?: s
 }
 
 function AdminStep({ onCreated }: { onCreated: () => void }) {
-  const [username, setUsername] = useState('admin')
+  const [username, setUsername] = useState('') // no default: the user picks it
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [busy, setBusy] = useState(false)
@@ -163,7 +163,7 @@ function AdminStep({ onCreated }: { onCreated: () => void }) {
     setBusy(true)
     setError(null)
     try {
-      await api.setupAdmin(username, password) // logs in; the response carries the CSRF token
+      await api.setupAdmin(username, password) // logs in (sets the session cookie)
       setPassword('')
       setConfirm('')
       onCreated()
@@ -179,10 +179,10 @@ function AdminStep({ onCreated }: { onCreated: () => void }) {
     <form onSubmit={submit} className="grid max-w-sm gap-4">
       {error && <Alert variant="error">{error}</Alert>}
       <Field label="Username" htmlFor="su">
-        <Input id="su" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required />
+        <Input id="su" autoComplete="username" maxLength={32} autoCapitalize="none" autoCorrect="off" spellCheck={false} value={username} onChange={(e) => setUsername(e.target.value)} required autoFocus />
       </Field>
       <Field label="Password" htmlFor="sp" hint="At least 10 characters.">
-        <Input id="sp" type="password" autoComplete="new-password" minLength={10} value={password} onChange={(e) => setPassword(e.target.value)} required autoFocus />
+        <Input id="sp" type="password" autoComplete="new-password" minLength={10} value={password} onChange={(e) => setPassword(e.target.value)} required />
       </Field>
       <Field label="Confirm password" htmlFor="sp2" error={mismatch ? 'Passwords don’t match' : null}>
         <Input id="sp2" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} aria-invalid={mismatch} required />

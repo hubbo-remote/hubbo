@@ -9,6 +9,7 @@ test.use({ reset: { firstRun: true } })
 async function createAdmin(page: Page) {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Set up Hubbo' })).toBeVisible()
+  await expect(page.getByLabel('Username')).toHaveValue('') // no default: the user picks it
   await page.getByLabel('Username').fill(ADMIN.username)
   await page.getByLabel('Password', { exact: true }).fill(ADMIN.password)
   await page.getByLabel('Confirm password').fill('mismatch')

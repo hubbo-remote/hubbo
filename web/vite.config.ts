@@ -33,11 +33,10 @@ export default defineConfig({
         : {
             '/api': {
               target,
-              // The hub only accepts its own Host (else 421) and rejects a
-              // foreign Origin on unsafe requests (CSRF defence, else 403).
-              // Served from the hub the UI is same-origin; through this dev
-              // proxy it isn't, so send the target's Host and drop Origin
-              // (the hub accepts requests without one).
+              // The hub rejects a foreign Origin on unsafe requests (403
+              // csrf_failed). Served from the hub the UI is same-origin;
+              // through this dev proxy it isn't, so send the target's Host
+              // and drop Origin (the hub accepts requests without one).
               changeOrigin: true,
               secure: false,
               configure: (proxy) => proxy.on('proxyReq', (req) => req.removeHeader('origin')),

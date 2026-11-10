@@ -66,8 +66,11 @@ export interface paths {
         put?: never;
         /**
          * Create the admin account (first run only)
-         * @description Only succeeds while no admin exists; afterwards `409 setup_already_done`.
-         *     On success the caller is logged in (same response as login).
+         * @description The caller picks the username and password (there's no default
+         *     username). Only succeeds while `auth_state` is `fresh`; afterwards
+         *     `409 setup_already_done`, and `503 storage_unavailable` while it's
+         *     `unavailable`. On success the caller is logged in (same response as
+         *     login).
          */
         post: operations["setupAdmin"];
         delete?: never;
@@ -88,10 +91,9 @@ export interface paths {
         /**
          * Log in as admin
          * @description Sets an HttpOnly, SameSite=Strict `hubbo_session` cookie (`Secure` when
-         *     served over HTTPS). The response carries the CSRF token the client must
-         *     echo in `X-Hubbo-CSRF`. Failed attempts are rate limited per client and
-         *     globally (`429` with `Retry-After`). The `Origin` header, when present,
-         *     must match the hub's host.
+         *     served over HTTPS) that lasts 7 days, or until the hub reboots. There's
+         *     no rate limit: the password hash's cost slows guessing. The `Origin`
+         *     header, when present, must match the hub's host.
          */
         post: operations["login"];
         delete?: never;
@@ -700,7 +702,7 @@ export interface paths {
         get?: never;
         /**
          * Change the admin password
-         * @description Ends every other session. Rate limited like login.
+         * @description Ends every other session.
          */
         put: operations["changeAdminPassword"];
         post?: never;
@@ -835,14 +837,41 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Reset the configuration to factory defaults
-         * @description Replaces devices, activities, global bindings and integration
-         *     settings with the defaults, stamped with a new generation (so every
-         *     client's old revisions get 409). Works while the config is `blocked`.
-         *     Credentials, tokens and pairings are kept. Like a restore it never
+         * Reset configuration
+         * @description Reset configuration: replaces devices, activities, global bindings
+         *     and integration settings with the defaults, stamped with a new
+         *     generation (so every client's old revisions get 409). Works while the
+         *     config is `blocked`. The login, tokens, the Home Assistant token and
+         *     pairings are kept (`POST /admin/factory-reset` erases those too). Like a restore it never
          *     starts or stops an activity: the active activity stays active if the
          *     defaults have an activity with its id, otherwise the hub becomes
          *     inactive without running any startup or shutdown commands.
+         */
+        post: operations["resetConfiguration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/factory-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Factory reset
+         * @description Erases everything and restarts into first-run setup: the login, every
+         *     API token, the Home Assistant token, BLE bonds, the remote endpoint
+         *     and the whole configuration. Answers `202` first; the hub then stops
+         *     answering for a few seconds and comes back with `auth_state` `fresh`
+         *     (every session gone), so the next step is `POST /auth/setup`. The
+         *     Apple TV still lists the old pairing: forget "Hubbo" there before
+         *     pairing again. Refused while a firmware update is running.
          */
         post: operations["factoryReset"];
         delete?: never;
@@ -858,7 +887,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Firmware version and update state */
+        /**
+         * Firmware version and update state
+         * @description Poll it during an update. After `rebooting`, the hub stops answering
+         *     for a few seconds, then comes back `idle` with the new `version` (and
+         *     every session gone: log in again).
+         */
         get: operations["getFirmwareStatus"];
         put?: never;
         post?: never;
@@ -878,11 +912,16 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Upload a signed firmware image
-         * @description Streams the app image into the inactive OTA slot, then verifies
-         *     signature, board ID and size before marking it bootable. `reboot=true`
-         *     reboots after a successful verify. A failed first boot rolls back.
-         *     Body limit is the OTA slot size.
+         * Upload a firmware image
+         * @description The body is the app image (`firmware.bin` from the build, not the
+         *     merged factory image), sent whole with `Content-Length`. The hub
+         *     checks all of it before erasing anything: it fits the inactive OTA
+         *     slot, it's an ESP32-S3 app image for this chip revision, it carries the
+         *     Hubbo marker for this board and partition layout, and its appended
+         *     SHA-256 matches. Then it answers `202` and writes the image in the
+         *     background (`GET /admin/firmware` shows the progress), sets it to boot
+         *     and reboots. There's no rollback. During the write the remote may lag
+         *     for up to about 30 s. The body limit is the OTA slot size.
          */
         post: operations["updateFirmware"];
         delete?: never;
@@ -937,7 +976,7 @@ export interface components {
          */
         Trigger: string;
         /** @enum {string} */
-        ErrorCode: "malformed_json" | "validation_failed" | "unsupported_media_type" | "payload_too_large" | "method_not_allowed" | "host_not_allowed" | "unauthenticated" | "invalid_credentials" | "forbidden" | "csrf_failed" | "rate_limited" | "not_found" | "revision_conflict" | "device_in_use" | "activity_in_use" | "config_blocked" | "storage_unavailable" | "credentials_corrupt" | "limit_reached" | "busy" | "setup_required" | "setup_already_done" | "details_required" | "integration_unavailable" | "not_implemented" | "internal_error";
+        ErrorCode: "malformed_json" | "validation_failed" | "unsupported_media_type" | "payload_too_large" | "method_not_allowed" | "length_required" | "unauthenticated" | "invalid_credentials" | "forbidden" | "csrf_failed" | "not_found" | "revision_conflict" | "device_in_use" | "activity_in_use" | "config_blocked" | "storage_unavailable" | "limit_reached" | "busy" | "setup_required" | "setup_already_done" | "details_required" | "update_in_progress" | "invalid_image" | "wrong_board" | "unavailable" | "integration_unavailable" | "not_implemented" | "internal_error";
         ErrorDetail: {
             /** @description JSON Pointer into the request body ('' for the whole body). */
             path: string;
@@ -959,21 +998,19 @@ export interface components {
                 details?: components["schemas"]["ErrorDetail"][];
                 /** @description Present with `revision_conflict`. */
                 current_revision?: components["schemas"]["Revision"];
-                /** @description Present with `rate_limited` (mirrors `Retry-After`). */
-                retry_after_s?: number;
             };
         };
         /**
          * @description What the hub knows about its credentials. "Can't read" is never
          *     "doesn't exist": only `fresh` (the store is readable and holds no
          *     admin) allows `POST /auth/setup`.
-         *     `ok`: loaded. `unavailable`: the store can't be read; logins and
-         *     authenticated requests get `503 storage_unavailable` until it can.
-         *     `corrupt`: stored credentials are damaged; logins and setup get
-         *     `409 credentials_corrupt` (recovery needs physical access).
+         *     Read once at boot. `ok`: loaded. `unavailable`: the store couldn't be
+         *     read or holds damaged credentials; logins, setup and authenticated
+         *     requests get `503 storage_unavailable`. Recovery is a reboot or the
+         *     wipe (`bin/hubbo ota <ip> --wipe`).
          * @enum {string}
          */
-        AuthState: "fresh" | "ok" | "unavailable" | "corrupt";
+        AuthState: "fresh" | "ok" | "unavailable";
         /**
          * @description Health of the saved configuration.
          *     `ok`: loaded and running. `fresh`: nothing was saved yet, the defaults
@@ -1102,8 +1139,6 @@ export interface components {
             /** @enum {string|null} */
             role: "admin" | "token" | null;
             username?: string;
-            /** @description Echo in `X-Hubbo-CSRF`. Present only for cookie sessions. Keep in memory, not browser storage. */
-            csrf_token?: string;
             expires_in_s?: number;
             /** @description True only when `auth_state` is `fresh`. */
             setup_required: boolean;
@@ -1668,14 +1703,23 @@ export interface components {
             warnings?: components["schemas"]["ErrorDetail"][];
         };
         FirmwareStatus: {
+            /** @description The running firmware's version (`git describe`). */
             version: string;
             board: string;
-            running_partition?: string;
-            /** @enum {string} */
-            update_state: "idle" | "receiving" | "verifying" | "ready_to_reboot" | "rebooting" | "failed";
-            received_bytes?: number;
-            rollback_available?: boolean;
-            message?: string;
+            update: {
+                /**
+                 * @description `idle`: nothing running. `writing`: erasing and writing the
+                 *     inactive slot. `rebooting`: written and set to boot; the hub
+                 *     restarts shortly. `failed`: the latest update stopped (`error`);
+                 *     the running firmware stays and still boots.
+                 * @enum {string}
+                 */
+                state: "idle" | "writing" | "rebooting" | "failed";
+                /** @description Percent of the image written (`writing`; 100 once `rebooting`). */
+                progress: number;
+                /** @description `failed` only: a short code such as `write_failed` or `verify_failed`. */
+                error: string | null;
+            };
         };
     };
     responses: {
@@ -1697,7 +1741,7 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description Authenticated but not allowed (`forbidden`, `csrf_failed`) */
+        /** @description Not allowed: `forbidden` (an API token on an admin operation) or `csrf_failed` (a cross-site `Origin`) */
         Forbidden: {
             headers: {
                 [name: string]: unknown;
@@ -1769,20 +1813,11 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description Too many attempts (`rate_limited`) */
-        RateLimited: {
-            headers: {
-                "Retry-After"?: number;
-                [name: string]: unknown;
-            };
-            content: {
-                "application/json": components["schemas"]["Error"];
-            };
-        };
         /**
          * @description Integration not connected, the engine is busy, the config store can't
          *     be written, or stored credentials can't be read so nobody can be
-         *     authenticated (`integration_unavailable`, `busy`, `storage_unavailable`).
+         *     authenticated, or (firmware) this hub has no update support
+         *     (`integration_unavailable`, `busy`, `storage_unavailable`, `unavailable`).
          */
         Unavailable: {
             headers: {
@@ -1794,8 +1829,6 @@ export interface components {
         };
     };
     parameters: {
-        /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-        CsrfHeader: string;
         DeviceIdPath: components["schemas"]["DeviceId"];
         ActivityIdPath: components["schemas"]["ActivityId"];
         IntegrationIdPath: components["schemas"]["IntegrationId"];
@@ -1906,7 +1939,6 @@ export interface operations {
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
-            429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["Unavailable"];
         };
@@ -1957,7 +1989,6 @@ export interface operations {
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
-            429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["Unavailable"];
         };
@@ -1965,10 +1996,7 @@ export interface operations {
     logout: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2080,10 +2108,7 @@ export interface operations {
     executeCommand: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path: {
                 device_id: components["parameters"]["DeviceIdPath"];
                 command_id: components["schemas"]["CommandId"];
@@ -2140,10 +2165,7 @@ export interface operations {
     createActivity: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2177,10 +2199,7 @@ export interface operations {
     validateActivity: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2211,10 +2230,7 @@ export interface operations {
     activitiesOff: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2263,10 +2279,7 @@ export interface operations {
     replaceActivity: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path: {
                 activity_id: components["parameters"]["ActivityIdPath"];
             };
@@ -2305,10 +2318,7 @@ export interface operations {
                 /** @description Revision the caller last read. */
                 revision: components["parameters"]["RevisionQuery"];
             };
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path: {
                 activity_id: components["parameters"]["ActivityIdPath"];
             };
@@ -2335,10 +2345,7 @@ export interface operations {
     activateActivity: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path: {
                 activity_id: components["parameters"]["ActivityIdPath"];
             };
@@ -2387,10 +2394,7 @@ export interface operations {
     replaceGlobalBindings: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2472,10 +2476,7 @@ export interface operations {
     configureIntegration: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path: {
                 integration_id: components["parameters"]["IntegrationIdPath"];
             };
@@ -2537,10 +2538,7 @@ export interface operations {
     requestEntityDetails: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path: {
                 integration_id: components["parameters"]["IntegrationIdPath"];
                 entity_id: string;
@@ -2601,10 +2599,7 @@ export interface operations {
     discoverIntegration: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path: {
                 integration_id: components["parameters"]["IntegrationIdPath"];
             };
@@ -2630,10 +2625,7 @@ export interface operations {
     cancelDiscovery: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path: {
                 integration_id: components["parameters"]["IntegrationIdPath"];
             };
@@ -2685,10 +2677,7 @@ export interface operations {
             query?: {
                 window_s?: number;
             };
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path: {
                 integration_id: components["parameters"]["IntegrationIdPath"];
             };
@@ -2716,10 +2705,7 @@ export interface operations {
     forgetIntegrationPairing: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path: {
                 integration_id: components["parameters"]["IntegrationIdPath"];
             };
@@ -2743,10 +2729,7 @@ export interface operations {
     registerDevice: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2780,10 +2763,7 @@ export interface operations {
     updateDevice: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path: {
                 device_id: components["parameters"]["DeviceIdPath"];
             };
@@ -2822,10 +2802,7 @@ export interface operations {
                 /** @description Revision the caller last read. */
                 revision: components["parameters"]["RevisionQuery"];
             };
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path: {
                 device_id: components["parameters"]["DeviceIdPath"];
             };
@@ -2875,10 +2852,7 @@ export interface operations {
     setRemoteEndpoint: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2933,10 +2907,7 @@ export interface operations {
     startRemotePairing: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2960,10 +2931,7 @@ export interface operations {
     cancelRemotePairing: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2984,10 +2952,7 @@ export interface operations {
     changeAdminPassword: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -3010,7 +2975,6 @@ export interface operations {
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
-            429: components["responses"]["RateLimited"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["Unavailable"];
         };
@@ -3041,10 +3005,7 @@ export interface operations {
     createToken: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -3077,10 +3038,7 @@ export interface operations {
     revokeToken: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path: {
                 token_id: components["schemas"]["TokenId"];
             };
@@ -3146,10 +3104,7 @@ export interface operations {
             query?: {
                 dry_run?: boolean;
             };
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -3178,13 +3133,10 @@ export interface operations {
             503: components["responses"]["Unavailable"];
         };
     };
-    factoryReset: {
+    resetConfiguration: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -3202,6 +3154,36 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    factoryReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The reset will start once this response is sent */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            /** @description A firmware update is running (`update_in_progress`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             503: components["responses"]["Unavailable"];
         };
     };
@@ -3225,21 +3207,13 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
-            501: components["responses"]["NotImplemented"];
             503: components["responses"]["Unavailable"];
         };
     };
     updateFirmware: {
         parameters: {
-            query?: {
-                reboot?: boolean;
-            };
-            header?: {
-                /** @description Required when authenticating with the session cookie; ignored for Bearer tokens. */
-                "X-Hubbo-CSRF"?: components["parameters"]["CsrfHeader"];
-                /** @description Hex SHA-256 of the image; checked after upload. */
-                "X-Hubbo-Image-Sha256"?: string;
-            };
+            query?: never;
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -3249,7 +3223,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Verified; rebooting or ready to reboot */
+            /** @description The image passed every check; the write has started */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -3258,15 +3232,60 @@ export interface operations {
                     "application/json": components["schemas"]["FirmwareStatus"];
                 };
             };
-            400: components["responses"]["MalformedJson"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
-            409: components["responses"]["Conflict"];
+            /** @description An update is already running, or the hub is rebooting (`update_in_progress`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No `Content-Length` header (`length_required`) */
+            411: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             413: components["responses"]["PayloadTooLarge"];
-            415: components["responses"]["UnsupportedMediaType"];
-            422: components["responses"]["ValidationFailed"];
-            501: components["responses"]["NotImplemented"];
-            503: components["responses"]["Unavailable"];
+            /** @description Body is not `Content-Type application/octet-stream` (`unsupported_media_type`) */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /**
+             * @description Refused before anything was written. `wrong_board`: a Hubbo image
+             *     for another board. `invalid_image`: not an app image (a merged
+             *     factory .bin isn't one), the wrong chip, not a Hubbo image, another
+             *     partition layout, or a checksum that doesn't match (the message
+             *     says which).
+             */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description This hub can't take an update now, e.g. no memory for the image (`unavailable`, `busy`) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
 }

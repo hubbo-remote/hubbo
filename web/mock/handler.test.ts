@@ -2,9 +2,9 @@
 // and reject every malicious one, so UI built against the mock is built
 // against the spec.
 import { describe, expect, it } from 'vitest'
-import type { Activity, ApiErrorBody, DiscoverStatus, EntityDetailsStatus, Session, Status, TransitionResult } from '../src/api/types.ts'
+import type { Activity, ApiErrorBody, DiscoverStatus, EntityDetailsStatus, FirmwareStatus, Session, Status, TransitionResult } from '../src/api/types.ts'
 import { fixture } from './fixtures.ts'
-import { CSRF_HEADER } from '../src/api/constants.ts'
+import { buildFirmwareImage } from './firmware.ts'
 import { createMock, type MockRequest, type MockResponse } from './handler.ts'
 
 /** Load an entity's details (POST, then GET: discoverDelayMs is 0 in these tests). */
@@ -13,7 +13,7 @@ async function loadDetails(m: ReturnType<typeof createMock>, entityId: string) {
   return (await m.handle(req('GET', `/admin/integrations/ha_main/entities/${entityId}/details`))).body as EntityDetailsStatus
 }
 
-const req = (method: string, path: string, body?: unknown, headers: Record<string, string> = { [CSRF_HEADER]: 'csrf-dev' }): MockRequest => {
+const req = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}): MockRequest => {
   const [p, q] = path.split('?')
   return { method, path: p!, query: new URLSearchParams(q ?? ''), headers, body, rawBody: body === undefined ? undefined : new TextEncoder().encode(JSON.stringify(body)) }
 }
@@ -55,7 +55,7 @@ describe('mock vs api/fixtures', () => {
     const m = createMock({ firstRun: true })
     const r = await m.handle(req('POST', '/auth/setup', fixture('auth/setup.request.json'), {}))
     expect(r.status).toBe(201)
-    expect((r.body as Session).csrf_token).toBeTruthy()
+    expect(r.body as Session).toMatchObject({ authenticated: true, username: fixture<{ username: string }>('auth/setup.request.json').username, expires_in_s: 604_800 })
     expect(r.headers?.['set-cookie']).toMatch(/HttpOnly; SameSite=Strict/)
   })
 
@@ -92,9 +92,13 @@ describe('mock matches hub-sim', () => {
     }
   })
 
-  it('403 for a foreign Origin on unsafe requests', async () => {
-    const r = await createMock().handle(req('POST', '/activities/off', {}, { [CSRF_HEADER]: 'csrf-dev', host: 'hub.local', origin: 'http://evil.example' }))
+  it('403 csrf_failed for a foreign Origin on unsafe requests; same-origin and no Origin pass', async () => {
+    const m = createMock()
+    const r = await m.handle(req('POST', '/activities/off', {}, { host: 'hub.local', origin: 'http://evil.example' }))
     expect(r.status).toBe(403)
+    expect(errorOf(r).code).toBe('csrf_failed')
+    expect((await m.handle(req('POST', '/activities/off', {}, { host: 'hub.local', origin: 'http://hub.local' }))).status).toBe(200)
+    expect((await m.handle(req('POST', '/activities/off', {}))).status).toBe(200)
   })
 
   it('refuses to delete a referenced activity (activity_in_use) and lists the references', async () => {
@@ -118,12 +122,6 @@ describe('mock matches hub-sim', () => {
 })
 
 describe('mock behaviour', () => {
-  it('requires X-Hubbo-CSRF on unsafe requests', async () => {
-    const r = await createMock().handle(req('POST', '/activities/off', {}, {}))
-    expect(r.status).toBe(403)
-    expect(errorOf(r).code).toBe('csrf_failed')
-  })
-
   it('requires login when configured', async () => {
     const m = createMock({ requireAuth: true })
     expect((await m.handle(req('GET', '/devices'))).status).toBe(401)
@@ -203,7 +201,7 @@ describe('mock behaviour', () => {
   it('nesting: requests allow 8 levels, a restore (a file) 12, like the hub', async () => {
     const m = createMock()
     const nested = (n: number): unknown => (n === 0 ? 1 : { a: nested(n - 1) })
-    const raw = (path: string, n: number): MockRequest => ({ ...req('POST', path), headers: { [CSRF_HEADER]: 'csrf-dev', 'content-type': 'application/json' }, rawBody: new TextEncoder().encode(JSON.stringify(nested(n))) })
+    const raw = (path: string, n: number): MockRequest => ({ ...req('POST', path), headers: { 'content-type': 'application/json' }, rawBody: new TextEncoder().encode(JSON.stringify(nested(n))) })
     expect(errorOf(await m.handle(raw('/activities', 9))).code).toBe('malformed_json')
     expect(errorOf(await m.handle(raw('/admin/restore?dry_run=true', 12))).code).not.toBe('malformed_json')
     expect(errorOf(await m.handle(raw('/admin/restore?dry_run=true', 13))).code).toBe('malformed_json')
@@ -429,5 +427,82 @@ describe('mock behaviour', () => {
     const r = await m.handle(req('PUT', '/admin/integrations/ha_main', body))
     expect(JSON.stringify(r.body)).not.toContain('eyJ')
     expect(JSON.stringify((await m.handle(req('GET', '/admin/backup'))).body)).not.toContain('eyJ')
+  })
+})
+
+const BOARD = fixture<FirmwareStatus>('admin/firmware.json').board
+const upload = (image: Uint8Array, headers: Record<string, string> = { 'content-type': 'application/octet-stream', 'content-length': String(image.byteLength) }): MockRequest => ({ method: 'POST', path: '/admin/firmware/update', query: new URLSearchParams(), headers, body: undefined, rawBody: image })
+const fw = async (m: ReturnType<typeof createMock>) => (await m.handle(req('GET', '/admin/firmware'))).body as FirmwareStatus
+const advance = (m: ReturnType<typeof createMock>, ms: number) => m.handle(req('POST', `/__mock/advance?ms=${ms}`))
+
+describe('firmware update', () => {
+  it('writes, reboots into the new version and drops every session', async () => {
+    const m = createMock({ timeScale: 0 })
+    const r = await m.handle(upload(await buildFirmwareImage({ board: BOARD, version: 'v9.0.0' })))
+    expect(r.status).toBe(202)
+    expect((r.body as FirmwareStatus).update).toEqual({ state: 'writing', progress: 0, error: null })
+    await advance(m, 1000)
+    expect((await fw(m)).update).toMatchObject({ state: 'writing', progress: 50 })
+    expect((await m.handle(upload(await buildFirmwareImage({ board: BOARD })))).status).toBe(409)
+    await advance(m, 1000)
+    expect((await fw(m)).update).toMatchObject({ state: 'rebooting', progress: 100 })
+    await advance(m, 600)
+    expect((await m.handle(req('GET', '/status'))).status).toBe(0) // down mid-reboot
+    await advance(m, 400)
+    expect((await m.handle(req('GET', '/admin/firmware'))).status).toBe(401)
+    expect((await m.handle(req('GET', '/auth/session'))).body).toMatchObject({ authenticated: false, auth_state: 'ok' })
+    const login = await m.handle(req('POST', '/auth/login', fixture('auth/login.request.json')))
+    expect(login.status).toBe(200)
+    expect(((await m.handle({ ...req('GET', '/admin/firmware'), headers: { cookie: login.headers!['set-cookie']!.split(';')[0]! } })).body as FirmwareStatus).version).toBe('v9.0.0')
+  })
+
+  it('refuses what the hub refuses, before writing anything', async () => {
+    const m = createMock({ timeScale: 0 })
+    const good = await buildFirmwareImage({ board: BOARD })
+    const code = async (r: MockRequest) => {
+      const res = await m.handle(r)
+      return [res.status, errorOf(res).code]
+    }
+    expect(await code(upload(new TextEncoder().encode('not an image at all, just some text that is long enough to pass the size floor')))).toEqual([422, 'invalid_image'])
+    expect(await code(upload(await buildFirmwareImage({ board: 'other_board' })))).toEqual([422, 'wrong_board'])
+    expect(await code(upload(await buildFirmwareImage({ board: BOARD, badHash: true })))).toEqual([422, 'invalid_image'])
+    expect(await code(upload(good, { 'content-type': 'application/json', 'content-length': '1' }))).toEqual([415, 'unsupported_media_type'])
+    expect(await code(upload(good, { 'content-type': 'application/octet-stream' }))).toEqual([411, 'length_required'])
+    expect(await code(upload(new Uint8Array(6_553_601)))).toEqual([413, 'payload_too_large'])
+    await m.handle(req('POST', '/__mock/firmware?ready=0'))
+    expect(await code(upload(good))).toEqual([503, 'unavailable'])
+    expect((await fw(m)).update.state).toBe('idle')
+  })
+
+  it('a failed write leaves the running version', async () => {
+    const m = createMock({ timeScale: 0 })
+    await m.handle(req('POST', '/__mock/firmware?fail=1'))
+    expect((await m.handle(upload(await buildFirmwareImage({ board: BOARD, version: 'v9.0.0' })))).status).toBe(202)
+    await advance(m, 2000)
+    expect(await fw(m)).toMatchObject({ version: fixture<FirmwareStatus>('admin/firmware.json').version, update: { state: 'failed', error: 'write_failed' } })
+  })
+})
+
+describe('contract details', () => {
+  it('refuses a factory reset while an update writes or reboots', async () => {
+    const m = createMock({ timeScale: 0 })
+    await m.handle(upload(await buildFirmwareImage({ board: BOARD })))
+    expect((await m.handle(req('POST', '/admin/factory-reset'))).status).toBe(409)
+    await advance(m, 2100)
+    expect((await fw(m)).update.state).toBe('rebooting')
+    expect((await m.handle(req('POST', '/admin/factory-reset'))).status).toBe(409)
+  })
+
+  it('the factory reset 503 is the hub’s text', async () => {
+    const m = createMock()
+    await m.handle(req('POST', '/__mock/factory-reset?ready=0'))
+    expect(errorOf(await m.handle(req('POST', '/admin/factory-reset'))).message).toBe("The hub can't do a factory reset right now")
+  })
+
+  it('devices never carry ha_capabilities, even after restoring a backup that has them', async () => {
+    const m = createMock()
+    expect((await m.handle(req('POST', '/admin/restore?dry_run=false', fixture('admin/restore.request.json')))).status).toBe(200)
+    for (const d of ((await m.handle(req('GET', '/devices'))).body as { devices: object[] }).devices) expect(d).not.toHaveProperty('ha_capabilities')
+    expect((await m.handle(req('GET', '/devices/dev_denon'))).body).not.toHaveProperty('ha_capabilities')
   })
 })
