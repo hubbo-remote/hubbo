@@ -7,6 +7,7 @@ import { ApiError, errorMessage, isNotImplemented } from '@/api/client'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Field, Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 
 export function PageHeader({ title, description, actions, back }: { title: ReactNode; description?: ReactNode; actions?: ReactNode; back?: { href: string; label: string } }) {
@@ -99,5 +100,13 @@ export function Section({ title, description, children, className = 'max-w-2xl' 
       </CardHeader>
       <CardContent>{children}</CardContent>
     </Card>
+  )
+}
+
+export function TypedWordField({ word, id, value, onChange }: { word: string; id: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <Field label={`Type “${word}” to confirm`} htmlFor={id}>
+      <Input id={id} autoComplete="off" autoCapitalize="none" spellCheck={false} value={value} onChange={(e) => onChange(e.target.value)} />
+    </Field>
   )
 }

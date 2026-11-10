@@ -21,16 +21,20 @@ Pinned: `espressif32@8.0.0` (arduino-esp32 3.3.12), `nRF24/RF24@1.6.2`,
 | `src/remote_radio.*` | nRF24: Hub scan (learns channel + address), listener, endpoint in NVS. Payloads go to a `PayloadSink` unchanged. |
 | `src/ethernet_link.*` | W5500 Ethernet with DHCP, non-blocking, logs link changes. |
 | `src/ble_hid.*` | NimBLE HID keyboard + consumer control. It is the core's `HidTransport`: link, pairing window, forget, state, reports. No key state (`BleHidAdapter` owns it). |
-| `src/http_server.*` | `esp_http_server` → `hubbo::http::Router`: path decoding, body limit from the matched route (`Router::bodyLimit`, 413 before reading) into a per-request PSRAM buffer, headers, `clientKey` from the peer IP, allowed hosts, authenticator, response. |
+| `src/http_server.*` | `esp_http_server` → `hubbo::http::Router`: path decoding, body limit from the matched route (`Router::bodyLimit`, 413 before reading) into a per-request PSRAM buffer, headers, authenticator, response. |
 | `src/engine_runtime.*` | `api::Runtime`: the HTTP task's bridge to the engine task (`EngineRequest` submit + wait, status snapshot, BLE integration state). |
 | `src/flash_fs.*` | LittleFS on the `spiffs` partition at `/fs`. Formats only a positively blank partition (all 0xFF, scanned at boot) or at boot after `fs format`; never while running, never on an unexplained mount failure. |
 | `src/littlefs_storage.h` | `storage::Storage` on `/fs` with honest `health()` (Unavailable when not mounted), under core's `SlotRecordStore`. |
 | `src/nvs_secret_store.*` | `auth::SecretStore` on NVS. |
+| `src/esp_hash.h` | `auth::Hash` with SHA-256 on the hardware accelerator (mbedTLS); HMAC and PBKDF2 stay portable. |
 | `src/esp_clock.h`, `src/esp_random_source.h` | `api::Clock` and `auth::RandomSource` ports. The RNG fails closed until BLE (the RF entropy source) is up. |
 | `src/diagnostics.*` | Serial log ring, raw payload log, latency probe (`TimedHidTransport`, loop gap). |
 | `src/console.*` | `con`: every text output. USB serial is non-blocking (4 KB TX buffer, 0 ms timeout: a slow or absent host never stalls the loop; overflow is dropped). Dev builds keep the last 8 KB for `/debug/log`. |
 | `src/latency.*` | Fixed-size latency recorder (p50/p95/p99/max). |
-| `src/ota.*` | ArduinoOTA, compiled in only with `HUBBO_OTA_PASSWORD`. |
+| `src/ota.*` | ArduinoOTA, compiled in only with `HUBBO_OTA_PASSWORD`, and the update owner flag it shares with the web update. |
+| `src/factory_reset.*` | `api::FactoryResetPort`: records the request (one NVS flag) and reboots; the wipe (all of NVS, then the fs format) runs early in the next boot. The gate's `HUBBO_WIPE_ON_BOOT` uses the same wipe. |
+| `src/firmware_update.*` | `api::FirmwareUpdatePort` over esp_ota: firmware updates from the web admin (see "Web updates"). |
+| `src/image_marker.h`, `scripts/image_marker.py` | The `HUBBO-IMAGE/1 board=… layout=… version=<git describe>` marker every image carries; the build fails if the .bin doesn't hold exactly one. Its version is the API's `version`. |
 | `src/main.cpp` | Wiring, boot, main loop, serial console. |
 | `scripts/drop_unused_idf_libs.py` | Link step: drops the precompiled esp_matter archive. Otherwise ordinary `std::string` calls resolve to Matter's copies and pull in Matter and the Wi-Fi stack (+24 KB RAM, +230 KB flash). |
 
@@ -58,8 +62,11 @@ bounds the wait: transitions finish on the next poll, executions by the 5 s acti
 
 loopTask runs at priority 16, above every task without a core affinity, so those run on core 0 (an idle LAN otherwise preempted the radio loop for 10–17 ms at a time). It never blocks, so nothing below it runs on core 1. Tasks pinned to core 1 above it (IPC, Arduino network events) still preempt it briefly. The `tasks` command shows each task's core and CPU share.
 
-Core 1 has only the RF/engine loop, so no handler, flash write or network burst can delay a radio
-read. On core 0 httpd sits below the network and BLE stacks. A slow handler, such as login's
+Core 1 has only the RF/engine loop, so no handler or network burst can delay a radio read. Flash
+writes are the exception: with no XIP from PSRAM and no flash auto-suspend, every erase or write
+turns the cache off on both cores, so it stalls the loop for its length. A config save (LittleFS)
+costs about 2 ms of loop gap (5 saves: max gap 2.1 ms, none over 5 ms). A firmware update erases
+about 500 sectors, so the remote may lag while it writes. On core 0 httpd sits below the network and BLE stacks. A slow handler, such as login's
 PBKDF2 at about 0.5 s, delays only other HTTP requests. The idle-task watchdog
 on core 0 (5 s) bounds any runaway handler.
 
@@ -82,9 +89,7 @@ internal or DMA memory ask for it explicitly.
 ## Network
 
 DHCP on the W5500. Once the hub has an address it starts mDNS as `hubbo-<efuse MAC>.local`
-(advertising `_http._tcp`). The router accepts `Host` values matching the IP, the hostname or the
-`.local` name, refreshed on every address change. Requests are plain HTTP (`secure` = false) until
-TLS (Phase 5).
+(advertising `_http._tcp`). Requests are plain HTTP (`secure` = false); HTTPS is out of scope.
 
 ## OTA
 
@@ -105,12 +110,34 @@ transfer gets 120 s in total: after that, progress no longer feeds the watchdog,
 trickling bytes can't hold the radio loop (and the remote) hostage. ArduinoOTA's own reboot is turned off:
 once the image is written, the hub reboots like any other deliberate reboot.
 
+### Web updates
+
+`POST /api/v1/admin/firmware/update` (admin only) hands the buffered image to
+`FirmwareUpdate::install()` on httpd. In order: it claims the owner flag (busy if ArduinoOTA or a
+reboot holds it), checks the whole image with core's `api::validateFirmwareImage()` (slot size,
+0xE9, ESP32-S3 and chip revision, app description, the Hubbo marker's board and layout, the
+appended SHA-256 on the hardware SHA, `esp_hash.h`), copies it to PSRAM, and calls `esp_ota_begin` with
+sequential writes, which erases nothing. Then a one-shot `fw_write` task (core 0, priority 3,
+internal stack) writes 4 KB at a time through an internal buffer, one sector erase per write, with a
+tick's yield between sectors. `esp_ota_end` checks the image again from flash, the boot slot is
+set, and `requestReboot` restarts the hub. A failure leaves the running image as the boot image.
+The remote may lag for the ~30 s of the write: flash erases stall both cores. There's no
+rollback: Arduino marks an image valid before `setup()`.
+
+While the web update holds the owner flag, the loop never runs ArduinoOTA's `handle()` and
+`ota_watch` drops OTA packets, so `bin/hubbo ota` just gets no answer. ArduinoOTA claims the flag
+for each `handle()` call, which holds its whole transfer. Once a reboot is pending, nobody can
+claim it.
+
 ## Deliberate reboots
 
 `reboot`, `fs format` and a finished OTA are requests. The main loop never waits on another task,
 because it alone polls the engine and httpd may be waiting on the engine. It releases held keys
 itself, stops reading the radio, and posts "flush and restart" to httpd. httpd writes out the
-debounced active activity, then restarts. The engine keeps being polled until then.
+debounced active activity, then restarts. The engine keeps being polled until then. Just before
+any deliberate restart, the loop line (`loop: max gap ...`) is printed and kept in RTC memory, and
+the next boot logs it as `previous run (restart: <why>): ...`, so a stall before a reboot (a
+firmware update's write) can still be read from `/debug/log`.
 
 ## Dev console over HTTP (dev builds)
 
@@ -186,7 +213,6 @@ Dedicated dev board only. USB power only, never USB and PoE together.
 3. Plug in Ethernet. Expect `eth: link up`, then `eth: up, IP …`. From a LAN machine:
    - `curl -i http://<ip>/api/v1/status` and `curl -i http://hubbo-<mac>.local/api/v1/status`
      should both answer, with the status JSON or 401 as `api/openapi.yaml` says.
-   - Sending `-H 'Host: evil.example'` should get 421.
    - The console's `status` shows the request count.
    - First-run setup (creating the admin through the API) and a login prove NVS secrets and RNG
      entropy. Whoever owns the credentials does it, once.

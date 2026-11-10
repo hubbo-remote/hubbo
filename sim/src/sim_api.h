@@ -22,7 +22,6 @@
 #include "hubbo/api/api.h"
 #include "hubbo/api/authenticator.h"
 #include "hubbo/auth/credentials.h"
-#include "hubbo/auth/rate_limit.h"
 #include "hubbo/auth/secret_store.h"
 #include "hubbo/auth/session.h"
 #include "hubbo/http/route.h"
@@ -41,6 +40,10 @@ public:
     // POST /sim/storage controls. `secrets` (optional) holds the HA token.
     SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &credentials,
            SwitchableStorage *storage = nullptr, auth::SecretStore *secrets = nullptr);
+    ~SimApi() {
+        runner_.hub().onFirmwareRebooted = nullptr;
+        runner_.hub().onFactoryReset = nullptr;
+    }
 
     http::RequestAuthenticator &authenticator();
     // Gives the integration task a turn after each request, so a discovery
@@ -65,6 +68,7 @@ private:
 
     void host(http::Method method, const char *pattern, Fn::F f);
     std::string simTime() const;
+    void eraseEverything();
 
     ScenarioRunner &runner_;
     bool authEnabled_;
@@ -72,9 +76,9 @@ private:
     HostRandom random_;
     auth::Credentials &credentials_;
     auth::SessionStore sessions_;
-    auth::LoginRateLimiter loginLimiter_;
     SimClock clock_;
     SimRuntime runtime_;
+    auth::SecretStore *secrets_;
     api::Api api_;
     api::Authenticator productionAuth_;
     SimulatorNoAuth noAuth_;

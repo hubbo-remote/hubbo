@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "invalid_image",
+    "message": "Not an app image (use firmware.bin, not the merged factory image)"
+  }
+}

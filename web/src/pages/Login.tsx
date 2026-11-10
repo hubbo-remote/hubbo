@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 
 export function Login({ onSignedIn }: { onSignedIn: () => void }) {
-  const [username, setUsername] = useState('admin')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -22,9 +22,9 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
       setPassword('')
       onSignedIn()
     } catch (err) {
-      // The hub can't read or trust its login data: re-check the session, which shows the right screen.
-      if (err instanceof ApiError && (err.code === 'storage_unavailable' || err.code === 'credentials_corrupt')) return onSignedIn()
-      setError(err instanceof ApiError && err.status === 429 ? 'Too many attempts. Wait a minute and try again.' : errorMessage(err))
+      // The hub can't read its login data: re-check the session, which shows the right screen.
+      if (err instanceof ApiError && err.code === 'storage_unavailable') return onSignedIn()
+      setError(errorMessage(err))
     } finally {
       setBusy(false)
     }
@@ -42,10 +42,10 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
         </div>
         {error && <Alert variant="error">{error}</Alert>}
         <Field label="Username" htmlFor="u">
-          <Input id="u" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required />
+          <Input id="u" autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={username} onChange={(e) => setUsername(e.target.value)} required autoFocus />
         </Field>
         <Field label="Password" htmlFor="p">
-          <Input id="p" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required autoFocus />
+          <Input id="p" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
         </Field>
         <Button type="submit" disabled={busy} className="w-full">
           {busy && <Loader2 className="animate-spin" />}

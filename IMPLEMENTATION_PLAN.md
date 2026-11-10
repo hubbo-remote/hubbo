@@ -219,8 +219,10 @@ the Phase 4 board gate, where the user set up a wiped board on an iPhone:
 - **Device kind:** it's stored but nothing uses it yet. Give it icons and grouping, or hide the field.
 - **Remote setup:** make the pair-by-scan vs. type-the-code choice and the live press check obvious.
 - **Mobile:** a full pass on a phone (layout, tap targets, keyboards, focus rings).
+- **Fewer notes:** the UI has far too many explanatory notes and descriptions (user, 2026-11-09). Cut them down; say what matters in the controls and states themselves. This includes what a restore leaves out (HA token, Bluetooth pairing).
 
 ## Post-MVP backlog
+- **Parallel e2e:** one hub per Playwright worker (a mock per worker, or a hub-sim port per worker), so e2e can run with several workers or shards. Today it's `workers: 1` against one shared hub.
 - **Discover an unknown remote's address without a Hub:** nRF24 promiscuous sniffing (research).
 - **HA `text` selector params:** a bounded string parameter type, so HA services with free-text fields can be bound. These services are skipped in Phase 3.
 - IR transmitter, model-specific code-set download from external legacy database, offline IR commands, optional IR learning.

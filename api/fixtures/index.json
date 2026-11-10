@@ -363,7 +363,7 @@
     },
     {
       "file": "admin/reset.json",
-      "operation": "factoryReset",
+      "operation": "resetConfiguration",
       "kind": "200"
     },
     {
@@ -382,6 +382,51 @@
       "kind": "200"
     },
     {
+      "file": "admin/firmware.writing.json",
+      "operation": "getFirmwareStatus",
+      "kind": "200"
+    },
+    {
+      "file": "admin/firmware.rebooting.json",
+      "operation": "getFirmwareStatus",
+      "kind": "200"
+    },
+    {
+      "file": "admin/firmware.failed.json",
+      "operation": "getFirmwareStatus",
+      "kind": "200"
+    },
+    {
+      "file": "admin/firmware.update.json",
+      "operation": "updateFirmware",
+      "kind": "202"
+    },
+    {
+      "file": "errors/update_in_progress.json",
+      "operation": "updateFirmware",
+      "kind": "409"
+    },
+    {
+      "file": "errors/wrong_board.json",
+      "operation": "updateFirmware",
+      "kind": "422"
+    },
+    {
+      "file": "errors/invalid_image.json",
+      "operation": "updateFirmware",
+      "kind": "422"
+    },
+    {
+      "file": "errors/length_required.json",
+      "operation": "updateFirmware",
+      "kind": "411"
+    },
+    {
+      "file": "errors/factory_reset_during_update.json",
+      "operation": "factoryReset",
+      "kind": "409"
+    },
+    {
       "file": "errors/unauthenticated.json",
       "operation": "listDevices",
       "kind": "401"
@@ -390,11 +435,6 @@
       "file": "errors/invalid_credentials.json",
       "operation": "login",
       "kind": "401"
-    },
-    {
-      "file": "errors/rate_limited.json",
-      "operation": "login",
-      "kind": "429"
     },
     {
       "file": "errors/forbidden_token_admin.json",

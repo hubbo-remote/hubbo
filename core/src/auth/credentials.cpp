@@ -1,6 +1,5 @@
 #include "hubbo/auth/credentials.h"
 
-#include <algorithm>
 #include <cstring>
 
 #include "hubbo/domain/ids.h"
@@ -16,9 +15,6 @@ bool readable(storage::Health health) {
     return health == storage::Health::Available || health == storage::Health::ReadOnly;
 }
 
-CredentialState stateOf(SecretRead result) {
-    return result == SecretRead::Corrupt ? CredentialState::Corrupt : CredentialState::Unavailable;
-}
 // Token record: "<sha256 base64url>|<created unix or -1>|<name>".
 std::string encodeRecord(const uint8_t hash[kSha256Size], int64_t created, std::string_view name) {
     return base64UrlEncode(hash, kSha256Size) + "|" + std::to_string(created) + "|" + std::string(name);
@@ -68,8 +64,7 @@ const char *credentialStateName(CredentialState state) {
     switch (state) {
         case CredentialState::Fresh: return "fresh";
         case CredentialState::Ok: return "ok";
-        case CredentialState::Unavailable: return "unavailable";
-        case CredentialState::Corrupt: return "corrupt";
+        case CredentialState::Unavailable: break;
     }
     return "unavailable";
 }
@@ -85,13 +80,13 @@ void Credentials::load() {
     std::string admin;
     const SecretRead adminRead = store_.read(kAdminKey, &admin);
     if (adminRead == SecretRead::Unavailable || adminRead == SecretRead::Corrupt) {
-        state_ = stateOf(adminRead);
+        state_ = CredentialState::Unavailable;
         return;
     }
     std::vector<std::string> tokenKeys;
     const SecretRead listed = store_.keys(kTokenPrefix, &tokenKeys);
     if (listed != SecretRead::Ok) {
-        state_ = stateOf(listed);
+        state_ = CredentialState::Unavailable;
         return;
     }
     for (const auto &key : tokenKeys) {
@@ -100,7 +95,7 @@ void Credentials::load() {
         const SecretRead r = store_.read(key, &value);
         if (r == SecretRead::Unavailable || r == SecretRead::Corrupt) {
             tokens_.clear();
-            state_ = stateOf(r);
+            state_ = CredentialState::Unavailable;
             return;
         }
         if (r != SecretRead::Ok || !decodeRecord(value, token.hash, &token.createdAt, &token.name)) continue;
@@ -110,7 +105,7 @@ void Credentials::load() {
     if (adminRead == SecretRead::NotFound) {
         // Tokens can only be made by an admin: tokens without one means the
         // admin record was lost, not that there never was one.
-        state_ = tokenKeys.empty() ? CredentialState::Fresh : CredentialState::Corrupt;
+        state_ = tokenKeys.empty() ? CredentialState::Fresh : CredentialState::Unavailable;
         if (!tokenKeys.empty()) tokens_.clear();
         return;
     }
@@ -119,7 +114,7 @@ void Credentials::load() {
     const std::string hash = bar == std::string::npos ? std::string() : admin.substr(bar + 1);
     if (!isValidUsername(user) || hash.rfind("pbkdf2-sha256$", 0) != 0) {
         tokens_.clear();
-        state_ = CredentialState::Corrupt;
+        state_ = CredentialState::Unavailable;
         return;
     }
     username_ = user;
@@ -127,52 +122,26 @@ void Credentials::load() {
     state_ = CredentialState::Ok;
 }
 
-void Credentials::reread() {
-    store_.reload();
-    load();
-    if (state_ == CredentialState::Ok) retryDelayMs_ = 0;
-}
-
-void Credentials::refresh(uint64_t nowMs) {
-    const storage::Health medium = store_.mediumHealth();
-    const bool transition = !retryHealthKnown_ || medium != retryHealth_;
-    retryHealthKnown_ = true;
-    retryHealth_ = medium;
-    // Loaded and the store still readable: nothing to do (one health check).
-    if (state_ == CredentialState::Ok && readable(store_.health())) return;
-    // A health transition (or Ok going stale) reloads at once; otherwise
-    // wait out the backoff, so a broken store costs one reload a minute,
-    // not one per request.
-    if (transition || state_ == CredentialState::Ok) retryDelayMs_ = 0;
-    if (retryDelayMs_ != 0 && nowMs < retryAtMs_) return;
-    store_.reload();
-    load();
-    if (state_ == CredentialState::Ok) {
-        retryDelayMs_ = 0;
-        return;
-    }
-    retryDelayMs_ = retryDelayMs_ == 0 ? kFirstRetryMs : std::min(retryDelayMs_ * 2, kMaxRetryMs);
-    retryAtMs_ = nowMs + retryDelayMs_;
-}
-
-CredentialResult Credentials::writeGuard() const {
+CredentialResult Credentials::adminGuard() const {
     switch (state_) {
         case CredentialState::Ok: return CredentialResult::Ok;
         case CredentialState::Fresh: return CredentialResult::NoAdmin;
-        case CredentialState::Unavailable: return CredentialResult::Unavailable;
-        case CredentialState::Corrupt: return CredentialResult::Corrupt;
+        case CredentialState::Unavailable: break;
+    }
+    return CredentialResult::Unavailable;
+}
+
+CredentialResult Credentials::setupGuard() const {
+    switch (state_) {
+        case CredentialState::Fresh: return CredentialResult::Ok;
+        case CredentialState::Ok: return CredentialResult::AlreadyExists;
+        case CredentialState::Unavailable: break;
     }
     return CredentialResult::Unavailable;
 }
 
 CredentialResult Credentials::setupAdmin(std::string_view username, std::string_view password) {
-    reread();  // never act on an old "fresh": storage may have come back with an admin
-    switch (state_) {
-        case CredentialState::Fresh: break;
-        case CredentialState::Ok: return CredentialResult::AlreadyExists;
-        case CredentialState::Unavailable: return CredentialResult::Unavailable;
-        case CredentialState::Corrupt: return CredentialResult::Corrupt;
-    }
+    if (const CredentialResult guard = setupGuard(); guard != CredentialResult::Ok) return guard;
     if (!isValidUsername(username)) return CredentialResult::InvalidUsername;
     if (!isAcceptablePassword(password)) return CredentialResult::WeakPassword;
     std::string encoded;
@@ -191,7 +160,7 @@ bool Credentials::verifyLogin(std::string_view username, std::string_view passwo
 }
 
 CredentialResult Credentials::changePassword(std::string_view current, std::string_view next) {
-    if (const CredentialResult guard = writeGuard(); guard != CredentialResult::Ok) return guard;
+    if (const CredentialResult guard = adminGuard(); guard != CredentialResult::Ok) return guard;
     if (!verifyLogin(username_, current)) return CredentialResult::WrongPassword;
     if (!isAcceptablePassword(next)) return CredentialResult::WeakPassword;
     std::string encoded;
@@ -202,7 +171,7 @@ CredentialResult Credentials::changePassword(std::string_view current, std::stri
 }
 
 CredentialResult Credentials::createToken(std::string_view name, int64_t nowUnix, IssuedToken *issued) {
-    if (const CredentialResult guard = writeGuard(); guard != CredentialResult::Ok) return guard;
+    if (const CredentialResult guard = adminGuard(); guard != CredentialResult::Ok) return guard;
     if (!isValidName(name)) return CredentialResult::InvalidName;
     if (tokens_.size() >= kMaxApiTokens) return CredentialResult::LimitReached;
     IssuedToken fresh;
@@ -223,7 +192,7 @@ CredentialResult Credentials::createToken(std::string_view name, int64_t nowUnix
 }
 
 CredentialResult Credentials::revokeToken(std::string_view id) {
-    if (const CredentialResult guard = writeGuard(); guard != CredentialResult::Ok) return guard;
+    if (const CredentialResult guard = adminGuard(); guard != CredentialResult::Ok) return guard;
     for (size_t i = 0; i < tokens_.size(); i++) {
         if (tokens_[i].id != id) continue;
         if (!store_.erase(tokenKey(id))) return CredentialResult::StorageFailed;

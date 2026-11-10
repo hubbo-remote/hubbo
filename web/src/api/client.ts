@@ -1,7 +1,6 @@
 // Typed client for /api/v1 (api/openapi.yaml). Every request the UI makes
-// goes through here. Session auth is an HttpOnly cookie the browser handles;
-// the CSRF token is held in memory only (never localStorage/sessionStorage)
-// and sent as X-Hubbo-CSRF on unsafe requests.
+// goes through here. Session auth is an HttpOnly, SameSite=Strict cookie the
+// browser handles; there's no CSRF token (the hub checks Origin instead).
 import type {
   Activity,
   ActivityDraft,
@@ -36,7 +35,7 @@ import type {
   ValidationResult,
 } from './types'
 
-import { API_BASE, CSRF_HEADER } from './constants'
+import { API_BASE } from './constants'
 
 export class ApiError extends Error {
   readonly status: number
@@ -63,12 +62,6 @@ export function errorMessage(e: unknown, opts: { details?: boolean } = {}): stri
 /** The hub answered 501: the feature exists in the API but this hub (e.g. hub-sim today) doesn't implement it yet. */
 export const isNotImplemented = (e: unknown) => toApiError(e).status === 501
 
-let csrfToken: string | null = null
-const remember = (s: Session) => {
-  csrfToken = s.csrf_token ?? null
-  return s
-}
-
 const unauthorizedListeners = new Set<() => void>()
 export const onUnauthorized = (fn: () => void) => {
   unauthorizedListeners.add(fn)
@@ -82,7 +75,6 @@ type RequestInit_ = { raw?: BodyInit; headers?: Record<string, string> }
 /** Sends one request; throws ApiError for network failures and non-2xx answers. */
 async function send(method: string, path: string, body?: unknown, init: RequestInit_ = {}): Promise<Response> {
   const headers: Record<string, string> = { accept: 'application/json', ...init.headers }
-  if (method !== 'GET' && csrfToken) headers[CSRF_HEADER] = csrfToken
   let payload: BodyInit | undefined = init.raw
   if (body !== undefined) {
     headers['content-type'] = 'application/json'
@@ -95,19 +87,50 @@ async function send(method: string, path: string, body?: unknown, init: RequestI
     throw new ApiError(0, null, 'Cannot reach the hub')
   }
   if (res.ok) return res
+  throw failure(path, res.status, res.statusText, await res.text().catch(() => ''))
+}
+
+/** The ApiError for a non-2xx answer; tells the app when the session needs re-checking. */
+function failure(path: string, status: number, statusText: string, text: string): ApiError {
   let json: unknown = null
   try {
-    const text = await res.text()
     json = text ? JSON.parse(text) : null
   } catch {
     /* non-JSON error page */
   }
   // 401, or a 503 storage_unavailable (under auth nobody can authenticate while the
   // credentials store is unreadable): re-check the session so the right screen shows.
-  const storageDown = res.status === 503 && (json as ApiErrorBody | null)?.error?.code === 'storage_unavailable'
-  if ((res.status === 401 || storageDown) && !path.startsWith('/auth/')) unauthorizedListeners.forEach((l) => l())
+  const storageDown = status === 503 && (json as ApiErrorBody | null)?.error?.code === 'storage_unavailable'
+  if ((status === 401 || storageDown) && !path.startsWith('/auth/')) unauthorizedListeners.forEach((l) => l())
   const errBody = json && typeof json === 'object' && 'error' in json ? (json as ApiErrorBody) : null
-  throw new ApiError(res.status, errBody, `${res.status} ${res.statusText}`)
+  return new ApiError(status, errBody, `${status} ${statusText}`)
+}
+
+/**
+ * POST /admin/firmware/update with XHR, the only way to see upload progress (fetch can't).
+ * The browser sets Content-Length; `onProgress` gets 0..1.
+ */
+function uploadFirmware(file: Blob, onProgress: (fraction: number) => void): Promise<FirmwareStatus> {
+  const path = '/admin/firmware/update'
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', API_BASE + path)
+    xhr.setRequestHeader('content-type', 'application/octet-stream')
+    xhr.setRequestHeader('accept', 'application/json')
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total)
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          return resolve(JSON.parse(xhr.responseText) as FirmwareStatus)
+        } catch {
+          return reject(new ApiError(xhr.status, null, 'The hub’s answer wasn’t readable'))
+        }
+      }
+      reject(failure(path, xhr.status, xhr.statusText, xhr.responseText))
+    }
+    xhr.onerror = () => reject(new ApiError(0, null, 'Cannot reach the hub'))
+    xhr.send(file)
+  })
 }
 
 async function request<T>(method: string, path: string, body?: unknown, init: RequestInit_ = {}): Promise<T> {
@@ -158,10 +181,10 @@ const activityBody = (a: ActivityDraft) => ({ name: a.name, startup: a.startup, 
 
 export const api = {
   // auth
-  session: async () => remember(await get<Session>('/auth/session')),
-  login: async (username: string, password: string) => remember(await post<Session>('/auth/login', { username, password })),
+  session: () => get<Session>('/auth/session'),
+  login: (username: string, password: string) => post<Session>('/auth/login', { username, password }),
   logout: () => post<void>('/auth/logout'),
-  setupAdmin: async (username: string, password: string) => remember(await post<Session>('/auth/setup', { username, password })),
+  setupAdmin: (username: string, password: string) => post<Session>('/auth/setup', { username, password }),
   changePassword: (current_password: string, new_password: string) => put<void>('/admin/account/password', { current_password, new_password }),
 
   // status & remote
@@ -224,17 +247,10 @@ export const api = {
   downloadBackup,
   /** Sends the file's text exactly as chosen: a `Backup` or a `blocked-raw` record (RestoreRequest). */
   restore: (text: string, dryRun: boolean) => request<RestoreResult>('POST', `/admin/restore?dry_run=${dryRun}`, undefined, { raw: text, headers: { 'content-type': 'application/json' } }),
-  factoryReset: () => post<ConfigState>('/admin/reset'),
+  /** Devices, activities, global buttons and integration settings go; the login, tokens and pairings stay. */
+  resetConfiguration: () => post<ConfigState>('/admin/reset'),
+  /** Erases everything (202); the hub restarts into first-run setup. */
+  factoryReset: () => post<void>('/admin/factory-reset'),
   firmware: () => get<FirmwareStatus>('/admin/firmware'),
-  uploadFirmware: async (file: File) => {
-    const sha = await sha256Hex(file)
-    return request<FirmwareStatus>('POST', '/admin/firmware/update?reboot=true', undefined, { raw: file, headers: sha ? { 'x-hubbo-image-sha256': sha } : {} })
-  },
-}
-
-async function sha256Hex(file: Blob): Promise<string | null> {
-  // crypto.subtle only exists in secure contexts (HTTPS or localhost).
-  if (!globalThis.crypto?.subtle) return null
-  const d = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
-  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('')
+  uploadFirmware,
 }

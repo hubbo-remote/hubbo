@@ -28,6 +28,16 @@ compaction. Nobody needs to ask for it or explain it.
 - Agents only edit their own files. A change needed in another area goes through the lead, who
   relays it to the owning agent.
 
+## Testing without waiting around
+
+- **While working, run only what a change touches:** one test filter (`bin/hubbo test -R Name`),
+  one e2e spec, one contract mode.
+- **Full gates run once per phase,** after `/simplify` and the review fixes and before the board
+  test: each agent runs `bin/hubbo gate <its area>` once (core, api, web or fw), as one command.
+  If a long run moves to the background, wait for its completion notice; don't split it into
+  chunks. After the board test, only an agent whose files changed reruns its gate.
+- `bin/hubbo web e2e --sim [--auth]` starts and stops its own hub-sim; don't run one by hand.
+
 ## Rules for everyone
 
 - Docker only. All builds and tests go through `bin/hubbo`, and nothing is installed on the host.

@@ -54,6 +54,14 @@ SecretRead MemorySecretStore::keys(std::string_view prefix, std::vector<std::str
     return SecretRead::Ok;
 }
 
+bool eraseAllSecrets(SecretStore &store) {
+    std::vector<std::string> keys;
+    if (store.keys("", &keys) != SecretRead::Ok) return false;
+    bool ok = true;
+    for (const auto &key : keys) ok = store.erase(key) && ok;
+    return ok;
+}
+
 // ---------------------------------------------------------------- record store
 
 StorageSecretStore::StorageSecretStore(storage::RecordStore &records) : records_(records) { reload(); }

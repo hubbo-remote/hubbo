@@ -8,9 +8,10 @@ no secrets).
 
 noauth: SIMULATOR_NO_AUTH, every request is a simulated admin. Walks the
         Phase 2 gate flow (registry, activity CRUD/validate/activate/off,
-        execute, tokens, 501s) with the request fixtures.
-auth:   production auth policy. First-run setup, login, cookies + CSRF,
-        tokens, the full role matrix over HTTP, Host allowlist, rate limit.
+        execute, tokens, firmware update) with the request fixtures.
+auth:   production auth policy. First-run setup with the user's own
+        username, login, cookies, cross-site Origin, tokens, the full role
+        matrix over HTTP (a token can't update firmware).
 
 mock:   the web admin's mock API (web/mock, signed in as the dev admin) gets
         the noauth flows; mock-auth gets the auth flows from first run.
@@ -44,7 +45,8 @@ PASSWORD = "correct horse battery"
 # every secret-named field the contract sends (remember_secrets), it may then
 # appear in no response (any operation, any status, the backup included).
 HA_TOKEN = "fake-ha-token"
-TRANSPORT_ERRORS = (405, 421)  # any request may get these (api/openapi.yaml conventions)
+TRANSPORT_ERRORS = (405,)  # any request may get these (api/openapi.yaml conventions)
+ADMIN = "hubbo-owner"  # setup takes the user's own username (there's no default)
 
 failures = []
 skips = []  # (what, why): checks this target can't support, printed at the end
@@ -80,7 +82,6 @@ class Client:
         self.base = base.rstrip("/")
         self.checker = checker
         self.cookie = None
-        self.csrf = None
         self.token = None
 
     def call(self, op_id, method, path, body=None, expect=None, headers=None, raw=None, label=None):
@@ -96,8 +97,6 @@ class Client:
             h["Authorization"] = "Bearer " + self.token
         elif self.cookie:
             h["Cookie"] = "hubbo_session=" + self.cookie
-            if self.csrf and method != "GET":
-                h["X-Hubbo-CSRF"] = self.csrf
         h.update(headers or {})
         req = urllib.request.Request(url, data=data, method=method, headers=h)
         try:
@@ -139,7 +138,10 @@ class Client:
                 failures.append(f"{where}: {p}")
         elif str(status) not in declared:
             failures.append(f"{where}: status {status} not declared for {op_id}")
-        elif status != 204:
+        elif "content" not in declared[str(status)] and "$ref" not in declared[str(status)]:
+            if text:
+                failures.append(f"{where}: {op_id} {status} declares no body, got {text[:120]}")
+        else:
             if body_json is None:
                 failures.append(f"{where}: empty body")
             else:
@@ -166,8 +168,6 @@ class Client:
             h["Authorization"] = "Bearer " + self.token
         elif self.cookie:
             h["Cookie"] = "hubbo_session=" + self.cookie
-            if self.csrf:
-                h["X-Hubbo-CSRF"] = self.csrf
         data = None
         if body is not None:
             data = json.dumps(body).encode()
@@ -187,28 +187,30 @@ class Client:
 
     def control(self, path, body=None):
         """POST a test control: hub-sim's /sim/<path> (200) or the mock's /api/v1/__mock/<path>
-        (204). Anything else is a failure. Returns whether it worked."""
-        url, ok = ("/api/v1/__mock/", 204) if MOCK else ("/sim/", 200)
+        (204, or 200 with the settings, like hub-sim's). Anything else is a failure. Returns
+        whether it worked."""
+        url, ok = ("/api/v1/__mock/", (200, 204)) if MOCK else ("/sim/", (200,))
         status, reply = self.host_call("POST", url + path, body)
-        expect(status == ok, f"control {path}: {status} {reply}")
-        return status == ok
+        expect(status in ok, f"control {path}: {status} {reply}")
+        return status in ok
 
     def headers_only(self, method, path, content_length):
-        """Send a request's headers announcing `content_length` body bytes but
-        none of the body; returns (status, json) of the early answer."""
+        """Send a request's headers but none of the body: announcing
+        `content_length` JSON bytes, or (None) no Content-Length at all, which
+        urllib can't do. Returns (status, json) of the early answer, checked
+        against the Error schema."""
         url = urllib.parse.urlsplit(self.base)
         conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
         try:
             conn.putrequest(method, "/api/v1" + path, skip_host=True)
             conn.putheader("Host", "127.0.0.1")
-            conn.putheader("Content-Type", "application/json")
-            conn.putheader("Content-Length", str(content_length))
+            if content_length is not None:
+                conn.putheader("Content-Type", "application/json")
+                conn.putheader("Content-Length", str(content_length))
             if self.token:
                 conn.putheader("Authorization", "Bearer " + self.token)
             elif self.cookie:
                 conn.putheader("Cookie", "hubbo_session=" + self.cookie)
-                if self.csrf:
-                    conn.putheader("X-Hubbo-CSRF", self.csrf)
             conn.endheaders()
             r = conn.getresponse()
             text = r.read().decode()
@@ -225,14 +227,14 @@ class Client:
         return r.status, body
 
     @contextlib.contextmanager
-    def acting_as(self, token=None, cookie=None, csrf=None):
+    def acting_as(self, token=None, cookie=None):
         """Temporarily switch credentials (restored afterwards)."""
-        saved = (self.token, self.cookie, self.csrf)
-        self.token, self.cookie, self.csrf = token, cookie, csrf
+        saved = (self.token, self.cookie)
+        self.token, self.cookie = token, cookie
         try:
             yield self
         finally:
-            self.token, self.cookie, self.csrf = saved
+            self.token, self.cookie = saved
 
 
 def revisions(value, path=""):
@@ -429,7 +431,7 @@ def admin_flow(c, checker, candidate=None):
     session = c.call("getSession", "GET", "/auth/session", expect=200)[1] or {}
     if session.get("auth_state") == "fresh":
         c.call("createToken", "POST", "/admin/tokens", {"name": "too early"}, expect=409, label="token before setup")
-        c.call("setupAdmin", "POST", "/auth/setup", {"username": "admin", "password": PASSWORD}, expect=201)
+        c.call("setupAdmin", "POST", "/auth/setup", {"username": ADMIN, "password": PASSWORD}, expect=201)
     _, tok, _ = c.call("createToken", "POST", "/admin/tokens", {"name": "contract test"}, expect=201)
     c.call("listTokens", "GET", "/admin/tokens", expect=200)
     if tok and "id" in tok:
@@ -448,14 +450,168 @@ def admin_flow(c, checker, candidate=None):
         c.call("restoreBackup", "POST", "/admin/restore", fixture("admin/restore.request.json"), expect=200,
                label="restore fixture")
 
-    if MOCK:  # the responses are still checked against the spec
-        skip("the 501s (x-hubbo-not-implemented)", "the mock implements them ahead of the hub")
-    for op_id, method, path in operations(checker, **{"x-hubbo-not-implemented": True}):
-        status, reply, _ = c.call(op_id, method, concrete(path), empty_body(checker, op_id))
-        if MOCK:
-            continue
-        expect(status == 501 and reply and reply["error"]["code"] == "not_implemented",
-               f"{op_id}: expected 501 not_implemented, got {status}")
+    firmware_flow(c)
+
+
+# ---------------------------------------------------------------- firmware
+
+SIM_BOARD = "simulator"   # hub-sim's board (simulatorFirmwareTarget())
+SIM_SLOT = 64 * 1024      # and its slot
+SIM_WRITE_MS, SIM_REBOOT_MS = 2000, 1000  # SimulatedFirmwareUpdate::kWriteMs, kRebootMs
+SIM_RESTART_MS = 1000  # SimulatedFactoryReset::kRestartMs
+
+
+def firmware_image(board=SIM_BOARD, layout=1, version="v9.9.9-contract", magic=0xE9, chip=9, min_rev=0,
+                   desc_magic=0xABCD5432, hash_ok=True, pad_to=512):
+    """A fake image in the real app .bin layout (core/tests/firmware_image_util.h)."""
+    import hashlib
+    b = bytearray(32)
+    b[0] = magic
+    b[12:14] = chip.to_bytes(2, "little")
+    b[15:17] = min_rev.to_bytes(2, "little")
+    b[23] = 1
+    desc = bytearray(256)
+    desc[0:4] = desc_magic.to_bytes(4, "little")
+    b += desc
+    if board is not None:
+        b += f"HUBBO-IMAGE/1 board={board} layout={layout} version={version}".encode() + b"\0"
+    if len(b) < pad_to:
+        b += b"\xff" * (pad_to - len(b))
+    digest = bytearray(hashlib.sha256(b).digest())
+    if not hash_ok:
+        digest[0] ^= 1
+    return bytes(b + digest)
+
+
+def upload(c, image, expect, label, content_type="application/octet-stream"):
+    status, body, _ = c.call("updateFirmware", "POST", "/admin/firmware/update", raw=image,
+                             headers={"Content-Type": content_type}, expect=expect, label=label)
+    return body
+
+
+def error_code(body):
+    return (body or {}).get("error", {}).get("code")
+
+
+def firmware_state(c):
+    _, s, _ = c.call("getFirmwareStatus", "GET", "/admin/firmware", expect=200)
+    return (s or {}).get("update", {})
+
+
+def firmware_flow(c):
+    """Every refusal changes nothing; a good image writes, reboots and ends idle.
+    The reboot ends any session, so a session client logs in again; returns
+    the cookie it ends with."""
+    _, s, _ = c.call("getFirmwareStatus", "GET", "/admin/firmware", expect=200)
+    expect(s and s["update"]["state"] == "idle", f"firmware status: {s}")
+    if MOCK:
+        skip("firmware image checks and states", "the mock's fake-image rules are its own")
+        return c.cookie
+    refusals = [
+        (firmware_image(pad_to=SIM_SLOT), 413, "payload_too_large", "image over the slot"),
+        (b"not an image at all", 422, "invalid_image", "not an image"),
+        (firmware_image(magic=0), 422, "invalid_image", "bad magic"),
+        (firmware_image(chip=2), 422, "invalid_image", "another chip"),
+        (firmware_image(min_rev=99), 422, "invalid_image", "newer chip revision"),
+        (firmware_image(desc_magic=0), 422, "invalid_image", "merged factory image"),
+        (firmware_image(board=None), 422, "invalid_image", "not a Hubbo image"),
+        (firmware_image(board="waveshare_esp32_s3_eth"), 422, "wrong_board", "another board"),
+        (firmware_image(layout=2), 422, "invalid_image", "another layout"),
+        (firmware_image(hash_ok=False), 422, "invalid_image", "bad checksum"),
+    ]
+    for image, status, code, label in refusals:
+        body = upload(c, image, status, label)
+        expect(error_code(body) == code, f"{label}: expected {code}, got {body}")
+    body = upload(c, firmware_image(), 415, "image as JSON", content_type="application/json")
+    expect(error_code(body) == "unsupported_media_type", f"image as JSON: {body}")
+    status, body = c.headers_only("POST", "/admin/firmware/update", None)
+    expect(status == 411 and error_code(body) == "length_required", f"no Content-Length: {status} {body}")
+    expect(firmware_state(c).get("state") == "idle", "a refused image must change nothing")
+
+    body = upload(c, firmware_image(), 202, "good image")
+    expect(body and body["update"]["state"] == "writing", f"accepted: {body}")
+    body = upload(c, firmware_image(), 409, "second upload")
+    expect(error_code(body) == "update_in_progress", f"second upload: {body}")
+    c.control("advance?ms=1000")
+    st = firmware_state(c)
+    expect(st.get("state") == "writing" and 0 < st.get("progress", 0) < 100, f"halfway: {st}")
+    c.control("advance?ms=1000")
+    expect(firmware_state(c).get("state") == "rebooting", "written: rebooting")
+    upload(c, firmware_image(), 409, "upload while rebooting")
+    c.control("advance?ms=1000")
+    relogin_after_restart(c, "the firmware reboot")
+    expect(firmware_state(c).get("state") == "idle", "after the simulated reboot")
+
+    # A write that fails, then the hub can't take an update at all.
+    if c.control("firmware?fail=1&ready=1"):
+        upload(c, firmware_image(), 202, "image whose write fails")
+        c.control("advance?ms=2000")
+        st = firmware_state(c)
+        expect(st.get("state") == "failed" and st.get("error") == "write_failed", f"failed write: {st}")
+        c.control("firmware?fail=0&ready=0")
+        body = upload(c, firmware_image(), 503, "no update support")
+        expect(error_code(body) == "unavailable", f"not ready: {body}")
+        c.control("firmware?fail=0&ready=1")
+    return c.cookie
+
+
+def admin_login(c, label):
+    """Logs the admin in (expecting 200). Returns the session cookie, or None."""
+    status, _, headers = c.call("login", "POST", "/auth/login", {"username": ADMIN, "password": PASSWORD},
+                                expect=200, label=label)
+    return http.cookies.SimpleCookie(headers.get("Set-Cookie"))["hubbo_session"].value if status == 200 else None
+
+
+def relogin_after_restart(c, what):
+    """A restart drops every session, as on the board: the old cookie gets
+    401, then log in again (c.cookie). No-op without a session (noauth)."""
+    if not c.cookie:
+        return
+    c.call("listDevices", "GET", "/devices", expect=401, label=f"old session after {what}")
+    c.cookie = admin_login(c, f"login after {what}") or c.cookie
+
+
+def factory_reset_flow(c):
+    """The real factory reset: refused during a firmware update, 202, then the
+    simulated restart erases everything and setup is open again. Runs last in
+    each mode's main flow (it erases the admin, tokens and config), and sets
+    the admin up again with the same login."""
+    _, fw, _ = c.call("getFirmwareStatus", "GET", "/admin/firmware", expect=200, label="board before a factory reset")
+    upload(c, firmware_image(board=(fw or {}).get("board", SIM_BOARD)), 202, "image before a factory reset")
+    _, body, _ = c.call("factoryReset", "POST", "/admin/factory-reset", expect=409, label="factory reset mid-update")
+    expect(error_code(body) == "update_in_progress", f"factory reset mid-update: {body}")
+    c.control(f"advance?ms={SIM_WRITE_MS + SIM_REBOOT_MS}")
+    relogin_after_restart(c, "the firmware reboot")
+    if c.control("factory-reset?ready=0"):
+        _, body, _ = c.call("factoryReset", "POST", "/admin/factory-reset", expect=503, label="no factory reset")
+        expect(error_code(body) == "unavailable", f"factory reset not ready: {body}")
+        c.control("factory-reset?ready=1")
+
+    c.call("factoryReset", "POST", "/admin/factory-reset", expect=202)
+    c.control(f"advance?ms={SIM_RESTART_MS}")
+    session_mode = bool(c.cookie)
+    with c.acting_as():
+        s = c.call("getSession", "GET", "/auth/session", expect=200, label="session after a factory reset")[1] or {}
+        # setup_required stays false for the simulator's no-auth admin.
+        expect(s.get("auth_state") == "fresh" and s.get("setup_required") is session_mode,
+               f"after a factory reset: {s}")
+        if session_mode:
+            c.call("login", "POST", "/auth/login", {"username": ADMIN, "password": PASSWORD}, expect=409,
+                   label="old login after a factory reset")
+    if session_mode:
+        c.call("listDevices", "GET", "/devices", expect=401, label="old session after a factory reset")
+    else:  # noauth: still the simulated admin, on a fresh hub
+        _, st, _ = c.call("getStatus", "GET", "/status", expect=200, label="status after a factory reset")
+        expect(st and st["auth_state"] == "fresh", f"status after a factory reset: {st}")
+    with c.acting_as():
+        c.call("setupAdmin", "POST", "/auth/setup", {"username": ADMIN, "password": PASSWORD}, expect=201,
+               label="setup after a factory reset")
+        cookie = admin_login(c, "login after a factory reset") if session_mode else None
+    if session_mode and cookie is None:
+        return
+    c.cookie = cookie or c.cookie
+    _, tokens, _ = c.call("listTokens", "GET", "/admin/tokens", expect=200, label="tokens after a factory reset")
+    expect(tokens is not None and not tokens["tokens"], f"tokens survived a factory reset: {tokens}")
 
 
 def until(fn, seconds=5):
@@ -742,30 +898,36 @@ def noauth(c, checker):
     candidate = ha_flow(c)
     admin_flow(c, checker, candidate)
     ha_unlink_flow(c)
+    factory_reset_flow(c)
 
 
 # ---------------------------------------------------------------- auth mode
 
 def setup_and_login(c):
-    """First-run setup, login checks. Returns (cookie, csrf) or None."""
+    """First-run setup, login checks. Returns the session cookie or None."""
     _, s, _ = c.call("getSession", "GET", "/auth/session", expect=200)
     expect(s and s["auth_mode"] == "enforced", f"session: {s}")
     if s and s["setup_required"]:
-        c.call("login", "POST", "/auth/login", {"username": "admin", "password": PASSWORD}, expect=409,
+        c.call("login", "POST", "/auth/login", {"username": ADMIN, "password": PASSWORD}, expect=409,
                label="login before setup")
         c.call("listDevices", "GET", "/devices", expect=401, label="request before setup")
-        c.call("setupAdmin", "POST", "/auth/setup", {"username": "admin", "password": PASSWORD}, expect=201)
+        c.call("setupAdmin", "POST", "/auth/setup", {"username": "not valid!", "password": PASSWORD}, expect=422,
+               label="setup with a bad username")
+        c.call("setupAdmin", "POST", "/auth/setup", {"username": ADMIN, "password": PASSWORD}, expect=201)
     c.call("setupAdmin", "POST", "/auth/setup", {"username": "x", "password": PASSWORD}, expect=409,
            label="setup twice")
+    c.call("login", "POST", "/auth/login", {"username": "admin", "password": PASSWORD}, expect=401,
+           label="no default admin username")
     c.call("listDevices", "GET", "/devices", expect=401, label="anonymous")
-    c.call("login", "POST", "/auth/login", {"username": "admin", "password": "wrong password!"}, expect=401)
-    c.call("login", "POST", "/auth/login", {"username": "admin", "password": PASSWORD},
+    c.call("login", "POST", "/auth/login", {"username": ADMIN, "password": "wrong password!"}, expect=401)
+    c.call("login", "POST", "/auth/login", {"username": ADMIN, "password": PASSWORD},
            headers={"Origin": "http://evil.example"}, expect=403, label="login cross-origin")
-    status, body, headers = c.call("login", "POST", "/auth/login", {"username": "admin", "password": PASSWORD},
+    status, body, headers = c.call("login", "POST", "/auth/login", {"username": ADMIN, "password": PASSWORD},
                                    expect=200)
     if status != 200:
         return None
-    return http.cookies.SimpleCookie(headers.get("Set-Cookie"))["hubbo_session"].value, body["csrf_token"]
+    expect("csrf_token" not in (body or {}), "no CSRF token any more")
+    return http.cookies.SimpleCookie(headers.get("Set-Cookie"))["hubbo_session"].value
 
 
 def token_role_matrix(c, checker, token):
@@ -781,19 +943,22 @@ def token_role_matrix(c, checker, token):
                                      label="token on admin")
             expect(status == 403 and body and body["error"]["code"] == "forbidden",
                    f"token on {op_id}: expected 403 forbidden, got {status}")
-        status, _, _ = c.call("listDevices", "GET", "/devices", headers={"Host": "evil.example"}, label="bad host")
-        expect(status == 421, f"bad Host: expected 421, got {status}")
+        # With a real image too: a token never reaches the firmware port.
+        body = upload(c, firmware_image(), 403, "token uploads firmware")
+        expect(error_code(body) == "forbidden", f"token firmware upload: {body}")
 
 
 def auth_mode(c, checker):
     login = setup_and_login(c)
     if login is None:
         return
-    cookie, csrf = login
-    with c.acting_as(cookie=cookie):  # no CSRF header
-        _, e, _ = c.call("createToken", "POST", "/admin/tokens", {"name": "x"}, expect=403, label="no csrf")
-        expect(e and e["error"]["code"] == "csrf_failed", "missing CSRF should be csrf_failed")
-    with c.acting_as(cookie=cookie, csrf=csrf):
+    cookie = login
+    with c.acting_as(cookie=cookie):
+        _, e, _ = c.call("createToken", "POST", "/admin/tokens", {"name": "x"},
+                         headers={"Origin": "http://evil.example"}, expect=403, label="cross-site request")
+        expect(error_code(e) == "csrf_failed", f"a foreign Origin should be csrf_failed: {e}")
+        _, s, _ = c.call("getSession", "GET", "/auth/session", expect=200, label="admin session")
+        expect(s and s.get("username") == ADMIN, f"the user's own username: {s}")
         c.call("listDevices", "GET", "/devices", expect=200, label="admin cookie")
         _, token, _ = c.call("createToken", "POST", "/admin/tokens", {"name": "contract agent"}, expect=201)
         registry_flow(c)
@@ -802,35 +967,32 @@ def auth_mode(c, checker):
         ble_pairing_flow(c)
         ha_flow(c)
         ha_unlink_flow(c)
+        cookie = firmware_flow(c)
     if not token:
         return
     if MOCK:
-        skip("token role matrix, revoked token, Host allowlist", "the mock takes no bearer tokens and no Host check")
+        skip("token role matrix, revoked token", "the mock takes no bearer tokens")
     else:
         token_role_matrix(c, checker, token)
 
     # Revoke: the token stops working at once. Logout ends the session.
-    with c.acting_as(cookie=cookie, csrf=csrf):
+    with c.acting_as(cookie=cookie):
         c.call("revokeToken", "DELETE", f"/admin/tokens/{token['id']}", expect=204)
     if not MOCK:
         with c.acting_as(token=token["token"]):
             c.call("listDevices", "GET", "/devices", expect=401, label="revoked token")
-    with c.acting_as(cookie=cookie, csrf=csrf):
+    with c.acting_as(cookie=cookie):
         c.call("logout", "POST", "/auth/logout", expect=204)
         c.call("listDevices", "GET", "/devices", expect=401, label="after logout")
-    if MOCK:
-        skip("login rate limit", "the mock doesn't rate-limit")
-        return
 
-    # Rate limit: enough wrong passwords lock the client out.
-    seen = None
+    # No rate limit: wrong passwords stay 401, and the right one still works.
     for _ in range(8):
-        seen, _, headers = c.call("login", "POST", "/auth/login",
-                                  {"username": "admin", "password": "wrong password!"}, label="brute force")
-        if seen == 429:
-            expect(headers.get("Retry-After"), "429 needs Retry-After")
-            break
-    expect(seen == 429, "login was never rate limited")
+        c.call("login", "POST", "/auth/login", {"username": ADMIN, "password": "wrong password!"}, expect=401,
+               label="wrong password again")
+    cookie = admin_login(c, "login after wrong passwords")
+    if cookie:
+        with c.acting_as(cookie=cookie):
+            factory_reset_flow(c)
 
 
 # ---------------------------------------------------------------- persistence
@@ -1193,7 +1355,7 @@ def restore_activity_flow(c, hub, relogin=None):
     c.call("restoreBackup", "POST", "/admin/restore", base, expect=200, label="fixtures again")
     c.call("activateActivity", "POST", f"/activities/{act}/activate", expect=200)
     time.sleep(STARTUP_SETTLE_S)
-    quiet_restore("factory reset while active", None, "/admin/reset", "factoryReset")
+    quiet_restore("factory reset while active", None, "/admin/reset", "resetConfiguration")
     activities = [a["id"] for a in (c.call("listActivities", "GET", "/activities", expect=200)[1] or {}).get("activities", [])]
     active = (c.call("getStatus", "GET", "/status", expect=200)[1] or {}).get("active_activity_id")
     expect(active == (act if act in activities else None),
@@ -1269,7 +1431,7 @@ def blocked_flow(c, hub, relogin=None):
             c.call("restoreBackup", "POST", "/admin/restore", fixture("admin/backup.json"), expect=200,
                    label="back to the fixtures")
         else:
-            _, reset, _ = c.call("factoryReset", "POST", "/admin/reset", expect=200, label="reset unblocks")
+            _, reset, _ = c.call("resetConfiguration", "POST", "/admin/reset", expect=200, label="reset unblocks")
             expect(reset and reset["state"] == "ok", f"reset result: {reset}")
         expect(config_state(c).get("state") == "ok", "restore/reset should leave blocked")
         survives_restart(c, hub, "unblock", relogin)
@@ -1293,28 +1455,27 @@ def blocked_flow(c, hub, relogin=None):
             hub.restart()  # nothing may have written the slots: still blocked
             if relogin:
                 relogin()
-    _, reset, _ = c.call("factoryReset", "POST", "/admin/reset", expect=200, label="reset a damaged config")
+    _, reset, _ = c.call("resetConfiguration", "POST", "/admin/reset", expect=200, label="reset a damaged config")
     expect(config_state(c).get("state") == "ok", f"reset should leave blocked (damaged): {config_state(c)}")
     survives_restart(c, hub, "reset after damage", relogin)
 
 
 def storage_flow(c, hub, relogin=None):
-    """Storage down: edits get 503 storage_unavailable. Without auth, switching
-    still works; with auth nothing can be authenticated (credentials can't be
-    read), so everything protected is 503. Back up: edits work again and
-    survive a restart."""
-    authenticated = relogin is not None
+    """Storage down: edits get 503 storage_unavailable, switching still works.
+    Credentials are read once at boot, so a medium lost at runtime doesn't log
+    anyone out (with auth, the session keeps working). Back up: edits work
+    again and survive a restart."""
 
     # Booting with storage down: the public session endpoint says so.
     hub.restart("--storage-unavailable")
     session = c.call("getSession", "GET", "/auth/session", expect=200, label="session with storage down")[1] or {}
     expect(session.get("config_state") == "storage_unavailable",
            f"boot with storage down: session config_state {session.get('config_state')}")
-    if not authenticated:
-        # The load itself couldn't read storage: nothing trustworthy to export.
-        _, body, _ = c.call("downloadBackup", "GET", "/admin/backup", expect=503, label="backup, booted with storage down")
-        expect(isinstance(body, dict) and body["error"]["code"] == "storage_unavailable",
-               f"backup after a boot with storage down must be refused, never empty: {body}")
+    # The load itself couldn't read storage: nothing trustworthy to export
+    # (with auth, nobody can be authenticated either: the same 503).
+    _, body, _ = c.call("downloadBackup", "GET", "/admin/backup", expect=503, label="backup, booted with storage down")
+    expect(isinstance(body, dict) and body["error"]["code"] == "storage_unavailable",
+           f"backup after a boot with storage down must be refused, never empty: {body}")
     hub.restart()
     if relogin:
         relogin()
@@ -1331,40 +1492,29 @@ def storage_flow(c, hub, relogin=None):
     session = c.call("getSession", "GET", "/auth/session", expect=200, label="session, storage down")[1] or {}
     expect(session.get("config_state") == "storage_unavailable",
            f"config state should follow the medium down: {session.get('config_state')}")
-    if not authenticated:
-        down = config_state(c)
-        expect(down.get("state") == "storage_unavailable" and down.get("generation") == before_generation,
-               f"/status config while storage is down: {down} (generation was {before_generation})")
+    down = config_state(c)
+    expect(down.get("state") == "storage_unavailable" and down.get("generation") == before_generation,
+           f"/status config while storage is down: {down} (generation was {before_generation})")
     create = fixture("activities/create.request.json")
     _, body, _ = c.call("createActivity", "POST", "/activities", create, expect=503, label="edit with storage down")
     expect(body and body["error"]["code"] == "storage_unavailable", f"edit with storage down: {body}")
-    if authenticated:
-        c.call("downloadBackup", "GET", "/admin/backup", expect=503,
-               label="backup with storage down (nobody can be authenticated)")
-    else:
-        # Loaded fine before the medium went away: the running config is the
-        # last acknowledged save, so it can still be exported.
-        _, down_backup, headers = c.call("downloadBackup", "GET", "/admin/backup", expect=200,
-                                         label="backup with storage down after a good load")
-        expect(headers.get("X-Hubbo-Backup") == "config", f"backup with storage down: {headers.get('X-Hubbo-Backup')}")
-        if isinstance(down_backup, dict) and isinstance(up_backup, dict):
-            d = diff(dict(down_backup, created_at=None), dict(up_backup, created_at=None))
-            expect(d is None, f"backup with storage down differs from the running config: {d}")
-    gb = None if authenticated else c.call("getGlobalBindings", "GET", "/global-bindings", expect=200)[1]
+    # Loaded fine before the medium went away: the running config is the
+    # last acknowledged save, so it can still be exported.
+    _, down_backup, headers = c.call("downloadBackup", "GET", "/admin/backup", expect=200,
+                                     label="backup with storage down after a good load")
+    expect(headers.get("X-Hubbo-Backup") == "config", f"backup with storage down: {headers.get('X-Hubbo-Backup')}")
+    if isinstance(down_backup, dict) and isinstance(up_backup, dict):
+        d = diff(dict(down_backup, created_at=None), dict(up_backup, created_at=None))
+        expect(d is None, f"backup with storage down differs from the running config: {d}")
+    gb = c.call("getGlobalBindings", "GET", "/global-bindings", expect=200)[1]
     if gb:
         c.call("replaceGlobalBindings", "PUT", "/global-bindings", gb, expect=503, label="bindings with storage down")
-    if authenticated:
-        c.call("activateActivity", "POST", "/activities/act_watch_apple_tv/activate", expect=503,
-               label="activate with storage down (nobody can be authenticated)")
-    else:
-        _, t, _ = c.call("activateActivity", "POST", "/activities/act_watch_apple_tv/activate", expect=200,
-                         label="activate with storage down")
-        expect(t and t.get("switched"), f"switching must work with storage down: {t}")
-        c.call("activitiesOff", "POST", "/activities/off", expect=200, label="off with storage down")
+    _, t, _ = c.call("activateActivity", "POST", "/activities/act_watch_apple_tv/activate", expect=200,
+                     label="activate with storage down")
+    expect(t and t.get("switched"), f"switching must work with storage down: {t}")
+    c.call("activitiesOff", "POST", "/activities/off", expect=200, label="off with storage down")
 
     hub.signal("USR2")  # available again
-    if relogin:
-        relogin()
     up = config_state(c)
     expect(up.get("state") == "ok" and up.get("generation") == before_generation,
            f"/status config after storage came back: {up} (generation was {before_generation})")
@@ -1382,16 +1532,15 @@ def auth_persistence(c, hub):
         pass
 
     def login():
-        status, body, headers = c.call("login", "POST", "/auth/login", {"username": "admin", "password": PASSWORD},
+        status, body, headers = c.call("login", "POST", "/auth/login", {"username": ADMIN, "password": PASSWORD},
                                        expect=200, label="login after restart")
         if status != 200:
             raise LoginLost(f"admin can't log in after a restart ({status}): credentials were not persisted")
         c.token = None
         c.cookie = http.cookies.SimpleCookie(headers.get("Set-Cookie"))["hubbo_session"].value
-        c.csrf = body["csrf_token"]
 
     try:
-        hub.restart()  # also clears the login rate limiter the brute-force check tripped
+        hub.restart()
         login()
         keep_status, keep, _ = c.call("createToken", "POST", "/admin/tokens", {"name": "survivor"}, expect=201)
         gone_status, gone, _ = c.call("createToken", "POST", "/admin/tokens", {"name": "revoked"}, expect=201)
@@ -1422,22 +1571,14 @@ def token_persistence(c, hub, login, keep, gone):
 
 
 def credential_state_flow(c, hub, login):
-    """"Can't read" is never "doesn't exist": unreadable or damaged credentials
-    never offer setup, and logins say why instead of 401."""
+    """"Can't read" is never "doesn't exist": credentials unreadable or damaged
+    at boot never offer setup, and logins say why instead of 401. Recovery is a
+    reboot (or the wipe)."""
     attacker = {"username": "mallory", "password": "a password of mine"}
 
     # Storage down at boot: the secrets can't be read.
     hub.restart("--storage-unavailable")
-    with c.acting_as():
-        s = c.call("getSession", "GET", "/auth/session", expect=200, label="session, secrets unreadable")[1] or {}
-        expect(s.get("auth_state") == "unavailable" and s.get("setup_required") is False,
-               f"unreadable secrets must not look like a fresh hub: {s}")
-        _, body, _ = c.call("setupAdmin", "POST", "/auth/setup", attacker, expect=503, label="setup, secrets unreadable")
-        expect(body and body["error"]["code"] == "storage_unavailable", f"setup with secrets unreadable: {body}")
-        _, body, _ = c.call("login", "POST", "/auth/login", {"username": "admin", "password": PASSWORD}, expect=503,
-                            label="login, secrets unreadable")
-        expect(body and body["error"]["code"] == "storage_unavailable", f"login with secrets unreadable: {body}")
-        c.call("listDevices", "GET", "/devices", expect=503, label="request, secrets unreadable")
+    unreadable_credentials(c, attacker, "secrets unreadable")
 
     # Storage back: the original admin logs in; setup is still refused.
     hub.restart()
@@ -1448,26 +1589,19 @@ def credential_state_flow(c, hub, login):
         c.call("setupAdmin", "POST", "/auth/setup", attacker, expect=409, label="setup after storage came back")
         c.call("login", "POST", "/auth/login", attacker, expect=401, label="attacker can't log in")
 
-    # Storage goes away at runtime while the admin is logged in, then comes back.
+    # Storage goes away at runtime: credentials were read at boot, so the
+    # session, login and the setup guard all carry on.
     login()
-    cookie, csrf = c.cookie, c.csrf
+    cookie = c.cookie
     hub.signal("USR1")
-    with c.acting_as(cookie=cookie, csrf=csrf):
-        c.call("listDevices", "GET", "/devices", expect=503, label="session while storage is down")
+    with c.acting_as(cookie=cookie):
+        c.call("listDevices", "GET", "/devices", expect=200, label="session while storage is down")
     with c.acting_as():
         s = c.call("getSession", "GET", "/auth/session", expect=200, label="session state, storage down")[1] or {}
-        expect(s.get("auth_state") == "unavailable" and s.get("setup_required") is False,
-               f"storage down at runtime: {s}")
-        c.call("login", "POST", "/auth/login", {"username": "admin", "password": PASSWORD}, expect=503,
-               label="login while storage is down")
-        _, body, _ = c.call("setupAdmin", "POST", "/auth/setup", attacker, expect=503,
-                            label="setup while storage is down")
-        expect(body and body["error"]["code"] == "storage_unavailable", f"setup while storage down: {body}")
+        expect(s.get("auth_state") == "ok" and s.get("setup_required") is False, f"storage down at runtime: {s}")
+        c.call("setupAdmin", "POST", "/auth/setup", attacker, expect=409, label="setup while storage is down")
+    login()
     hub.signal("USR2")
-    login()  # the original admin, on the very next request
-    with c.acting_as():
-        c.call("setupAdmin", "POST", "/auth/setup", attacker, expect=409, label="setup after storage is back")
-        c.call("login", "POST", "/auth/login", attacker, expect=401, label="attacker after storage is back")
 
     # One torn secrets slot next to an intact one: the intact record loads.
     hub.restart(damage=["secrets.b"])
@@ -1476,30 +1610,29 @@ def credential_state_flow(c, hub, login):
         s = c.call("getSession", "GET", "/auth/session", expect=200, label="session, one secrets slot damaged")[1] or {}
         expect(s.get("auth_state") == "ok", f"one damaged slot should fall back to the other: {s}")
 
-    # Both secrets slots present but not intact (torn or rotted): Corrupt,
-    # never a fresh hub. Absence needs proof.
+    # Both secrets slots present but not intact (torn or rotted):
+    # unavailable, never a fresh hub. Absence needs proof.
     hub.restart(damage=["secrets.a", "secrets.b"])
-    with c.acting_as():
-        s = c.call("getSession", "GET", "/auth/session", expect=200, label="session, secrets slots damaged")[1] or {}
-        expect(s.get("auth_state") == "corrupt" and s.get("setup_required") is False,
-               f"damaged secrets slots must not look like a fresh hub: {s}")
-        _, body, _ = c.call("setupAdmin", "POST", "/auth/setup", attacker, expect=409,
-                            label="setup, secrets slots damaged")
-        expect(body and body["error"]["code"] == "credentials_corrupt", f"setup with damaged slots: {body}")
-        _, body, _ = c.call("login", "POST", "/auth/login", {"username": "admin", "password": PASSWORD},
-                            expect=409, label="login, secrets slots damaged")
-        expect(body and body["error"]["code"] == "credentials_corrupt", f"login with damaged slots: {body}")
+    unreadable_credentials(c, attacker, "secrets slots damaged")
 
     # A damaged secrets record: setup and login refused. (Last: the network
     # can't repair credentials.)
     hub.restart(write_record=("secrets", "api/tools/contract-data/secrets.corrupt.json"))
+    unreadable_credentials(c, attacker, "secrets corrupt")
+
+
+def unreadable_credentials(c, attacker, why):
+    """Credentials that couldn't be read at boot: `unavailable`, never a fresh
+    hub; setup, login and every protected request get 503 storage_unavailable."""
     with c.acting_as():
-        s = c.call("getSession", "GET", "/auth/session", expect=200, label="session, secrets corrupt")[1] or {}
-        expect(s.get("auth_state") == "corrupt" and s.get("setup_required") is False, f"corrupt secrets: {s}")
-        _, body, _ = c.call("setupAdmin", "POST", "/auth/setup", attacker, expect=409, label="setup, secrets corrupt")
-        expect(body and body["error"]["code"] == "credentials_corrupt", f"setup with corrupt secrets: {body}")
-        c.call("login", "POST", "/auth/login", {"username": "admin", "password": PASSWORD}, expect=409,
-               label="login, secrets corrupt")
+        s = c.call("getSession", "GET", "/auth/session", expect=200, label=f"session, {why}")[1] or {}
+        expect(s.get("auth_state") == "unavailable" and s.get("setup_required") is False,
+               f"{why} must not look like a fresh hub: {s}")
+        for op_id, path, body in (("setupAdmin", "/auth/setup", attacker),
+                                  ("login", "/auth/login", {"username": ADMIN, "password": PASSWORD})):
+            _, reply, _ = c.call(op_id, "POST", path, body, expect=503, label=f"{op_id}, {why}")
+            expect(error_code(reply) == "storage_unavailable", f"{op_id} with {why}: {reply}")
+        c.call("listDevices", "GET", "/devices", expect=503, label=f"request, {why}")
 
 
 def mock_first_run(c):
@@ -1526,10 +1659,10 @@ def main():
         if args.mode == "mock-auth":
             mock_first_run(client)
             client.control("reset", {"requireAuth": True})  # the seed, login required
-        else:  # the seed, signed in as the dev admin: same cookie-and-CSRF rules as the hub
+        else:  # the seed, signed in as the dev admin: same cookie rules as the hub
             client.control("reset")
             _, s, _ = client.call("getSession", "GET", "/auth/session", expect=200, label="dev session")
-            client.cookie, client.csrf = "dev", (s or {}).get("csrf_token")
+            client.cookie = "dev"
         skip("restart persistence, blocked config, storage faults, damaged credentials",
              "need hub-sim restarts and its storage (contract.sh's supervisor)")
     (noauth if args.mode in ("noauth", "mock") else auth_mode)(client, checker)

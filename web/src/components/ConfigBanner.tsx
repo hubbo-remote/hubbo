@@ -25,10 +25,10 @@ export function ConfigBanner({ admin, link = true }: { admin: boolean; /** Off i
             {blocked
               ? admin
                 ? link
-                  ? 'To fix it, download the saved configuration (raw) to keep a copy, then restore a backup or reset to factory defaults.'
-                  : 'Finish setup, then in Settings download the saved configuration (raw) to keep a copy, and restore a backup or reset to factory defaults.'
-                : 'An admin needs to download the saved configuration (raw), then restore a backup or reset to factory defaults.'
-              : 'Try restarting the hub. If this keeps happening, the storage may need a factory reset or the board may need attention.'}
+                  ? 'To fix it, download the saved configuration (raw) to keep a copy, then restore a backup or reset the configuration.'
+                  : 'Finish setup, then in Settings download the saved configuration (raw) to keep a copy, and restore a backup or reset the configuration.'
+                : 'An admin needs to download the saved configuration (raw), then restore a backup or reset the configuration.'
+              : 'Try restarting the hub. If this keeps happening, the storage may need to be wiped or the board may need attention.'}
           </p>
         </div>
         {blocked && admin && link && (

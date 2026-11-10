@@ -38,6 +38,12 @@ void eventEmitted(hubbo::remote::EventKind kind);
 // Call once per loop iteration.
 void loopTick();
 void printLatency();
+// Before a deliberate restart (any task): prints the loop line ("loop: max
+// gap ...", as printLatency()) and keeps it in RTC memory, which survives a
+// software restart. printPreviousRun() logs it again at the next boot, so
+// /debug/log shows a reboot's stall (a firmware update's write) afterwards.
+void keepLoopStatsAcrossRestart(const char *why);
+void printPreviousRun();  // boot, once
 // CPU share per task (core affinity, priority) since the previous call.
 void printTasks();
 void resetLatency();

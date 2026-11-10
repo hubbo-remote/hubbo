@@ -7,9 +7,10 @@
 
 #include "hubbo/api/authenticator.h"
 #include "hubbo/api/ble_pairing_port.h"
+#include "hubbo/api/factory_reset_port.h"
+#include "hubbo/api/firmware_update_port.h"
 #include "hubbo/api/remote_port.h"
 #include "hubbo/auth/credentials.h"
-#include "hubbo/auth/rate_limit.h"
 #include "hubbo/auth/session.h"
 #include "hubbo/domain/adapter.h"
 #include "hubbo/engine/engine.h"
@@ -19,9 +20,9 @@
 // The /api/v1 route handlers (api/openapi.yaml), shared by the firmware and
 // hub-sim. Transport-free: they see http::Request/Response only.
 //
-// The router admits a request first (http/route.h): Host allowlist, Origin
-// for unsafe methods, the policy decision, and the operation's body limit
-// and JSON content type from the policy table. Handlers then parse (JSON
+// The router admits a request first (http/route.h): Origin for unsafe
+// methods, the policy decision, and the operation's body limit
+// and content type from the policy table. Handlers then parse (JSON
 // nesting <= 8, else 400 malformed_json) and check shapes strictly: unknown
 // fields, wrong types, missing fields -> 422 validation_failed with JSON
 // Pointer `details`.
@@ -113,12 +114,11 @@ struct HubInfo {
 struct ApiContext {
     auth::Credentials &credentials;
     auth::SessionStore &sessions;
-    auth::LoginRateLimiter &loginLimiter;
     const Clock &clock;
     config::ConfigService &config;
     Runtime &runtime;
     HubInfo info;
-    // What POST /admin/reset restores (the board's first-boot config). Null:
+    // What POST /admin/reset (resetConfiguration) restores (the board's first-boot config). Null:
     // an empty config (ConfigService adds the built-in integrations).
     const ConfigSpec *factoryDefaults = nullptr;
 
@@ -141,6 +141,11 @@ struct ApiContext {
     // /admin/integrations/{id}/pair); null answers 503. Last, so positional
     // initializers that stop at `discovery` still compile.
     BlePairingPort *blePairing = nullptr;
+    // Firmware updates (GET /admin/firmware, POST /admin/firmware/update);
+    // null answers 503.
+    FirmwareUpdatePort *firmware = nullptr;
+    // The real factory reset (POST /admin/factory-reset); null answers 503.
+    FactoryResetPort *factoryReset = nullptr;
 };
 
 // SecretStore key of the "ha_main" access token. Never in config, backups,

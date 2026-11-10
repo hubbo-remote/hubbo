@@ -18,9 +18,17 @@
 #error "Only the Waveshare ESP32-S3-ETH board profile exists. Build env waveshare_esp32_s3_eth."
 #endif
 
+// Macros because the image marker (image_marker.h) is one string literal.
+#define HUBBO_BOARD_NAME "waveshare_esp32_s3_eth"
+// The partition table's version (platformio.ini: default_16MB.csv). An OTA
+// update can't change the table, so an image for another layout is refused.
+// Bump it when the table changes.
+#define HUBBO_PARTITION_LAYOUT 1
+
 namespace hubbo::fw::board {
 
-constexpr const char *kName = "waveshare_esp32_s3_eth";
+constexpr const char *kName = HUBBO_BOARD_NAME;
+constexpr unsigned kLayout = HUBBO_PARTITION_LAYOUT;
 
 // Onboard W5500 Ethernet, driven by ESP-IDF's W5500 driver on SPI3.
 namespace w5500 {

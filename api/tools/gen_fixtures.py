@@ -438,11 +438,11 @@ fx("remote/buttons.json", "listRemoteButtons", "200", {
     "buttons": [{"name": n, "group": g, "label": l} for n, g, l in BUTTONS],
     "event_kinds": ["down", "up", "tap", "hold"], "hold_ms": 800})
 
-fx("auth/login.request.json", "login", "request", {"username": "admin", "password": "correct horse battery"})
-fx("auth/setup.request.json", "setupAdmin", "request", {"username": "admin", "password": "correct horse battery"})
+fx("auth/login.request.json", "login", "request", {"username": "hubbo-owner", "password": "correct horse battery"})
+fx("auth/setup.request.json", "setupAdmin", "request", {"username": "hubbo-owner", "password": "correct horse battery"})
 fx("auth/session.admin.json", "getSession", "200", {
-    "authenticated": True, "role": "admin", "username": "admin",
-    "csrf_token": "rT5vX8yB2nM4kL7pQ1wE9sD3fG6hJ0aZ_cV-uI8oP2Y", "expires_in_s": 28800,
+    "authenticated": True, "role": "admin", "username": "hubbo-owner",
+    "expires_in_s": 604800,
     "setup_required": False, "auth_state": "ok", "config_state": "ok", "auth_mode": "enforced"})
 fx("auth/session.anonymous.json", "getSession", "200", {
     "authenticated": False, "role": None, "setup_required": False, "auth_state": "ok", "config_state": "ok", "auth_mode": "enforced"})
@@ -628,7 +628,7 @@ fx("errors/backup_blocked_damaged.json", "downloadBackup", "409",
 fx("admin/restore.result.json", "restoreBackup", "200", {
     "dry_run": False, "devices": len(DEVICES), "activities": len(ACTIVITIES), "integrations": 3,
     "migrated_from": None, "requires": ["home_assistant_token", "ble_pairing", "api_tokens"], "warnings": []})
-fx("admin/reset.json", "factoryReset", "200", {"state": "ok", "generation": 58})
+fx("admin/reset.json", "resetConfiguration", "200", {"state": "ok", "generation": 58})
 fx("errors/config_blocked.json", "createActivity", "409",
    err("config_blocked", "The saved configuration can't be used; restore a backup or reset"))
 fx("errors/hold_not_allowed.json", "executeCommand", "422", err(
@@ -636,20 +636,40 @@ fx("errors/hold_not_allowed.json", "executeCommand", "422", err(
         ("/command_id", "hold_not_allowed", "key_down/key_up are for bindings; execute key_tap instead"),
     ]))
 fx("admin/firmware.json", "getFirmwareStatus", "200", {
-    "version": "0.1.0", "board": "waveshare_esp32_s3_eth", "running_partition": "app0",
-    "update_state": "idle", "rollback_available": True})
+    "version": "v0.5.0", "board": "waveshare_esp32_s3_eth",
+    "update": {"state": "idle", "progress": 0, "error": None}})
+fx("admin/firmware.writing.json", "getFirmwareStatus", "200", {
+    "version": "v0.5.0", "board": "waveshare_esp32_s3_eth",
+    "update": {"state": "writing", "progress": 42, "error": None}})
+fx("admin/firmware.rebooting.json", "getFirmwareStatus", "200", {
+    "version": "v0.5.0", "board": "waveshare_esp32_s3_eth",
+    "update": {"state": "rebooting", "progress": 100, "error": None}})
+fx("admin/firmware.failed.json", "getFirmwareStatus", "200", {
+    "version": "v0.5.0", "board": "waveshare_esp32_s3_eth",
+    "update": {"state": "failed", "progress": 0, "error": "write_failed"}})
+fx("admin/firmware.update.json", "updateFirmware", "202", {
+    "version": "v0.5.0", "board": "waveshare_esp32_s3_eth",
+    "update": {"state": "writing", "progress": 0, "error": None}})
+fx("errors/update_in_progress.json", "updateFirmware", "409",
+   err("update_in_progress", "An update is already running"))
+fx("errors/wrong_board.json", "updateFirmware", "422",
+   err("wrong_board", "This Hubbo image is for another board"))
+fx("errors/invalid_image.json", "updateFirmware", "422",
+   err("invalid_image", "Not an app image (use firmware.bin, not the merged factory image)"))
+fx("errors/length_required.json", "updateFirmware", "411",
+   err("length_required", "Send the image whole, with Content-Length"))
+fx("errors/factory_reset_during_update.json", "factoryReset", "409",
+   err("update_in_progress", "A firmware update is running"))
 
 # Errors
 fx("errors/unauthenticated.json", "listDevices", "401",
    err("unauthenticated", "Log in or send an API token"))
 fx("errors/invalid_credentials.json", "login", "401",
    err("invalid_credentials", "Wrong username or password"))
-fx("errors/rate_limited.json", "login", "429",
-   err("rate_limited", "Too many failed logins; try again later", retry_after_s=30))
 fx("errors/forbidden_token_admin.json", "registerDevice", "403",
    err("forbidden", "API tokens cannot register devices"))
 fx("errors/csrf_failed.json", "createActivity", "403",
-   err("csrf_failed", "Missing or wrong X-Hubbo-CSRF header"))
+   err("csrf_failed", "Origin does not match this hub"))
 fx("errors/not_found.json", "getDevice", "404", err("not_found", "No device dev_projector"))
 fx("errors/revision_conflict.json", "replaceActivity", "409",
    err("revision_conflict", "Activity changed since revision 3", current_revision=4))

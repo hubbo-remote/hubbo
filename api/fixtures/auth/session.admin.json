@@ -1,9 +1,8 @@
 {
   "authenticated": true,
   "role": "admin",
-  "username": "admin",
-  "csrf_token": "rT5vX8yB2nM4kL7pQ1wE9sD3fG6hJ0aZ_cV-uI8oP2Y",
-  "expires_in_s": 28800,
+  "username": "hubbo-owner",
+  "expires_in_s": 604800,
   "setup_required": false,
   "auth_state": "ok",
   "config_state": "ok",

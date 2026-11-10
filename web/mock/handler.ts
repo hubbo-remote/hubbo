@@ -1,5 +1,5 @@
 // In-memory /api/v1 for UI development, following api/openapi.yaml and
-// seeded from api/fixtures. Includes auth, CSRF, optimistic concurrency,
+// seeded from api/fixtures. Includes auth, the Origin check, optimistic concurrency,
 // validation errors and slow/failing adapters. NOT behavioural truth: that
 // is hub-sim running the real C++ core.
 import type {
@@ -34,10 +34,12 @@ import type {
   ValidationIssue,
   BlePairingStatus as PairingStatus,
   EntityDetailsStatus,
+  FirmwareStatus,
 } from '../src/api/types.ts'
-import { BLE_PAIR_WINDOW_MAX_S, BLE_PAIR_WINDOW_MIN_S, BLE_PAIR_WINDOW_S, CSRF_HEADER, REMOTE_CHANNEL_MAX, REMOTE_SCAN_TIMEOUT_S } from '../src/api/constants.ts'
+import { BLE_PAIR_WINDOW_MAX_S, BLE_PAIR_WINDOW_MIN_S, BLE_PAIR_WINDOW_S, REMOTE_CHANNEL_MAX, REMOTE_SCAN_TIMEOUT_S } from '../src/api/constants.ts'
 import { forEachAction, validateActivity, validateBindings, type Catalog } from '../src/lib/activity.ts'
 import { addressProblem } from '../src/lib/remote.ts'
+import { checkFirmwareImage } from './firmware.ts'
 import { fixture, fixtureBytes, loadSeed, type Seed } from './fixtures.ts'
 import { activityShape, bindingsShape } from './shape.ts'
 
@@ -51,6 +53,7 @@ export interface MockRequest {
 }
 
 export interface MockResponse {
+  /** 0: drop the connection (the hub is rebooting). */
   status: number
   body?: unknown
   headers?: Record<string, string>
@@ -67,6 +70,8 @@ export interface MockOptions {
   discoverDelayMs?: number
   /** How long a remote-pairing scan takes to "find" the Hub. Default 6 s; e2e uses 0. */
   pairDelayMs?: number
+  /** Hub ms a firmware update or factory reset moves per real ms. Default 1/3 (a 6 s write); e2e uses 0, so only `advance` moves it, like hub-sim. */
+  timeScale?: number
   random?: () => number
 }
 
@@ -84,14 +89,23 @@ export type ResetFlags = Pick<MockOptions, 'firstRun' | 'requireAuth'> & {
   discoverFails?: boolean
   /** A remote scan never hears a Hub: it runs out its 120 s and ends `timeout`. */
   scanNeverFinds?: boolean
-  /** The credentials store can't be read (`unavailable`) or is damaged (`corrupt`). */
-  authState?: 'unavailable' | 'corrupt'
+  /** The credentials store couldn't be read (or held damaged credentials) at boot. */
+  authState?: 'unavailable'
 }
 
 type Role = 'public' | 'setup' | 'token' | 'admin'
 type Handler = (req: MockRequest, m: string[]) => MockResponse | Promise<MockResponse>
 
 const DEV_SID = 'dev'
+/** Like hub-sim's SimulatedFirmwareUpdate: a write takes 2 s, then rebooting 1 s (the mock's hub is down for its second half). */
+const FW_WRITE_MS = 2000
+const FW_REBOOT_MS = 1000
+/** The OTA slot (POST /admin/firmware/update x-hubbo-max-body). */
+const FW_SLOT_BYTES = 6_553_600
+/** A factory reset's restart, like hub-sim's (the mock's hub is down for all of it). */
+const ERASE_RESTART_MS = 1000
+/** Sessions last 7 days, absolute (or until the hub reboots). */
+const SESSION_S = 604_800
 /** Requests refused while the config is blocked or unwritable (validate is a dry run, so it isn't one). */
 const EDITS = [/^\/activities(\/(?!validate$)[^/]+)?$/, /^\/activities\/[^/]+\/activate$/, /^\/global-bindings$/, /^\/admin\/devices/]
 const MAX_BODY = 32 * 1024
@@ -139,8 +153,9 @@ export function createMock(opts: MockOptions = {}) {
   const bootedAt = Date.now()
   let db: Seed
   let adminCreated: boolean
+  let username: string
   let password: string
-  let sessions: Map<string, { csrf: string }>
+  let sessions: Set<string>
   let pairing: RemotePairStatus & { startedAt?: number }
   /** The Hub endpoint the radio listens on (GET /admin/remote). */
   let endpoint: RemoteEndpoint | null
@@ -152,6 +167,16 @@ export function createMock(opts: MockOptions = {}) {
   let blePair: { state: 'idle' } | { state: 'pairing'; endsAt: number } | { state: 'failed' } = { state: 'idle' }
   /** Like hub-sim's /sim/ha?auth=reject and ?connect=stall: how the fake HA answers the next connect (after a save). */
   let haNextConnect: 'ok' | 'reject' | 'stall' = 'ok'
+  /** A firmware update in hub time: `advancedMs` from /__mock/advance plus scaled real time since `startedAt`. */
+  let fw: { state: 'idle' } | { state: 'writing'; startedAt: number; advancedMs: number; version: string } | { state: 'failed'; error: string }
+  /** Like hub-sim's POST /sim/firmware: writes fail; the hub can't take an update. Mock-only: the new image doesn't take (the old one boots again). */
+  let fwFail: boolean
+  let fwReady: boolean
+  let fwRevert: boolean
+  /** A factory reset in progress, in hub time like `fw`. */
+  let erase: { startedAt: number; advancedMs: number } | null
+  /** Like hub-sim's POST /sim/factory-reset?ready=0: the hub can't erase (503). */
+  let eraseReady: boolean
   /** Entities HA has forgotten (POST /__mock/ha?remove=): their devices go stale at the next discovery. */
   let removedEntities: Set<string>
   /** Each HA entity's own command variants (e.g. its source list), from the fixture device on it. */
@@ -188,9 +213,10 @@ export function createMock(opts: MockOptions = {}) {
     mode = { ...flags, firstRun: flags.firstRun ?? opts.firstRun, requireAuth: flags.requireAuth ?? opts.requireAuth }
     db = loadSeed()
     adminCreated = !mode.firstRun
-    password = fixture<{ password: string }>('auth/login.request.json').password
-    // No sessions where none could exist: login required, first run, or credentials the hub can't read or trust.
-    sessions = new Map(mode.requireAuth || mode.firstRun || mode.authState ? [] : [[DEV_SID, { csrf: `csrf-${DEV_SID}` }]])
+    // A set-up mock hub's admin is the login fixture's (the user picked the name; there's no default).
+    ;({ username, password } = fixture<{ username: string; password: string }>('auth/login.request.json'))
+    // No sessions where none could exist: login required, first run, or credentials the hub can't read.
+    sessions = new Set(mode.requireAuth || mode.firstRun || mode.authState ? [] : [DEV_SID])
     // From admin/remote.json; a first-run hub has no endpoint yet.
     pairing = mode.firstRun ? { state: 'idle', paired: false } : { ...db.remote.pairing }
     endpoint = mode.firstRun ? null : db.remote.endpoint
@@ -198,6 +224,12 @@ export function createMock(opts: MockOptions = {}) {
     bleDown = false
     blePair = { state: 'idle' }
     haNextConnect = 'ok'
+    fw = { state: 'idle' }
+    fwFail = false
+    fwReady = true
+    fwRevert = false
+    erase = null
+    eraseReady = true
     discovery = { state: 'idle' }
     // The fixture's entities come from HA's `demo` platform, which has no services of its own. Give them
     // realistic platforms, with integration services and skipped ones, so the UI shows those too.
@@ -422,15 +454,59 @@ export function createMock(opts: MockOptions = {}) {
   function sessionBody(sid: string | null): Session {
     const common = { auth_mode: 'enforced', config_state: config.state, auth_state: authState() } as const
     return sid
-      ? { authenticated: true, role: 'admin', username: 'admin', csrf_token: sessions.get(sid)!.csrf, expires_in_s: 28_800, setup_required: false, ...common }
+      ? { authenticated: true, role: 'admin', username, expires_in_s: SESSION_S, setup_required: false, ...common }
       : { authenticated: false, role: null, setup_required: authState() === 'fresh', ...common }
   }
 
   function newSession(): [string, Session] {
     const sid = rand36(24)
-    sessions.set(sid, { csrf: rand36(32) })
+    sessions.add(sid)
     sessions.delete(DEV_SID)
     return [sid, sessionBody(sid)]
+  }
+
+  const hubMs = (t: { startedAt: number; advancedMs: number }) => t.advancedMs + (opts.timeScale ?? 1 / 3) * (Date.now() - t.startedAt)
+  /** Hub ms since the running update started. */
+  const firmwareMs = () => (fw.state === 'writing' ? hubMs(fw) : 0)
+
+  /** True while a factory reset restarts the hub; at its end everything is gone and the hub is fresh. */
+  function erasing(): boolean {
+    if (!erase) return false
+    if (hubMs(erase) < ERASE_RESTART_MS) return true
+    reset({ firstRun: true, requireAuth: mode.requireAuth }) // no admin, sessions, tokens, remote or config
+    const ble = db.configs.get('ble')
+    if (ble?.settings.type === 'ble_hid') ble.settings = { ...ble.settings, bonded: false, peer_name: undefined }
+    return false
+  }
+
+  /**
+   * Where a firmware update is, in hub time. The reboot's end is applied here: the new version
+   * runs and every session is gone (they live in RAM), like the board.
+   */
+  function firmwarePhase(): 'idle' | 'writing' | 'rebooting' | 'down' | 'failed' {
+    if (fw.state !== 'writing') return fw.state
+    const ms = firmwareMs()
+    if (ms < FW_WRITE_MS) return 'writing'
+    if (fwFail) {
+      fw = { state: 'failed', error: 'write_failed' }
+      return 'failed'
+    }
+    if (ms < FW_WRITE_MS + FW_REBOOT_MS / 2) return 'rebooting'
+    if (ms < FW_WRITE_MS + FW_REBOOT_MS) return 'down'
+    if (!fwRevert) {
+      db.firmware = { ...db.firmware, version: fw.version }
+      db.status.hubbo.version = fw.version
+    }
+    sessions.clear()
+    fw = { state: 'idle' }
+    return 'idle'
+  }
+
+  function firmwareStatus(): FirmwareStatus {
+    const phase = firmwarePhase()
+    const state = phase === 'down' ? 'rebooting' : phase // (handle() answers nothing while down)
+    const progress = state === 'writing' ? Math.floor((firmwareMs() * 100) / FW_WRITE_MS) : state === 'rebooting' ? 100 : 0
+    return { ...db.firmware, update: { state, progress, error: fw.state === 'failed' ? fw.error : null } }
   }
 
   function status(): Status {
@@ -489,6 +565,7 @@ export function createMock(opts: MockOptions = {}) {
       if (!b?.password || b.password.length < 10) details.push({ path: '/password', code: 'weak_password', message: 'Use at least 10 characters' })
       if (details.length) return invalid(details)
       adminCreated = true
+      username = b.username!
       password = b.password!
       const [sid, s] = newSession()
       return { status: 201, body: s, headers: { 'set-cookie': cookie(sid) } }
@@ -496,7 +573,7 @@ export function createMock(opts: MockOptions = {}) {
     ['POST', /^\/auth\/login$/, 'public', (req) => {
       if (!adminCreated) return err(409, 'setup_required', 'Create the admin account first')
       const b = req.body as { username?: string; password?: string }
-      if (b?.username !== 'admin' || b.password !== password) return err(401, 'invalid_credentials', 'Wrong username or password')
+      if (b?.username !== username || b.password !== password) return err(401, 'invalid_credentials', 'Wrong username or password')
       const [sid, s] = newSession()
       return { status: 200, body: s, headers: { 'set-cookie': cookie(sid) } }
     }],
@@ -894,9 +971,20 @@ export function createMock(opts: MockOptions = {}) {
       const result = { dry_run: dry, devices: b.devices.length, activities: b.activities.length, integrations: b.integrations?.length ?? 0, migrated_from: null, requires: ['home_assistant_token', 'ble_pairing', 'api_tokens'], warnings: [] }
       if (!dry) {
         // Revisions in the backup may be missing or 0; stampAll() replaces them all.
-        db.devices = b.devices.map((d) => ({ ...d, availability: 'unknown' as const, revision: 0 }))
+        // A backup's StoredDevice carries ha_capabilities; a Device (what the API returns) never does.
+        db.devices = b.devices.map(({ ha_capabilities: _, ...d }) => ({ ...d, availability: 'unknown' as const, revision: 0 }))
         db.activities = b.activities.map((a) => ({ ...a, schema_version: 1 as const, revision: 0 }))
         db.globalBindings = { bindings: b.global_bindings?.bindings ?? {}, revision: 0 }
+        // Integration settings come back without secrets (a backup never has the HA token). Like the
+        // hub, the stored token survives only when the URL stays the same.
+        for (const i of b.integrations ?? []) {
+          const c = db.configs.get(i.id)
+          if (!c || c.settings.type !== 'home_assistant' || i.type !== 'home_assistant') continue
+          const s = (i.settings ?? {}) as { url?: string; verify_tls?: boolean }
+          const url = s.url ?? ''
+          db.configs.set(i.id, { ...c, name: i.name ?? c.name, enabled: i.enabled ?? c.enabled, settings: { type: 'home_assistant', url, verify_tls: s.verify_tls ?? false, has_access_token: c.settings.has_access_token && url === c.settings.url } })
+          haOverride = null // the client reconnects with the restored settings
+        }
         stampAll()
       }
       return ok(result)
@@ -906,14 +994,41 @@ export function createMock(opts: MockOptions = {}) {
       stampAll()
       return ok(config)
     }],
-    ['GET', /^\/admin\/firmware$/, 'admin', () => ok(db.firmware)],
-    ['POST', /^\/admin\/firmware\/update$/, 'admin', (req) => {
-      const n = req.rawBody?.byteLength ?? 0
-      if (n < 1024) return invalid([{ path: '', code: 'wrong_type', message: 'That file is not a signed Hubbo firmware image for this board' }])
-      return ok({ ...db.firmware, update_state: 'rebooting', received_bytes: n, message: 'Image verified. Rebooting into the new slot.' }, 202)
+    ['POST', /^\/admin\/factory-reset$/, 'admin', () => {
+      const update = firmwarePhase()
+      if (update === 'writing' || update === 'rebooting') return fixtureError(409, 'errors/factory_reset_during_update.json')
+      if (!eraseReady) return err(503, 'unavailable', "The hub can't do a factory reset right now")
+      erase = { startedAt: Date.now(), advancedMs: 0 }
+      return { status: 202 }
+    }],
+    ['GET', /^\/admin\/firmware$/, 'admin', () => ok(firmwareStatus())],
+    // In the hub's order: size and type (the router), Content-Length, busy, ready, then the image checks.
+    ['POST', /^\/admin\/firmware\/update$/, 'admin', async (req) => {
+      const image = req.rawBody ?? new Uint8Array()
+      if (image.byteLength > FW_SLOT_BYTES) return err(413, 'payload_too_large', 'The image is larger than the update slot')
+      if (!/^application\/octet-stream\b/i.test(req.headers['content-type'] ?? '')) return err(415, 'unsupported_media_type', 'Send the image as application/octet-stream')
+      if (req.headers['content-length'] === undefined) return fixtureError(411, 'errors/length_required.json')
+      if (fw.state === 'writing') return fixtureError(409, 'errors/update_in_progress.json')
+      if (!fwReady) return err(503, 'unavailable', 'The hub can’t take an update right now')
+      const checked = await checkFirmwareImage(image, db.firmware.board)
+      if ('code' in checked) return err(422, checked.code, checked.message)
+      fw = { state: 'writing', startedAt: Date.now(), advancedMs: 0, version: checked.version }
+      return ok(firmwareStatus(), 202)
     }],
 
     // Mock-only controls (never in the real API).
+    // Like hub-sim's POST /sim/firmware: writes fail (?fail=1) or the hub can't take an update (?ready=0).
+    // Mock-only ?revert=1: the reboot comes back on the old image (a reset mid-write, or a new image that crashes).
+    ['POST', /^\/__mock\/factory-reset$/, 'public', (req) => {
+      if (req.query.has('ready')) eraseReady = req.query.get('ready') === '1'
+      return ok({ ready: eraseReady })
+    }],
+    ['POST', /^\/__mock\/firmware$/, 'public', (req) => {
+      if (req.query.has('fail')) fwFail = req.query.get('fail') === '1'
+      if (req.query.has('ready')) fwReady = req.query.get('ready') === '1'
+      if (req.query.has('revert')) fwRevert = req.query.get('revert') === '1'
+      return ok({ fail: fwFail, ready: fwReady, revert: fwRevert })
+    }],
     ['POST', /^\/__mock\/reset$/, 'public', (req) => (reset((req.body ?? {}) as ResetFlags), ok())],
     // Like hub-sim's /sim/radio/found and /sim/advance: a Hub answers the scan; time moves on.
     ['POST', /^\/__mock\/radio\/found$/, 'public', (req) => {
@@ -932,6 +1047,8 @@ export function createMock(opts: MockOptions = {}) {
       if (blePair.state === 'pairing') blePair.endsAt -= ms
       if (details) details.startedAt -= ms
       if (discovery.startedAt !== undefined) discovery.startedAt -= ms
+      if (fw.state === 'writing') fw.advancedMs += ms
+      if (erase) erase.advancedMs += ms
       return ok()
     }],
     // The HA client's state, as the fake HA server would drive it (cleared by the next settings change).
@@ -1002,6 +1119,7 @@ export function createMock(opts: MockOptions = {}) {
   async function handle(req: MockRequest): Promise<MockResponse> {
     const base = opts.latencyMs ?? 0
     if (base > 0) await new Promise((r) => setTimeout(r, base * (0.5 + rand())))
+    if ((firmwarePhase() === 'down' || erasing()) && !req.path.startsWith('/__mock/')) return { status: 0 }
     // Per-route limits (x-hubbo-max-body): restore takes a whole config; firmware images are streamed.
     const limit = req.path.startsWith('/admin/restore') ? RESTORE_MAX_BODY : MAX_BODY
     const firmware = req.path.startsWith('/admin/firmware')
@@ -1026,23 +1144,20 @@ export function createMock(opts: MockOptions = {}) {
     }
     const [, re, role, fn] = hit
     const sid = sessionId(req)
-    // Credentials the hub can't read or trust: no logins, no setup, no authenticated requests.
+    // Credentials the hub can't read: no logins, no setup, no authenticated requests.
     if (authState() === 'unavailable' && (role !== 'public' || /^\/auth\/login$/.test(req.path))) {
-      return err(503, 'storage_unavailable', 'The saved login data can’t be read right now')
-    }
-    if (authState() === 'corrupt' && (role === 'setup' || /^\/auth\/login$/.test(req.path))) {
-      return err(409, 'credentials_corrupt', 'The saved login data is damaged')
+      return err(503, 'storage_unavailable', 'The saved login data can’t be read; restart the hub')
     }
     if (role === 'setup' && adminCreated) return err(409, 'setup_already_done', 'An admin account already exists')
-    // Like the hub: a browser Origin on an unsafe request must be this hub (CSRF defence).
+    // Like the hub: a browser Origin on an unsafe request must be this hub (with SameSite=Strict
+    // and JSON-only bodies, the whole cross-site defence; there's no CSRF token).
     const origin = req.headers.origin
     if (req.method !== 'GET' && origin && req.headers.host && new URL(origin).host !== req.headers.host) {
-      return err(403, 'forbidden', 'Origin does not match this hub')
+      return err(403, 'csrf_failed', 'Cross-site request refused')
     }
     if (role === 'token' || role === 'admin') {
       if (!adminCreated) return err(401, 'unauthenticated', 'Finish first-run setup first') // like the hub: setup_required is only a session field
       if (!sid) return err(401, 'unauthenticated', 'Sign in to continue')
-      if (req.method !== 'GET' && req.headers[CSRF_HEADER] !== sessions.get(sid)!.csrf) return err(403, 'csrf_failed', 'Missing or wrong X-Hubbo-CSRF header')
     }
     // Config state: a blocked config refuses every edit (and switching, since nothing is compiled);
     // unwritable storage refuses edits. Restore and reset are the way out.

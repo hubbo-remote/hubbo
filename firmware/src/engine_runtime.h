@@ -28,7 +28,7 @@
 #include "hubbo/integrations/ha_client.h"
 #include "hubbo/remote/input.h"
 
-#include "ble_hid.h"
+#include "ble_pairing_runtime.h"
 
 namespace hubbo::fw {
 
@@ -49,9 +49,6 @@ struct RuntimeStatus {
     uint32_t queueOverflows = 0;
     uint32_t latencyCount = 0;  // read -> HID samples
     float p50Ms = 0, p95Ms = 0, p99Ms = 0;
-
-    uint8_t bleState = 0;  // BleHid::State
-    char blePeer[BleHid::kAddressSize] = {};
 };
 
 class EngineRuntime : public hubbo::api::Runtime {
@@ -63,6 +60,8 @@ public:
     // Once at boot, before the API starts: integrationState() looks up the
     // integration's spec (on httpd, the ConfigService's task).
     void setConfig(const hubbo::config::ConfigService *config) { config_ = config; }
+    // Once at boot: the ble_hid integration's state comes from its link().
+    void setBlePairing(const BlePairingRuntime *blePairing) { blePairing_ = blePairing; }
 
     // Engine task.
     void publish(const RuntimeStatus &status);
@@ -79,12 +78,13 @@ public:
 
 private:
     RuntimeStatus read() const;
-    uint8_t bleState() const;
+    BlePairingRuntime::Link bleLink() const;
 
     hubbo::Engine &engine_;
     const hubbo::AdapterSet &adapters_;
     const hubbo::integrations::HomeAssistantClient &homeAssistant_;  // state(): any task
     const hubbo::config::ConfigService *config_ = nullptr;
+    const BlePairingRuntime *blePairing_ = nullptr;
     mutable portMUX_TYPE lock_ = portMUX_INITIALIZER_UNLOCKED;
     RuntimeStatus status_;
 };

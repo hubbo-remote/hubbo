@@ -56,13 +56,11 @@ public:
     virtual bool erase(std::string_view key) = 0;  // true if gone afterwards
     // Ok and fills `out`, or Unavailable/Corrupt (out untouched).
     virtual SecretRead keys(std::string_view prefix, std::vector<std::string> *out) const = 0;
-    // Re-read the medium (after it came back). No-op for stores that read
-    // through on every call, such as NVS.
-    virtual void reload() {}
-    // The medium's own health, even while health() reports a failed read as
-    // Unavailable. Credentials::refresh() retries at once when it changes.
-    virtual storage::Health mediumHealth() const { return health(); }
 };
+
+// Erases every key (a simulated factory reset; the board erases the NVS
+// namespace instead). False if the keys couldn't be listed or one stayed.
+bool eraseAllSecrets(SecretStore &store);
 
 // In-memory store for hub-sim and tests. Same key/value rules as NVS. The
 // public fields inject failures.
@@ -102,12 +100,11 @@ public:
     bool write(std::string_view key, std::string_view value) override;
     bool erase(std::string_view key) override;
     SecretRead keys(std::string_view prefix, std::vector<std::string> *out) const override;
-    void reload() override;
-    storage::Health mediumHealth() const override { return records_.health(); }
 
     SecretRead loadState() const { return loaded_; }  // Ok (record), NotFound (none), Unavailable, Corrupt
 
 private:
+    void reload();  // reads the record once, at construction (boot)
     // Whole map as the generation the store says comes next; false (nothing
     // saved) on failure, including a store that isn't fully Available
     // (ReadOnly after a failed invalidation: no write is trusted there).

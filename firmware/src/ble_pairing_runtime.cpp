@@ -1,30 +1,37 @@
 #include "ble_pairing_runtime.h"
 
-#include <cstdio>
+#include <cstring>
 
 namespace hubbo::fw {
 
 using hubbo::api::BlePairingResult;
 using hubbo::api::BlePairState;
 
+BlePairingRuntime::Link BlePairingRuntime::link() const {
+    portENTER_CRITICAL(&lock_);
+    const Link copy = snapshot_;
+    portEXIT_CRITICAL(&lock_);
+    return copy;
+}
+
 hubbo::api::BlePairingStatus BlePairingRuntime::status() const {
     portENTER_CRITICAL(&lock_);
-    Snapshot copy = snapshot_;
+    Link copy = snapshot_;
     const Request request = request_;
     const uint32_t windowMs = requestWindowMs_;
     portEXIT_CRITICAL(&lock_);
 
     // A request the loop hasn't taken yet: show its effect already.
-    if (copy.state != BlePairState::NotReady) {
+    if (copy.pairing != BlePairState::NotReady) {
         if (request == Request::Start) {
-            copy.state = BlePairState::Pairing;
+            copy.pairing = BlePairState::Pairing;
             copy.windowRemainingMs = windowMs;
         } else if (request == Request::Forget) {
-            copy.state = BlePairState::Idle;
+            copy.pairing = BlePairState::Idle;
         }
     }
     hubbo::api::BlePairingStatus status;
-    status.state = copy.state;
+    status.state = copy.pairing;
     if (status.state == BlePairState::Pairing) {
         status.windowRemainingMs = copy.windowRemainingMs;
     } else if (status.state == BlePairState::Paired) {
@@ -36,10 +43,10 @@ hubbo::api::BlePairingStatus BlePairingRuntime::status() const {
 BlePairingResult BlePairingRuntime::startPairing(uint32_t windowMs) {
     BlePairingResult result = BlePairingResult::Accepted;
     portENTER_CRITICAL(&lock_);
-    if (snapshot_.state == BlePairState::NotReady) {
+    if (snapshot_.pairing == BlePairState::NotReady) {
         result = BlePairingResult::NotReady;
     } else if (request_ == Request::Start ||
-               (snapshot_.state == BlePairState::Pairing && request_ != Request::Forget)) {
+               (snapshot_.pairing == BlePairState::Pairing && request_ != Request::Forget)) {
         result = BlePairingResult::Busy;  // a window is open, or about to be
     } else {
         request_ = Request::Start;  // replaces a pending forget: a start forgets first
@@ -52,7 +59,7 @@ BlePairingResult BlePairingRuntime::startPairing(uint32_t windowMs) {
 BlePairingResult BlePairingRuntime::forget() {
     BlePairingResult result = BlePairingResult::Accepted;
     portENTER_CRITICAL(&lock_);
-    if (snapshot_.state == BlePairState::NotReady) {
+    if (snapshot_.pairing == BlePairState::NotReady) {
         result = BlePairingResult::NotReady;
     } else {
         request_ = Request::Forget;  // replaces a pending start
@@ -75,23 +82,30 @@ bool BlePairingRuntime::poll(uint32_t nowMs) {
     return true;
 }
 
-void BlePairingRuntime::publish(uint32_t nowMs, const char *peer) {
-    Snapshot s;
-    switch (ble_.state()) {
+void BlePairingRuntime::publish(uint32_t nowMs) {
+    Link s;
+    const BleHid::State state = ble_.state();
+    if (!peerRead_ || state != peerState_) {
+        ble_.peerAddress(peer_, sizeof(peer_));
+        peerState_ = state;
+        peerRead_ = true;
+    }
+    switch (state) {
         case BleHid::State::Off:
-            s.state = BlePairState::NotReady;
+            s.pairing = BlePairState::NotReady;
             break;
         case BleHid::State::Pairing:
-            s.state = BlePairState::Pairing;
+            s.pairing = BlePairState::Pairing;
             s.windowRemainingMs = ble_.pairingSecondsLeft(nowMs) * 1000;
             break;
         case BleHid::State::Waiting:
         case BleHid::State::Connected:
-            s.state = BlePairState::Paired;
-            snprintf(s.peer, sizeof(s.peer), "%s", peer);
+            s.pairing = BlePairState::Paired;
+            s.hostConnected = state == BleHid::State::Connected;
+            memcpy(s.peer, peer_, sizeof(s.peer));
             break;
         case BleHid::State::NotPaired:
-            s.state = ble_.pairingFailed() ? BlePairState::Failed : BlePairState::Idle;
+            s.pairing = ble_.pairingFailed() ? BlePairState::Failed : BlePairState::Idle;
             break;
     }
     portENTER_CRITICAL(&lock_);

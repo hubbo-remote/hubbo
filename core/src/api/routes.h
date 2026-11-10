@@ -124,6 +124,6 @@ void addRegistryRoutes(RouteSink &sink, ApiContext &ctx);  // devices, capabilit
 void addActivityRoutes(RouteSink &sink, ApiContext &ctx);  // activities, global bindings, activate, off
 void addStatusRoutes(RouteSink &sink, ApiContext &ctx);    // status, remote status/buttons
 void addBackupRoutes(RouteSink &sink, ApiContext &ctx);    // backup download, restore
-void addUnimplementedRoutes(RouteSink &sink);              // clear 501s, no fake success
+void addFirmwareRoutes(RouteSink &sink, ApiContext &ctx);  // firmware status and update, factory reset
 
 }  // namespace hubbo::api

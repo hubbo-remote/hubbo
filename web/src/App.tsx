@@ -70,9 +70,9 @@ export function App() {
         <Spinner />
       </div>
     )
-  } else if (!session.authenticated && (session.auth_state === 'unavailable' || session.auth_state === 'corrupt')) {
-    // Never the wizard or login: the hub can't read (or trust) its credentials.
-    body = <CredentialsProblem kind={session.auth_state} onRetry={refresh} />
+  } else if (!session.authenticated && session.auth_state === 'unavailable') {
+    // Never the wizard or login: the hub can't read its credentials.
+    body = <CredentialsProblem onRetry={refresh} />
   } else if (session.setup_required && session.auth_state === 'fresh') {
     // Only a hub that positively knows it has no admin offers setup (and the
     // no-auth simulator, which is fresh but signed in, never needs it).

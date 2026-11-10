@@ -3,16 +3,16 @@
 // auto `hub` fixture; a spec file that needs first-run or login sets
 // `test.use({ reset: {...} })` and is skipped where the target can't do it.
 import { test as base, expect, type Locator, type Page } from '@playwright/test'
-import { API_BASE, CSRF_HEADER } from '../src/api/constants.ts'
+import { API_BASE } from '../src/api/constants.ts'
 import type { Session } from '../src/api/types.ts'
 import { fixture } from '../mock/fixtures.ts'
 import type { ResetFlags } from '../mock/handler.ts'
 
 export const SIM_URL = process.env.HUBBO_API_TARGET && process.env.HUBBO_API_TARGET !== 'mock' ? process.env.HUBBO_API_TARGET.replace(/\/$/, '') : null
+/** The admin e2e sets up on a fresh hub, and the one a set-up mock has. */
 export const ADMIN = fixture<{ username: string; password: string }>('auth/login.request.json')
 
-const session = async (page: Page): Promise<Session> => (await page.request.get(`${API_BASE}/auth/session`)).json()
-const csrf = (s: Session): Record<string, string> => (s.csrf_token ? { [CSRF_HEADER]: s.csrf_token } : {})
+export const session = async (page: Page): Promise<Session> => (await page.request.get(`${API_BASE}/auth/session`)).json()
 
 /**
  * Fresh hub state, through `page.request` so the page shares the session.
@@ -25,7 +25,7 @@ async function resetHub(page: Page, flags: ResetFlags): Promise<boolean> {
   }
   // hub-sim keeps the admin across /sim/reset, and under --auth needs a session for it.
   let s = await session(page)
-  // Credentials the hub can't read or trust come from how hub-sim was started, not from a reset.
+  // Credentials the hub can't read come from how hub-sim was started, not from a reset.
   if (flags.authState) return s.auth_state === flags.authState
   const fresh = !!flags.firstRun && s.setup_required
   if (flags.firstRun && !fresh) return false // already set up
@@ -48,9 +48,9 @@ async function resetHub(page: Page, flags: ResetFlags): Promise<boolean> {
     const damaged = /damaged/i.test((await (await page.request.get(`${API_BASE}/status`)).json()).config?.reason ?? '')
     return damaged === !!flags.configDamaged
   }
-  const r = await page.request.post(`${SIM_URL}/sim/reset`, { headers: csrf(s) })
+  const r = await page.request.post(`${SIM_URL}/sim/reset`)
   expect(r.ok(), `POST /sim/reset -> ${r.status()}`).toBeTruthy()
-  if (flags.requireAuth) await page.request.post(`${API_BASE}/auth/logout`, { headers: csrf(s) })
+  if (flags.requireAuth) await page.request.post(`${API_BASE}/auth/logout`)
   return true
 }
 
@@ -58,15 +58,14 @@ export const test = base.extend<{ reset: ResetFlags; hub: void }>({
   reset: [{}, { option: true }],
   hub: [
     async ({ page, reset }, use, testInfo) => {
-      testInfo.skip(!(await resetHub(page, reset)), 'this hub cannot start in that state (first run: fresh hub-sim --auth; login: --auth; blocked/corrupt: seeded with hub-sim write-record; storage: --storage-unavailable --auth)')
+      if (testInfo.project.name === 'noauth') testInfo.skip((await session(page)).auth_mode === 'enforced', 'the noauth project is for hub-sim without auth')
+      testInfo.skip(!(await resetHub(page, reset)), 'this hub cannot start in that state (first run: fresh hub-sim --auth; login: --auth; blocked: seeded with hub-sim write-record; storage: --storage-unavailable --auth)')
       await use()
     },
     { auto: true },
   ],
 })
 
-/** hub-sim with real authentication (`--auth`). */
-export const onAuthSim = async (page: Page) => !!SIM_URL && (await session(page)).auth_mode === 'enforced'
 
 /** API tokens need a real admin; the no-auth simulator starts without one, so create it. */
 export async function ensureAdmin(page: Page) {
@@ -101,9 +100,9 @@ export async function connectHa(page: Page, token = FAKE_HA.token) {
   await settleHa(page, token === FAKE_HA.token ? 'connected' : 'auth_failed')
 }
 
-/** POST a test control (with the session's CSRF token): hub-sim's /sim/<path> or the mock's /__mock/<path>. */
+/** POST a test control: hub-sim's /sim/<path> or the mock's /__mock/<path>. */
 export async function control(page: Page, path: string) {
-  const r = await page.request.post(`${SIM_URL ? `${SIM_URL}/sim` : `${API_BASE}/__mock`}/${path}`, { headers: csrf(await session(page)) })
+  const r = await page.request.post(`${SIM_URL ? `${SIM_URL}/sim` : `${API_BASE}/__mock`}/${path}`)
   expect(r.ok(), `control ${path} -> ${r.status()}`).toBeTruthy()
   return r.status() === 204 ? undefined : r.json()
 }
@@ -185,6 +184,7 @@ export async function open(page: Page, hash: string) {
 
 export const loginHeading = (page: Page) => page.getByRole('heading', { name: 'Sign in to Hubbo' })
 export async function signIn(page: Page, password = ADMIN.password) {
+  await page.getByLabel('Username').fill(ADMIN.username)
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()
 }
@@ -205,10 +205,8 @@ export async function expectNotStoredInBrowser(page: Page, secret: string) {
   expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toContain(secret)
 }
 
-/** JSON API calls as the UI makes them (session cookie + CSRF), sharing the page's session. */
+/** JSON API calls as the UI makes them (the session cookie), sharing the page's session. */
 export function api(page: Page) {
-  let headers: Promise<Record<string, string>> | undefined
-  const h = () => (headers ??= session(page).then(csrf))
   const get = async (path: string) => {
     const r = await page.request.get(`${API_BASE}${path}`)
     expect(r.ok(), `GET ${path} -> ${r.status()}`).toBeTruthy()
@@ -216,9 +214,9 @@ export function api(page: Page) {
   }
   return {
     get,
-    put: async (path: string, data: unknown) => page.request.put(`${API_BASE}${path}`, { data, headers: await h() }),
-    post: async (path: string, data?: unknown) => page.request.post(`${API_BASE}${path}`, { data, headers: await h() }),
-    del: async (path: string) => page.request.delete(`${API_BASE}${path}`, { headers: await h() }),
+    put: async (path: string, data: unknown) => page.request.put(`${API_BASE}${path}`, { data }),
+    post: async (path: string, data?: unknown) => page.request.post(`${API_BASE}${path}`, { data }),
+    del: async (path: string) => page.request.delete(`${API_BASE}${path}`),
     activeActivity: async (): Promise<string | null> => (await get('/status')).active_activity_id,
   }
 }

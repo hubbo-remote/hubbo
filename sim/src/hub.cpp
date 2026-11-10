@@ -29,6 +29,7 @@ SimHub::SimHub(storage::Storage *storage, storage::StateStore *state, bool realH
     engine_.setObserver(this);
     fakes_.hid.pairing = &blePairing_;
     resetBle();
+    factoryReset_ = freshFactoryResetPort();
 }
 
 config::LoadReport SimHub::boot(const ConfigSpec &defaults, auth::Credentials *credentials) {
@@ -43,19 +44,53 @@ ValidationReport SimHub::load(const ConfigSpec &config) {
     return outcome.issues;
 }
 
-ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
-    // The simulated thumb lets go: nothing stays held across a reset.
+void SimHub::stopEverything() {
     held_ = 0;
     input_.releaseAll(nowMs_);
     if (engine_.hasActiveActivity()) engine_.off(nowMs_);
+    forgetActive();
+    remote_ = api::SimulatedRemote();
+}
+
+api::SimulatedFactoryReset SimHub::freshFactoryResetPort() {
+    api::SimulatedFactoryReset port;
+    port.erase = [this] {
+        if (onFactoryReset) onFactoryReset();
+    };
+    return port;
+}
+
+ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
+    stopEverything();  // nothing stays held across a reset
     fakes_.homeAssistant.resetFaults();
     ha_.server.reset();
     ha_.client.reconnect();  // at once, not after the backoff; stale entities forgotten
-    remote_ = api::SimulatedRemote();
     resetBle();
     fakes_.hid.setConnected(true);
-    forgetActive();
+    firmware_ = api::SimulatedFirmwareUpdate();
+    factoryReset_ = freshFactoryResetPort();
     return load(config);
+}
+
+void SimHub::wipe(auth::Credentials *credentials) {
+    stopEverything();
+    blePairing_ = api::SimulatedBlePairing();  // unbonded
+    // The board formats the filesystem; here the config record's slots
+    // (SlotRecordStore's "<name>.a"/".b") go.
+    for (const char slot : {'a', 'b'}) {
+        (void)storage_->remove(std::string(config::ConfigService::kRecordName) + "." + slot);
+    }
+    boot(ConfigSpec{}, credentials);  // the firmware's first boot and defaults
+    engine_.poll(nowMs_);
+}
+
+void SimHub::advanceFirmware(uint32_t ms) {
+    const api::FirmwareUpdateState before = firmware_.status().state;
+    firmware_.advance(ms);  // write, then the simulated reboot
+    const bool updating = before == api::FirmwareUpdateState::Writing || before == api::FirmwareUpdateState::Rebooting;
+    if (!updating || firmware_.status().state != api::FirmwareUpdateState::Idle) return;
+    // Idle after Writing or Rebooting only comes from a finished reboot.
+    if (onFirmwareRebooted) onFirmwareRebooted();
 }
 
 void SimHub::resetBle() {
@@ -114,6 +149,8 @@ void SimHub::advance(uint32_t ms, bool silent) {
     }
     remote_.advance(ms);      // scan timeout
     blePairing_.advance(ms);  // pairing window timeout
+    advanceFirmware(ms);
+    factoryReset_.advance(ms);  // the restart, then its erase
     // The radio gave up on them; the simulated thumb lets go too.
     if (silent && input_.held() == 0) held_ = 0;
 }

@@ -21,6 +21,7 @@ const PAGES: [string, string][] = [
   ['/settings/account', 'Settings'],
   ['/settings/remote', 'Settings'],
   ['/settings/backup', 'Settings'],
+  ['/settings/firmware', 'Firmware'],
   ['/settings/diagnostics', 'Settings'],
 ]
 

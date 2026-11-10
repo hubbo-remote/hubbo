@@ -15,15 +15,13 @@
 // touch the router, ConfigService or anything else the handlers own.
 //
 // Limits: the body may be as large as the matched route allows
-// (Router::bodyLimit, from the auth policy table; at most
-// auth::maxRequestBody()). Anything larger gets 413 before a byte is read.
-// The body is read into a PSRAM buffer allocated per request.
+// (Router::bodyLimit, from the auth policy table; a firmware update's is the
+// OTA slot size). Anything larger gets 413 before a byte is read. The body
+// is read into a PSRAM buffer allocated per request; no memory for it: 503.
 // URI and header sizes are bounded by the framework (CONFIG_HTTPD_MAX_URI_LEN
 // 512, CONFIG_HTTPD_MAX_REQ_HDR_LEN 1024 in arduino-esp32 3.3.12).
 //
-// Each request's clientKey (login rate limiting) is the peer's IPv4 address,
-// or the /64 prefix of an IPv6 one. Plain HTTP on the LAN for now
-// (`secure` stays false); TLS is Phase 5.
+// Plain HTTP on the LAN (`secure` stays false); HTTPS is out of scope.
 
 #include <cstddef>
 #include <atomic>
@@ -69,11 +67,10 @@ public:
 
     // The embedded web admin (web_assets.h) on GET /*. Register it last:
     // httpd matches in registration order, so /api/* and /debug/* win.
-    // Same Host allowlist as the API. Hashed /a/ files are immutable;
-    // everything else is revalidated with the build's ETag (304). A path
-    // that isn't a file gets index.html when the client wants HTML (the
-    // SPA's routes), else 404 (always under /a/). Bodies are sent gzipped,
-    // straight from flash.
+    // Hashed /a/ files are immutable; everything else is revalidated with
+    // the build's ETag (304). A path that isn't a file gets index.html when
+    // the client wants HTML (the SPA's routes), else 404 (always under /a/).
+    // Bodies are sent gzipped, straight from flash.
     bool serveWebAdmin();
 
     uint32_t requestCount() const { return requests_; }

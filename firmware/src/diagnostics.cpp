@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 
+#include <esp_attr.h>
+
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -35,6 +37,21 @@ LatencyStats eventLatency;
 LatencyStats hidLatency;
 uint32_t maxLoopGapUs = 0;
 uint32_t slowLoops = 0;  // iterations over 5 ms
+
+// Survives esp_restart() (not a power cycle). Valid only with the magic.
+struct KeptLoopStats {
+    uint32_t magic;
+    uint32_t maxGapUs;
+    uint32_t slowLoops;
+    char why[24];
+};
+constexpr uint32_t kKeptMagic = 0x4C4F4F50;  // "LOOP"
+RTC_NOINIT_ATTR KeptLoopStats kept;
+
+void printLoopLine(const char *prefix, uint32_t maxGapUs, uint32_t slow, const char *suffix) {
+    con.printf("%sloop: max gap %lu us, %lu iterations over 5 ms%s\n", prefix, static_cast<unsigned long>(maxGapUs),
+               static_cast<unsigned long>(slow), suffix);
+}
 uint32_t lastLoopUs = 0;
 bool inPayload = false;
 uint32_t payloadReadUs = 0;
@@ -188,8 +205,29 @@ void printTasks() {
 void printLatency() {
     printLine("read->event", eventLatency);
     printLine("read->hid", hidLatency);
-    con.printf("loop: max gap %lu us, %lu iterations over 5 ms\n", static_cast<unsigned long>(maxLoopGapUs),
-                  static_cast<unsigned long>(slowLoops));
+    printLoopLine("", maxLoopGapUs, slowLoops, "");
+}
+
+void keepLoopStatsAcrossRestart(const char *why) {
+    // Plain reads of loopTask's counters: at worst one sample stale.
+    const uint32_t gapUs = maxLoopGapUs;
+    const uint32_t slow = slowLoops;
+    printLoopLine("", gapUs, slow, " (since boot or `lat reset`)");
+    KeptLoopStats k = {kKeptMagic, gapUs, slow, {}};
+    snprintf(k.why, sizeof(k.why), "%s", why != nullptr ? why : "?");
+    kept = k;
+}
+
+void printPreviousRun() {
+    KeptLoopStats k = kept;
+    kept.magic = 0;
+    if (k.magic != kKeptMagic) {
+        return;  // a power-on or a crash
+    }
+    k.why[sizeof(k.why) - 1] = '\0';
+    char prefix[sizeof(k.why) + 32];
+    snprintf(prefix, sizeof(prefix), "previous run (restart: %s): ", k.why);
+    printLoopLine(prefix, k.maxGapUs, k.slowLoops, "");
 }
 
 void resetLatency() {

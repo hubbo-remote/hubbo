@@ -5,6 +5,11 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/** A typed word that confirms a destructive action (case and surrounding spaces don't matter). */
+export const typedMatches = (typed: string, word: string) => typed.trim().toLowerCase() === word
+
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
 /** Structural equality for plain JSON data (drafts vs saved copies). */
 export const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 

@@ -12,7 +12,7 @@
 //
 //   Authorization: Bearer hbt_...   -> Token principal (if the token is live)
 //   Cookie: hubbo_session=...       -> Admin principal (if the session is
-//                                      live), csrfValid from X-Hubbo-CSRF
+//                                      live)
 //   anything else / invalid         -> Anonymous (the policy answers 401)
 //
 // A bearer header wins over a cookie, so a script that also carries a stale
@@ -21,7 +21,6 @@
 namespace hubbo::api {
 
 constexpr const char *kSessionCookie = "hubbo_session";
-constexpr const char *kCsrfHeader = "X-Hubbo-CSRF";
 
 // Clocks the API needs, injected by the platform.
 class Clock {

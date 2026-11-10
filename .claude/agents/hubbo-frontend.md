@@ -16,18 +16,15 @@ the current phase's doc in `docs/design/`.
 `api/` belongs to the API agent. Ask for spec changes through the lead.
 
 **How to work:**
-- Use `bin/hubbo web` (dev, check, build, test) and `bin/hubbo web e2e`.
-- For hub-sim e2e, run `bin/hubbo sim serve` in the foreground first, then
-  `HUBBO_API_TARGET=http://127.0.0.1:8780`.
-- Never wait on a background server.
+- Use `bin/hubbo web` (dev, check, build, test) and `bin/hubbo web e2e`. For hub-sim, use
+  `bin/hubbo web e2e --sim [--auth]`, which starts and stops a fresh hub-sim itself.
 - Never connect to the real Home Assistant.
 - Secrets such as the HA token are write-only in the UI. Never show them or store them in the
   browser.
 - Keep it simple. Don't restyle existing pages unless asked; a redesign is deferred.
-- Gates:
-  - `bin/hubbo web check` and `bin/hubbo web build` pass;
-  - the unit tests pass;
-  - e2e passes against the mock, and against hub-sim in both auth modes.
+- Gate: `bin/hubbo gate web`: check (with the unit tests), build, e2e on the mock (desktop and
+  phone), on hub-sim with `--auth`, and the `noauth` project on hub-sim without auth (the specs
+  whose behaviour differs without auth).
 
 **When you finish a piece of work:** update `docs/team/hubbo-frontend.md` with the state,
 decisions, gotchas and open items. Keep it short and current.

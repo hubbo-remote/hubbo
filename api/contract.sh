@@ -62,20 +62,24 @@ trap cleanup EXIT
 # The mock: no latency, discovery finishes at once, and a remote scan keeps
 # scanning until the contract answers it (like hub-sim's /sim/radio/found).
 if [ -n "$mock_modes" ]; then
-    docker compose run -d --name "$MOCK" -T -e HUBBO_MOCK_PORT="$MOCK_PORT" -e HUBBO_MOCK_LATENCY=0 \
+    docker compose run -d --name "$MOCK" -T -e HUBBO_MOCK_PORT="$MOCK_PORT" -e HUBBO_MOCK_LATENCY=0 -e HUBBO_MOCK_TIME_SCALE=0 \
         -e HUBBO_MOCK_DISCOVER_MS=0 -e HUBBO_MOCK_PAIR_MS=600000 web mock >/dev/null
 fi
 
 docker build -q -t "$IMAGE" -f api/tools/lint.Dockerfile api/tools >/dev/null
 
 if [ -n "$hub_modes" ]; then
-    # Its own build directory: build/native is shared with other builds running
-    # at the same time, and a half-rebuilt tree can link inconsistent objects.
-    docker compose run --rm -T toolchain bash -c '
-        [ -f build/contract/build.ninja ] || cmake -S . -B build/contract -G Ninja -DCMAKE_BUILD_TYPE=Debug >/dev/null
-        cmake --build build/contract --target hub-sim' >/dev/null
-
+    # Build in build/native under its lock (as `bin/hubbo sim` does), then run
+    # a private copy, so a later rebuild can't replace the binary mid-run.
     rm -rf "$CTL"
+    mkdir -p "$CTL"
+    docker compose run --rm -T toolchain bash -c '
+        exec 9>build/native.lock
+        flock 9
+        { [ -f build/native/build.ninja ] ||
+            cmake -S . -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Debug >/dev/null; } &&
+        cmake --build build/native --target hub-sim >/dev/null &&
+        cp build/native/sim/hub-sim '"$CTL"'/hub-sim'
     supervisors=""
     for mode in $hub_modes; do
         mkdir -p "$CTL/$mode"
@@ -91,7 +95,7 @@ if [ -n "$hub_modes" ]; then
             local ctl=$CTL/\$1 extra='' n=0
             while true; do
                 n=\$((n + 1))
-                build/contract/sim/hub-sim serve --port \$2 \$3 --data \$d/\$1 \$extra >>\$d/\$1.log 2>&1 &
+                $CTL/hub-sim serve --port \$2 \$3 --data \$d/\$1 \$extra >>\$d/\$1.log 2>&1 &
                 local pid=\$!
                 echo \$n >\$ctl/started
                 local sent=0
@@ -109,7 +113,7 @@ if [ -n "$hub_modes" ]; then
                 wait \$pid 2>/dev/null || true
                 if [ -f \$ctl/prepare ]; then
                     read -r name file <\$ctl/prepare
-                    build/contract/sim/hub-sim write-record --data \$d/\$1 --name \$name --file \$file >>\$d/\$1.log 2>&1
+                    $CTL/hub-sim write-record --data \$d/\$1 --name \$name --file \$file >>\$d/\$1.log 2>&1
                     rm -f \$ctl/prepare
                 fi
                 if [ -f \$ctl/damage ]; then

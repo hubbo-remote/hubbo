@@ -45,6 +45,7 @@ public:
     api::RuntimeSnapshot snapshot() const override;
     const AdapterSet &adapters() const override { return hub_.adapters(); }
     const char *integrationState(std::string_view integrationId) const override;
+    std::string integrationDetail(std::string_view integrationId) const override;
     const char *deviceAvailability(const DeviceSpec &device) const override;
 
 private:

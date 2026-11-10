@@ -19,9 +19,6 @@ std::string_view cookieValue(std::string_view header, std::string_view name) {
 
 auth::RequestContext Authenticator::authenticate(const http::Request &request) {
     auth::RequestContext context;
-    // Storage may have gone down or come back: settle that first.
-    credentials_.refresh(clock_.monotonicMs());
-    context.adminExists = credentials_.adminExists();
     context.credentialsUnavailable = credentials_.state() == auth::CredentialState::Unavailable;
     // Can't read the credentials: accept none (a token or session can't be
     // checked against a store that can't be read). The policy answers 503.
@@ -39,11 +36,9 @@ auth::RequestContext Authenticator::authenticate(const http::Request &request) {
 
     const std::string_view id = cookieValue(request.headers->header("Cookie"), kSessionCookie);
     if (id.empty()) return context;
-    const auth::SessionAuth session =
-        sessions_.authenticate(id, request.headers->header(kCsrfHeader), clock_.monotonicMs());
+    const auth::SessionAuth session = sessions_.authenticate(id, clock_.monotonicMs());
     if (session.valid) {
         context.principal = auth::Principal::admin();
-        context.csrfValid = session.csrfValid;
         context.sessionExpiresInMs = session.expiresInMs;
     }
     return context;

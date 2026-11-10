@@ -14,9 +14,9 @@ std::string_view trim(std::string_view s) {
 
 }  // namespace
 
-bool isJsonContentType(std::string_view contentType) {
+bool isMediaType(std::string_view contentType, std::string_view mediaType) {
     const size_t semicolon = contentType.find(';');
-    return asciiEqualsIgnoreCase(trim(contentType.substr(0, semicolon)), "application/json");
+    return asciiEqualsIgnoreCase(trim(contentType.substr(0, semicolon)), mediaType);
 }
 
 bool originAllowed(std::string_view origin, std::string_view host) {

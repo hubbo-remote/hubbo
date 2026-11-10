@@ -1,6 +1,7 @@
 # Security
 
-Hubbo is a LAN appliance that controls real devices and holds a Home Assistant credential. This
+Hubbo is a LAN appliance that controls real devices and holds a Home Assistant credential. It's
+sized for one home on a trusted LAN with one admin (Phase 5 trimmed the auth to match). This
 document covers the threat model, how access control works, and the transport and storage
 choices. The code lives in `core/include/hubbo/auth/` and `core/include/hubbo/ha/`; the API
 contract is `api/openapi.yaml`.
@@ -21,10 +22,10 @@ contract is `api/openapi.yaml`.
 
 - **Anything else on the LAN**: a compromised IoT device, a guest phone. It can reach the
   hub's HTTP port and sniff plaintext traffic on a shared segment. *Defence:* authentication on
-  every route except login/session, rate-limited login, TLS (below), no default credentials.
-- **A malicious web page in the admin's browser** (CSRF, DNS rebinding). *Defence:*
-  SameSite=Strict HttpOnly cookie, per-session CSRF token header, JSON-only bodies, Origin check,
-  no CORS headers, and a Host check (see below).
+  every route except setup/login/session, a slow password hash, no default credentials (not even
+  a default username).
+- **A malicious web page in the admin's browser** (CSRF). *Defence:* SameSite=Strict HttpOnly
+  cookie, JSON-only bodies, an Origin check and no CORS headers (see below).
 - **A leaked or over-eager API token**, e.g. an LLM agent. *Defence:* tokens can't register
   devices, change integrations, see secrets, manage tokens, pair, restore or flash. They can only
   touch registered devices through allowlisted commands with typed params. Tokens can be revoked
@@ -41,6 +42,12 @@ contract is `api/openapi.yaml`.
   (Harmony protocol), so anyone nearby with an nRF24 can inject button presses. That is accepted:
   it gives the same power as holding the remote.
 - Internet exposure. Hubbo must not be port-forwarded. Remote access belongs to a VPN or HA.
+- Sniffing on the LAN. HTTPS, secure boot and flash encryption are out of scope (user decision,
+  2026-11-09): the LAN is trusted.
+- DNS rebinding. The Host allowlist was removed in Phase 5. A rebinding page can't send the
+  SameSite=Strict cookie, so it gets only what an anonymous caller gets.
+- Online password guessing. There's no rate limit; each guess costs a PBKDF2 hash (about 0.5 s
+  on the board), and the admin picks the password.
 - A compromised Home Assistant. Hubbo trusts HA's responses about entities and states.
 
 ## Roles
@@ -60,10 +67,11 @@ One admin account and any number of API tokens (max 16). No other roles.
 | Tokens, admin password | yes | **no** |
 | Backup, restore, firmware | yes | **no** |
 
-The table is data in `core/src/auth/policy.cpp` (role, method and CSRF exemption per operation).
-Every operation in the spec has `x-hubbo-role` (and login/setup `x-hubbo-csrf-exempt`), and
-`api/lint.sh` fails if the two disagree. Each route handler calls
-`authorize(operation, context)` before reading the body. `core/tests/auth_policy_test.cpp`
+The table is data in `core/src/auth/policy.cpp`: per operation the requirement (`Public`,
+`TokenOrAdmin` or `AdminOnly`), the method, the body limit and the body type. Every operation in
+the spec has `x-hubbo-role` (`public`, `token` or `admin`) and `api/lint.sh` fails if the two
+disagree. The router calls `authorize(operation, context)` before the handler runs. Setup is
+`Public`; its handler refuses it unless the credentials are `fresh`. `core/tests/auth_policy_test.cpp`
 contains the full matrix written out by hand, so a table change that widens access fails a test.
 
 Registered-device restriction is enforced in validation, not by roles: an action may only name a
@@ -76,16 +84,17 @@ it runs prevalidated compiled actions.
 
 ### Admin password
 
-- Created by the first-run wizard (`POST /auth/setup`), which only works while no admin exists.
-  Whoever reaches a fresh hub first creates the admin. No physical confirmation step (user
-  decision, 2026-11-08): the hub lives on a trusted home LAN and is set up right after flashing.
+- Created by the first-run wizard (`POST /auth/setup`), which only works while the credentials
+  are `fresh`. The user picks the username (`^[A-Za-z0-9_.-]{1,32}$`); there's no default. Whoever
+  reaches a fresh hub first creates the admin. No physical confirmation step (user decision,
+  2026-11-08): the hub lives on a trusted home LAN and is set up right after flashing.
 - 10–128 bytes, no composition rules.
 - Stored as `pbkdf2-sha256$<iterations>$<salt>$<key>` (16-byte random salt, 32-byte key) in NVS.
   Default 10,000 iterations (the minimum accepted). Measured on the dev ESP32-S3 with the
   firmware built at -O2: about 550 ms per setup or login. The earlier default of 60,000 would
   take over 3 s there (and about 4.6 s in the -O0 build that was measured first, at the 5 s
-  task watchdog: setup rebooted the board). For a
-  single-home LAN device the login rate limit matters more than the work factor. The iteration
+  task watchdog: setup rebooted the board). The hash's cost is also what slows online guessing,
+  since there's no rate limit. The iteration
   count is in the string, so existing hashes (including 60,000 ones) still verify and the
   default can change without a migration.
 - Verification compares in constant time. An unknown username is verified against
@@ -98,53 +107,40 @@ it runs prevalidated compiled actions.
 ### Unreadable or damaged credentials
 
 "Can't read" is never "doesn't exist" (`docs/design/persistence-and-contracts.md`, parts 1 and
-6). `auth::Credentials` has four states, and only `fresh` allows `POST /auth/setup`; anything
-else would let whoever asks first take over a hub whose real admin just can't be read:
+6). `auth::Credentials` reads the store once, at boot, into one of three states, and only `fresh`
+allows `POST /auth/setup`. Anything else would let whoever asks first take over a hub whose real
+admin just can't be read:
 
 - `fresh`: the store is readable and positively has no admin.
-- `ok`: the admin (and tokens) loaded.
-- `unavailable`: the medium can't be read. Nothing can be authenticated, so protected requests,
-  login and setup get `503 storage_unavailable`.
-- `corrupt`: the secrets exist but can't be used: an intact record that doesn't decode, tokens
-  without an admin, or a record whose slots are present but none is intact (a torn or rotted
-  write). Setup and login get `409 credentials_corrupt`. The network can't repair this.
-
-The authenticator calls `Credentials::refresh()` on every request. Outside `ok` it reloads with
-backoff (at once on a medium health transition, then 1 s doubling to 60 s), so a broken store
-costs one reload a minute, not one per request. `setupAdmin()` ignores that schedule and always
-re-reads the store before deciding, so a stale `fresh` or `unavailable` never leads to a new
-admin.
+- `ok`: the admin (and tokens) loaded. If the medium goes away later, the cached hash and tokens
+  keep working; writes (new tokens, a password change) fail.
+- `unavailable`: the store couldn't be read, or holds damaged credentials (an intact record that
+  doesn't decode, tokens without an admin, slots that exist but none is intact). Nothing can be
+  authenticated: protected requests, login and setup get `503 storage_unavailable`. Recovery is
+  a reboot, or the wipe (`bin/hubbo ota <ip> --wipe`) when the damage is real.
 
 ### Sessions
 
-- `SessionStore`, RAM only, at most 8. A ninth login evicts the least recently used.
-- Session ID and CSRF token are each 32 random bytes (base64url). One allocation-free
-  `authenticate(id, csrf)` call per request checks both, comparing against every slot in
-  constant time.
-- Idle timeout 8 h, absolute lifetime 24 h. Logout deletes it. Changing the password ends every
-  other session. A reboot ends all of them, because nothing is written to flash.
+- `SessionStore`, RAM only, at most 8. A ninth login evicts the oldest.
+- The session ID is 32 random bytes (base64url). `authenticate(id)` compares it against every
+  slot in constant time, with no allocation.
+- One absolute lifetime of 7 days from login, no idle timer. Logout deletes it. Changing the
+  password ends every other session. A reboot ends all of them (a firmware update too), because
+  nothing is written to flash.
 - Cookie: `hubbo_session=<id>; Path=/; HttpOnly; SameSite=Strict`, plus `Secure` when served
   over HTTPS.
 
-### CSRF and browser defences
+### Cross-site requests
+
+There's no CSRF token (removed in Phase 5). These stop forged browser requests:
 
 1. `SameSite=Strict`: browsers don't send the cookie on cross-site requests at all.
-2. Synchronizer token: the CSRF token comes back from login and `GET /auth/session` in the JSON
-   body. The SPA keeps it in memory (not `localStorage`) and sends `X-Hubbo-CSRF` on every
-   POST/PUT/DELETE. `authorize()` refuses cookie-authenticated unsafe requests without a valid one
-   (`403 csrf_failed`), except login and setup, which run before a session exists.
-3. `Content-Type: application/json` is required for request bodies. Cross-site forms can't
-   send that without a CORS preflight, and Hubbo sends no CORS headers, so the preflight fails.
-4. `Origin`, when present, must match the `Host` header (`originAllowed()`), on every unsafe
-   request, API and host-tool routes alike (`http::Router` checks it before
-   authorization).
-5. **DNS rebinding:** `http::Router::setAllowedHosts()` rejects requests whose `Host` (port
-   ignored, case-insensitive) is not one of the hub's own names, with `421 host_not_allowed`,
-   before routing. A missing Host is rejected too. hub-sim allows `localhost`, `127.0.0.1` and
-   `[::1]`; the firmware must set its IP address, mDNS name and hostname (and update the list
-   when DHCP changes the address).
-
-Bearer tokens are not sent automatically by browsers, so bearer requests skip CSRF checks.
+2. `Content-Type: application/json` is required for request bodies (the firmware image:
+   `application/octet-stream`). Cross-site forms can't send either without a CORS preflight,
+   and Hubbo sends no CORS headers, so the preflight fails.
+3. `Origin`, when present, must match the `Host` header (`originAllowed()`), on every unsafe
+   request, API and host-tool routes alike. `http::Router` checks it before authorization and
+   answers `403 csrf_failed`.
 
 ### API tokens
 
@@ -156,17 +152,6 @@ Bearer tokens are not sent automatically by browsers, so bearer requests skip CS
 - `last_used_at` is kept in RAM only, to save flash wear; it reads `null` again after a reboot.
 - Authentication (`api::Authenticator`): `Authorization: Bearer` wins over a cookie, and a bad
   bearer token never falls back to the cookie.
-
-### Login rate limiting
-
-`LoginRateLimiter`, also used for password change:
-
-- Per client (IPv4 address, or IPv6 /64): 5 free failures, then a lockout that doubles from 1 s
-  up to 15 min. A record is forgotten after an hour without failures. Success clears it.
-- Global: more than 30 failures in a minute locks out every client until the minute ends, so
-  rotating addresses doesn't help.
-- Fixed 16-entry table. A full table recycles the stalest record.
-- Responses are `429 rate_limited` with `Retry-After`.
 
 ### Entropy
 
@@ -189,30 +174,10 @@ session/token after BLE init. If the source fails, the auth code fails closed.
 
 ## Transport (TLS)
 
-Plain HTTP on the LAN exposes the admin password, session cookie and API tokens to anyone who
-can sniff. The architecture requires HTTPS or trusted TLS termination. Options, best first:
-
-1. **TLS on the ESP32 with a locally issued certificate.** `esp_https_server` (mbedTLS) works
-   with arduino-esp32 3.x. Costs: about 40–50 KB of RAM per concurrent TLS session (put buffers
-   in PSRAM), a slower first handshake, and certificate handling. Use ECDSA P-256 for faster
-   handshakes. Certificate choices:
-   - *Self-signed, generated on first boot*: works offline, but the browser warns, and users
-     learn to click through warnings. Show the SHA-256 fingerprint in the first-run wizard and on
-     the serial console so the user can check it once.
-   - *User-supplied cert/key* (e.g. from their own CA or a Let's Encrypt DNS-01 cert for
-     `hubbo.home.example.com`): no warnings, more setup. Upload is admin-only, and the key goes
-     in NVS.
-2. **Trusted TLS termination** (a reverse proxy the user already runs, e.g. Caddy or HA's NGINX
-   add-on) with Hubbo reachable only from that proxy. Needs an explicit "trusted proxy" setting,
-   and then Hubbo must refuse direct HTTP from other hosts. This is easy to misconfigure.
-3. **Plain HTTP**: only for first boot and for the simulator. The UI should show a persistent
-   warning, and the `Secure` cookie attribute can't be used.
-
-Recommendation: ship (1) with a self-signed cert generated on first boot, keep HTTP on port 80
-only to redirect to HTTPS (after setup), and allow a user-supplied cert. Measure RAM and
-latency on the board before committing (it's in the architecture's verification list). RF
-dispatch must not wait on TLS. The HTTP server runs at lower priority than the RF and engine
-tasks.
+The admin web UI and API are plain HTTP on the LAN. HTTPS is out of scope (user decision,
+2026-11-09): the LAN is trusted, and anyone who can sniff it can see the admin password, the
+session cookie and API tokens. The `Secure` cookie attribute is set only if a TLS transport ever
+sets `Request::secure`.
 
 Outbound to Home Assistant: an `https://` URL connects over `wss://`, verified against the
 public CA bundle in the firmware (`verify_tls: true`, the default). `verify_tls: false` keeps
@@ -246,7 +211,7 @@ message and nowhere else.
 | HA access token | NVS | no | never (`has_access_token: true/false`) |
 | BLE bond keys | NimBLE's NVS store | no | never |
 | TLS private key | NVS | no | never |
-| Sessions | RAM | no | CSRF token only, to its own session |
+| Sessions | RAM | no | never (the cookie only, at login) |
 
 NVS options on the ESP32-S3:
 
@@ -264,6 +229,9 @@ NVS options on the ESP32-S3:
 - **HMAC-based NVS key protection** (ESP-IDF 5.x, eFuse HMAC key): derives the NVS key from an
   eFuse key without a key partition. Check whether arduino-esp32 3.3.12's prebuilt IDF config
   allows it.
+
+Flash encryption and secure boot are out of scope (user decision, 2026-11-09). The notes below
+stay for reference.
 
 Recommendation: MVP ships with NVS encryption off but the code written so it can be turned on
 (all secrets in NVS through one storage interface, nothing secret in LittleFS). Document an
@@ -286,26 +254,47 @@ it.
 
 ## Firmware updates
 
-`POST /admin/firmware/update` is admin-only and CSRF-protected. The image is verified (signature
-if Secure Boot / signed OTA is set up, board ID, size, SHA-256) before it is marked bootable, and
-a failed first boot rolls back. Until signing is in place, an attacker with the admin session
-can flash anything. That's the admin's power by definition, but it raises the value of the admin
-session, which is another reason for TLS.
+`POST /admin/firmware/update` is admin-only (a token gets `403`). The body is the whole app
+image, buffered in PSRAM by the transport, with its own body limit (the OTA slot, 6.25 MiB; the
+policy table's one `Body::Binary` row). Before anything is erased, `api::validateFirmwareImage()`
+checks it fits the slot, it's an ESP32-S3 app image for this chip revision (not a merged factory
+image), it carries the Hubbo marker for this board and partition layout, and its appended
+SHA-256 matches. Then the firmware's writer task writes it, sets it to boot and reboots. There's
+no rollback (user decision).
+
+These checks stop the realistic mistake, uploading the wrong file. They aren't a signature:
+there's no secure boot, so an attacker with the admin session can flash anything that passes
+them. That's the admin's power by definition. ArduinoOTA (for `bin/hubbo ota`) stays, behind
+its own compiled-in password hash, and shares the one-update-at-a-time owner flag.
+
+## Factory reset
+
+`POST /admin/factory-reset` is admin-only (a token gets `403`) and is refused (`409`) during a
+firmware update. It answers `202`, then the hub erases every secret (the login, tokens, the HA
+token), the BLE bonds, the remote endpoint and the config filesystem, and restarts into
+first-run setup (`fresh`). Like the first boot, whoever reaches the hub first can then set it
+up, which is fine on a trusted LAN. The Apple TV keeps its side of the pairing until it forgets
+"Hubbo". `POST /admin/reset` (reset configuration) keeps all secrets and pairings. With
+`unavailable` credentials nobody can authenticate, so recovery stays the wipe.
 
 ## Security test checklist
 
-Covered by unit tests today (`core/tests/auth_*_test.cpp`, `ha_capabilities_test.cpp`):
+Covered by unit tests today (`core/tests/auth_*_test.cpp`, `route_test.cpp`,
+`firmware_update_test.cpp`, `ha_capabilities_test.cpp`):
 
 - [x] Role matrix: every operation × anonymous/token/admin.
-- [x] Tokens get 403 on every admin operation.
-- [x] CSRF required for cookie POST/PUT/DELETE; not for bearer; login/setup exempt.
-- [x] Setup closes once an admin exists.
+- [x] Tokens get 403 on every admin operation, firmware and factory reset included.
+- [x] A foreign Origin is `403 csrf_failed` on API and host-tool routes.
+- [x] Setup works only while `fresh`, and takes the user's own username.
+- [x] Credentials read once at boot: unreadable or damaged is `unavailable`, never `fresh`.
 - [x] Forged simulator principal gets nothing in non-simulator builds.
-- [x] Sessions: expiry (idle and absolute), eviction, logout, reboot loses all, CSRF token bound
-      to its session.
+- [x] Sessions: absolute expiry, eviction, logout, reboot loses all.
+- [x] Factory reset: refused mid-update, 202 first, then every secret erased and setup open
+      again (contract, both modes).
 - [x] Tokens: wrong secret, wrong id, malformed and revoked tokens rejected.
 - [x] Password hashing: RFC test vectors, salts differ, malformed stored hashes rejected.
-- [x] Rate limiter: free attempts, doubling, cap, global limit, forgetting.
+- [x] Firmware images: every validation step refuses its mistake, in order; the body type and
+      limit come from the policy table.
 - [x] HA: `entity_id`/`target`/`area_id`/… params refused; ranges, types, enums; no toggle,
       play_media or join; broadcast and malformed entity IDs refused; only allowlisted data keys.
 - [x] OpenAPI: nested objects/arrays in params, raw service fields and HA entity IDs as
@@ -314,11 +303,14 @@ Covered by unit tests today (`core/tests/auth_*_test.cpp`, `ha_capabilities_test
 
 Covered over HTTP against hub-sim by `api/contract.sh` (both modes):
 
-- [x] Auth-enabled simulator: setup, login, cookie + CSRF, tokens, every admin operation 403 for
-      a token, revocation, logout, login rate limiting, cross-origin login refused.
+- [x] Auth-enabled simulator: setup (bad username refused, no default `admin`), login, cookies,
+      tokens, every admin operation 403 for a token (a real firmware image too), revocation,
+      logout, cross-origin requests refused, wrong passwords stay 401.
+- [x] Firmware update: every refusal (411, 413, 415, 422 `wrong_board`/`invalid_image`, 409,
+      503) changes nothing; a good image writes, reboots and ends idle; a failed write.
+- [x] Credentials unreadable at boot or damaged: `unavailable`, setup and login 503.
 - [x] The malicious fixtures are refused (400/422).
 - [x] Body limits (`413`), JSON depth limit (`400`), `415` for non-JSON.
-- [x] Host-header allowlist (`421`).
 - [x] No secret-named field in any response (except the one-time token creation).
 - [x] The HA token, once sent, appears in no response of any operation or status, the backup
       included; a new URL clears it; the token is write-only (`has_access_token` only).
@@ -328,5 +320,4 @@ Still to do:
 - [ ] No secret in any log line (grep the simulator's output for the test secrets). Backups are
       covered for the HA token (above).
 - [ ] CI proves the ESP32 build cannot define `HUBBO_SIMULATOR_NO_AUTH`.
-- [ ] On hardware: PBKDF2 login time, TLS RAM and handshake time, `esp_fill_random` after BLE
-      init.
+- [ ] On hardware: `esp_fill_random` after BLE init.

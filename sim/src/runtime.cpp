@@ -5,6 +5,8 @@
 #include <ctime>
 #include <random>
 
+#include "hubbo/integrations/ble_state.h"
+
 namespace hubbo::sim {
 
 bool HostRandom::fill(uint8_t *out, size_t length) {
@@ -57,22 +59,25 @@ const char *SimRuntime::integrationState(std::string_view integrationId) const {
     if (integration->type == kHomeAssistantType && hub_.realHomeAssistant()) {
         return integrations::haIntegrationState(hub_.haClient(), *integration);
     }
-    if (!integration->enabled) return "disabled";
     if (integration->type == kBleHidType) {
-        // As the board's BleHid: the bond (the pairing port) first, then the link.
-        switch (hub_.blePairing().status().state) {
-            case api::BlePairState::NotReady: return "error";
-            case api::BlePairState::Pairing: return "connecting";
-            case api::BlePairState::Paired: return hub_.hid().connected() ? "connected" : "disconnected";
-            case api::BlePairState::Idle:
-            case api::BlePairState::Failed: return "not_configured";
-        }
+        return integrations::bleIntegrationState(*integration, hub_.blePairing().status().state, hub_.hid().connected());
     }
+    if (!integration->enabled) return "disabled";
     if (integration->type == kHomeAssistantType && !hub_.homeAssistant().available()) return "disconnected";
     return "connected";
 }
 
+std::string SimRuntime::integrationDetail(std::string_view integrationId) const {
+    const IntegrationSpec *integration = hub_.configService().findIntegration(integrationId);
+    if (integration == nullptr || integration->type != kBleHidType) return {};
+    const api::BlePairingStatus pairing = hub_.blePairing().status();
+    return integrations::bleIntegrationDetail(pairing.state, hub_.hid().connected(), pairing.peerName);
+}
+
 const char *SimRuntime::deviceAvailability(const DeviceSpec &device) const {
+    if (device.provider.type == kBleHidType) {
+        return integrations::bleDeviceAvailability(hub_.blePairing().status().state, hub_.hid().connected());
+    }
     if (!hub_.realHomeAssistant() || device.provider.type != kHomeAssistantType) return "unknown";
     return integrations::haDeviceAvailability(hub_.haClient(), device);
 }
