@@ -1,9 +1,38 @@
 # hubbo-core: working notes
 
-Current as of Phase 4, on branch `phase-4`, not yet committed (Phase 3 is merged). Design:
-`docs/design/phase3-home-assistant.md`. This file covers state, decisions and traps only.
+Current as of Phase 5, on branch `phase-5`, not yet committed (Phase 4 is merged). Design:
+`docs/design/phase5-appliance.md`. This file covers state, decisions and traps only.
 
 ## State
+
+- Phase 5 (design section 4, plus the hub-sim side of section 2):
+  - `integrations/ble_state.*`: the shared ble_hid mapping. `bleIntegrationState(spec, pairState,
+    hostConnected)` ("disabled" first), `bleIntegrationDetail(...)` (the board's old bleText lines),
+    and `bleDeviceAvailability(...)`. hub-sim uses all three (SimRuntime). The firmware should map
+    BleHid::State onto them: Off is NotReady, NotPaired is Idle/Failed, Waiting is Paired with the
+    link down, Connected is Paired with the link up. hub-sim's ble_hid devices now report
+    available/unavailable, not unknown.
+  - SimHub owns an `api::SimulatedFirmwareUpdate` (`firmware()`), advanced with hub time and
+    replaced on factoryReset. It's passed as `ApiContext::firmware`. `POST /sim/firmware?fail=0|1&ready=0|1`
+    sets failWrites/ready (400 without a valid one). When a simulated reboot finishes an update
+    (Writing/Rebooting to Idle), `SimHub::onFirmwareRebooted` fires and SimApi clears every session,
+    as the board's restart does. The reported version doesn't change (the lead's call: no API hook
+    just for the sim; the board test checks the real version).
+  - Factory reset (design end of section 3): SimHub holds an `api::SimulatedFactoryReset`
+    (`factoryResetPort()`), advanced on hub time, passed as `ApiContext::factoryReset`. Its erase
+    calls `SimHub::onFactoryReset` (like `onFirmwareRebooted`), which SimApi sets to
+    `eraseEverything()`: `auth::eraseAllSecrets`, sessions cleared, `SimHub::wipe(&credentials)`,
+    then `applyHomeAssistantSettings` again (no token: not_configured). `wipe()` is the board's
+    wiped restart: `stopEverything()` (shared with /sim/reset: keys released, nothing active or
+    saved active, remote unpaired), BLE unbonded (not `resetBle()`), the config record's slots
+    removed, then `boot(ConfigSpec{}, credentials)` through bootHub() (the firmware's defaults:
+    built-ins only, generation 1; `lastBoot()` reports it). `/sim/reset` gives a fresh port.
+    `POST /sim/factory-reset?ready=0|1`. Without a `secrets` store (tests that don't pass one), the
+    login isn't erased. Not to confuse: `SimHub::factoryReset()` is /sim/reset (seed config, bonded BLE).
+  - Auth trim applied in sim: no login limiter, no clientKey, no Host allowlist (any Host is
+    served; a foreign Origin on an unsafe method is 403 csrf_failed, test ForeignOriginIsRefused),
+    SimulatorNoAuth only sets the simulator principal. ApiContext is built positionally in
+    sim_api's `context()`, with `firmware` last.
 
 - Phases 2 and 3 are committed. Phase 4 core work is green on `bin/hubbo test`, `tsan` and `asan`:
   - `integrations/websocket_transport.h`: the port (connect, send, close, `poll(timeout)`, and
@@ -144,6 +173,9 @@ Current as of Phase 4, on branch `phase-4`, not yet committed (Phase 3 is merged
   into ws://.../api/websocket, and FakeHaTransport only accepts ws:// or wss://.
 - ApiContext is an aggregate under `-Werror=missing-field-initializers`. Every new field breaks every
   brace-init, so sim_api.cpp builds it through the `context()` helper.
+- `RebootRoundTrip.RandomSequences` runs 300 seeds, but only 30 under tsan/asan (detected by
+  `__SANITIZE_*__` / `__has_feature`); `HUBBO_ROUNDTRIP_ITERATIONS=N` overrides. It's the slowest test.
+- While working, run `bin/hubbo test -R <filter>`; tsan and asan run once at phase end.
 - Build only through `bin/hubbo test|tsan|asan|sim` (they lock the build dirs). `-R <regex>` passes
   through to ctest. Run servers in the foreground; `api/contract.sh` manages its own hub-sim.
 - Avoid Arduino macro names (bit, min, max, abs) in core. Use `sim::bind`, not `std::bind`, with ADL
@@ -156,6 +188,5 @@ Current as of Phase 4, on branch `phase-4`, not yet committed (Phase 3 is merged
 - Firmware: pass the client a millis Clock and use `haIntegrationState()` in EngineRuntime (check).
 - In real mode, `ha latency` and `ha fail` scenario verbs are refused; only `ha available|unavailable`
   works. Use /sim/ha for faults.
-- The sim's BLE state names (runtime.cpp) copy the firmware's `bleText` table by hand. A shared core
-  `bleIntegrationState()` would keep them in step; it needs a firmware change, so it waits for the lead.
+- Firmware: switch engine_runtime's bleText to `integrations/ble_state.h` (hubbo-firmware's job).
 - At the phase commit: /commits with only this area's files, staged by path.
