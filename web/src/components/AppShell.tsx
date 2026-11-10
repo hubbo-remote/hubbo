@@ -76,7 +76,14 @@ export function AppShell({ session, onSignedOut, children }: { session: Session;
 
   return (
     <div className="min-h-dvh md:grid md:grid-cols-[15rem_minmax(0,1fr)]">
-      <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-card focus:px-3 focus:py-2 focus:shadow">
+      {/* Hash routing: "#main" would be a route, so move focus instead of following the link. */}
+      <a
+        href="#main"
+        onClick={(e) => {
+          e.preventDefault()
+          document.getElementById('main')?.focus()
+        }}
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-card focus:px-3 focus:py-2 focus:shadow">
         Skip to content
       </a>
       {/* Desktop sidebar */}
@@ -136,7 +143,7 @@ export function AppShell({ session, onSignedOut, children }: { session: Session;
         <div className="hidden h-16 items-center justify-end gap-3 px-8 md:flex">
           <ActiveChip />
         </div>
-        <main id="main" className="mx-auto w-full max-w-6xl flex-1 px-4 pt-4 pb-28 sm:px-6 md:px-8 md:pt-0 md:pb-12">
+        <main id="main" tabIndex={-1} className="outline-none mx-auto w-full max-w-6xl flex-1 px-4 pt-4 pb-28 sm:px-6 md:px-8 md:pt-0 md:pb-12">
           {children}
         </main>
       </div>

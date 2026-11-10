@@ -87,6 +87,9 @@ const ICONS: Record<IconName, ReactNode> = {
   ),
 }
 
+/** Minimum hit area per key, in viewBox units (≥ 24 px once the remote is ~1.5 px per unit, as on a phone). */
+const HIT = 16
+
 function ShapeEl({ s, ...rest }: { s: Shape } & React.SVGProps<SVGPathElement & SVGCircleElement>) {
   return s.kind === 'circle' ? <circle cx={s.cx} cy={s.cy} r={s.r} {...rest} /> : <path d={s.d} {...rest} />
 }
@@ -195,6 +198,8 @@ export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, 
             className={cn('group outline-none', interactive && 'cursor-pointer')}
           >
             <title>{`${name} (${k.id})${ev.length ? ` · ${ev.join(', ')}` : ''}`}</title>
+            {/* An invisible minimum hit area: small keys (numbers, colours) stay tappable on a phone. */}
+            {interactive && <rect x={cx - HIT / 2} y={cy - HIT / 2} width={HIT} height={HIT} fill="transparent" />}
             {/* Focus/selection ring: the same shape stroked wide behind the key, whose fill hides the inner half. */}
             <ShapeEl
               s={k.shape}
