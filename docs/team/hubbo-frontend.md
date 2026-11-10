@@ -2,7 +2,37 @@
 
 Current state, not a log. Update when a piece of work lands.
 
-## State of the web admin (Phase 5 in progress on `phase-5`, not committed)
+## Polish round 1 (branch `polish`, not committed; docs/design/polish-ux.md)
+
+- **Routes, no redirects** (the product never shipped; old routes are deleted): `/` Activities
+  (home), `/activities/global|new|:id`, `/devices[/:id]`, `/integrations`, `/status/:tab?`
+  (overview, backups, firmware, diagnostics), `/settings/:tab?` (account, tokens, remote, network,
+  reset). An unknown tab renders NotFound. Nav: Activities, Devices, Integrations, Status, Settings.
+- **Home** (`pages/Activities.tsx`, eager): tiles are `aria-pressed` buttons that start the
+  activity; compact one-line rows (one column on a phone), the running one filled with an "On"
+  pill; Off is in the header (disabled, still visible, when nothing runs); edit/duplicate/delete sit behind
+  "More for <name>". e2e locators on tile names need `exact: true` (they clash with "More for").
+- Dashboard is gone; `pages/Status.tsx` holds overview and diagnostics, `admin/Backups.tsx` the
+  backup/restore that was in Settings. Appearance tab removed. Resets live in Settings → Reset.
+- **Copy rules** (the user's): like regular apps, light and short; never explain the
+  implementation or the dev process, never assume our setup (Apple TV, HA, our remote). The
+  "hands off the UI" rule is lifted for the polish pass.
+- Shared: `Facts` (common.tsx), `EVENT_VERB` (lib/remote), `plural` (lib/utils),
+  `isUserIntegration` and `KIND_LABEL` (lib/health). `ErrorState`/`NotAvailable` lost `what`.
+- **Integrations**: the card header is the one place the state shows (`state-<id>` test id;
+  /integrations polled every 3 s, since /status has no `detail`). Bluetooth shows the hub's
+  detail alone ("Connected to Family Room"); others `state · detail`. `HaConnection` shows
+  only its alerts there; Setup passes `showState` for the state line.
+- Device page: service ids show only in an opened command; "Change entity…" (was Re-link). The
+  remote endpoint shows no radio status, only an alert when the radio isn't working.
+- Firmware refusals show the hub's message (now plain). The mock's strings match the hub's:
+  BLE detail, "Not set up", "<id> isn't in Home Assistant", "Used by …", the firmware refusals.
+- **Screenshots**: no before/after shots unless the lead asks. `e2e/shots.spec.ts` runs only when
+  `build/shots/.take` exists; it writes `build/shots/current/<desktop|phone>/`, moved by hand to
+  `before/` or `after/`. `build/shots/index.json` holds captions and old → new names.
+- API messages were made plain by the API and core agents (round 2).
+
+## State of the web admin (Phase 5, committed on `phase-5`)
 
 - React 19 + TS + Vite + Tailwind, shadcn-style components in `web/src/components/ui`. wouter with
   hash URLs. Our own small query cache in `src/api/hooks.ts`: `useQuery(key, fn, { pollMs,
@@ -61,7 +91,7 @@ Current state, not a log. Update when a piece of work lands.
   - Setup and Login start with an **empty username** (autofocus there; `autoComplete` username /
     new-password / current-password). The mock's set-up admin and e2e `ADMIN` are the login
     fixture's (`hubbo-owner`, like api/tools/contract.py).
-  - **Firmware** (`components/admin/FirmwareUpdate.tsx`, Settings → Firmware): version and board;
+  - **Firmware** (`components/admin/FirmwareUpdate.tsx`, Status → Firmware): version and board;
     a .bin picker that reads the file's marker (`lib/firmware.ts readMarker`) to say "Hubbo vX for
     <board>" (the hub decides; nothing blocks client-side); `api.uploadFirmware` is XHR for
     `upload.onprogress` (the browser sets Content-Length). After the 202 it polls GET
@@ -80,11 +110,11 @@ Current state, not a log. Update when a piece of work lands.
     half of the reboot drops connections (`status: 0` → socket destroyed); at its end the
     version changes and every session is cleared. `/__mock/firmware?fail=&ready=` mirrors
     `/sim/firmware`; mock-only `?revert=1` reboots into the old version.
-- **Backup & reset** (Settings, after the board test):
+- **Backup & reset** (Status → Backups; Settings → Reset):
   - "Reset configuration" (POST /admin/reset, `api.resetConfiguration`): devices, activities,
     global buttons and integration settings go; login, tokens and pairings stay. Typed `reset`.
   - "Factory reset" (`components/admin/FactoryReset.tsx`, POST /admin/factory-reset): erases
-    everything; typed `erase`; says to forget "Hubbo" on the Apple TV. After the 202 it shows
+    everything; typed `erase`. After the 202 it shows
     "Erasing… the hub is restarting", polls the public /auth/session (not /status: sessions are
     gone) until `fresh`, then reloads into setup. Refusals show "Nothing was erased".
   - After a restore, if ha_main has a URL but no token, a notice links to Integrations (backups
@@ -103,8 +133,10 @@ Current state, not a log. Update when a piece of work lands.
   `HUBBO_MOCK_LATENCY`, `_FIRST_RUN=1`, `_AUTH=1`, `_PAIR_MS`, `_DISCOVER_MS` (e2e sets both to 0).
 - **hub-sim**: `HUBBO_API_TARGET=http://127.0.0.1:8780` proxies to `bin/hubbo sim serve` (real
   core with fakes: fake HA at `http://homeassistant.local:8123`, token `fake-ha-token`).
-- **Board**: a dev server already runs on :5180 proxied to the board. Never start another on 5180;
-  e2e uses its own Vite on :5181.
+- **Dev server**: :5180 proxies to a local hub-sim, not the board (`bin/hubbo sim serve --port
+  8790 --data build/sim-dev --auth`, then `HUBBO_API_TARGET=http://127.0.0.1:8790 bin/hubbo web
+  dev`). Never start another on 5180; port 8780 is reserved for the e2e sim; e2e uses its own Vite
+  on :5181. Use the board only when hardware is truly needed.
 
 ## Mock controls (never in the real API)
 
@@ -132,7 +164,7 @@ Current state, not a log. Update when a piece of work lands.
   `advance`, `setStorage`, `registerHa`, `removeHaEntity`, `discoverHa`, `api(page)`, all over
   `control(page, path)` (`/sim/<path>` or `/__mock/<path>`).
 - Projects: first-run → seeded → app and phone (both depend on seeded; phone on the mock only).
-  `phone` (390×844, touch) runs dashboard, remote, ble and a11y.
+  `phone` (390×844, touch) runs activate, status, remote, ble and a11y.
   `workers: 1` (one shared hub). `board` is read-only against a real board (`HUBBO_E2E_BASE_URL`),
   keeps no trace/screenshot/video, and **the normal projects must never point at a board**.
 - A file filter is a substring (`ble` matches `unavailable.spec.ts`; use `ble.spec`). Project
@@ -177,10 +209,6 @@ Current state, not a log. Update when a piece of work lands.
 
 ## Key decisions
 
-- **No UI copy or UX changes until the polish pass** unless the lead relays a functional need. The
-  user finds the UI has far too many notes; UX and copy get reworked in the polish pass (fast,
-  without the board). A Bluetooth line in the restore note was added and reverted for this reason.
-
 - Secrets: nothing secret in browser storage (no CSRF token any more); the HA token is write-only. e2e checks with `expectNotStoredInBrowser`.
 - Backups are an opaque blob; restore sends the file exactly as chosen.
 - Never round-trip `ha_capabilities` (422 unknown_field): PUTs send name/kind/provider/revision.
@@ -193,11 +221,19 @@ Current state, not a log. Update when a piece of work lands.
 
 ## Open items
 
-- Phase 5 web work isn't committed; `/simplify` done. `bin/hubbo gate web` green on this tree
-  2026-11-09 (mock 93 passed; `--sim --auth` 59; `noauth` 4), plus contract mock + mock-auth.
-- Skipped in /simplify: drive the firmware poll through `useQuery` pollMs (drops the run ref and
-  eslint-disables); a shared ProgressBar (PairRemote has the same markup) and key/value `Facts`
-  component; one mock clock for every timer; hub-sim reporting the new version and dropping
+- The polish rounds aren't committed; `/simplify` done. Gate 2026-11-10 after the review fixes:
+  green (unit 82; mock 102 passed; `--sim --auth` 64; `noauth` 4).
+- Accepted by the lead, leave as is: Recent errors show the raw message (Status is the debug
+  page); the 3 s /integrations poll; the header can lag an HA save by up to 2 s.
+- Skipped in polish /simplify: one route table shared by App and the nav; a RoutedTabs helper for
+  Status and Settings; moving `LIMITS` out of the entry chunk; `useStatus` by Status tab (changes
+  the uptime refresh); one `inSetup` banner prop (changes copy for a non-admin); `Section`
+  regions to replace the e2e `exact: true` locators (changes the a11y tree); an `ErrorState`
+  overrides prop for the per-component error-code copy; deriving the post-restore token notice
+  from the preview's `requires` (behavior); dropping `export` from file-local helpers.
+- Skipped in Phase 5 /simplify: drive the firmware poll through `useQuery` pollMs (drops the run
+  ref and eslint-disables); a shared ProgressBar (PairRemote has the same markup); one mock clock
+  for every timer; hub-sim reporting the new version and dropping
   sessions after a simulated reboot (core/API ask) would remove the `SIM_URL` branches.
 - Flaky once each, passed on rerun: `activity.spec:163` (mock), `watch-apple-tv` (hub-sim).
 - Board check of the firmware flow is pending (the real reboot: network errors, then a 401).
