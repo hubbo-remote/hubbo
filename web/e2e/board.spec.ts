@@ -26,7 +26,7 @@ test('the board serves the UI: it loads under its CSP, styled, with nothing bloc
   const problems = await watch(page)
   const res = await page.goto('/')
   expect(res?.headers()['content-security-policy']).toContain("default-src 'self'")
-  await expect(page.getByRole('heading', { name: 'Sign in to Hubbo' }).or(page.getByRole('heading', { name: 'Dashboard' }))).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Sign in to Hubbo' }).or(page.getByRole('heading', { name: 'Activities' }))).toBeVisible()
   // Tailwind's stylesheet applied (the body isn't the browser's default white-on-nothing).
   expect(await page.evaluate(() => getComputedStyle(document.body).fontFamily)).not.toBe('Times New Roman')
   expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--background').trim())).not.toBe('')
@@ -40,9 +40,10 @@ test('signed in, the main pages render read-only with nothing blocked', async ({
   await page.getByLabel('Username').fill(USER)
   await page.getByLabel('Password').fill(PASSWORD!)
   await page.getByRole('button', { name: 'Sign in' }).click()
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Activities' })).toBeVisible()
+  await page.goto('/#/status')
   for (const name of ['Remote', 'Bluetooth', 'Home Assistant', 'Ethernet']) await expect(page.getByText(name, { exact: true }).first()).toBeVisible()
-  for (const [hash, heading] of [['/activities', 'Activities'], ['/devices', 'Devices'], ['/integrations', 'Integrations'], ['/settings/diagnostics', 'Settings']]) {
+  for (const [hash, heading] of [['/devices', 'Devices'], ['/integrations', 'Integrations'], ['/status/diagnostics', 'Status'], ['/settings/account', 'Settings']]) {
     await page.goto(`/#${hash}`)
     await expect(page.getByRole('heading', { name: heading, level: 1 })).toBeVisible()
   }

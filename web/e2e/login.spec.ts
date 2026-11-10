@@ -10,7 +10,7 @@ test('login, wrong password, sign out', async ({ page }) => {
   await expect(page.getByRole('alert')).toContainText(/wrong username or password/i)
 
   await signIn(page)
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Activities' })).toBeVisible()
   // The session is an HttpOnly cookie: invisible to page script.
   expect(await page.evaluate(() => document.cookie)).not.toContain('hubbo_session')
 

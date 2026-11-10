@@ -11,7 +11,7 @@ test('devices list and command tests with typed params', async ({ page }) => {
   await page.getByLabel('Level', { exact: true }).fill('0.4')
   await page.getByRole('button', { name: 'Test' }).click()
   // hub-sim's fake adapters may answer differently from the mock's fixtures.
-  await expect(page.getByText(SIM_URL ? /^(Accepted|Timed out|Failed)/ : /^Accepted/)).toBeVisible()
+  await expect(page.getByText(SIM_URL ? /^(Sent|Timed out|Failed)/ : /^Sent/)).toBeVisible()
 
   // Out-of-range input is flagged before anything is sent.
   await page.getByLabel('Level', { exact: true }).fill('3')
@@ -29,23 +29,23 @@ test('a command that times out reports it, not an HTTP error', async ({ page }) 
 test('hold commands are binding-only on the device page', async ({ page }) => {
   await open(page, '/devices/dev_apple_tv')
   const keyDown = page.getByRole('button', { name: /^Key down/ })
-  await expect(keyDown).toContainText('Binding only')
+  await expect(keyDown).toContainText('Buttons only')
   await keyDown.click()
-  await expect(page.getByText('can’t be tested on its own')).toBeVisible()
+  await expect(page.getByText('It can’t be tested here.')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Test' })).toHaveCount(0)
   // Momentary commands still have a test form.
   await page.getByRole('button', { name: /^Key tap/ }).click()
   await expect(page.getByRole('button', { name: 'Test' })).toBeVisible()
 })
 
-test('the Home Assistant search keeps its box (and focus) while results update; the kind picker shows its arrow', async ({ page }) => {
+test('the Home Assistant search keeps its box (and focus) while results update; the type picker shows its arrow', async ({ page }) => {
   await connectHa(page)
   await open(page, '/devices')
   await page.getByRole('button', { name: 'Add device' }).click()
   const dialog = page.getByRole('dialog')
   await dialog.getByRole('button', { name: /Home Assistant/ }).click()
-  const search = dialog.getByLabel('Search Home Assistant entities')
-  const results = dialog.getByRole('list', { name: 'Discovered entities' })
+  const search = dialog.getByLabel('Search devices')
+  const results = dialog.getByRole('list', { name: 'Devices found' })
   await expect(results).toBeVisible()
   await search.click()
   const box = await search.elementHandle()
@@ -65,6 +65,6 @@ test('the Home Assistant search keeps its box (and focus) while results update; 
   const free = SIM_URL ? 'media_player.denon' : 'switch.tv_backlight'
   await search.fill(free)
   await results.getByRole('button', { name: free }).click()
-  await expect(dialog.getByLabel('Kind')).toBeVisible()
+  await expect(dialog.getByLabel('Type')).toBeVisible()
   await expect(dialog.locator('#dev-kind ~ svg')).toBeVisible() // a picker, not a text field
 })

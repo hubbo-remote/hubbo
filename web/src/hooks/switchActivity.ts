@@ -14,8 +14,8 @@ export async function switchActivity(id: string | 'off', nameOf: (id: string) =>
     toast(m.title, { variant: m.variant, description: m.description })
   } catch (e) {
     const err = toApiError(e)
-    if (err.code === 'busy') toast('The hub is busy', { variant: 'error', description: 'Nothing changed. Try again in a moment.' })
-    else toastError(id === 'off' ? 'Could not turn off' : 'Could not start the activity', e)
+    if (err.code === 'busy') toast('Hubbo is busy', { variant: 'error', description: 'Try again in a moment.' })
+    else toastError(id === 'off' ? 'Couldn’t turn off' : 'Couldn’t start the activity', e)
   } finally {
     invalidate('status', 'activities')
   }

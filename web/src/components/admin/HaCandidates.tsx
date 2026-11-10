@@ -65,17 +65,17 @@ export function HaCandidates({ integration, onPick, blocker = defaultBlocker }: 
     if (e.code === 'integration_unavailable')
       return (
         <Alert variant="error" title="Home Assistant isn’t connected" action={<Button size="sm" variant="outline" onClick={start}>Retry</Button>}>
-          Hubbo can only list entities while it’s connected to Home Assistant. Check its state under Integrations. ({e.message})
+          Connect it under Integrations, then try again.
         </Alert>
       )
-    return <ErrorState error={error} retry={start} what="Browsing Home Assistant entities" />
+    return <ErrorState error={error} retry={start} />
   }
   if (!disc.data) return <div className="grid gap-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-12" />)}</div>
 
   if (state === 'running' || (state === 'idle' && busy))
     return (
       <div className="flex flex-wrap items-center gap-3 rounded-lg border px-3 py-4 text-sm" aria-live="polite">
-        <Loader2 className="size-4 animate-spin text-primary" /> Reading entities and services from Home Assistant…
+        <Loader2 className="size-4 animate-spin text-primary" /> Looking for devices…
         <Button size="sm" variant="outline" className="ml-auto" onClick={cancel}>
           Cancel
         </Button>
@@ -84,15 +84,15 @@ export function HaCandidates({ integration, onPick, blocker = defaultBlocker }: 
   if (state === 'idle')
     return (
       <div className="grid justify-items-start gap-2 text-sm text-muted-foreground">
-        <p>Discovery was cancelled.</p>
+        <p>Stopped.</p>
         <Button size="sm" onClick={start} disabled={busy}>
-          <Search /> Discover entities
+          <Search /> Look again
         </Button>
       </div>
     )
   if (state === 'failed')
     return (
-      <Alert variant="error" title="Discovery failed" action={<Button size="sm" variant="outline" onClick={start} disabled={busy}>Try again</Button>}>
+      <Alert variant="error" title="Couldn’t load devices" action={<Button size="sm" variant="outline" onClick={start} disabled={busy}>Try again</Button>}>
         {disc.data.error ?? 'Home Assistant didn’t answer.'}
       </Alert>
     )
@@ -101,17 +101,17 @@ export function HaCandidates({ integration, onPick, blocker = defaultBlocker }: 
   const truncated = disc.data.truncated ?? 0
   return (
     <div className="grid gap-3">
-      {truncated > 0 && <Alert variant="warning">{truncated} entities weren’t loaded (more than 2048 supported entities).</Alert>}
+      {truncated > 0 && <Alert variant="warning">{truncated} more weren’t loaded.</Alert>}
       <div className="flex gap-2">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input placeholder="Search entities" aria-label="Search Home Assistant entities" value={q} onChange={(e) => setQ(e.target.value)} className="pl-9" maxLength={48} autoFocus />
+          <Input placeholder="Search" aria-label="Search devices" value={q} onChange={(e) => setQ(e.target.value)} className="pl-9" maxLength={48} autoFocus />
         </div>
-        <Button variant="outline" size="icon" onClick={start} disabled={busy} aria-label="Discover again" title="Discover again">
+        <Button variant="outline" size="icon" onClick={start} disabled={busy} aria-label="Refresh" title="Refresh">
           <RefreshCw className={busy ? 'animate-spin' : undefined} />
         </Button>
       </div>
-      <ul className="grid max-h-80 gap-1 overflow-y-auto" aria-label="Discovered entities">
+      <ul className="grid max-h-80 gap-1 overflow-y-auto" aria-label="Devices found">
         {list.map((c) => {
           const blocked = blocker(c)
           return (
@@ -143,49 +143,28 @@ export function HaCandidates({ integration, onPick, blocker = defaultBlocker }: 
         })}
         {list.length === 0 && <li className="px-3 py-6 text-center text-sm text-muted-foreground">Nothing matches.</li>}
       </ul>
-      <p className="text-xs text-muted-foreground">
-        {disc.data.total !== undefined && `${disc.data.total} entities found.`} {disc.data.next_cursor && 'Showing the first matches; search to narrow it down.'}
-      </p>
+      {disc.data.next_cursor && <p className="text-xs text-muted-foreground">Search to see more.</p>}
     </div>
   )
 }
 
-/** What Hubbo would offer for an entity (from its loaded details): built-in commands, its integration's services, and what was left out. */
+/** The commands an entity would have (from its loaded details). */
 export function EntityPreview({ c }: { c: EntityDetails }) {
   const ids = c.command_ids ?? []
-  const builtIn = ids.filter((id) => id.startsWith(`${c.domain}.`))
-  const services = ids.filter((id) => !builtIn.includes(id))
-  const group = (title: string, items: string[]) =>
-    items.length > 0 && (
-      <div className="grid gap-1">
-        <p className="text-xs font-medium text-muted-foreground">{title}</p>
+  return (
+    <section aria-label="Commands" className="grid max-h-60 gap-2 overflow-y-auto rounded-lg border px-3 py-2">
+      <p className="text-xs font-medium text-muted-foreground">Commands</p>
+      {ids.length === 0 ? (
+        <p className="text-sm text-muted-foreground">None</p>
+      ) : (
         <ul className="flex flex-wrap gap-1">
-          {items.map((id) => (
+          {ids.map((id) => (
             <li key={id} className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
               {id}
             </li>
           ))}
         </ul>
-      </div>
-    )
-  return (
-    <section aria-label="Commands this device will have" className="grid max-h-60 gap-3 overflow-y-auto rounded-lg border px-3 py-2">
-      {c.platform && (
-        <p className="text-xs text-muted-foreground">
-          Home Assistant integration: <span className="font-mono text-foreground">{c.platform}</span>
-        </p>
       )}
-      {!c.platform && <p className="text-xs text-muted-foreground">Defined in Home Assistant’s configuration (YAML), so there are no integration services.</p>}
-      {ids.length === 0 && <p className="text-sm text-muted-foreground">Hubbo offers no commands for this entity.</p>}
-      {group('Built-in commands', builtIn)}
-      {group(c.platform ? `From the ${c.platform} integration` : 'From its Home Assistant integration', services)}
-      {(c.skipped_services?.length ?? 0) > 0 && (
-        <p className="text-xs text-muted-foreground">
-          Not offered (a field Hubbo can’t type, more than 4 fields, or no entity target): <span className="font-mono">{c.skipped_services!.join(', ')}</span>
-        </p>
-      )}
-      {(c.dropped_options ?? 0) > 0 && <p className="text-xs text-muted-foreground">{c.dropped_options} list options were left out (too long or too many); the commands still work with the rest.</p>}
-      <p className="text-xs text-muted-foreground">Parameters and their ranges show on the device page once it’s registered.</p>
     </section>
   )
 }

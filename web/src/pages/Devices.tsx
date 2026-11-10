@@ -26,7 +26,6 @@ export default function Devices() {
     <>
       <PageHeader
         title="Devices"
-        description="The curated list of things Hubbo may control. Activities can only use registered devices."
         actions={
           <Button onClick={() => setAdding(true)} disabled={lock.locked} title={lock.title}>
             <Plus /> Add device
@@ -38,8 +37,8 @@ export default function Devices() {
       ) : !devices.data || !integrations.data ? (
         <div className="grid gap-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-16" />)}</div>
       ) : devices.data.length === 0 ? (
-        <EmptyState icon={Tv2} title="No devices yet" action={<Button onClick={() => setAdding(true)} disabled={lock.locked} title={lock.title}>Add your first device</Button>}>
-          Register a receiver, TV or Apple TV from one of your integrations.
+        <EmptyState icon={Tv2} title="No devices yet" action={<Button onClick={() => setAdding(true)} disabled={lock.locked} title={lock.title}>Add device</Button>}>
+          Add a TV, receiver or anything else you want to control.
         </EmptyState>
       ) : (
         <div className="grid gap-6">
@@ -59,7 +58,6 @@ export default function Devices() {
                         <p className="truncate font-mono text-xs text-muted-foreground">{providerRef(d.provider)}</p>
                       </div>
                       {d.availability !== 'available' && <Badge variant={d.availability === 'stale' ? 'destructive' : 'secondary'}>{d.availability === 'stale' ? 'Needs re-link' : d.availability}</Badge>}
-                      <span className="hidden font-mono text-xs text-muted-foreground sm:inline">{d.id}</span>
                       <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
                     </Link>
                   ))}

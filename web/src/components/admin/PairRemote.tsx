@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { PressCheck } from './PressCheck'
 
 /** RF pairing by learning an existing Hub's address while its pair button is pressed. */
-export function PairRemote({ paired, channel, onPaired }: { paired?: boolean; channel?: number; onPaired?: () => void }) {
+export function PairRemote({ paired }: { paired?: boolean }) {
   const [st, setSt] = useState<RemotePairStatus | null>(null)
   const [error, setError] = useState<unknown>(null)
   const scanning = st?.state === 'scanning'
@@ -32,16 +32,13 @@ export function PairRemote({ paired, channel, onPaired }: { paired?: boolean; ch
         const s = await api.remotePairStatus()
         setSt(s)
         if (s.state !== 'scanning') invalidate('status', 'remote')
-        if (s.state === 'found') {
-          onPaired?.()
-        }
       } catch (e) {
         setError(e)
         setSt(null) // stop polling; the error explains why
       }
     }, 1000)
     return () => clearInterval(t)
-  }, [scanning, onPaired])
+  }, [scanning])
 
   const start = async () => {
     setError(null)
@@ -67,29 +64,21 @@ export function PairRemote({ paired, channel, onPaired }: { paired?: boolean; ch
   return (
     <div className="grid gap-4">
       <ol className="grid list-decimal gap-1.5 pl-5 text-sm text-muted-foreground marker:text-foreground">
-        <li>Put your existing Hub (the one the remote already works with) near Hubbo and power it on.</li>
-        <li>
-          Press <b className="text-foreground">Scan from Hub</b>, then press the pair button on the back of the Hub.
-        </li>
-        <li>Press a few buttons on the remote. Hubbo learns the Hub’s address and listens on it.</li>
+        <li>Press Scan, then the pair button on your old Hub.</li>
+        <li>Press a few buttons on the remote.</li>
       </ol>
-      <p className="text-xs text-muted-foreground">You only need the old Hub once per remote. Pairing a remote without a Hub isn’t supported yet.</p>
-      {error != null && <ErrorState error={error} what="Remote pairing" />}
+      {error != null && <ErrorState error={error} />}
       {st?.state === 'found' ? (
         <>
-          <Alert variant="success" title="Remote paired">
-            Listening on channel {st.channel}. {st.message}
-          </Alert>
+          <Alert variant="success" title="Remote paired" />
           <PressCheck />
         </>
       ) : st?.state === 'timeout' ? (
         <Alert variant="error" title="No Hub found">
-          {st.message ?? `Nothing answered in ${REMOTE_SCAN_TIMEOUT_S / 60} minutes.`} Make sure the Hub is powered and press its pair button right after starting the scan.
+          Press the Hub’s pair button right after you start the scan.
         </Alert>
       ) : st?.state === 'stopped' ? (
-        <Alert variant="info" title="Scan stopped">
-          {st.paired ? 'The current pairing is kept.' : 'Nothing was changed.'}
-        </Alert>
+        <Alert variant="info" title="Scan stopped" />
       ) : null}
       <div className="flex flex-wrap items-center gap-3">
         {scanning ? (
@@ -98,7 +87,7 @@ export function PairRemote({ paired, channel, onPaired }: { paired?: boolean; ch
               Cancel
             </Button>
             <span className="inline-flex items-center gap-2 text-sm" aria-live="polite">
-              <Loader2 className="size-4 animate-spin text-primary" /> {st.message ?? 'Scanning…'} {st.remaining_s !== undefined && `· ${st.remaining_s}s left`}
+              <Loader2 className="size-4 animate-spin text-primary" /> Scanning… {st.remaining_s !== undefined && `${st.remaining_s} s`}
             </span>
             <div
               role="progressbar"
@@ -114,12 +103,12 @@ export function PairRemote({ paired, channel, onPaired }: { paired?: boolean; ch
           </>
         ) : (
           <Button onClick={start}>
-            <Radio /> {paired || st?.state === 'found' ? 'Re-pair' : 'Scan from Hub'}
+            <Radio /> {paired || st?.state === 'found' ? 'Pair again' : 'Scan'}
           </Button>
         )}
         {paired && !scanning && st?.state !== 'found' && (
           <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
-            <CheckCircle2 className="size-4 text-success" /> Paired{channel !== undefined && ` · channel ${channel}`}
+            <CheckCircle2 className="size-4 text-success" /> Paired
           </span>
         )}
       </div>

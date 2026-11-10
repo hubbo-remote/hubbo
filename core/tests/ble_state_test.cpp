@@ -38,13 +38,13 @@ TEST(BleState, DisabledComesFirst) {
 }
 
 TEST(BleState, DetailNamesThePeer) {
-    EXPECT_EQ(bleIntegrationDetail(BlePairState::NotReady, false, ""), "Bluetooth failed to start");
-    EXPECT_EQ(bleIntegrationDetail(BlePairState::Idle, false, ""), "No host paired");
-    EXPECT_EQ(bleIntegrationDetail(BlePairState::Failed, false, ""), "No host paired");
-    EXPECT_EQ(bleIntegrationDetail(BlePairState::Pairing, false, ""), "Pairing window open");
+    EXPECT_EQ(bleIntegrationDetail(BlePairState::NotReady, false, ""), "Bluetooth isn't working");
+    EXPECT_EQ(bleIntegrationDetail(BlePairState::Idle, false, ""), "Not paired");
+    EXPECT_EQ(bleIntegrationDetail(BlePairState::Failed, false, ""), "Not paired");
+    EXPECT_EQ(bleIntegrationDetail(BlePairState::Pairing, false, ""), "Ready to pair");
     EXPECT_EQ(bleIntegrationDetail(BlePairState::Paired, false, "Family Room"), "Waiting for Family Room");
     EXPECT_EQ(bleIntegrationDetail(BlePairState::Paired, true, "Family Room"), "Connected to Family Room");
-    EXPECT_EQ(bleIntegrationDetail(BlePairState::Paired, true, ""), "Connected to the paired host");
+    EXPECT_EQ(bleIntegrationDetail(BlePairState::Paired, true, ""), "Connected to your device");
 }
 
 TEST(BleState, DeviceIsAvailableOnlyWhenBondedAndConnected) {

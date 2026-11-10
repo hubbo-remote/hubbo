@@ -7,19 +7,19 @@ import type { Session } from '@/api/types'
 import { AppShell } from '@/components/AppShell'
 import { Toaster } from '@/components/ui/toast'
 import { Spinner } from '@/components/ui/misc'
-import { Dashboard } from '@/pages/Dashboard'
+import { Activities } from '@/pages/Activities'
 import { Login } from '@/pages/Login'
 import { NotFound } from '@/pages/NotFound'
 import { CredentialsProblem } from '@/pages/CredentialsProblem'
 
-// Code-split: the dashboard ships in the entry chunk, everything else loads on demand.
-const Activities = lazy(() => import('@/pages/Activities'))
+// Code-split: Activities (home) ships in the entry chunk, everything else loads on demand.
 const ActivityEditor = lazy(() => import('@/pages/ActivityEditor'))
 const GlobalBindings = lazy(() => import('@/pages/GlobalBindings'))
 const Devices = lazy(() => import('@/pages/Devices'))
 const DeviceDetail = lazy(() => import('@/pages/DeviceDetail'))
 const Integrations = lazy(() => import('@/pages/Integrations'))
 const Settings = lazy(() => import('@/pages/Settings'))
+const Status = lazy(() => import('@/pages/Status'))
 const Setup = lazy(() => import('@/pages/Setup'))
 
 function Loading() {
@@ -58,7 +58,7 @@ export function App() {
     body = bootError ? (
       <div className="grid min-h-dvh place-items-center p-6 text-center">
         <div className="grid gap-2">
-          <p className="font-medium">Cannot reach the hub</p>
+          <p className="font-medium">Can’t reach Hubbo</p>
           <p className="text-sm text-muted-foreground">{bootError}</p>
           <button className="text-sm text-primary underline" onClick={() => void refresh()}>
             Try again
@@ -111,15 +111,15 @@ function SignedIn({ session, onSignedOut, onSetupDone }: { session: Session; onS
     <AppShell session={session} onSignedOut={onSignedOut}>
       <Suspense fallback={<Loading />}>
         <Switch>
-          <Route path="/" component={Dashboard} />
-          <Route path="/activities" component={Activities} />
+          <Route path="/" component={Activities} />
           <Route path="/activities/global" component={GlobalBindings} />
           <Route path="/activities/new">{() => <ActivityEditor id={null} />}</Route>
           <Route path="/activities/:id">{(p) => <ActivityEditor id={p.id} />}</Route>
           <Route path="/devices" component={Devices} />
           <Route path="/devices/:id">{(p) => <DeviceDetail id={p.id} />}</Route>
           <Route path="/integrations" component={Integrations} />
-          <Route path="/settings/:tab?">{(p) => <Settings tab={p.tab ?? 'account'} />}</Route>
+          <Route path="/status/:tab?">{(p) => <Status tab={p.tab} />}</Route>
+          <Route path="/settings/:tab?">{(p) => <Settings tab={p.tab} />}</Route>
           <Route component={NotFound} />
         </Switch>
       </Suspense>

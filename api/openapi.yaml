@@ -594,7 +594,7 @@ paths:
       x-hubbo-role: token
       summary: Integration instances (safe summaries, no settings or secrets)
       description: |
-        `system`, `ble` (Bluetooth keyboard) and `ha_main` (Home Assistant)
+        `system`, `ble` (Bluetooth) and `ha_main` (Home Assistant)
         are built in and always present, even on a fresh hub; they can be
         configured and disabled but not created or deleted. `ha_main` is
         `not_configured` until it has a URL and an access token

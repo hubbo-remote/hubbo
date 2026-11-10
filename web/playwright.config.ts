@@ -33,7 +33,7 @@ export default defineConfig({
           // Layout and touch on a phone (390×844); desktop covers the flows. Mock only.
           {
             name: 'phone',
-            testMatch: /(^|\/)(dashboard|remote|ble|a11y)\.spec\.ts$/,
+            testMatch: /(^|\/)(activate|status|remote|ble|a11y)\.spec\.ts$/,
             dependencies: ['seeded'],
             use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
           },

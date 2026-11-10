@@ -155,6 +155,11 @@ Current as of Phase 5, on branch `phase-5`, not yet committed (Phase 4 is merged
   (Unreachable with an immediate retry, NotConfigured, or AuthFailed). onClosed() backs off only from
   Connecting, Authenticating or Connected, meaning the link dropped by itself. New settings also clear
   the stale entities, since they may point at another HA.
+- **Disabling an integration never fails validation.** Its actions compile to Unavailable, and
+  unpairedHolds() pairs a hold with its release on Adapter or Unavailable alike (adapter, device,
+  release command, params): pairing is a property of the bindings.
+- **Referrers carry the activity's name** (`Referrer::activityName`, "" for the global bindings), so
+  the API's "Used by ..." messages need no lookup.
 - **Timeouts:** the client's command timeout is 5 s, the same as the executor's action bound. The
   executor's fires first, so the API shows `status: timeout`, `adapter_timeout`. The client's late
   answer for that ticket is ignored.

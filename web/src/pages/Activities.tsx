@@ -1,26 +1,29 @@
-import { Activity as ActivityIcon, Copy, Globe, MoreHorizontal, Play, Plus, Trash2 } from 'lucide-react'
-import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { Activity as ActivityIcon, Copy, Globe, Loader2, MoreHorizontal, Pencil, Plus, Power, Trash2, type LucideIcon } from 'lucide-react'
+import { useRef, useState, type ComponentProps, type FormEvent, type KeyboardEvent } from 'react'
 import { Link, useLocation } from 'wouter'
 import { api } from '@/api/client'
 import { invalidate } from '@/api/hooks'
 import type { Activity } from '@/api/types'
 import { EmptyState, ErrorState, PageHeader } from '@/components/common'
-import { Badge } from '@/components/ui/badge'
 import { Button, buttonVariants } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { toast, toastError } from '@/components/ui/toast'
 import { switchActivity } from '@/hooks/switchActivity'
 import { useActivities, useConfigLock, useStatus } from '@/hooks/data'
-import { bindingCount, LIMITS } from '@/lib/activity'
-import { plural } from '@/lib/utils'
+import { LIMITS } from '@/lib/activity'
+import { cn } from '@/lib/utils'
 
-export default function Activities() {
+/** One column of large tap rows on a phone; compact rows in columns on wider screens. */
+const GRID = 'grid gap-2 sm:grid-cols-2 lg:grid-cols-3'
+
+/** The home page: switch activities with one tap. Editing sits behind each tile's small controls. */
+export function Activities() {
   const acts = useActivities()
-  const status = useStatus()
+  const status = useStatus(2000)
   const [, navigate] = useLocation()
+  const [pending, setPending] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<Activity | null>(null)
   const [menu, setMenu] = useState<string | null>(null)
   const [dup, setDup] = useState<{ from: Activity; name: string; busy: boolean } | null>(null)
@@ -34,6 +37,15 @@ export default function Activities() {
     setDup(null)
   }
   const lock = useConfigLock()
+  const list = acts.data?.activities
+  const activeId = status.data ? status.data.active_activity_id : (acts.data?.active_activity_id ?? null)
+  const blocked = lock.state === 'blocked'
+
+  const run = async (id: string | 'off') => {
+    setPending(id)
+    await switchActivity(id, (x) => list?.find((a) => a.id === x)?.name ?? x)
+    setPending(null)
+  }
 
   const askDuplicate = (a: Activity) => setDup({ from: a, name: `${a.name} copy`.slice(0, LIMITS.nameMax), busy: false })
   const duplicate = async (e: FormEvent) => {
@@ -51,7 +63,7 @@ export default function Activities() {
       navigate(`/activities/${copy.id}`)
     } catch (err) {
       setDup((d) => d && { ...d, busy: false })
-      toastError('Could not duplicate', err)
+      toastError('Couldn’t duplicate', err)
     }
   }
 
@@ -61,93 +73,113 @@ export default function Activities() {
       invalidate('activities')
       toast(`Deleted ${a.name}`, { variant: 'success' })
     } catch (e) {
-      toastError('Could not delete', e)
+      toastError('Couldn’t delete', e)
     }
     setConfirm(null)
   }
-
-  const start = (a: Activity) => switchActivity(a.id, (x) => acts.data?.activities.find((y) => y.id === x)?.name ?? x)
 
   return (
     <>
       <PageHeader
         title="Activities"
-        description="What the remote does in each mode: startup steps, button bindings and shutdown steps."
         actions={
-          <>
-            <Link href="/activities/global" className={buttonVariants({ variant: 'outline' })}>
-              <Globe /> Global buttons
-            </Link>
-            {lock.locked ? (
-              <Button disabled title={lock.title}>
-                <Plus /> New activity
-              </Button>
-            ) : (
-              <Link href="/activities/new" className={buttonVariants()}>
-                <Plus /> New activity
-              </Link>
-            )}
-          </>
+          list?.length ? (
+            <Button variant={activeId ? 'default' : 'outline'} onClick={() => run('off')} disabled={!activeId || !!pending || blocked} title={lock.title}>
+              {pending === 'off' ? <Loader2 className="animate-spin" /> : <Power />}
+              Off
+            </Button>
+          ) : undefined
         }
       />
       {acts.error ? (
         <ErrorState error={acts.error} retry={acts.refetch} />
-      ) : !acts.data ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {[0, 1, 2].map((i) => <Skeleton key={i} className="h-28" />)}
+      ) : !list ? (
+        <div className={GRID}>
+          {[0, 1, 2].map((i) => <Skeleton key={i} className="h-14" />)}
         </div>
-      ) : acts.data.activities.length === 0 ? (
-        <EmptyState icon={ActivityIcon} title="No activities yet" action={<Link href="/activities/new" className={buttonVariants()}>Create your first activity</Link>}>
-          An activity powers on your gear, picks inputs and maps remote buttons. For example: Watch Apple TV.
+      ) : list.length === 0 ? (
+        <EmptyState
+          icon={ActivityIcon}
+          title="No activities yet"
+          action={
+            <div className="flex flex-wrap justify-center gap-2">
+              <Link href="/activities/new" className={buttonVariants()}>
+                New activity
+              </Link>
+              <GlobalLink />
+            </div>
+          }
+        >
+          An activity turns on your devices and sets up the remote for them.
         </EmptyState>
       ) : (
-        <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {acts.data.activities.map((a) => {
-            const running = (status.data?.active_activity_id ?? acts.data!.active_activity_id) === a.id
-            const n = bindingCount(a.bindings)
+        <ul className={GRID}>
+          {list.map((a) => {
+            const on = a.id === activeId
             return (
-              <li key={a.id}>
-                <Card className="relative flex h-full flex-col transition-shadow focus-within:ring-[3px] focus-within:ring-ring/40 hover:shadow-md">
-                  <Link href={`/activities/${a.id}`} className="flex-1 rounded-xl p-5 outline-none after:absolute after:inset-0 after:content-['']">
-                    <div className="flex items-start justify-between gap-2">
-                      <h2 className="font-semibold">{a.name}</h2>
-                      {running && <Badge variant="success">Running</Badge>}
+              <li key={a.id} className="relative">
+                {/* The running tile does nothing on tap: re-running its startup could toggle devices off. */}
+                <button
+                  onClick={on ? undefined : () => run(a.id)}
+                  disabled={!!pending || blocked}
+                  aria-disabled={on || undefined}
+                  title={lock.title}
+                  aria-pressed={on}
+                  className={cn(
+                    'flex min-h-14 w-full items-center gap-3 rounded-xl border py-3 pr-12 pl-4 text-left shadow-xs transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-60',
+                    on ? 'border-primary bg-primary text-primary-foreground cursor-default' : 'bg-card hover:bg-accent cursor-pointer',
+                  )}
+                >
+                  <span className="min-w-0 flex-1 truncate font-semibold">{a.name}</span>
+                  {pending === a.id ? (
+                    <span className="flex shrink-0 items-center gap-1.5 text-xs opacity-80">
+                      <Loader2 className="size-3 animate-spin" /> Starting…
+                    </span>
+                  ) : (
+                    on && <span className="shrink-0 rounded-full bg-primary-foreground/20 px-2 py-0.5 text-xs font-medium">On</span>
+                  )}
+                </button>
+                <div className="absolute top-1/2 right-2 -translate-y-1/2">
+                  <Button variant="ghost" size="icon" className={cn('size-8', on ? 'text-primary-foreground hover:bg-primary-foreground/15 hover:text-primary-foreground' : 'text-muted-foreground')} aria-label={`More for ${a.name}`} aria-expanded={menu === a.id} onClick={() => setMenu(menu === a.id ? null : a.id)}>
+                    <MoreHorizontal />
+                  </Button>
+                  {menu === a.id && (
+                    <div role="menu" aria-label={a.name} className="absolute top-full right-0 z-20 mt-1 grid w-40 rounded-md border bg-popover p-1 shadow-lg" onKeyDown={(e) => menuKeys(e, () => setMenu(null))}>
+                      <MenuItem autoFocus icon={Pencil} onClick={() => (setMenu(null), navigate(`/activities/${a.id}`))}>
+                        Edit
+                      </MenuItem>
+                      <MenuItem icon={Copy} disabled={lock.locked} onClick={() => (setMenu(null), askDuplicate(a))}>
+                        Duplicate
+                      </MenuItem>
+                      <MenuItem icon={Trash2} destructive disabled={lock.locked} onClick={() => (setMenu(null), setConfirm(a))}>
+                        Delete
+                      </MenuItem>
                     </div>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      {plural(n, 'button binding')} · {plural(a.startup.length, 'startup step')} · rev {a.revision}
-                    </p>
-                  </Link>
-                  <div className="relative z-10 flex items-center gap-1 border-t px-3 py-2">
-                    <Button variant="ghost" size="sm" onClick={() => start(a)} disabled={running || lock.state === 'blocked'} title={lock.state === 'blocked' ? lock.title : undefined}>
-                      <Play /> Start
-                    </Button>
-                    <div className="relative ml-auto">
-                      <Button variant="ghost" size="icon" className="size-8" aria-label={`More actions for ${a.name}`} aria-expanded={menu === a.id} onClick={() => setMenu(menu === a.id ? null : a.id)} disabled={lock.locked} title={lock.title}>
-                        <MoreHorizontal />
-                      </Button>
-                      {menu === a.id && (
-                        <div role="menu" aria-label={`Actions for ${a.name}`} className="absolute right-0 bottom-full z-20 mb-1 grid w-40 rounded-md border bg-popover p-1 shadow-lg" onKeyDown={(e) => menuKeys(e, () => setMenu(null))}>
-                          <button role="menuitem" autoFocus className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent focus:bg-accent outline-none" onClick={() => (setMenu(null), askDuplicate(a))}>
-                            <Copy className="size-4" /> Duplicate
-                          </button>
-                          <button role="menuitem" className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10 focus:bg-destructive/10 outline-none" onClick={() => (setMenu(null), setConfirm(a))}>
-                            <Trash2 className="size-4" /> Delete
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </Card>
+                  )}
+                </div>
               </li>
             )
           })}
         </ul>
       )}
+      {list && list.length > 0 && (
+        <div className="mt-6 flex flex-wrap gap-2">
+          {lock.locked ? (
+            <Button variant="outline" disabled title={lock.title}>
+              <Plus /> New activity
+            </Button>
+          ) : (
+            <Link href="/activities/new" className={buttonVariants({ variant: 'outline' })}>
+              <Plus /> New activity
+            </Link>
+          )}
+          <GlobalLink />
+        </div>
+      )}
       <Dialog
         open={!!dup}
         onClose={closeDup}
         title={`Duplicate ${dupShown?.from.name ?? ''}`}
-        description="The copy gets the same startup, shutdown and button bindings."
         footer={
           <>
             <Button variant="ghost" onClick={closeDup}>
@@ -160,7 +192,7 @@ export default function Activities() {
         }
       >
         <form id="dup-form" onSubmit={duplicate}>
-          <Field label="Name of the copy" htmlFor="dup-name">
+          <Field label="Name" htmlFor="dup-name">
             <Input id="dup-name" value={dupShown?.name ?? ''} maxLength={LIMITS.nameMax} onChange={(e) => setDup((d) => d && { ...d, name: e.target.value })} autoFocus required />
           </Field>
         </form>
@@ -169,7 +201,7 @@ export default function Activities() {
         open={!!confirm}
         onClose={() => setConfirm(null)}
         title={`Delete ${confirmShown?.name ?? ''}?`}
-        description={status.data?.active_activity_id === confirmShown?.id ? 'It’s running now. Hubbo switches to the next activity and runs its startup; this one’s shutdown doesn’t run.' : 'Its bindings and sequences are removed from the hub. This can’t be undone (unless you have a backup).'}
+        description={activeId === confirmShown?.id ? 'It’s on now. Hubbo will switch to the next activity.' : 'This can’t be undone.'}
         footer={
           <>
             <Button variant="ghost" onClick={() => setConfirm(null)}>
@@ -185,7 +217,29 @@ export default function Activities() {
   )
 }
 
-/** Menu keys: arrows, Home and End move between items; Escape and Tab close it (focus goes back to its button). */
+function GlobalLink() {
+  return (
+    <Link href="/activities/global" className={buttonVariants({ variant: 'ghost' })}>
+      <Globe /> Global buttons
+    </Link>
+  )
+}
+
+function MenuItem({ icon: Icon, destructive, children, ...props }: { icon: LucideIcon; destructive?: boolean } & ComponentProps<'button'>) {
+  return (
+    <button
+      role="menuitem"
+      className={cn(
+        'flex items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm outline-none hover:bg-accent focus:bg-accent disabled:opacity-50 disabled:pointer-events-none',
+        destructive && 'text-destructive hover:bg-destructive/10 focus:bg-destructive/10',
+      )}
+      {...props}
+    >
+      <Icon className="size-4" /> {children}
+    </button>
+  )
+}
+
 /** `v`, or the last non-null `v` while it's null (e.g. a closing dialog's subject). */
 function useLast<T>(v: T | null): T | null {
   const [last, setLast] = useState(v)
@@ -193,8 +247,9 @@ function useLast<T>(v: T | null): T | null {
   return v ?? last
 }
 
+/** Menu keys: arrows, Home and End move between items; Escape and Tab close it (focus goes back to its button). */
 function menuKeys(e: KeyboardEvent<HTMLElement>, close: () => void) {
-  const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+  const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)')]
   const i = items.indexOf(document.activeElement as HTMLElement)
   const go = (j: number) => (e.preventDefault(), items[(j + items.length) % items.length]?.focus())
   if (e.key === 'ArrowDown') go(i + 1)

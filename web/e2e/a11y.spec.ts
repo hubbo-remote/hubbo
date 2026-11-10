@@ -11,18 +11,19 @@ async function expectNoSeriousViolations(page: Page, what: string) {
 }
 
 const PAGES: [string, string][] = [
-  ['/', 'Dashboard'],
-  ['/activities', 'Activities'],
+  ['/', 'Activities'],
   ['/activities/act_watch_apple_tv', 'Bound buttons'],
   ['/activities/global', 'Global buttons'],
   ['/devices', 'Devices'],
   ['/devices/dev_denon', 'Family Room Denon'],
   ['/integrations', 'Integrations'],
-  ['/settings/account', 'Settings'],
-  ['/settings/remote', 'Settings'],
-  ['/settings/backup', 'Settings'],
-  ['/settings/firmware', 'Firmware'],
-  ['/settings/diagnostics', 'Settings'],
+  ['/status/overview', 'Response time'],
+  ['/status/backups', 'Restore'],
+  ['/status/firmware', 'Firmware'],
+  ['/status/diagnostics', 'Raw status'],
+  ['/settings/account', 'Password'],
+  ['/settings/remote', 'Pair the remote'],
+  ['/settings/reset', 'Factory reset'],
 ]
 
 for (const [hash, what] of PAGES) {

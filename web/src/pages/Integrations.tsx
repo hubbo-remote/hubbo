@@ -8,23 +8,24 @@ import { ErrorState, HealthDot, PageHeader } from '@/components/common'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/misc'
 import { Switch } from '@/components/ui/switch'
-import { toast, toastError } from '@/components/ui/toast'
+import { toastError } from '@/components/ui/toast'
 import { useIntegrations } from '@/hooks/data'
-import { healthLabel, INTEGRATION_ICON } from '@/lib/health'
+import { healthLabel, INTEGRATION_ICON, isUserIntegration } from '@/lib/health'
 import { plural } from '@/lib/utils'
 
 export default function Integrations() {
-  const integrations = useIntegrations()
+  const integrations = useIntegrations(3000) // the cards' state lines are live
   return (
     <>
-      <PageHeader title="Integrations" description="How Hubbo reaches your devices. Each integration manages its own connection and pairing." />
+      <PageHeader title="Integrations" />
       {integrations.error ? (
         <ErrorState error={integrations.error} retry={integrations.refetch} />
       ) : !integrations.data ? (
         <div className="grid gap-4 md:grid-cols-2">{[0, 1].map((i) => <Skeleton key={i} className="h-60" />)}</div>
       ) : (
         <div className="grid items-start gap-4 md:grid-cols-2">
-          {[...integrations.data]
+          {integrations.data
+            .filter(isUserIntegration)
             .sort((a, b) => order(a) - order(b))
             .map((i) => (
               <IntegrationCard key={i.id} integration={i} />
@@ -35,7 +36,21 @@ export default function Integrations() {
   )
 }
 
-const order = (i: Integration) => ({ home_assistant: 0, ble_hid: 1, system: 2 })[i.type]
+const order = (i: Integration) => (i.type === 'home_assistant' ? 0 : 1)
+
+/**
+ * The card's one state line. Off shows only that; Bluetooth's detail says it all ("Connected to
+ * Family Room"); others add their detail to the state.
+ */
+function stateLine(i: Integration) {
+  if (!i.enabled || i.state === 'disabled' || !i.detail) return healthLabel(i.state)
+  if (i.type === 'ble_hid') return i.detail
+  return (
+    <>
+      {healthLabel(i.state)} <span>· {i.detail}</span>
+    </>
+  )
+}
 
 function IntegrationCard({ integration: i }: { integration: Integration }) {
   const Icon = INTEGRATION_ICON[i.type]
@@ -48,7 +63,7 @@ function IntegrationCard({ integration: i }: { integration: Integration }) {
       setQueryData(`integration-config/${i.id}`, await api.configureIntegration(i.id, { enabled, revision: cfg.revision }))
       invalidate('integrations', 'status')
     } catch (e) {
-      toastError('Could not update integration', e)
+      toastError('Couldn’t update', e)
     } finally {
       setToggling(false)
     }
@@ -62,35 +77,18 @@ function IntegrationCard({ integration: i }: { integration: Integration }) {
           </div>
           <div>
             <CardTitle>{i.name}</CardTitle>
-            <CardDescription className="mt-1 flex flex-wrap items-center gap-x-2">
-              <HealthDot state={i.state} /> {healthLabel(i.state)}
-              {i.detail && <span>· {i.detail}</span>}
+            <CardDescription data-testid={`state-${i.id}`} className="mt-1 flex flex-wrap items-center gap-x-2">
+              <HealthDot state={i.state} />
+              {stateLine(i)}
             </CardDescription>
           </div>
         </div>
-        {i.type !== 'system' && <Switch checked={i.enabled} onCheckedChange={toggle} disabled={toggling} aria-label={`Enable ${i.name}`} />}
+        <Switch checked={i.enabled} onCheckedChange={toggle} disabled={toggling} aria-label={`Enable ${i.name}`} />
       </CardHeader>
       <CardContent className="grid gap-4">
-        {i.type !== 'system' && (
-          <p className="text-sm text-muted-foreground">
-            {plural(i.device_count, 'registered device')}
-          </p>
-        )}
-        {i.type === 'home_assistant' && <HomeAssistantSettings id={i.id} onSaved={() => toast('Home Assistant settings saved', { variant: 'success' })} />}
+        <p className="text-sm text-muted-foreground">{plural(i.device_count, 'device')}</p>
+        {i.type === 'home_assistant' && <HomeAssistantSettings id={i.id} />}
         {i.type === 'ble_hid' && <BlePanel id={i.id} />}
-        {i.type === 'system' && (
-          <div className="grid gap-2 text-sm text-muted-foreground">
-            <p>Built-in commands. Always on.</p>
-            <ul className="grid gap-1">
-              {(i.commands ?? []).map((c) => (
-                <li key={c.command_id}>
-                  <span className="font-medium text-foreground">{c.label}</span>
-                  {c.description && <> · {c.description}</>}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
       </CardContent>
     </Card>
   )

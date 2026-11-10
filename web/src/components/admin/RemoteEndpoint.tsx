@@ -12,28 +12,16 @@ import { Skeleton } from '@/components/ui/misc'
 import { checkAddress, formatAddress, parseChannel } from '@/lib/remote'
 import { PressCheck } from './PressCheck'
 
-const RADIO: Record<RemoteConfig['radio'], string> = { not_ready: 'Not working (check the radio module)', idle: 'Idle: no endpoint yet', listening: 'Listening', scanning: 'Scanning for a Hub' }
-
 const useRemote = () => useQuery('remote', () => api.remote(), { pollMs: 5000 })
 
-/** "channel 5, address FC:5C:97:55:0E" */
-const endpointText = (e: NonNullable<RemoteConfig['endpoint']>) => `channel ${e.channel}, address ${formatAddress(e.address)}`
-
-/** The Hub endpoint Hubbo listens on, and manual entry for a known one (prefilled with it). */
+/** The Hub endpoint Hubbo listens on, prefilled with the stored one. The radio's state shows only when it's broken. */
 export function RemoteEndpoint() {
   const remote = useRemote()
-  if (remote.error) return <ErrorState error={remote.error} retry={remote.refetch} what="Remote endpoint" />
+  if (remote.error) return <ErrorState error={remote.error} retry={remote.refetch} />
   if (!remote.data) return <Skeleton className="h-40" />
   return (
     <div className="grid gap-4">
-      <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 text-sm" aria-label="Current remote endpoint">
-        <dt className="text-muted-foreground">Channel</dt>
-        <dd className="font-mono">{remote.data.endpoint?.channel ?? 'not set'}</dd>
-        <dt className="text-muted-foreground">Address</dt>
-        <dd className="font-mono">{remote.data.endpoint ? formatAddress(remote.data.endpoint.address) : 'not set'}</dd>
-        <dt className="text-muted-foreground">Radio</dt>
-        <dd>{RADIO[remote.data.radio] ?? remote.data.radio}</dd>
-      </dl>
+      {remote.data.radio === 'not_ready' && <Alert variant="error">The remote’s radio isn’t working. Try restarting Hubbo.</Alert>}
       <EndpointForm current={remote.data} />
     </div>
   )
@@ -80,7 +68,6 @@ function EndpointForm({ current }: { current: RemoteConfig }) {
   return (
     <ShowErrors.Provider value={touched}>
       <form onSubmit={submit} className="grid gap-3" noValidate>
-        <p className="text-sm text-muted-foreground">Already know your Hub’s radio endpoint (e.g. from the serial console)? Enter it instead of scanning.</p>
         <div className="grid gap-3 sm:grid-cols-[8rem_1fr]">
           <Field label="Channel" htmlFor="rf-channel" error={chError ?? error?.details.find((d) => d.path === '/channel')?.message}>
             <Input id="rf-channel" inputMode="numeric" placeholder={String(current.endpoint?.channel ?? 74)} value={channel} onChange={(e) => setChannel(e.target.value)} maxLength={3} />
@@ -89,17 +76,17 @@ function EndpointForm({ current }: { current: RemoteConfig }) {
             <Input id="rf-address" className="font-mono" spellCheck={false} autoComplete="off" placeholder={current.endpoint ? formatAddress(current.endpoint.address) : 'FC:5C:97:55:0F'} value={address} onChange={(e) => setAddress(e.target.value)} maxLength={20} />
           </Field>
         </div>
-        {error && !error.details.some((d) => d.path === '/channel' || d.path === '/address') && <ErrorState error={error} what="Setting the remote endpoint" />}
-        {scanning && <Alert variant="info">A scan is running. Cancel it to enter an endpoint by hand.</Alert>}
+        {error && !error.details.some((d) => d.path === '/channel' || d.path === '/address') && <ErrorState error={error} />}
+        {scanning && <Alert variant="info">Stop the scan to enter these by hand.</Alert>}
         {savedAt !== null && current.endpoint && (
           <>
-            <Alert variant="success">Saved. Listening on {endpointText(current.endpoint)}.</Alert>
+            <Alert variant="success">Saved.</Alert>
             <PressCheck key={savedAt} />
           </>
         )}
         <div>
           <Button type="submit" variant="outline" disabled={busy || scanning || !channel.trim() || !address.trim()}>
-            {busy && <Loader2 className="animate-spin" />} Use this endpoint
+            {busy && <Loader2 className="animate-spin" />} Save
           </Button>
         </div>
       </form>

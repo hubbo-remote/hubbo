@@ -1,6 +1,6 @@
 # hubbo-api: working notes
 
-Current as of Phase 5 (auth trim, firmware update routes). Not a log: rewrite sections as they change.
+Current as of polish round 1 (after Phase 5). Not a log: rewrite sections as they change.
 
 ## State
 
@@ -24,6 +24,10 @@ Current as of Phase 5 (auth trim, firmware update routes). Not a log: rewrite se
 
 ## Key decisions (and why)
 
+- **Messages the UI shows as-is are product copy** (docs/design/polish-ux.md): e.g. "X isn't in
+  Home Assistant", "This update is for a different device", "This isn't a Hubbo update file",
+  referrers "Used by <activity name>" / "Used by global buttons" (from
+  `config::Referrer::activityName`). Codes never change for copy.
 - **Phase 5 auth trim** (user decisions, docs/design/phase5-appliance.md §1):
   - Roles are `Public`, `TokenOrAdmin`, `AdminOnly`. Setup is `Public`; its handler checks
     `fresh` before reading the body (409 `setup_already_done`, 503 when unavailable).

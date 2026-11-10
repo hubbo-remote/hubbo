@@ -386,7 +386,7 @@ void putCandidate(JsonObject out, const ApiContext &ctx, const DiscoveryCache::C
 
 std::string detailsError(ErrorCode code, const std::string &entityId) {
     switch (code) {
-        case ErrorCode::EntityNotFound: return "Home Assistant has no entity " + entityId;
+        case ErrorCode::EntityNotFound: return entityId + " isn't in Home Assistant";
         case ErrorCode::AdapterUnavailable: return "Home Assistant disconnected";
         default: return discoveryError(code);
     }

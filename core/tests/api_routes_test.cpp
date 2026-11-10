@@ -389,7 +389,7 @@ TEST_F(ApiTest, AdminDeviceRegistry) {
 
     r = details("switch.not_in_ha");
     EXPECT_EQ(r.json["state"], "failed");
-    EXPECT_EQ(r.json["error"], "Home Assistant has no entity switch.not_in_ha");
+    EXPECT_EQ(r.json["error"], "switch.not_in_ha isn't in Home Assistant");
     r = call(http::Method::Post, "/api/v1/admin/devices",
              R"({"name":"Ghost","integration_id":"ha_main",
                  "provider":{"type":"home_assistant","entity_id":"switch.not_in_ha"}})");
@@ -1019,6 +1019,19 @@ TEST_F(ApiTest, DiscoverySearchDecodesTheQuery) {
                    "/api/v1/admin/devices/dev_denon?revision=%" + std::to_string(30 + rev % 10));
     ASSERT_LT(rev, 10u);
     EXPECT_EQ(r.code(), "device_in_use");  // the revision parsed; the device is referenced
+    // Each referrer by name: "Used by <activity name>" or "Used by global buttons".
+    ASSERT_GT(r.json["error"]["details"].size(), 0u) << dump(r);
+    for (JsonVariantConst d : r.json["error"]["details"].as<JsonArrayConst>()) {
+        const std::string path = d["path"].as<std::string>();
+        const std::string message = d["message"].as<std::string>();
+        if (path.rfind("/global_bindings", 0) == 0) {
+            EXPECT_EQ(message, "Used by global buttons");
+        } else {
+            const size_t start = std::string_view("/activities/").size();
+            const std::string id = path.substr(start, path.find('/', start) - start);
+            EXPECT_EQ(message, "Used by " + hub.configService().findActivity(id)->name) << path;
+        }
+    }
 }
 
 TEST_F(ApiTest, NewHomeAssistantSettingsDropTheOldDiscovery) {

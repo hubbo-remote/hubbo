@@ -269,6 +269,30 @@ TEST_F(CompilerTest, FailedCompileProducesNothing) {
     EXPECT_FALSE(report.ok());
 }
 
+// Turning an integration off is always allowed: its key_down/key_up holds
+// still pair (the actions just don't run), and an unpaired one still fails.
+TEST_F(CompilerTest, DisablingAnIntegrationKeepsItsHoldsPaired) {
+    ConfigSpec c = fixtureConfig();
+    for (auto &integration : c.integrations) {
+        if (integration.id == "ble") integration.enabled = false;
+    }
+    auto compiled = compile(c);
+    ASSERT_NE(compiled, nullptr);
+    EXPECT_TRUE(report.ok()) << report.issues()[0].path;
+    const ActionSpan down = compiled->lookup(0, Button::Up, EventKind::Down);
+    ASSERT_EQ(down.count, 1);
+    EXPECT_EQ(compiled->span(down)[0].op, ActionOp::Unavailable);
+
+    ActivitySpec &watch = c.activities[0];
+    for (auto &b : watch.bindings) {
+        if (b.trigger == "up:up") b.actions.clear();
+    }
+    ValidationReport unpaired;
+    EXPECT_EQ(compileConfig(c, adapters, &unpaired), nullptr);
+    ASSERT_FALSE(unpaired.ok());
+    EXPECT_EQ(unpaired.issues()[0].code, ErrorCode::UnpairedHold);
+}
+
 TEST(JsonPointer, Escapes) {
     EXPECT_EQ(jsonPointerToken("a/b~c"), "a~1b~0c");
     EXPECT_EQ(jsonPointerToken("up:down"), "up:down");

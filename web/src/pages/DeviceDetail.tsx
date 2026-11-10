@@ -11,13 +11,13 @@ import { ErrorState, PageHeader } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, ShowErrors } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { toast, toastError } from '@/components/ui/toast'
 import { useCapabilities, useConfigLock, useDevice, useIntegrations } from '@/hooks/data'
-import { providerRef } from '@/lib/health'
+import { KIND_LABEL, providerRef } from '@/lib/health'
 import { defaultParams } from '@/lib/activity'
 import { haDeviceError, loadEntityDetails } from '@/lib/ha'
 import { cn } from '@/lib/utils'
@@ -40,24 +40,19 @@ export default function DeviceDetail({ id }: { id: string }) {
         description={d ? `${integration?.name ?? d.integration_id} · ${providerRef(d.provider)}` : undefined}
       />
       {d?.availability === 'stale' && (
-        <Alert variant="error" title="This device needs re-linking" className="mb-4" action={d.provider.type === 'home_assistant' ? <HaRelink device={d} /> : undefined}>
-          {d.provider.type === 'home_assistant'
-            ? `Home Assistant no longer has ${d.provider.entity_id} (it was renamed or removed). Its commands fail until you re-link it to the entity’s new name.`
-            : 'Its integration no longer knows this target. Its commands fail until you remove this device and add it again.'}
+        <Alert variant="error" title="Device not found" className="mb-4" action={d.provider.type === 'home_assistant' ? <HaRelink device={d} /> : undefined}>
+          {d.provider.type === 'home_assistant' ? `${d.provider.entity_id} is gone from Home Assistant. Change the entity to keep it working.` : 'Remove it and add it again.'}
         </Alert>
       )}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <Card>
           <CardHeader>
-            <div>
-              <CardTitle>Commands</CardTitle>
-              <CardDescription>Discovered from the device’s capabilities. Test sends the command now; “accepted” means the integration took it, not that the device reacted.</CardDescription>
-            </div>
+            <CardTitle>Commands</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-2">
             {caps.error && <ErrorState error={caps.error} retry={caps.refetch} />}
             {caps.loading && [0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-12" />)}
-            {caps.data?.commands.length === 0 && <p className="text-sm text-muted-foreground">This device reports no commands.</p>}
+            {caps.data?.commands.length === 0 && <p className="text-sm text-muted-foreground">No commands.</p>}
             {caps.data?.commands.map((c) => (
               <CommandRow key={c.command_id} deviceId={id} command={c} open={open === c.command_id} onToggle={() => setOpen(open === c.command_id ? null : c.command_id)} />
             ))}
@@ -78,23 +73,16 @@ function CommandRow({ deviceId, command, open, onToggle }: { deviceId: string; c
   return (
     <div className={cn('rounded-lg border', open && 'bg-muted/30')}>
       <button onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-3 rounded-lg px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer">
-        <div className="min-w-0 flex-1">
-          <p className="font-medium">{command.label}</p>
-          <p className="truncate font-mono text-xs text-muted-foreground">
-            {command.command_id}
-            {command.params.length > 0 && ` (${command.params.map((p) => p.name).join(', ')})`}
-          </p>
-        </div>
-        {hold && <Badge variant="secondary">Binding only</Badge>}
+        <p className="min-w-0 flex-1 font-medium">{command.label}</p>
+        {hold && <Badge variant="secondary">Buttons only</Badge>}
         <ChevronDown className={cn('size-4 text-muted-foreground transition-transform', open && 'rotate-180')} aria-hidden />
       </button>
       {open && (
         <div className="grid gap-4 border-t px-4 py-4">
           {command.description && <p className="text-sm text-muted-foreground">{command.description}</p>}
+          <p className="truncate font-mono text-xs text-muted-foreground">{command.command_id}</p>
           {hold ? (
-            <p className="text-sm text-muted-foreground">
-              This command holds until it is released, so it can’t be tested on its own. Bind it to a button’s <b>down</b> event; Hubbo adds the release on <b>up</b>.
-            </p>
+            <p className="text-sm text-muted-foreground">Use it on a remote button. It can’t be tested here.</p>
           ) : (
             <>
               <ShowErrors.Provider value={tried}>
@@ -136,13 +124,13 @@ function HaRelink({ device }: { device: Device }) {
   return (
     <>
       <Button size="sm" variant="outline" onClick={() => (setError(null), setOpen(true))} disabled={lock.locked} title={lock.title}>
-        Re-link…
+        Change entity…
       </Button>
-      <Dialog open={open} onClose={() => setOpen(false)} title={`Re-link ${device.name}`} description="Pick the Home Assistant entity this device should control. Its commands are read again from Home Assistant.">
+      <Dialog open={open} onClose={() => setOpen(false)} title={`Change entity for ${device.name}`} description="Pick the Home Assistant device to use.">
         <div className="grid gap-3">
           {error && <Alert variant="error"><p className="whitespace-pre-line">{error}</p></Alert>}
           {busy ? (
-            <p className="flex items-center gap-2 text-sm"><Loader2 className="size-4 animate-spin" /> Loading the entity’s actions and re-linking…</p>
+            <p className="flex items-center gap-2 text-sm"><Loader2 className="size-4 animate-spin" /> Changing…</p>
           ) : (
             <HaCandidates
               integration={device.integration_id}
@@ -167,16 +155,16 @@ function HaRefresh({ device }: { device: Device }) {
       if (device.provider.type === 'home_assistant') await loadEntityDetails(device.integration_id, device.provider.entity_id)
       await api.updateDevice(device.id, { provider: device.provider, revision: device.revision })
       refreshDevice(device.id)
-      toast('Commands refreshed from Home Assistant', { variant: 'success' })
+      toast('Commands refreshed', { variant: 'success' })
     } catch (e) {
-      toast('Could not refresh', { variant: 'error', description: await haDeviceError(e) })
+      toast('Couldn’t refresh', { variant: 'error', description: await haDeviceError(e) })
     } finally {
       setBusy(false)
     }
   }
   return (
-    <Button size="sm" variant="outline" onClick={refresh} disabled={busy || lock.locked} title={lock.title ?? 'Read the entity and its services from Home Assistant again'}>
-      {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />} Refresh from Home Assistant
+    <Button size="sm" variant="outline" onClick={refresh} disabled={busy || lock.locked} title={lock.title}>
+      {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />} Refresh commands
     </Button>
   )
 }
@@ -196,7 +184,7 @@ function DeviceAdmin({ device }: { device: Device }) {
       invalidate('devices')
       toast('Renamed', { variant: 'success' })
     } catch (e) {
-      toastError('Could not rename', e)
+      toastError('Couldn’t rename', e)
     } finally {
       setBusy(false)
     }
@@ -219,19 +207,9 @@ function DeviceAdmin({ device }: { device: Device }) {
         <CardTitle>Device</CardTitle>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <dl className="grid gap-1.5 text-sm">
-          {[
-            ['Hub ID', device.id],
-            ['Integration', device.integration_id],
-            ['Target', providerRef(device.provider)],
-            ['Kind', device.kind],
-            ['Availability', device.availability],
-          ].map(([k, v]) => (
-            <div key={k} className="flex justify-between gap-3">
-              <dt className="text-muted-foreground">{k}</dt>
-              <dd className="truncate font-mono text-xs">{v}</dd>
-            </div>
-          ))}
+        <dl className="flex justify-between gap-3 text-sm">
+          <dt className="text-muted-foreground">Type</dt>
+          <dd className="truncate">{KIND_LABEL[device.kind] ?? device.kind}</dd>
         </dl>
         {device.provider.type === 'home_assistant' && (
           <div className="flex flex-wrap gap-2">

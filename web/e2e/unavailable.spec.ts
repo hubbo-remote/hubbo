@@ -5,11 +5,11 @@ import { expect, notAvailable, open, SIM_URL, stubUnimplemented, test } from './
 test('features the hub does not implement yet show "Not available yet"', async ({ page }) => {
   test.skip(!!SIM_URL, 'hub-sim answers no 501s')
   await stubUnimplemented(page)
-  await open(page, '/settings/firmware')
+  await open(page, '/status/firmware')
   await expect(notAvailable(page)).toBeVisible()
 
   await open(page, '/settings/remote')
-  await page.getByRole('button', { name: /Scan from Hub|Re-pair/ }).click()
+  await page.getByRole('button', { name: /^(Scan|Pair again)$/ }).click()
   await expect(notAvailable(page)).toBeVisible()
 
   await open(page, '/integrations')

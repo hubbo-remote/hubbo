@@ -343,7 +343,7 @@ export function createMock(opts: MockOptions = {}) {
     if (details.state === 'running' && Date.now() - details.startedAt < (opts.discoverDelayMs ?? 1500)) return { state: 'running', entity_id: entityId }
     details.state = 'settled'
     const c = haCandidate(entityId)
-    if (!c) return { state: 'failed', entity_id: entityId, error: `Home Assistant has no entity ${entityId}` }
+    if (!c) return { state: 'failed', entity_id: entityId, error: `${entityId} isn't in Home Assistant` }
     const x = entityExtras.get(entityId)
     return {
       state: 'done',
@@ -433,11 +433,19 @@ export function createMock(opts: MockOptions = {}) {
     return st.bonded ? { state: 'paired', ...(st.peer_name ? { peer_name: st.peer_name } : {}) } : { state: 'idle' }
   }
 
+  /** The hub's BLE detail line (core's bleIntegrationDetail): from the pairing state and the link, never the enabled flag. */
+  function bleDetail(st: { bonded: boolean; peer_name?: string | null }): string {
+    const pair = blePairStatus(st).state
+    if (pair === 'pairing') return 'Ready to pair'
+    if (pair !== 'paired') return 'Not paired'
+    return `${bleDown ? 'Waiting for' : 'Connected to'} ${st.peer_name ?? 'your device'}`
+  }
+
   function integrations() {
     return db.integrations.map((i) => {
       const c = db.configs.get(i.id)
       const state = integrationState(i.id)
-      const detail = c?.settings.type === 'ble_hid' ? (c.settings.bonded ? `Bonded to ${c.settings.peer_name ?? 'a host'}` : 'Not bonded') : state === 'not_configured' ? 'Add a URL and access token' : i.detail
+      const detail = c?.settings.type === 'ble_hid' ? bleDetail(c.settings) : state === 'not_configured' ? 'Not set up' : i.detail
       return { ...i, name: c?.name ?? i.name, enabled: c?.enabled ?? i.enabled, state, detail, device_count: db.devices.filter((d) => d.integration_id === i.id).length }
     })
   }
@@ -545,9 +553,9 @@ export function createMock(opts: MockOptions = {}) {
     const out: ValidationIssue[] = []
     for (const a of db.activities) {
       if (a.id === skipActivity) continue
-      forEachAction(a, (x, rel) => hit(x) && out.push({ path: `/activities/${a.id}${rel}`, code: 'referenced', message: `Referenced by activity ${a.id}` }))
+      forEachAction(a, (x, rel) => hit(x) && out.push({ path: `/activities/${a.id}${rel}`, code: 'referenced', message: `Used by ${a.name}` }))
     }
-    forEachAction(db.globalBindings, (x, rel) => hit(x) && out.push({ path: `/global_bindings${rel}`, code: 'referenced', message: 'Referenced by the global bindings' }))
+    forEachAction(db.globalBindings, (x, rel) => hit(x) && out.push({ path: `/global_bindings${rel}`, code: 'referenced', message: 'Used by global buttons' }))
     return out
   }
 

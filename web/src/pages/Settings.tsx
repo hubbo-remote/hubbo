@@ -1,57 +1,51 @@
-import { Check, Copy, Download, KeyRound, Loader2, Plus, RefreshCw, RotateCcw, Trash2, Upload } from 'lucide-react'
+import { Check, Copy, KeyRound, Loader2, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { Link, useLocation } from 'wouter'
-import { api, errorMessage, toApiError, type BackupKind } from '@/api/client'
+import { useLocation } from 'wouter'
+import { api, errorMessage } from '@/api/client'
 import { invalidate, invalidateAll, useQuery } from '@/api/hooks'
-import type { RestoreResult, TokenCreated } from '@/api/types'
+import type { TokenCreated } from '@/api/types'
 import { FactoryReset } from '@/components/admin/FactoryReset'
-import { FirmwareUpdate } from '@/components/admin/FirmwareUpdate'
+import { NetworkInfo } from '@/components/admin/NetworkInfo'
 import { PairRemote } from '@/components/admin/PairRemote'
 import { RemoteEndpoint } from '@/components/admin/RemoteEndpoint'
-import { RemoteSvg } from '@/components/remote/RemoteSvg'
-import { NetworkInfo } from '@/components/admin/NetworkInfo'
 import { ErrorState, PageHeader, Section, TypedWordField } from '@/components/common'
-import { ThemeToggle } from '@/components/AppShell'
+import { RemoteSvg } from '@/components/remote/RemoteSvg'
 import { Alert } from '@/components/ui/alert'
-import { Button, buttonVariants } from '@/components/ui/button'
+import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, ShowErrors } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { Tabs } from '@/components/ui/tabs'
 import { toast, toastError } from '@/components/ui/toast'
-import { useConfigLock, useStatus } from '@/hooks/data'
-import { agoMs, timeAgo, typedMatches } from '@/lib/utils'
+import { useStatus } from '@/hooks/data'
+import { timeAgo, typedMatches } from '@/lib/utils'
+import { NotFound } from './NotFound'
 
 const TABS = [
   { id: 'account', label: 'Account' },
   { id: 'tokens', label: 'API tokens' },
   { id: 'remote', label: 'Remote' },
   { id: 'network', label: 'Network' },
-  { id: 'backup', label: 'Backup & reset' },
-  { id: 'firmware', label: 'Firmware' },
-  { id: 'diagnostics', label: 'Diagnostics' },
+  { id: 'reset', label: 'Reset' },
 ]
 
-const REQUIRES: Record<RestoreResult['requires'][number], string> = {
-  home_assistant_token: 'enter the Home Assistant token again',
-  ble_pairing: 'pair Bluetooth again',
-  api_tokens: 'create new API tokens',
-}
-
-export default function Settings({ tab }: { tab: string }) {
+export default function Settings({ tab = 'account' }: { tab?: string }) {
   const [, navigate] = useLocation()
-  const value = TABS.some((t) => t.id === tab) ? tab : 'account'
+  if (!TABS.some((t) => t.id === tab)) return <NotFound />
   return (
     <>
       <PageHeader title="Settings" />
-      <Tabs tabs={TABS} value={value} onChange={(t) => navigate(`/settings/${t}`, { replace: true })}>
-        {value === 'account' && <Account />}
-        {value === 'tokens' && <Tokens />}
-        {value === 'remote' && <RemoteTab />}
-        {value === 'network' && <Network />}
-        {value === 'backup' && <Backup />}
-        {value === 'firmware' && <FirmwareUpdate />}
-        {value === 'diagnostics' && <Diagnostics />}
+      <Tabs tabs={TABS} value={tab} onChange={(t) => navigate(`/settings/${t}`, { replace: true })}>
+        {tab === 'account' && <Account />}
+        {tab === 'tokens' && <Tokens />}
+        {tab === 'remote' && <RemoteTab />}
+        {tab === 'network' && <NetworkInfo />}
+        {tab === 'reset' && (
+          <div className="grid gap-4">
+            <ResetConfiguration />
+            <FactoryReset />
+          </div>
+        )}
       </Tabs>
     </>
   )
@@ -77,7 +71,7 @@ function Account() {
       setCur('')
       setNext('')
       setConfirm('')
-      toast('Password changed', { variant: 'success', description: 'Other sessions have been signed out.' })
+      toast('Password changed', { variant: 'success', description: 'Other devices were signed out.' })
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -87,37 +81,31 @@ function Account() {
 
   return (
     <div className="grid gap-4">
-      <Section title="Admin password" description="The single admin account manages devices, integrations, pairing, tokens, backups and firmware.">
+      <Section title="Password">
         <ShowErrors.Provider value={attempted}>
-        <form onSubmit={submit} className="grid max-w-sm gap-4">
-          {error && <Alert variant="error">{error}</Alert>}
-          <Field label="Current password" htmlFor="cp">
-            <Input id="cp" type="password" autoComplete="current-password" value={cur} onChange={(e) => setCur(e.target.value)} required />
-          </Field>
-          <Field label="New password" htmlFor="np" hint="At least 10 characters.">
-            <Input id="np" type="password" autoComplete="new-password" minLength={10} value={next} onChange={(e) => setNext(e.target.value)} required />
-          </Field>
-          <Field label="Confirm new password" htmlFor="np2" error={mismatch ? 'Passwords don’t match' : null}>
-            <Input id="np2" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} aria-invalid={mismatch} required />
-          </Field>
-          <div>
-            <Button type="submit" disabled={busy}>
-              {busy && <Loader2 className="animate-spin" />} Change password
-            </Button>
-          </div>
-        </form>
+          <form onSubmit={submit} className="grid max-w-sm gap-4">
+            {error && <Alert variant="error">{error}</Alert>}
+            <Field label="Current password" htmlFor="cp">
+              <Input id="cp" type="password" autoComplete="current-password" value={cur} onChange={(e) => setCur(e.target.value)} required />
+            </Field>
+            <Field label="New password" htmlFor="np" hint="At least 10 characters.">
+              <Input id="np" type="password" autoComplete="new-password" minLength={10} value={next} onChange={(e) => setNext(e.target.value)} required />
+            </Field>
+            <Field label="Confirm new password" htmlFor="np2" error={mismatch ? 'Passwords don’t match' : null}>
+              <Input id="np2" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} aria-invalid={mismatch} required />
+            </Field>
+            <div>
+              <Button type="submit" disabled={busy}>
+                {busy && <Loader2 className="animate-spin" />} Change password
+              </Button>
+            </div>
+          </form>
         </ShowErrors.Provider>
       </Section>
-      <Section title="Setup wizard" description="Walk through network, remote pairing and Home Assistant again.">
+      <Section title="Setup">
         <a href="#/setup/network" className="text-sm font-medium text-primary underline-offset-4 hover:underline">
           Run setup again
         </a>
-      </Section>
-      <Section title="Appearance">
-        <div className="flex items-center justify-between gap-4">
-          <p className="text-sm text-muted-foreground">Theme for this browser.</p>
-          <ThemeToggle />
-        </div>
       </Section>
     </div>
   )
@@ -139,7 +127,7 @@ function Tokens() {
       setCopied(false)
       invalidate('tokens')
     } catch (err) {
-      toastError('Could not create token', err)
+      toastError('Couldn’t create the token', err)
     } finally {
       setBusy(false)
     }
@@ -151,16 +139,16 @@ function Tokens() {
       invalidate('tokens')
       toast('Token revoked', { variant: 'success' })
     } catch (err) {
-      toastError('Could not revoke', err)
+      toastError('Couldn’t revoke the token', err)
     }
   }
 
   return (
-    <Section title="API tokens" description="For scripts, Home Assistant automations and LLM agents. Tokens can list devices, edit activities, test commands and switch activities. They can’t manage devices, integrations, pairing, tokens, backups or firmware.">
+    <Section title="API tokens" description="Let other apps and scripts control Hubbo.">
       <form onSubmit={create} className="mb-5 flex flex-wrap items-end gap-2">
         <div className="min-w-48 flex-1">
-          <Field label="New token name" htmlFor="tn">
-            <Input id="tn" placeholder="e.g. Kitchen tablet" value={name} onChange={(e) => setName(e.target.value)} maxLength={48} required />
+          <Field label="Name" htmlFor="tn">
+            <Input id="tn" placeholder="Kitchen tablet" value={name} onChange={(e) => setName(e.target.value)} maxLength={48} required />
           </Field>
         </div>
         <Button type="submit" disabled={busy || !name.trim()}>
@@ -172,7 +160,7 @@ function Tokens() {
       ) : !tokens.data ? (
         <Skeleton className="h-20" />
       ) : tokens.data.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No tokens.</p>
+        <p className="text-sm text-muted-foreground">No tokens yet.</p>
       ) : (
         <ul className="divide-y rounded-lg border">
           {tokens.data.map((t) => (
@@ -181,7 +169,7 @@ function Tokens() {
               <div className="min-w-0 flex-1">
                 <p className="truncate font-medium">{t.name}</p>
                 <p className="text-xs text-muted-foreground">
-                  <span className="font-mono">{t.hint}…</span> · created {t.created_at ? timeAgo(t.created_at) : 'unknown'} · last used {timeAgo(t.last_used_at)}
+                  <span className="font-mono">{t.hint}…</span> · Last used {timeAgo(t.last_used_at)}
                 </p>
               </div>
               <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => revoke(t.id)} aria-label={`Revoke ${t.name}`}>
@@ -191,13 +179,7 @@ function Tokens() {
           ))}
         </ul>
       )}
-      <Dialog
-        open={!!created}
-        onClose={() => setCreated(null)}
-        title="Copy your new token"
-        description="This is the only time it’s shown. The hub keeps only a hash."
-        footer={<Button onClick={() => setCreated(null)}>I’ve saved it</Button>}
-      >
+      <Dialog open={!!created} onClose={() => setCreated(null)} title="Copy your token" description="You won’t see it again." footer={<Button onClick={() => setCreated(null)}>Done</Button>}>
         {created && (
           <div className="grid gap-3">
             <div className="flex items-center gap-2 rounded-lg border bg-muted p-2">
@@ -213,9 +195,7 @@ function Tokens() {
                 {copied ? <Check /> : <Copy />} {copied ? 'Copied' : 'Copy'}
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Use it as <code className="font-mono">Authorization: Bearer …</code>. It can still control registered devices, so treat it like a key.
-            </p>
+            <p className="text-xs text-muted-foreground">Send it as a Bearer token. Keep it private.</p>
           </div>
         )}
       </Dialog>
@@ -229,206 +209,16 @@ function RemoteTab() {
   return (
     <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_14rem]">
       <div className="grid gap-4">
-        <Section title="Remote endpoint" description="The radio channel and Hub address Hubbo listens on.">
-          <RemoteEndpoint />
+        <Section title="Pair the remote">
+          <PairRemote paired={status.data?.remote.paired} />
         </Section>
-        <Section title="Scan from Hub" description="Hubbo learns the radio address of a Hub the remote is already paired with.">
-          <PairRemote paired={status.data?.remote.paired} channel={status.data?.remote.channel} />
+        <Section title="Channel and address">
+          <RemoteEndpoint />
         </Section>
       </div>
       <div className="hidden lg:block">
-        <RemoteSvg selected={last && last.age_ms < 5000 ? last.button : null} label="The remote; the last button pressed is highlighted" className="mx-auto max-h-[32rem]" />
+        <RemoteSvg selected={last && last.age_ms < 5000 ? last.button : null} label="Remote" className="mx-auto max-h-[32rem]" />
       </div>
-    </div>
-  )
-}
-
-function Network() {
-  return <NetworkInfo />
-}
-
-/** Shown before and after a `blocked-raw` download. */
-const BLOCKED_RAW_NOTE = 'This is the hub’s saved configuration exactly as stored, exported while the hub is blocked. It may only be restorable on firmware that can read it.'
-
-/** Why a download failed, in the admin's terms (409 config_blocked, 503 storage_unavailable). */
-function DownloadError({ error }: { error: unknown }) {
-  const e = toApiError(error)
-  if (e.code === 'config_blocked')
-    return (
-      <Alert variant="error" title="Nothing intact to download">
-        <p>The saved configuration is damaged and the hub has no intact copy to export, so there’s no backup to download. Restore a backup or reset the configuration to continue.</p>
-        <p className="mt-1 text-muted-foreground">The hub said: {e.message}</p>
-      </Alert>
-    )
-  if (e.code === 'storage_unavailable')
-    return (
-      <Alert variant="error" title="The hub can’t read its storage">
-        <p>No backup was made: the hub couldn’t read its saved configuration when it started, so it has nothing it can vouch for. Try again once the storage is back (restarting the hub may help).</p>
-        <p className="mt-1 text-muted-foreground">The hub said: {e.message}</p>
-      </Alert>
-    )
-  return <ErrorState error={error} what="Downloading backups" />
-}
-
-/** A 422 whose detail is `unsupported_schema`: the file is from newer firmware (or one this firmware can't migrate). */
-const unsupportedSchema = (e: unknown) => {
-  const err = toApiError(e)
-  return err.status === 422 && err.details.some((d) => d.code === 'unsupported_schema')
-}
-
-function RestoreError({ error }: { error: unknown }) {
-  if (unsupportedSchema(error))
-    return (
-      <Alert variant="error" title="This file needs newer firmware">
-        <p>This file was made by newer firmware; update the hub first. Nothing was changed.</p>
-        <p className="mt-1 text-muted-foreground">The hub said: {toApiError(error).message}</p>
-      </Alert>
-    )
-  return <ErrorState error={error} what="Restoring backups" />
-}
-
-function saveBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob)
-  const a = Object.assign(document.createElement('a'), { href: url, download: filename })
-  document.body.append(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 0)
-}
-
-function Backup() {
-  const configState = useConfigLock().state
-  const blocked = configState === 'blocked'
-  const [file, setFile] = useState<{ name: string; text: string } | null>(null)
-  const [preview, setPreview] = useState<RestoreResult | null>(null)
-  const [error, setError] = useState<unknown>(null)
-  const [downloaded, setDownloaded] = useState<{ kind: BackupKind; filename: string } | null>(null)
-  const [downloadError, setDownloadError] = useState<unknown>(null)
-  const [busy, setBusy] = useState<'download' | 'check' | 'restore' | null>(null)
-  /** After a restore: Home Assistant has a URL but no token (backups never carry it). */
-  const [haTokenMissing, setHaTokenMissing] = useState(false)
-
-  const download = async () => {
-    setBusy('download')
-    setDownloaded(null)
-    setDownloadError(null)
-    try {
-      const d = await api.downloadBackup()
-      saveBlob(d.blob, d.filename)
-      setDownloaded({ kind: d.kind, filename: d.filename })
-      if (d.kind === 'config') toast('Backup downloaded', { variant: 'success', description: d.filename })
-    } catch (e) {
-      setDownloadError(e)
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const pick = async (f: File | undefined) => {
-    setPreview(null)
-    setError(null)
-    setHaTokenMissing(false)
-    if (!f) return setFile(null)
-    try {
-      const text = await f.text()
-      JSON.parse(text) // early feedback only: the hub gets the file exactly as chosen
-      setFile({ name: f.name, text })
-      setBusy('check')
-      setPreview(await api.restore(text, true))
-    } catch (e) {
-      setError(e instanceof SyntaxError ? new Error('That file isn’t valid JSON.') : e)
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const restore = async () => {
-    if (!file) return
-    setBusy('restore')
-    try {
-      await api.restore(file.text, false)
-      invalidateAll()
-      toast('Backup restored', { variant: 'success' })
-      setFile(null)
-      setPreview(null)
-      const ha = await api.integrationConfig('ha_main').catch(() => null)
-      setHaTokenMissing(ha?.settings.type === 'home_assistant' && !!ha.settings.url && !ha.settings.has_access_token)
-    } catch (e) {
-      setError(e)
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const showRawNote = blocked || downloaded?.kind === 'blocked-raw'
-  return (
-    <div className="grid gap-4">
-      <Section
-        title={blocked ? 'Download the saved configuration (raw)' : 'Download a backup'}
-        description={
-          blocked
-            ? 'The hub can’t run its saved configuration, so there’s no normal backup. You can still download the saved configuration as stored, to keep it before restoring or resetting.'
-            : 'One JSON file with devices, activities and integration settings. Passwords, API tokens, Home Assistant tokens and Bluetooth bonds are never included.'
-        }
-      >
-        <div className="grid gap-4">
-          {configState === 'storage_unavailable' && (
-            <Alert variant="info" title="Storage is down">
-              <p>A backup still works: it’s the configuration that’s running, which is the last one the hub saved.</p>
-            </Alert>
-          )}
-          {showRawNote && (
-            <Alert variant="warning" title={downloaded?.kind === 'blocked-raw' ? `Saved as ${downloaded.filename}` : 'Raw saved configuration'}>
-              <p>{BLOCKED_RAW_NOTE}</p>
-            </Alert>
-          )}
-          {downloadError != null && <DownloadError error={downloadError} />}
-          <div>
-            <Button variant="outline" onClick={download} disabled={!!busy}>
-              {busy === 'download' ? <Loader2 className="animate-spin" /> : <Download />} {blocked ? 'Download the saved configuration (raw)' : 'Download backup'}
-            </Button>
-          </div>
-        </div>
-      </Section>
-      <Section title="Restore" description="The hub validates the whole file before replacing anything. Restoring never starts an activity: one that’s running stays on if the backup still has it, otherwise nothing is active.">
-        <div className="grid gap-4">
-          <label className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center text-sm hover:bg-accent/40 focus-within:ring-[3px] focus-within:ring-ring/50">
-            <Upload className="size-5 text-muted-foreground" aria-hidden />
-            <span>{file ? file.name : 'Choose a backup file'}</span>
-            <input type="file" accept="application/json,.json" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
-          </label>
-          {busy === 'check' && <p className="text-sm text-muted-foreground">Checking…</p>}
-          {haTokenMissing && (
-            <Alert
-              variant="warning"
-              title="Enter the Home Assistant token again"
-              action={
-                <Link href="/integrations" className={buttonVariants({ size: 'sm', variant: 'outline' })}>
-                  Integrations
-                </Link>
-              }
-            >
-              <p>Backups never include the Home Assistant token, so the restored settings have none. Home Assistant stays disconnected until you enter it under Integrations.</p>
-            </Alert>
-          )}
-          {error != null && <RestoreError error={error} />}
-          {preview && (
-            <Alert variant="warning" title="Ready to restore">
-              <p>
-                Replaces all devices and activities with {preview.devices} devices and {preview.activities} activities.
-                {preview.requires.length > 0 && <> Afterwards: {preview.requires.map((r) => REQUIRES[r]).join(', ')}.</>}
-              </p>
-            </Alert>
-          )}
-          <div>
-            <Button variant="destructive" disabled={!preview || !!busy} onClick={restore}>
-              {busy === 'restore' && <Loader2 className="animate-spin" />} Restore
-            </Button>
-          </div>
-        </div>
-      </Section>
-      <ResetConfiguration />
-      <FactoryReset />
     </div>
   )
 }
@@ -449,16 +239,16 @@ function ResetConfiguration() {
     try {
       await api.resetConfiguration()
       invalidateAll() // every object has a new revision now
-      toast('Configuration reset', { variant: 'success', description: 'Devices, activities, global buttons and integration settings were removed. Your login, API tokens and pairings are unchanged.' })
+      toast('Configuration reset', { variant: 'success' })
       close()
     } catch (e) {
-      toastError('Resetting the configuration failed', e)
+      toastError('Couldn’t reset the configuration', e)
     } finally {
       setBusy(false)
     }
   }
   return (
-    <Section title="Reset configuration" description="Removes every device, activity and global button and resets integration settings. Your login, API tokens and pairings are kept. Works even when the saved configuration can’t be used.">
+    <Section title="Reset configuration" description="Removes devices, activities and integration settings. Keeps your login, tokens and pairings.">
       <Button variant="outline" className="text-destructive hover:text-destructive" onClick={() => setConfirm(true)}>
         <RotateCcw /> Reset configuration…
       </Button>
@@ -466,7 +256,7 @@ function ResetConfiguration() {
         open={confirm}
         onClose={close}
         title="Reset the configuration?"
-        description="This can’t be undone. Download a backup first if you might want this configuration again."
+        description="Your devices, activities and integration settings will be removed."
         footer={
           <>
             <Button variant="ghost" onClick={close}>
@@ -481,51 +271,5 @@ function ResetConfiguration() {
         <TypedWordField word={RESET_WORD} id="reset-confirm" value={typed} onChange={setTyped} />
       </Dialog>
     </Section>
-  )
-}
-
-function Diagnostics() {
-  const status = useStatus()
-  const d = status.data?.diagnostics
-  const r = status.data?.remote
-  return (
-    <div className="grid gap-4">
-      <Section title="Recent errors" description="The hub keeps the last 16. Secrets are never logged.">
-        {!d ? (
-          <Skeleton className="h-20" />
-        ) : !d.last_errors?.length ? (
-          <p className="text-sm text-muted-foreground">No errors since boot.</p>
-        ) : (
-          <pre tabIndex={0} aria-label="Recent errors" className="max-h-96 overflow-auto rounded-lg bg-muted p-3 font-mono text-xs leading-relaxed outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            {d.last_errors.map((e) => `${e.at ?? '-'}  ${(e.source ?? '').padEnd(10)} ${e.code.padEnd(12)} ${e.message}`).join('\n')}
-          </pre>
-        )}
-      </Section>
-      {r && (
-        <Section title="Radio">
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
-            {[
-              ['Channel', r.channel ?? '–'],
-              ['Last packet', agoMs(r.last_packet_age_ms)],
-              ['Bad checksums', r.counters?.bad_checksum ?? 0],
-              ['Unknown codes', r.counters?.unknown_code ?? 0],
-            ].map(([k, v]) => (
-              <div key={String(k)}>
-                <dt className="text-xs text-muted-foreground">{k}</dt>
-                <dd className="font-medium tabular-nums">{v}</dd>
-              </div>
-            ))}
-          </dl>
-        </Section>
-      )}
-      <Section title="Raw status" description="What /api/v1/status returns, for bug reports.">
-        <div className="mb-3 flex justify-end">
-          <Button variant="outline" size="sm" onClick={() => status.refetch()}>
-            <RefreshCw /> Refresh
-          </Button>
-        </div>
-        <pre tabIndex={0} aria-label="Raw status" className="max-h-96 overflow-auto rounded-lg bg-muted p-3 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">{status.data ? JSON.stringify(status.data, null, 2) : 'Loading…'}</pre>
-      </Section>
-    </div>
   )
 }

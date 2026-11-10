@@ -7,13 +7,14 @@ test.use({ reset: { scanNeverFinds: true } })
 // A reset doesn't stop a scan on hub-sim (sim time stands still), so make sure none is left running.
 test.beforeEach(async ({ page }) => void (await api(page).del('/admin/remote/pair')))
 
-const dl = (page: import('@playwright/test').Page) => page.locator('dl[aria-label="Current remote endpoint"]')
-const scanButton = (page: import('@playwright/test').Page) => page.getByRole('button', { name: /Scan from Hub|Re-pair/ })
+const channel = (page: Page) => page.getByLabel('Channel', { exact: true })
+const address = (page: Page) => page.getByLabel('Address', { exact: true })
+const scanButton = (page: Page) => page.getByRole('button', { name: /^(Scan|Pair again)$/ })
 const pressCheck = (page: Page) => page.getByTestId('press-check')
 
 /** A remote button press reaching the hub, once the press check has its baseline read. */
 async function pressRemote(page: Page, button: string) {
-  await expect(pressCheck(page)).toContainText('Waiting for a button press')
+  await expect(pressCheck(page)).toContainText('Press any button on the remote')
   await page.waitForResponse((r) => r.url().endsWith('/remote/status')) // the baseline
   await advance(page, 1000) // a hub clock that stands still would make an old event look as young
   await control(page, `remote/${button}/tap`)
@@ -22,35 +23,31 @@ async function pressRemote(page: Page, button: string) {
 test('remote endpoint: shows the current one; manual entry is validated and takes effect', async ({ page }) => {
   await open(page, '/settings/remote')
   // hub-sim keeps whatever endpoint an earlier scan or test set (a reset doesn't touch the radio).
-  if (!SIM_URL) await expect(dl(page)).toContainText('FC:5C:97:55:0F')
-  await expect(dl(page)).toContainText('Radio')
+  if (!SIM_URL) await expect(address(page)).toHaveValue('FC:5C:97:55:0F')
 
   await page.getByLabel('Channel', { exact: true }).fill('125')
   await page.getByLabel('Address', { exact: true }).fill('FC5C975555')
   await page.getByLabel('Address', { exact: true }).blur()
   await expect(page.getByText('A whole number from 0 to 124')).toHaveCount(0) // errors wait for a submit
-  await page.getByRole('button', { name: 'Use this endpoint' }).click()
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(page.getByText('A whole number from 0 to 124')).toBeVisible()
   await expect(page.getByText('can’t end in 55 or AA')).toBeVisible()
-  await expect(dl(page)).not.toContainText('125') // nothing was sent
+  expect((await api(page).get('/admin/remote')).endpoint?.channel).not.toBe(125) // nothing was sent
 
   await page.getByLabel('Channel', { exact: true }).fill('12')
   await page.getByLabel('Address', { exact: true }).fill('a1:b2:c3:d4:e5')
-  await page.getByRole('button', { name: 'Use this endpoint' }).click()
-  await expect(page.getByText('Saved. Listening on channel 12, address A1:B2:C3:D4:E5')).toBeVisible()
-  await expect(dl(page)).toContainText('12')
-  await expect(dl(page)).toContainText('A1:B2:C3:D4:E5')
-  await expect(dl(page)).toContainText('Listening')
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(page.getByText('Saved.', { exact: true })).toBeVisible()
   // The fields keep saying what the hub uses: after the save, and after a reload.
   await expect(page.getByLabel('Channel', { exact: true })).toHaveValue('12')
   await expect(page.getByLabel('Address', { exact: true })).toHaveValue('A1:B2:C3:D4:E5')
 
   // Live proof the remote reaches the hub: each press shows up.
   await pressRemote(page, 'down')
-  await expect(pressCheck(page)).toContainText(/Got it: Down (pressed|released)/)
+  await expect(pressCheck(page)).toContainText(/Down (pressed|released)/)
   await advance(page, 1000)
   await control(page, 'remote/up/tap')
-  await expect(pressCheck(page)).toContainText(/Got it: Up (pressed|released) \(2 so far\)/)
+  await expect(pressCheck(page)).toContainText(/Up (pressed|released)/)
 
   await page.reload()
   await expect(page.getByLabel('Channel', { exact: true })).toHaveValue('12')
@@ -63,8 +60,8 @@ test('scan from Hub: progress toward the 120 s timeout; cancel keeps the pairing
   const bar = page.getByRole('progressbar', { name: 'Scan progress' })
   await expect(bar).toBeVisible()
   await expect(bar).toHaveAttribute('aria-valuemax', '120')
-  await expect(page.getByText(/1[12]\ds left/)).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Use this endpoint' })).toBeDisabled() // locked while scanning
+  await expect(page.getByText(/Scanning… 1[12]\d s/)).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled() // locked while scanning
 
   await page.reload() // the scan keeps running on the hub; the page picks it up
   await expect(bar).toBeVisible()
@@ -80,11 +77,10 @@ test('scan from Hub: a Hub answers; its endpoint is shown and used', async ({ pa
   await expect(page.getByRole('progressbar', { name: 'Scan progress' })).toBeVisible()
   await hubAnswersScan(page, 33, '5A5B5C5D5E')
   await expect(page.getByText('Remote paired')).toBeVisible()
-  await expect(dl(page)).toContainText('33')
-  await expect(dl(page)).toContainText('5A:5B:5C:5D:5E')
-  await expect(page.getByLabel('Channel', { exact: true })).toHaveValue('33')
+  await expect(channel(page)).toHaveValue('33')
+  await expect(address(page)).toHaveValue('5A:5B:5C:5D:5E')
   await pressRemote(page, 'select')
-  await expect(pressCheck(page)).toContainText(/Got it: \w+/)
+  await expect(pressCheck(page)).toContainText(/\w+ (pressed|released|held)/)
 })
 
 test('scan from Hub: no Hub in 120 s is a clear timeout', async ({ page }) => {
@@ -93,5 +89,5 @@ test('scan from Hub: no Hub in 120 s is a clear timeout', async ({ page }) => {
   await expect(page.getByRole('progressbar', { name: 'Scan progress' })).toBeVisible()
   await advance(page, 121_000)
   await expect(page.getByText('No Hub found')).toBeVisible()
-  await expect(page.getByText('press its pair button')).toBeVisible()
+  await expect(page.getByText('Press the Hub’s pair button')).toBeVisible()
 })

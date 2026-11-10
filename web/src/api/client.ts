@@ -84,7 +84,7 @@ async function send(method: string, path: string, body?: unknown, init: RequestI
   try {
     res = await fetch(API_BASE + path, { method, headers, body: payload, credentials: 'same-origin' })
   } catch {
-    throw new ApiError(0, null, 'Cannot reach the hub')
+    throw new ApiError(0, null, 'Can’t reach Hubbo')
   }
   if (res.ok) return res
   throw failure(path, res.status, res.statusText, await res.text().catch(() => ''))
@@ -123,12 +123,12 @@ function uploadFirmware(file: Blob, onProgress: (fraction: number) => void): Pro
         try {
           return resolve(JSON.parse(xhr.responseText) as FirmwareStatus)
         } catch {
-          return reject(new ApiError(xhr.status, null, 'The hub’s answer wasn’t readable'))
+          return reject(new ApiError(xhr.status, null, 'Hubbo sent an answer that couldn’t be read'))
         }
       }
       reject(failure(path, xhr.status, xhr.statusText, xhr.responseText))
     }
-    xhr.onerror = () => reject(new ApiError(0, null, 'Cannot reach the hub'))
+    xhr.onerror = () => reject(new ApiError(0, null, 'Can’t reach Hubbo'))
     xhr.send(file)
   })
 }
@@ -163,9 +163,9 @@ export function dispositionFilename(header: string | null): string | null {
 async function downloadBackup(): Promise<BackupDownload> {
   const res = await send('GET', '/admin/backup', undefined, { headers: { accept: 'application/json, application/octet-stream' } })
   const kind = res.headers.get('x-hubbo-backup')
-  if (kind !== 'config' && kind !== 'blocked-raw') throw new ApiError(res.status, null, 'The hub’s answer didn’t say what kind of backup it is (no X-Hubbo-Backup header), so it wasn’t saved.')
+  if (kind !== 'config' && kind !== 'blocked-raw') throw new ApiError(res.status, null, 'The backup couldn’t be saved. Try again.')
   const blob = await res.blob()
-  if (blob.size === 0) throw new ApiError(res.status, null, 'The hub sent an empty backup, so nothing was saved.')
+  if (blob.size === 0) throw new ApiError(res.status, null, 'The backup was empty. Try again.')
   const date = new Date().toISOString().slice(0, 10)
   const filename = dispositionFilename(res.headers.get('content-disposition')) ?? (kind === 'blocked-raw' ? `hubbo-backup-BLOCKED-${date}.json` : `hubbo-backup-${date}.json`)
   return { kind, blob, filename }

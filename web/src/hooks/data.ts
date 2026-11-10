@@ -14,7 +14,7 @@ export const useCapabilities = (id: string | null) => useQuery(id ? `caps/${id}`
 export const useActivities = () => useQuery('activities', () => api.activities())
 export const useActivity = (id: string | null) => useQuery(id ? `activity/${id}` : null, () => api.activity(id!))
 export const useGlobalBindings = () => useQuery('global-bindings', () => api.globalBindings())
-export const useIntegrations = (enabled = true) => useQuery(enabled ? 'integrations' : null, () => api.integrations())
+export const useIntegrations = (pollMs?: number) => useQuery('integrations', () => api.integrations(), { pollMs })
 export const useIntegrationConfig = (id: string) => useQuery(`integration-config/${id}`, () => api.integrationConfig(id))
 
 /** Everything the binding/sequence editors validate against: devices, their commands, system commands, activities. */
@@ -50,5 +50,5 @@ export function useCatalog() {
 export function useConfigLock() {
   const c = useStatus().data?.config
   const locked = c?.state === 'blocked' || c?.state === 'storage_unavailable'
-  return { locked, state: c?.state, reason: c?.reason, title: locked ? 'The hub isn’t accepting changes right now (see the banner at the top)' : undefined }
+  return { locked, state: c?.state, title: locked ? 'Changes are paused' : undefined }
 }

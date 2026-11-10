@@ -42,7 +42,7 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
   return (
     <div className="grid gap-3">
       {actions.length === 0 ? (
-        <p className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">No steps. {label} does nothing.</p>
+        <p className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">No steps.</p>
       ) : (
         <ol ref={list} className="grid gap-2" aria-label={`${label} steps`}>
           {actions.map((a, i) => {
@@ -121,7 +121,7 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
         </ol>
       )}
       <p id={hint} className="sr-only">
-        Drag a step, or focus it and press Alt+Up or Alt+Down, to change the order.
+        Alt+Up and Alt+Down move a step.
       </p>
       <div className="flex flex-wrap gap-2">
         <Button variant="outline" size="sm" disabled={full} onClick={() => setEditing({ index: actions.length, action: null })}>
@@ -150,7 +150,7 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
                 setEditing(null)
               }}
             >
-              {editing && editing.index < actions.length ? 'Update step' : 'Add step'}
+              {editing && editing.index < actions.length ? 'Done' : 'Add step'}
             </Button>
           </>
         }

@@ -18,11 +18,11 @@ import { healthLabel } from '@/lib/health'
 import { cn } from '@/lib/utils'
 
 const STEPS = [
-  { id: 'admin', title: 'Admin account', blurb: 'One account manages the hub. Pick a strong password; it’s stored hashed on the hub.' },
-  { id: 'network', title: 'Network', blurb: 'Hubbo uses wired Ethernet and gets its address from your router.' },
-  { id: 'remote', title: 'Pair the remote', blurb: 'Hubbo takes over from your existing Hub by listening on its address.' },
-  { id: 'ha', title: 'Home Assistant', blurb: 'Optional. Lets Hubbo control receivers, TVs, lights and switches through Home Assistant.' },
-  { id: 'done', title: 'Done', blurb: 'Hubbo is set up. You can change any of this later.' },
+  { id: 'admin', title: 'Account', blurb: null },
+  { id: 'network', title: 'Network', blurb: null },
+  { id: 'remote', title: 'Remote', blurb: null },
+  { id: 'ha', title: 'Home Assistant', blurb: 'Optional.' },
+  { id: 'done', title: 'Done', blurb: 'You’re all set.' },
 ] as const
 type StepId = (typeof STEPS)[number]['id']
 const stepIndex = (id: StepId | string | undefined) => STEPS.findIndex((s) => s.id === id)
@@ -76,13 +76,12 @@ export default function Setup({ onDone, start }: { onDone: () => void; start?: s
   return (
     <div className="min-h-dvh bg-muted/40">
       {/* The config state needs a session, so this appears once the admin exists. */}
-      {current !== null && current > 0 && <ConfigBanner admin link={false} />}
+      {current !== null && current > 0 && <ConfigBanner admin inSetup />}
       <div className="mx-auto grid max-w-3xl gap-6 px-4 py-8 sm:py-12">
         <header className="flex items-center gap-3">
           <Logo className="size-9" />
           <div>
             <h1 className="text-xl font-semibold">Set up Hubbo</h1>
-            <p className="text-sm text-muted-foreground">About five minutes. Everything here can be changed later.</p>
           </div>
           <ThemeToggle className="ml-auto" />
         </header>
@@ -107,10 +106,10 @@ export default function Setup({ onDone, start }: { onDone: () => void; start?: s
               <p className="text-xs font-medium text-muted-foreground">
                 Step {current + 1} of {STEPS.length}
               </p>
-              <h2 id="step-title" className="mt-1 text-lg font-semibold">
+              <h2 id="step-title" className="mt-1 mb-6 text-lg font-semibold">
                 {STEPS[current]!.title}
+                {STEPS[current]!.blurb && <span className="mt-0.5 block text-sm font-normal text-muted-foreground">{STEPS[current]!.blurb}</span>}
               </h2>
-              <p className="mb-6 text-sm text-muted-foreground">{STEPS[current]!.blurb}</p>
               {
                 {
                   admin: <AdminStep onCreated={adminCreated} />,
@@ -136,7 +135,7 @@ export default function Setup({ onDone, start }: { onDone: () => void; start?: s
                 </Button>
               )}
               <Button onClick={next}>
-                {current === STEPS.length - 1 ? 'Go to the dashboard' : 'Continue'}
+                {current === STEPS.length - 1 ? 'Finish' : 'Continue'}
                 <ChevronRight />
               </Button>
             </div>
@@ -206,7 +205,7 @@ function RemoteStep() {
     <div className="grid gap-6">
       <PairRemote />
       <div className="grid gap-3 border-t pt-5">
-        <h3 className="text-sm font-medium">Or enter a known endpoint</h3>
+        <h3 className="text-sm font-medium">Or enter the channel and address</h3>
         <RemoteEndpoint />
       </div>
     </div>
@@ -218,8 +217,8 @@ function HaStep() {
   const integrations = useIntegrations()
   const ha = integrations.data?.find((i) => i.type === 'home_assistant')
   if (!integrations.data) return <Skeleton className="h-40" />
-  if (!ha) return <p className="text-sm text-muted-foreground">This hub has no Home Assistant integration.</p>
-  return <HomeAssistantSettings id={ha.id} />
+  if (!ha) return <p className="text-sm text-muted-foreground">Home Assistant isn’t available.</p>
+  return <HomeAssistantSettings id={ha.id} showState />
 }
 
 /** What's set up, from the hub. */
@@ -228,9 +227,9 @@ function DoneStep() {
   const ha = status?.integrations.find((i) => i.type === 'home_assistant')
   if (!status) return <Skeleton className="h-24" />
   const rows: [string, string][] = [
-    ['Admin account', 'Created'],
-    ['Remote', status.remote.paired ? `Paired (channel ${status.remote.channel ?? '?'})` : 'Not paired yet: Settings → Remote'],
-    ['Home Assistant', ha ? (ha.state === 'not_configured' ? 'Not set up: Integrations' : healthLabel(ha.state)) : 'Not available'],
+    ['Account', 'Created'],
+    ['Remote', status.remote.paired ? 'Paired' : 'Not paired'],
+    ['Home Assistant', ha ? healthLabel(ha.state) : 'Not available'],
   ]
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm" aria-label="Setup summary">

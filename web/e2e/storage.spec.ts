@@ -7,10 +7,10 @@ test.afterEach(async ({ page }) => setStorage(page, 'available'))
 test('storage goes down: banner, edits disabled, switching still works; it comes back: edits work again', async ({ page }) => {
   // The credentials are read once at boot, so a session (under --auth too) outlives the store going down.
   const hub = api(page)
-  await open(page, '/activities')
+  await open(page, '/')
   await setStorage(page, 'unavailable')
 
-  const banner = page.getByRole('alert').filter({ hasText: 'The hub can’t save changes' })
+  const banner = page.getByRole('alert').filter({ hasText: 'Hubbo can’t save changes' })
   await expect(banner).toBeVisible() // appears with the next status poll, no reload needed
   await expect(page.getByRole('button', { name: 'New activity' })).toBeDisabled()
   const before = await hub.get('/activities/act_play_xbox')
@@ -19,7 +19,7 @@ test('storage goes down: banner, edits disabled, switching still works; it comes
   expect((await refused.json()).error.code).toBe('storage_unavailable')
 
   // Switching doesn't need the store.
-  await page.getByRole('main').getByRole('listitem').filter({ hasText: 'Play Xbox' }).getByRole('button', { name: 'Start' }).click()
+  await page.getByRole('main').getByRole('button', { name: 'Play Xbox', exact: true }).click()
   await expect.poll(hub.activeActivity).toBe('act_play_xbox')
 
   await setStorage(page, 'available')
@@ -30,12 +30,12 @@ test('storage goes down: banner, edits disabled, switching still works; it comes
 })
 
 test('storage failing after a good load: a backup still exports the running config (the last acknowledged save)', async ({ page }) => {
-  await open(page, '/settings/backup')
+  await open(page, '/status/backups')
   await setStorage(page, 'unavailable')
-  await expect(page.getByText('A backup still works: it’s the configuration that’s running')).toBeVisible()
+  await expect(page.getByText('Backups still work while storage is down.')).toBeVisible()
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download backup' }).click()])
   expect(download.suggestedFilename()).toMatch(/^hubbo-backup-\d{4}-\d\d-\d\d\.json$/)
   expect(JSON.parse(await readFile((await download.path())!, 'utf8')).format).toBe('hubbo-backup')
   await expect(page.getByText('Backup downloaded')).toBeVisible()
-  await expect(page.getByRole('alert').filter({ hasText: /No backup was made|can’t read its storage/ })).toHaveCount(0)
+  await expect(page.getByRole('alert').filter({ hasText: /Nothing to download|Can’t read storage/ })).toHaveCount(0)
 })

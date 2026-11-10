@@ -64,7 +64,8 @@ Outcome invalid(ErrorCode code, const char *path) {
 
 // Where an action sits; the JSON Pointer is only built for matches.
 struct ActionRef {
-    const std::string &owner;  // activity id, "" for the global bindings
+    const std::string &owner;      // activity id, "" for the global bindings
+    const std::string &ownerName;  // activity name, "" for the global bindings
     const char *section;       // "/startup", "/shutdown", "/bindings"
     const std::string *trigger;  // bindings only
     size_t index;
@@ -72,7 +73,7 @@ struct ActionRef {
     Referrer referrer() const {
         std::string path = section;
         if (trigger != nullptr) path += "/" + jsonPointerToken(*trigger);
-        return {owner, path + "/" + std::to_string(index)};
+        return {owner, path + "/" + std::to_string(index), ownerName};
     }
 };
 
@@ -80,16 +81,22 @@ template <typename F>
 void forEachAction(const ConfigSpec &config, F &&visit) {
     static const std::string kGlobal;
     for (const auto &a : config.activities) {
-        for (size_t i = 0; i < a.startup.size(); i++) visit(ActionRef{a.id, "/startup", nullptr, i}, a.startup[i]);
-        for (size_t i = 0; i < a.shutdown.size(); i++) visit(ActionRef{a.id, "/shutdown", nullptr, i}, a.shutdown[i]);
+        for (size_t i = 0; i < a.startup.size(); i++) {
+            visit(ActionRef{a.id, a.name, "/startup", nullptr, i}, a.startup[i]);
+        }
+        for (size_t i = 0; i < a.shutdown.size(); i++) {
+            visit(ActionRef{a.id, a.name, "/shutdown", nullptr, i}, a.shutdown[i]);
+        }
         for (const auto &b : a.bindings) {
             for (size_t i = 0; i < b.actions.size(); i++) {
-                visit(ActionRef{a.id, "/bindings", &b.trigger, i}, b.actions[i]);
+                visit(ActionRef{a.id, a.name, "/bindings", &b.trigger, i}, b.actions[i]);
             }
         }
     }
     for (const auto &b : config.globalBindings) {
-        for (size_t i = 0; i < b.actions.size(); i++) visit(ActionRef{kGlobal, "/bindings", &b.trigger, i}, b.actions[i]);
+        for (size_t i = 0; i < b.actions.size(); i++) {
+            visit(ActionRef{kGlobal, kGlobal, "/bindings", &b.trigger, i}, b.actions[i]);
+        }
     }
 }
 

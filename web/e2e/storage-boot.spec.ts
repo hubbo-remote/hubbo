@@ -7,10 +7,10 @@ test.use({ reset: { authState: 'unavailable', configState: 'storage_unavailable'
 
 test('storage down at boot: storage error screen, no setup wizard, no login', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Hubbo can’t read its login data' })).toBeVisible()
-  await expect(page.getByText('Restart the hub')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Hubbo can’t read its login' })).toBeVisible()
+  await expect(page.getByText('Restart Hubbo')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Set up Hubbo' })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Sign in to Hubbo' })).toHaveCount(0)
   await page.getByRole('button', { name: 'Check again' }).click()
-  await expect(page.getByRole('heading', { name: 'Hubbo can’t read its login data' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Hubbo can’t read its login' })).toBeVisible()
 })

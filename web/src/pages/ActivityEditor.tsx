@@ -91,7 +91,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
       setConflict(null)
       setQueryData(`activity/${result.id}`, result)
       invalidate('activities', 'status')
-      toast(isNew ? 'Activity created' : 'Saved', { variant: 'success', description: `${result.name} · revision ${result.revision}` })
+      toast(isNew ? 'Activity created' : 'Saved', { variant: 'success' })
       if (isNew) navigate(`/activities/${result.id}`, { replace: true })
     } catch (e) {
       if (e instanceof ApiError && e.code === 'revision_conflict' && draft.id) {
@@ -99,13 +99,13 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
         try {
           setConflict(await api.activity(draft.id))
         } catch {
-          toast('This activity changed elsewhere', { variant: 'error', description: 'Reload the page to get the latest version.' })
+          toast('Changed somewhere else', { variant: 'error', description: 'Reload to get the latest.' })
         }
       } else if (e instanceof ApiError && e.details.length) {
         setServerIssues(e.details)
-        toast('The hub rejected this activity', { variant: 'error', description: `${plural(e.details.length, 'problem')} to fix` })
+        toast('Couldn’t save', { variant: 'error', description: `${plural(e.details.length, 'problem')} to fix` })
       } else {
-        toastError('Could not save', e)
+        toastError('Couldn’t save', e)
       }
     } finally {
       setBusy(null)
@@ -118,9 +118,9 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
     try {
       const r = await api.validateActivity(draft)
       setServerIssues(r.errors)
-      toast(r.valid ? 'The hub accepts this activity' : 'The hub found problems', { variant: r.valid ? 'success' : 'error', description: r.valid ? 'Dry run only. Nothing was saved.' : `${plural(r.errors.length, 'error')}` })
+      toast(r.valid ? 'No problems found' : `${plural(r.errors.length, 'problem')} found`, { variant: r.valid ? 'success' : 'error' })
     } catch (e) {
-      toastError('Validation failed', e)
+      toastError('Couldn’t check', e)
     } finally {
       setBusy(null)
     }
@@ -156,7 +156,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
   return (
     <ShowErrors.Provider value={showErrors}>
       <PageHeader
-        back={{ href: '/activities', label: 'Activities' }}
+        back={{ href: '/', label: 'Activities' }}
         title={
           <span className="flex items-center gap-2">
             <label htmlFor="act-name" className="sr-only">
@@ -165,7 +165,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
             <Input
               id="act-name"
               value={draft.name}
-              placeholder="Watch Apple TV"
+              placeholder="Activity name"
               maxLength={LIMITS.nameMax}
               onChange={(e) => update({ name: e.target.value })}
               aria-invalid={!!nameError}
@@ -176,7 +176,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
         }
         description={
           <span className="flex flex-wrap items-center gap-2 px-2">
-            {isNew ? <Badge variant="secondary">New</Badge> : <span>Revision {draft.revision}</span>}
+            {isNew && <Badge variant="secondary">New</Badge>}
             {dirty ? (
               <Badge variant="warning">Unsaved changes</Badge>
             ) : (
@@ -193,9 +193,9 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
           <>
             <Button variant="outline" onClick={dryRun} disabled={!!busy}>
               {busy === 'validate' ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
-              Validate
+              Check
             </Button>
-            <Button onClick={() => save()} disabled={!!busy || (!dirty && !isNew) || lock.locked} title={lock.title ?? 'Save (Ctrl+S)'}>
+            <Button onClick={() => save()} disabled={!!busy || (!dirty && !isNew) || lock.locked} title={lock.title}>
               {busy === 'save' ? <Loader2 className="animate-spin" /> : <Save />}
               {isNew ? 'Create' : 'Save'}
               <Kbd className="hidden border-primary-foreground/30 bg-transparent text-primary-foreground/70 lg:inline">⌘S</Kbd>
@@ -205,7 +205,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
       />
 
       {errors.length > 0 && (
-        <Alert variant="error" title={`${plural(errors.length, 'problem')} to fix before saving`} className="mb-4">
+        <Alert variant="error" title={`${plural(errors.length, 'problem')} to fix`} className="mb-4">
           <ul className="grid gap-0.5">
             {errors.slice(0, 6).map((e, i) => (
               <li key={i}>
@@ -237,15 +237,14 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
             selected={selected}
             onSelect={setSelected}
             fallback={globalBindings}
-            fallbackLabel="Global"
           />
         )}
         {tab === 'startup' && (
           <Card>
             <CardHeader>
               <div>
-                <CardTitle>Startup sequence</CardTitle>
-                <CardDescription>Runs in order when this activity starts, even when switching from another activity. The other activity's shutdown never runs.</CardDescription>
+                <CardTitle>Startup</CardTitle>
+                <CardDescription>Runs when the activity starts.</CardDescription>
               </div>
             </CardHeader>
             <CardContent>
@@ -257,8 +256,8 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
           <Card>
             <CardHeader>
               <div>
-                <CardTitle>Shutdown sequence</CardTitle>
-                <CardDescription>Runs in order when you press Off while this activity is active.</CardDescription>
+                <CardTitle>Shutdown</CardTitle>
+                <CardDescription>Runs when you turn it off.</CardDescription>
               </div>
             </CardHeader>
             <CardContent>
@@ -281,7 +280,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
           setConflict(null)
           setServerIssues(null)
           setQueryData(`activity/${conflict.id}`, conflict)
-          toast('Loaded the latest version from the hub')
+          toast('Loaded the latest version')
         }}
         onOverwrite={() => conflict && save(conflict.revision)}
       />
@@ -302,12 +301,12 @@ function ConflictDialog({ mine, theirs, busy, onClose, onLoadTheirs, onOverwrite
   const diff = useMemo(() => {
     if (!theirs) return []
     const out: string[] = []
-    if (mine.name !== theirs.name) out.push(`Name: “${theirs.name}” on the hub, “${mine.name}” here`)
-    if (!same(mine.startup, theirs.startup)) out.push(`Startup: ${theirs.startup.length} steps on the hub, ${mine.startup.length} here`)
-    if (!same(mine.shutdown, theirs.shutdown)) out.push(`Shutdown: ${theirs.shutdown.length} steps on the hub, ${mine.shutdown.length} here`)
+    if (mine.name !== theirs.name) out.push(`Name: “${theirs.name}” saved, “${mine.name}” here`)
+    if (!same(mine.startup, theirs.startup)) out.push(`Startup: ${plural(theirs.startup.length, 'step')} saved, ${mine.startup.length} here`)
+    if (!same(mine.shutdown, theirs.shutdown)) out.push(`Shutdown: ${plural(theirs.shutdown.length, 'step')} saved, ${mine.shutdown.length} here`)
     const keys = new Set([...Object.keys(mine.bindings), ...Object.keys(theirs.bindings)])
-    const changed = [...keys].filter((k) => !same(mine.bindings[k], theirs.bindings[k]))
-    if (changed.length) out.push(`Bindings differ on ${plural(changed.length, 'trigger')}: ${changed.slice(0, 5).join(', ')}${changed.length > 5 ? '…' : ''}`)
+    const changed = new Set([...keys].filter((k) => !same(mine.bindings[k], theirs.bindings[k])).map((k) => parseTrigger(k)?.button ?? k))
+    if (changed.size) out.push(`Buttons: ${plural(changed.size, 'button')} ${changed.size === 1 ? 'differs' : 'differ'}`)
     return out
   }, [mine, theirs])
 
@@ -315,19 +314,19 @@ function ConflictDialog({ mine, theirs, busy, onClose, onLoadTheirs, onOverwrite
     <Dialog
       open={!!theirs}
       onClose={onClose}
-      title="This activity changed on the hub"
-      description={theirs ? `Someone saved revision ${theirs.revision} while you were editing revision ${mine.revision}.` : undefined}
+      title="Changed somewhere else"
+      description="This activity was saved in another window while you were editing."
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
             Keep editing
           </Button>
           <Button variant="outline" onClick={onLoadTheirs}>
-            Discard mine, load theirs
+            Load theirs
           </Button>
           <Button variant="destructive" onClick={onOverwrite} disabled={busy}>
             {busy && <Loader2 className="animate-spin" />}
-            Overwrite with mine
+            Save mine
           </Button>
         </>
       }
@@ -339,7 +338,7 @@ function ConflictDialog({ mine, theirs, busy, onClose, onLoadTheirs, onOverwrite
           ))}
         </ul>
       ) : (
-        <p className="text-sm text-muted-foreground">The hub's version matches your edits, so overwriting is safe.</p>
+        <p className="text-sm text-muted-foreground">No differences.</p>
       )}
     </Dialog>
   )

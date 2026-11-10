@@ -49,13 +49,13 @@ export function ActionPicker({ value, onChange, catalog, context, allowHold = fa
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Device" htmlFor={`${id}-dev`}>
           <Select id={`${id}-dev`} value={deviceId} onChange={(e) => pickDevice(e.target.value)}>
-            <option value="">Nothing</option>
+            <option value="">None</option>
             {[...catalog.devices.values()].map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
               </option>
             ))}
-            {systemCommands.length > 0 && <option value={SYSTEM_VALUE}>{context === 'sequence' ? 'Wait (delay)' : 'Hubbo (wait, switch activity, off)'}</option>}
+            {systemCommands.length > 0 && <option value={SYSTEM_VALUE}>{context === 'sequence' ? 'Wait' : 'Hubbo'}</option>}
           </Select>
         </Field>
         {value && (!system || systemCommands.length > 1) && (
@@ -103,8 +103,7 @@ export function TestButton({ action, size = 'sm', onRun }: { action: Action; siz
       <span aria-live="polite" className="text-sm">
         {res && (
           <span className={cn(res.status === 'accepted' ? 'text-success' : res.status === 'timeout' ? 'text-[color-mix(in_oklch,var(--warning),black_35%)] dark:text-warning' : 'text-destructive')}>
-            {res.status === 'accepted' ? 'Accepted' : res.status === 'timeout' ? 'Timed out' : res.status === 'failed' ? 'Failed' : 'Not sent'}
-            {'elapsed_ms' in res && <span className="text-muted-foreground"> · {res.elapsed_ms} ms</span>}
+            {res.status === 'accepted' ? 'Sent' : res.status === 'timeout' ? 'Timed out' : res.status === 'failed' ? 'Failed' : 'Not sent'}
             {res.message && <span className="text-muted-foreground"> · {res.message}</span>}
           </span>
         )}
