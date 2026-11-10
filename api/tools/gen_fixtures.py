@@ -383,8 +383,8 @@ REMOTE_STATUS = {
 INTEGRATIONS = [
     {"id": "system", "type": "system", "name": "System", "enabled": True, "state": "connected",
      "device_count": 0, "commands": SYSTEM_COMMANDS},
-    {"id": "ble", "type": "ble_hid", "name": "Bluetooth keyboard", "enabled": True, "state": "connected",
-     "detail": "Bonded to Family Room", "device_count": 1},
+    {"id": "ble", "type": "ble_hid", "name": "Bluetooth", "enabled": True, "state": "connected",
+     "detail": "Connected to Family Room", "device_count": 1},
     {"id": "ha_main", "type": "home_assistant", "name": "Home Assistant", "enabled": True,
      "state": "connected", "detail": "Home Assistant 2026.11.1", "device_count": 5},
 ]
@@ -511,7 +511,7 @@ fx("integrations/ha_main.config.json", "getIntegrationConfig", "200", {
                  "verify_tls": True, "has_access_token": True},
     "revision": 2})
 fx("integrations/ble.config.json", "getIntegrationConfig", "200", {
-    "id": "ble", "type": "ble_hid", "name": "Bluetooth keyboard", "enabled": True,
+    "id": "ble", "type": "ble_hid", "name": "Bluetooth", "enabled": True,
     "settings": {"type": "ble_hid", "device_name": "Family Room Hubbo", "bonded": True,
                  "peer_name": "Family Room"},
     "revision": 1})
@@ -552,7 +552,7 @@ fx("integrations/ha_main.entity_details.done.json", "getEntityDetails", "200", {
     "command_ids": [c["command_id"] for c in switch_commands()], "dropped_options": 0,
     "skipped_services": ["zha.issue_zigbee_cluster_command"], "registered_device_id": None})
 fx("integrations/ha_main.entity_details.failed.json", "getEntityDetails", "200",
-   {"state": "failed", "entity_id": "switch.not_in_ha", "error": "Home Assistant has no entity switch.not_in_ha"})
+   {"state": "failed", "entity_id": "switch.not_in_ha", "error": "switch.not_in_ha isn't in Home Assistant"})
 fx("errors/details_required.json", "registerDevice", "409", err(
     "details_required", "Load this entity's details first "
     "(POST /api/v1/admin/integrations/ha_main/entities/switch.tv_backlight/details)"))
@@ -592,7 +592,7 @@ BACKUP = {
     "remote": {"address": "FC5C97550F", "channel": 74},
     "integrations": [
         {"id": "system", "type": "system", "name": "System", "enabled": True},
-        {"id": "ble", "type": "ble_hid", "name": "Bluetooth keyboard", "enabled": True,
+        {"id": "ble", "type": "ble_hid", "name": "Bluetooth", "enabled": True,
          "settings": {"device_name": "Family Room Hubbo"}},
         {"id": "ha_main", "type": "home_assistant", "name": "Home Assistant", "enabled": True,
          "settings": {"url": "https://homeassistant.local:8123", "verify_tls": True}},
@@ -653,9 +653,9 @@ fx("admin/firmware.update.json", "updateFirmware", "202", {
 fx("errors/update_in_progress.json", "updateFirmware", "409",
    err("update_in_progress", "An update is already running"))
 fx("errors/wrong_board.json", "updateFirmware", "422",
-   err("wrong_board", "This Hubbo image is for another board"))
+   err("wrong_board", "This update is for a different device"))
 fx("errors/invalid_image.json", "updateFirmware", "422",
-   err("invalid_image", "Not an app image (use firmware.bin, not the merged factory image)"))
+   err("invalid_image", "This isn't a Hubbo update file"))
 fx("errors/length_required.json", "updateFirmware", "411",
    err("length_required", "Send the image whole, with Content-Length"))
 fx("errors/factory_reset_during_update.json", "factoryReset", "409",

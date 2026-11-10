@@ -1,7 +1,7 @@
 {
   "id": "ble",
   "type": "ble_hid",
-  "name": "Bluetooth keyboard",
+  "name": "Bluetooth",
   "enabled": true,
   "settings": {
     "type": "ble_hid",

@@ -46,10 +46,10 @@
     {
       "id": "ble",
       "type": "ble_hid",
-      "name": "Bluetooth keyboard",
+      "name": "Bluetooth",
       "enabled": true,
       "state": "connected",
-      "detail": "Bonded to Family Room",
+      "detail": "Connected to Family Room",
       "device_count": 1
     },
     {
