@@ -8,6 +8,7 @@ import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
+import type { EntityDetails } from '@/lib/ha'
 
 /** Why a candidate can't be picked, or null if it can. */
 type Blocker = (c: DiscoverCandidate) => string | null
@@ -26,7 +27,8 @@ export function HaCandidates({ integration, onPick, blocker = defaultBlocker }: 
   }, [q])
   const key = `discover/${integration}/${query}`
   const running = getQueryData<DiscoverStatus>(key)?.state === 'running'
-  const disc = useQuery(key, () => api.discovery(integration, query ? { q: query } : {}), { pollMs: running ? 1000 : undefined })
+  // keepPrevious: the search box and the last results stay while a new search loads.
+  const disc = useQuery(key, () => api.discovery(integration, query ? { q: query } : {}), { pollMs: running ? 1000 : undefined, keepPrevious: true })
   const [startError, setStartError] = useState<unknown>(null)
   const [busy, setBusy] = useState(false)
   const autoStarted = useRef(false)
@@ -117,7 +119,7 @@ export function HaCandidates({ integration, onPick, blocker = defaultBlocker }: 
               <button
                 disabled={!!blocked}
                 onClick={() => onPick(c)}
-                className="flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
+                className="flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
               >
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{c.name}</p>
@@ -132,7 +134,8 @@ export function HaCandidates({ integration, onPick, blocker = defaultBlocker }: 
                     <Check className="size-3" /> Added
                   </span>
                 ) : (
-                  <span className="text-xs text-muted-foreground">{blocked ?? `${c.command_ids?.length ?? 0} commands`}</span>
+                  // No command count: a candidate previews only its domain's commands; the full list loads once it's picked.
+                  blocked && <span className="text-xs text-muted-foreground">{blocked}</span>
                 )}
               </button>
             </li>
@@ -147,8 +150,8 @@ export function HaCandidates({ integration, onPick, blocker = defaultBlocker }: 
   )
 }
 
-/** What Hubbo would offer for an entity: built-in commands, its integration's services, and what was left out. */
-export function CandidatePreview({ c }: { c: DiscoverCandidate }) {
+/** What Hubbo would offer for an entity (from its loaded details): built-in commands, its integration's services, and what was left out. */
+export function EntityPreview({ c }: { c: EntityDetails }) {
   const ids = c.command_ids ?? []
   const builtIn = ids.filter((id) => id.startsWith(`${c.domain}.`))
   const services = ids.filter((id) => !builtIn.includes(id))
@@ -172,6 +175,7 @@ export function CandidatePreview({ c }: { c: DiscoverCandidate }) {
           Home Assistant integration: <span className="font-mono text-foreground">{c.platform}</span>
         </p>
       )}
+      {!c.platform && <p className="text-xs text-muted-foreground">Defined in Home Assistant’s configuration (YAML), so there are no integration services.</p>}
       {ids.length === 0 && <p className="text-sm text-muted-foreground">Hubbo offers no commands for this entity.</p>}
       {group('Built-in commands', builtIn)}
       {group(c.platform ? `From the ${c.platform} integration` : 'From its Home Assistant integration', services)}
