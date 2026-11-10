@@ -2,8 +2,10 @@
 # Developer entry point. Every command runs inside the hubbo-toolchain
 # container; nothing is installed on the host.
 #
-#   bin/hubbo test            build the native core and run its tests
-#   bin/hubbo fw <pio args>   PlatformIO in firmware/ (e.g. `fw run`; builds the web admin first)
+#   bin/hubbo test [ctest args]  build the native core and run its tests in parallel
+#                             (e.g. `test -R RebootRoundTrip`; tsan and asan take them too)
+#   bin/hubbo fw <pio args>   PlatformIO in firmware/ (e.g. `fw run`; builds the web admin first;
+#                             HUBBO_FW_VERSION=<label> overrides the image's version)
 #   bin/hubbo ota <ip> [--wipe]  build the dev firmware and upload it over Ethernet
 #                             (--wipe: erase every setting first, like a new board)
 #   bin/hubbo sim <args>      build and run hub-sim (`sim serve`, `sim run <script>`)
@@ -13,7 +15,9 @@
 #   bin/hubbo run <cmd...>    any command in the toolchain
 #   bin/hubbo image           (re)build the toolchain image
 #   bin/hubbo web [pnpm args] web admin (default: `dev`, e.g. `web build`)
-#   bin/hubbo web e2e [args]  Playwright e2e (HUBBO_API_TARGET=http://127.0.0.1:8780 for hub-sim)
+#   bin/hubbo web e2e [--sim [--auth]] [args]  Playwright e2e against the mock, or (--sim)
+#                             against a fresh hub-sim that it starts and stops itself
+#   bin/hubbo gate <core|api|web|fw|all>  an area's full phase-end gate, as one command
 set -euo pipefail
 
 self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
@@ -70,8 +74,14 @@ native_tests() {  # <service> <build dir> <build type> [ctest args...]
         { [ -f "$dir/build.ninja" ] ||
             cmake -S . -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE="$type" >/dev/null; } &&
         cmake --build "$dir" &&
-        ctest --test-dir "$dir" --output-on-failure "$@"' _ "$@"
+        ctest --test-dir "$dir" --output-on-failure -j "$(nproc)" "$@"' _ "$@"
 }
+
+# Build hub-sim under the build-dir lock (a shell snippet for in_toolchain).
+build_sim='mkdir -p build && exec 9>build/native.lock && flock 9 &&
+    { [ -f build/native/build.ninja ] ||
+        cmake -S . -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Debug >/dev/null; } &&
+    cmake --build build/native --target hub-sim >/dev/null'
 
 cmd="${1:-help}"
 shift || true
@@ -144,15 +154,8 @@ case "$cmd" in
     sim)
         # Build under the build-dir lock, then run a private copy, so a later
         # rebuild can't replace the binary under a running sim.
-        in_toolchain bash -c '
-            mkdir -p build
-            exec 9>build/native.lock
-            flock 9
-            { [ -f build/native/build.ninja ] ||
-                cmake -S . -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Debug >/dev/null; } &&
-            cmake --build build/native --target hub-sim >/dev/null &&
-            cp build/native/sim/hub-sim /tmp/hub-sim &&
-            exec 9>&- &&
+        in_toolchain bash -c "$build_sim"' &&
+            cp build/native/sim/hub-sim /tmp/hub-sim && exec 9>&- &&
             exec /tmp/hub-sim "$@"' _ "$@"
         ;;
     tsan)
@@ -175,13 +178,49 @@ case "$cmd" in
         if [ "$1" = e2e ]; then
             shift
             run_in web exec true  # install/update node_modules first
-            run_in web-e2e "$@"
+            if [ "${1:-}" != --sim ]; then
+                run_in web-e2e "$@"
+                exit
+            fi
+            # --sim: run against a hub-sim on fresh data, owned by this command
+            # from start to stop, so nobody waits on a server by hand.
+            shift
+            sim_args=()
+            [ "${1:-}" = --auth ] && { sim_args=(--auth); shift; }
+            lock 7 build/e2e-sim.lock
+            in_toolchain bash -c "$build_sim"' && cp build/native/sim/hub-sim build/e2e-hub-sim'
+            sim=hubbo-e2e-sim
+            trap 'docker rm -f "$sim" >/dev/null 2>&1 || true' EXIT
+            docker rm -f "$sim" >/dev/null 2>&1 || true
+            docker compose run -d --rm -T --name "$sim" toolchain build/e2e-hub-sim \
+                serve --port 8780 --data build/sim-e2e --reset "${sim_args[@]}" >/dev/null
+            for _ in $(seq 1 60); do
+                curl -s -m 1 -o /dev/null http://127.0.0.1:8780/api/v1/auth/session && break
+                sleep 0.5
+            done
+            HUBBO_API_TARGET=http://127.0.0.1:8780 run_in web-e2e "$@"
         else
             [ "$1" = build ] && lock 8 build/web-dist.lock
             run_in web "$@"
         fi
         ;;
+    gate)
+        # One area's full phase-end gate, stopping at the first failure. Run it
+        # once per phase; while working, run only what a change touches.
+        gate_core() { "$self" test && "$self" tsan && "$self" asan; }
+        gate_api() { api/lint.sh && api/contract.sh; }
+        gate_web() {
+            "$self" web check && "$self" web build && "$self" web e2e &&
+                "$self" web e2e --sim --auth && "$self" web e2e --sim --project=noauth
+        }
+        gate_fw() { "$self" fw run && "$self" fw run -e waveshare_esp32_s3_eth_ota; }
+        case "${1:-}" in
+            core | api | web | fw) "gate_$1" ;;
+            all) gate_core && gate_api && gate_web && gate_fw ;;
+            *) echo "usage: bin/hubbo gate <core|api|web|fw|all>" >&2; exit 2 ;;
+        esac
+        ;;
     *)
-        sed -n 's/^#   \(bin\/hubbo\)/\1/p' "$0"
+        sed -n '/^set -euo/q; s/^#   //p' "$0"
         ;;
 esac

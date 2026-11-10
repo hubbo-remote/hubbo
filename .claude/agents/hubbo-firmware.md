@@ -39,7 +39,7 @@ Core and API code under `core/` belong to other agents. Change it only through t
 - The RF task never touches NVS or flash, and never waits on another task.
 - `-O2`, and `heap_caps_malloc_extmem_enable(0)`.
 
-**Gate:** `bin/hubbo fw run` builds both envs. Changes that matter on the board are verified on
+**Gate:** `bin/hubbo gate fw` builds both envs. Changes that matter on the board are verified on
 the board.
 
 **When you finish a piece of work:** update `docs/team/hubbo-firmware.md` with the state, the

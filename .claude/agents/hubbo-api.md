@@ -22,11 +22,9 @@ Core owns the engine, config and `sim/`. Change those only through the lead.
 - The spec is the contract. The frontend builds against it, so send spec changes to the lead early.
 - Secrets are write-only. The token never appears in any response, log or backup, and the
   contract asserts that.
-- Auth is due to be trimmed later, so don't extend it.
-- Gates:
-  - `bin/hubbo test` passes;
-  - `api/lint.sh` passes;
-  - `api/contract.sh` passes in both auth modes, against hub-sim run in the foreground.
+- Auth was trimmed in Phase 5 to fit one home. Keep it small, and don't extend it.
+- Gate: `bin/hubbo gate api` (lint, then the contract in all four modes). Core's gate runs the
+  native tests, tsan and asan; while working, run your own suites with `bin/hubbo test -R`.
 
 **When you finish a piece of work:** update `docs/team/hubbo-api.md` with the state, decisions,
 gotchas and open items. Keep it short and current.

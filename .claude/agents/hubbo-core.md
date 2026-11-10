@@ -23,9 +23,7 @@ lead.
 - The core is portable: no Arduino and no ESP-IDF. Platforms plug in through ports.
 - The RF/engine task never blocks and never waits on another task.
 - Follow the persistence rules: absence needs proof, one pipeline, the hub runs what's saved.
-- Gates:
-  - `bin/hubbo test`, `bin/hubbo tsan` and `bin/hubbo asan` all pass;
-  - hub-sim builds (`bin/hubbo sim`).
+- Gate: `bin/hubbo gate core` (the native tests, tsan and asan, which include hub-sim).
 
 **When you finish a piece of work:** update `docs/team/hubbo-core.md` with the state, decisions,
 gotchas and open items. Keep it short and current; it isn't a log.

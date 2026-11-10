@@ -19,9 +19,12 @@ services:
       - .:/work
       - platformio:/platformio
     environment:
-      # Read at build and upload time by firmware OTA envs. Unset is fine.
+      # Firmware build options, all optional: the OTA password (OTA envs),
+      # the one-shot wipe build (`ota --wipe`) and a version label that
+      # replaces `git describe` in the image marker.
       - HUBBO_OTA_PASSWORD
       - HUBBO_WIPE_ON_BOOT
+      - HUBBO_FW_VERSION
 
   # The toolchain set up for ThreadSanitizer (`bin/hubbo tsan`). TSan can't
   # map its shadow memory under the host kernel's full mmap randomization, so
