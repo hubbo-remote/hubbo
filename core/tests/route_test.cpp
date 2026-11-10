@@ -21,7 +21,6 @@ struct Echo : RouteHandler {
 auth::RequestContext as(auth::Principal who) {
     auth::RequestContext c;
     c.principal = who;
-    c.csrfValid = true;
     return c;
 }
 
@@ -119,39 +118,48 @@ TEST(QueryValue, DecodesOneParameterAtATime) {
 }
 
 
-TEST_F(RouterTest, HostAllowlistBlocksRebinding) {
-    router.setAllowedHosts({"localhost", "127.0.0.1", "[::1]", "hubbo.local"});
-    auto withHost = [&](const char *host) {
+TEST_F(RouterTest, ForeignOriginIsCsrfFailed) {
+    auto post = [&](const char *path, const char *origin) {
         auth::test::Headers headers;
-        if (host != nullptr) headers.items["Host"] = host;
+        headers.items["Host"] = "hubbo.local";
+        if (origin != nullptr) headers.items["Origin"] = origin;
         Request r;
-        r.method = Method::Get;
-        r.path = "/api/v1/session";
+        r.method = Method::Post;
+        r.path = path;
         r.headers = &headers;
         r.context = as(auth::Principal::admin());
         Response out;
         router.dispatch(r, out);
         return out;
     };
-    for (const char *ok : {"localhost", "localhost:8080", "127.0.0.1:8080", "[::1]:8080", "[::1]", "HUBBO.local"}) {
-        EXPECT_EQ(withHost(ok).status, 200) << ok;
+    for (const char *path : {"/api/v1/activities/off", "/sim/reset"}) {
+        const Response bad = post(path, "http://evil.example");
+        EXPECT_EQ(bad.status, 403) << path;
+        EXPECT_NE(bad.body.find("csrf_failed"), std::string::npos) << path;
+        EXPECT_EQ(post(path, "http://hubbo.local").status, 200) << path;
+        EXPECT_EQ(post(path, nullptr).status, 200) << path << ": no Origin (curl, agents)";
     }
-    for (const char *bad : {"evil.example", "evil.example:8080", "localhost.evil.example", "", "[::2]:80"}) {
-        const Response r = withHost(bad);
-        EXPECT_EQ(r.status, 421) << bad;
-        EXPECT_NE(r.body.find("host_not_allowed"), std::string::npos);
-    }
-    EXPECT_EQ(withHost(nullptr).status, 421) << "no Host header";
 }
 
-TEST_F(RouterTest, HostRoutesUseThePolicyTableIncludingCsrf) {
-    Request r;
-    r.method = Method::Post;
-    r.path = "/sim/reset";
-    r.context.principal = auth::Principal::admin();
-    r.context.csrfValid = false;
-    Response out;
-    router.dispatch(r, out);
-    EXPECT_EQ(out.status, 403);
-    EXPECT_NE(out.body.find("csrf_failed"), std::string::npos);
+TEST_F(RouterTest, BodyTypeComesFromThePolicyTable) {
+    router.add("/api/v1/admin/firmware/update", auth::Operation::UpdateFirmware, echo);
+    router.add("/api/v1/activities", auth::Operation::CreateActivity, echo);
+    auto post = [&](const char *path, const char *type) {
+        auth::test::Headers headers;
+        headers.items["Content-Type"] = type;
+        Request r;
+        r.method = Method::Post;
+        r.path = path;
+        r.body = "\xE9 bytes";
+        r.headers = &headers;
+        r.context = as(auth::Principal::admin());
+        Response out;
+        router.dispatch(r, out);
+        return out.status;
+    };
+    EXPECT_EQ(post("/api/v1/admin/firmware/update", "application/octet-stream"), 200);
+    EXPECT_EQ(post("/api/v1/admin/firmware/update", "application/json"), 415);
+    EXPECT_EQ(post("/api/v1/activities", "application/octet-stream"), 415);
+    EXPECT_EQ(post("/api/v1/activities", "application/json"), 200);
+    EXPECT_EQ(router.bodyLimit(Method::Post, "/api/v1/admin/firmware/update"), 0x640000u);
 }

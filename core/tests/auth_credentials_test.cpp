@@ -59,7 +59,7 @@ TEST(AuthSecretStore, KeysFollowNvsRules) {
 TEST(AuthCredentials, SetupLoginAndPersistence) {
     Fixture f;
     EXPECT_EQ(f.creds.state(), CredentialState::Fresh);
-    EXPECT_FALSE(f.creds.adminExists());
+    EXPECT_NE(f.creds.state(), CredentialState::Ok);
     EXPECT_FALSE(f.creds.verifyLogin("admin", "anything at all"));
     EXPECT_EQ(f.creds.setupAdmin("admin", "short"), CredentialResult::WeakPassword);
     EXPECT_EQ(f.creds.setupAdmin("bad name", "correct horse battery"), CredentialResult::InvalidUsername);
@@ -79,7 +79,7 @@ TEST(AuthCredentials, SetupLoginAndPersistence) {
     // "Reboot": a new Credentials over the same store.
     Credentials again(f.store, f.hash, f.random, kFastIterations);
     again.load();
-    EXPECT_TRUE(again.adminExists());
+    EXPECT_EQ(again.state(), CredentialState::Ok);
     EXPECT_TRUE(again.verifyLogin("admin", "correct horse battery"));
 }
 
@@ -97,7 +97,7 @@ TEST(AuthCredentials, FailedWritesChangeNothing) {
     Fixture f;
     f.store.failWrites = true;
     EXPECT_EQ(f.creds.setupAdmin("admin", "correct horse battery"), CredentialResult::StorageFailed);
-    EXPECT_FALSE(f.creds.adminExists());
+    EXPECT_NE(f.creds.state(), CredentialState::Ok);
     f.store.failWrites = false;
     ASSERT_EQ(f.creds.setupAdmin("admin", "correct horse battery"), CredentialResult::Ok);
     f.store.failWrites = true;
@@ -174,14 +174,18 @@ TEST(AuthCredentialStates, UnreadableStoreIsUnavailableNotFresh) {
     Credentials boot(f.store, f.hash, f.random, kFastIterations);
     boot.load();
     EXPECT_EQ(boot.state(), CredentialState::Unavailable);
-    EXPECT_FALSE(boot.adminExists());
-    // The takeover: writes work again but nothing was re-read. Setup must
-    // re-check storage and refuse, not overwrite the real admin.
+    EXPECT_NE(boot.state(), CredentialState::Ok);
+    // The takeover: writes work again, but credentials are read once at
+    // boot. Setup still refuses, never overwriting the real admin.
     f.store.healthState = storage::Health::Available;
-    EXPECT_EQ(boot.setupAdmin("mallory", "a password of mine"), CredentialResult::AlreadyExists);
-    EXPECT_EQ(boot.state(), CredentialState::Ok);
-    EXPECT_TRUE(boot.verifyLogin("admin", "correct horse battery"));
-    EXPECT_FALSE(boot.verifyLogin("mallory", "a password of mine"));
+    EXPECT_EQ(boot.setupAdmin("mallory", "a password of mine"), CredentialResult::Unavailable);
+    EXPECT_EQ(boot.state(), CredentialState::Unavailable);
+    // A reboot recovers.
+    Credentials reboot(f.store, f.hash, f.random, kFastIterations);
+    reboot.load();
+    EXPECT_EQ(reboot.state(), CredentialState::Ok);
+    EXPECT_TRUE(reboot.verifyLogin("admin", "correct horse battery"));
+    EXPECT_FALSE(reboot.verifyLogin("mallory", "a password of mine"));
 }
 
 TEST(AuthCredentialStates, NothingIsWrittenWhileUnavailable) {
@@ -195,28 +199,34 @@ TEST(AuthCredentialStates, NothingIsWrittenWhileUnavailable) {
     EXPECT_EQ(boot.createToken("x", 0, &t), CredentialResult::Unavailable);
     EXPECT_EQ(boot.changePassword("correct horse battery", "another password"), CredentialResult::Unavailable);
     EXPECT_FALSE(boot.verifyLogin("admin", "correct horse battery"));
-    f.store.healthState = storage::Health::Available;
-    boot.refresh(0);
-    EXPECT_EQ(boot.state(), CredentialState::Ok);
-    EXPECT_TRUE(boot.verifyLogin("admin", "correct horse battery"));
 }
 
-TEST(AuthCredentialStates, DamagedRecordsAreCorruptAndBlockSetup) {
+TEST(AuthCredentialStates, DamagedRecordsAreUnavailableAndBlockSetup) {
     {
         Fixture f;
         ASSERT_TRUE(f.store.write("admin", "no separator"));
         f.creds.load();
-        EXPECT_EQ(f.creds.state(), CredentialState::Corrupt);
-        EXPECT_EQ(f.creds.setupAdmin("mallory", "a password of mine"), CredentialResult::Corrupt);
+        EXPECT_EQ(f.creds.state(), CredentialState::Unavailable);
+        EXPECT_EQ(f.creds.setupAdmin("mallory", "a password of mine"), CredentialResult::Unavailable);
     }
     {
         // Tokens without an admin: the admin record was lost, not never made.
         Fixture f;
         ASSERT_TRUE(f.store.write("tok_abcdefgh", "AAAA|1|x"));
         f.creds.load();
-        EXPECT_EQ(f.creds.state(), CredentialState::Corrupt);
-        EXPECT_EQ(f.creds.setupAdmin("mallory", "a password of mine"), CredentialResult::Corrupt);
+        EXPECT_EQ(f.creds.state(), CredentialState::Unavailable);
+        EXPECT_EQ(f.creds.setupAdmin("mallory", "a password of mine"), CredentialResult::Unavailable);
     }
+}
+
+TEST(AuthCredentialStates, SetupTakesTheUsersOwnUsername) {
+    Fixture f;
+    EXPECT_EQ(f.creds.setupAdmin("bad name", "correct horse battery"), CredentialResult::InvalidUsername);
+    EXPECT_EQ(f.creds.setupAdmin("", "correct horse battery"), CredentialResult::InvalidUsername);
+    ASSERT_EQ(f.creds.setupAdmin("jon.m", "correct horse battery"), CredentialResult::Ok);
+    EXPECT_EQ(f.creds.username(), "jon.m");
+    EXPECT_FALSE(f.creds.verifyLogin("admin", "correct horse battery")) << "no built-in admin name";
+    EXPECT_TRUE(f.creds.verifyLogin("jon.m", "correct horse battery"));
 }
 
 TEST(AuthCredentialStates, FreshOnlyWhenPositivelyEmpty) {
@@ -232,14 +242,14 @@ namespace {
 
 }  // namespace
 
-TEST(ApiAuthenticator, BearerCookieAndCsrf) {
+TEST(ApiAuthenticator, BearerAndCookie) {
     Fixture f;
     ASSERT_EQ(f.creds.setupAdmin("admin", "correct horse battery"), CredentialResult::Ok);
     IssuedToken token;
     ASSERT_EQ(f.creds.createToken("agent", 0, &token), CredentialResult::Ok);
     SessionStore sessions(f.random);
     FakeClock clock;
-    NewSession session;
+    std::string session;
     ASSERT_TRUE(sessions.create(clock.mono, &session));
     api::Authenticator authn(f.creds, sessions, clock);
 
@@ -253,24 +263,21 @@ TEST(ApiAuthenticator, BearerCookieAndCsrf) {
 
     RequestContext c = run({});
     EXPECT_EQ(c.principal.role, Role::Anonymous);
-    EXPECT_TRUE(c.adminExists);
 
     c = run({{"authorization", "Bearer " + token.plaintext}});
     EXPECT_EQ(c.principal.role, Role::Token);
     EXPECT_EQ(c.principal.credential, Credential::BearerToken);
 
-    c = run({{"cookie", "theme=dark; hubbo_session=" + session.id}});
+    c = run({{"cookie", "theme=dark; hubbo_session=" + session}});
     EXPECT_EQ(c.principal.role, Role::Admin);
-    EXPECT_FALSE(c.csrfValid);
-    c = run({{"cookie", "hubbo_session=" + session.id}, {"x-hubbo-csrf", session.csrf}});
-    EXPECT_TRUE(c.csrfValid);
+    EXPECT_EQ(c.sessionExpiresInMs, kSessionLifetimeMs);
 
     // A bad bearer never falls back to the cookie.
-    c = run({{"authorization", "Bearer hbt_nope"}, {"cookie", "hubbo_session=" + session.id}});
+    c = run({{"authorization", "Bearer hbt_nope"}, {"cookie", "hubbo_session=" + session}});
     EXPECT_EQ(c.principal.role, Role::Anonymous);
     // Expired session.
-    clock.mono += SessionConfig{}.idleTimeoutMs;
-    c = run({{"cookie", "hubbo_session=" + session.id}});
+    clock.mono += kSessionLifetimeMs;
+    c = run({{"cookie", "hubbo_session=" + session}});
     EXPECT_EQ(c.principal.role, Role::Anonymous);
 }
 
@@ -305,7 +312,7 @@ TEST(AuthStorageSecretStore, CredentialsSurviveRestart) {
     StorageSecretStore store(records);  // "reboot"
     Credentials creds(store, hash, random, kFastIterations);
     creds.load();
-    EXPECT_TRUE(creds.adminExists());
+    EXPECT_EQ(creds.state(), CredentialState::Ok);
     EXPECT_TRUE(creds.verifyLogin("admin", "correct horse battery"));
     ASSERT_EQ(creds.tokens().size(), 1u);
     EXPECT_EQ(creds.tokens()[0].name, "agent");
@@ -354,19 +361,15 @@ TEST(AuthStorageSecretStore, PowerLossKeepsOldOrNewNeverGarbage) {
     }
 }
 
-TEST(AuthCredentialStates, CredentialsFollowTheStoreAtRuntime) {
+TEST(AuthCredentialStates, ReadOnceAtBoot) {
     Fixture f;
     f.withAdmin();
+    f.store.healthState = storage::Health::Unavailable;  // the medium goes away after boot
     EXPECT_EQ(f.creds.state(), CredentialState::Ok);
-    f.store.healthState = storage::Health::Unavailable;  // medium goes away
-    f.creds.refresh(0);
-    EXPECT_EQ(f.creds.state(), CredentialState::Unavailable);
-    EXPECT_FALSE(f.creds.verifyLogin("admin", "correct horse battery"));
-    EXPECT_EQ(f.creds.setupAdmin("mallory", "a password of mine"), CredentialResult::Unavailable);
-    f.store.healthState = storage::Health::Available;  // and comes back
-    f.creds.refresh(0);
-    EXPECT_EQ(f.creds.state(), CredentialState::Ok);
-    EXPECT_TRUE(f.creds.verifyLogin("admin", "correct horse battery"));
+    EXPECT_TRUE(f.creds.verifyLogin("admin", "correct horse battery")) << "the hash is cached";
+    IssuedToken t;
+    EXPECT_EQ(f.creds.createToken("agent", 0, &t), CredentialResult::StorageFailed) << "but writes fail";
+    EXPECT_TRUE(f.creds.tokens().empty());
     EXPECT_EQ(f.creds.setupAdmin("mallory", "a password of mine"), CredentialResult::AlreadyExists);
 }
 
@@ -436,135 +439,9 @@ TEST(AuthStorageSecretStore, ReadOnlyStoreRefusesSecretWrites) {
     EXPECT_TRUE(creds.tokens().empty());
 }
 
-namespace {
-
-// A secret store over memory whose reads can fail on a healthy medium (an
-// unreadable slot), counting reloads so the refresh schedule is visible.
-struct FlakySecrets : SecretStore {
-    storage::Health health() const override {
-        return unreadable ? storage::Health::Unavailable : memory.healthState;
-    }
-    storage::Health mediumHealth() const override { return memory.healthState; }
-    SecretRead read(std::string_view key, std::string *value) const override {
-        return unreadable ? SecretRead::Unavailable : memory.read(key, value);
-    }
-    bool write(std::string_view key, std::string_view value) override {
-        return !unreadable && memory.write(key, value);
-    }
-    bool erase(std::string_view key) override { return !unreadable && memory.erase(key); }
-    SecretRead keys(std::string_view prefix, std::vector<std::string> *out) const override {
-        return unreadable ? SecretRead::Unavailable : memory.keys(prefix, out);
-    }
-    void reload() override { reloads++; }
-    MemorySecretStore memory;
-    bool unreadable = false;
-    int reloads = 0;
-};
-
-}  // namespace
-
-TEST(AuthCredentialRefresh, BacksOffOneSecondDoublingToAMinute) {
-    FlakySecrets store;
-    store.unreadable = true;
-    SoftwareHash hash;
-    CountingRandom random;
-    Credentials creds(store, hash, random, kFastIterations);
-    creds.load();
-    ASSERT_EQ(creds.state(), CredentialState::Unavailable);
-
-    creds.refresh(0);  // first sight of the medium: reload at once
-    EXPECT_EQ(store.reloads, 1);
-    // Then 1 s, 2 s, 4 s ... capped at 60 s, measured from each reload.
-    uint64_t now = 0;
-    int expected = 1;
-    for (uint64_t delay : {1000u, 2000u, 4000u, 8000u, 16000u, 32000u, 60000u, 60000u}) {
-        for (uint64_t t = now + 1; t < now + delay; t += delay / 4) {
-            creds.refresh(t);
-            EXPECT_EQ(store.reloads, expected) << "no reload " << t - now << " ms into a " << delay << " ms wait";
-        }
-        now += delay;
-        creds.refresh(now);
-        expected++;
-        EXPECT_EQ(store.reloads, expected) << "reload after " << delay << " ms";
-    }
-    EXPECT_EQ(creds.state(), CredentialState::Unavailable);
-
-    // Readable again: the next due reload finds the admin-less store Fresh.
-    store.unreadable = false;
-    creds.refresh(now + 60000);
-    EXPECT_EQ(creds.state(), CredentialState::Fresh);
-}
-
-TEST(AuthCredentialRefresh, MediumHealthTransitionRetriesAtOnce) {
-    FlakySecrets store;
-    SoftwareHash hash;
-    CountingRandom random;
-    Credentials creds(store, hash, random, kFastIterations);
-    creds.load();
-    ASSERT_EQ(creds.setupAdmin("admin", "correct horse battery"), CredentialResult::Ok);
-    creds.refresh(0);
-    const int base = store.reloads;
-    creds.refresh(10);
-    EXPECT_EQ(store.reloads, base) << "Ok on a readable store: no reload";
-
-    store.memory.healthState = storage::Health::Unavailable;  // medium goes away
-    creds.refresh(20);
-    EXPECT_EQ(store.reloads, base + 1);
-    EXPECT_EQ(creds.state(), CredentialState::Unavailable);
-    creds.refresh(30);
-    EXPECT_EQ(store.reloads, base + 1) << "still down: backing off";
-
-    store.memory.healthState = storage::Health::Available;  // and comes back
-    creds.refresh(40);  // well inside the backoff window
-    EXPECT_EQ(store.reloads, base + 2) << "a health transition retries at once";
-    EXPECT_EQ(creds.state(), CredentialState::Ok);
-    EXPECT_TRUE(creds.verifyLogin("admin", "correct horse battery"));
-}
-
-TEST(AuthCredentialRefresh, SetupNeverActsOnABackedOffState) {
-    // Unreadable on a healthy medium, backed off for a minute.
-    {
-        FlakySecrets store;
-        ASSERT_TRUE(store.memory.write("admin", "admin|pbkdf2-sha256$x"));
-        store.unreadable = true;
-        SoftwareHash hash;
-        CountingRandom random;
-        Credentials creds(store, hash, random, kFastIterations);
-        creds.load();
-        uint64_t now = 0;
-        for (int i = 0; i < 10; i++) creds.refresh(now += 60000);
-        store.unreadable = false;  // readable again, no health transition
-        creds.refresh(now + 1);
-        EXPECT_EQ(creds.state(), CredentialState::Unavailable) << "inside the backoff window";
-        // The takeover: setup must re-read and refuse, not trust the schedule.
-        EXPECT_EQ(creds.setupAdmin("mallory", "a password of mine"), CredentialResult::AlreadyExists);
-        EXPECT_EQ(creds.state(), CredentialState::Ok);
-        std::string admin;
-        ASSERT_EQ(store.memory.read("admin", &admin), SecretRead::Ok);
-        EXPECT_EQ(admin, "admin|pbkdf2-sha256$x") << "the real admin was not overwritten";
-    }
-    // A "fresh" that went stale: an admin appeared behind the cached state.
-    {
-        FlakySecrets store;
-        SoftwareHash hash;
-        CountingRandom random;
-        Credentials creds(store, hash, random, kFastIterations);
-        creds.load();
-        creds.refresh(0);
-        ASSERT_EQ(creds.state(), CredentialState::Fresh);
-        ASSERT_TRUE(store.memory.write("admin", "admin|pbkdf2-sha256$x"));
-        creds.refresh(1);
-        EXPECT_EQ(creds.state(), CredentialState::Fresh) << "inside the backoff window";
-        EXPECT_EQ(creds.setupAdmin("mallory", "a password of mine"), CredentialResult::AlreadyExists);
-        std::string admin;
-        ASSERT_EQ(store.memory.read("admin", &admin), SecretRead::Ok);
-        EXPECT_EQ(admin, "admin|pbkdf2-sha256$x");
-    }
-}
-
-TEST(AuthStorageSecretStore, DamagedSlotsAreCorruptNeverFresh) {
+TEST(AuthStorageSecretStore, DamagedSlotsAreUnavailableNeverFresh) {
     // Absence needs proof (design part 6): secrets slots that exist but
-    // aren't intact are Corrupt, so nobody gets to set up a new admin.
+    // aren't intact are Unavailable, so nobody gets to set up a new admin.
     for (const bool both : {true, false}) {
         storage::MemoryStorage disk;
         storage::SlotRecordStore records(disk, 16 * 1024);
@@ -597,12 +474,9 @@ TEST(AuthStorageSecretStore, DamagedSlotsAreCorruptNeverFresh) {
             continue;
         }
         EXPECT_EQ(store.loadState(), SecretRead::Corrupt);
-        EXPECT_EQ(creds.state(), CredentialState::Corrupt);
-        EXPECT_EQ(creds.setupAdmin("mallory", "a password of mine"), CredentialResult::Corrupt);
+        EXPECT_EQ(creds.state(), CredentialState::Unavailable);
+        EXPECT_EQ(creds.setupAdmin("mallory", "a password of mine"), CredentialResult::Unavailable);
         EXPECT_FALSE(creds.verifyLogin("admin", "correct horse battery"));
-        creds.refresh(0);
-        creds.refresh(120000);
-        EXPECT_EQ(creds.state(), CredentialState::Corrupt) << "a reload doesn't turn damage into Fresh";
         EXPECT_EQ(disk.files(), before) << "nothing overwrote the slots";
     }
 }

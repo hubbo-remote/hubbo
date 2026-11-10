@@ -11,15 +11,13 @@ using namespace hubbo::auth;
 
 namespace {
 
-RequestContext ctx(Principal p, bool csrf = true, bool adminExists = true) {
+RequestContext ctx(Principal p) {
     RequestContext c;
     c.principal = p;
-    c.csrfValid = csrf;
-    c.adminExists = adminExists;
     return c;
 }
 
-Decision as(Principal p, Operation op, bool csrf = true) { return authorize(op, ctx(p, csrf)); }
+Decision as(Principal p, Operation op) { return authorize(op, ctx(p)); }
 
 Operation op(const char *id) {
     Operation out = Operation::Count;
@@ -60,11 +58,12 @@ TEST(AuthPolicy, RoleMatrix) {
         "startIntegrationPairing", "getIntegrationPairing", "forgetIntegrationPairing", "registerDevice", "updateDevice",
         "deleteDevice", "getRemoteConfig", "setRemoteEndpoint", "getRemotePairing", "startRemotePairing", "cancelRemotePairing",
         "changeAdminPassword", "listTokens", "createToken", "revokeToken", "downloadBackup",
-        "restoreBackup", "factoryReset", "getFirmwareStatus", "updateFirmware",
+        "restoreBackup", "resetConfiguration", "factoryReset", "getFirmwareStatus", "updateFirmware",
     };
-    const char *publicOps[] = {"login", "logout", "getSession"};
+    // setupAdmin's handler refuses it unless the credentials are fresh.
+    const char *publicOps[] = {"setupAdmin", "login", "logout", "getSession"};
 
-    size_t covered = 1;  // setupAdmin, tested separately
+    size_t covered = 0;
     for (const char *id : tokenAllowed) {
         EXPECT_EQ(as(Principal::anonymous(), op(id)), Decision::Unauthenticated) << id;
         EXPECT_EQ(as(Principal::token(), op(id)), Decision::Allow) << id;
@@ -106,33 +105,13 @@ TEST(AuthPolicy, EveryAdminPathIsAdminOnly) {
     }
 }
 
-TEST(AuthPolicy, CsrfRequiredForCookieUnsafeRequests) {
-    // Cookie + unsafe + no CSRF -> refused, even for admin-only operations.
-    EXPECT_EQ(as(Principal::admin(), Operation::CreateActivity, false), Decision::CsrfFailed);
-    EXPECT_EQ(as(Principal::admin(), Operation::RegisterDevice, false), Decision::CsrfFailed);
-    EXPECT_EQ(as(Principal::admin(), Operation::Logout, false), Decision::CsrfFailed);
-    EXPECT_EQ(as(Principal::admin(), Operation::UpdateFirmware, false), Decision::CsrfFailed);
-    // Safe methods don't need it.
-    EXPECT_EQ(as(Principal::admin(), Operation::ListDevices, false), Decision::Allow);
-    EXPECT_EQ(as(Principal::admin(), Operation::DownloadBackup, false), Decision::Allow);
-    // Login and setup run before a session exists.
-    EXPECT_EQ(as(Principal::admin(), Operation::Login, false), Decision::Allow);
-    // Bearer tokens are not ambient credentials: no CSRF.
-    EXPECT_EQ(as(Principal::token(), Operation::CreateActivity, false), Decision::Allow);
-}
-
-TEST(AuthPolicy, SetupOnlyBeforeAdminExists) {
-    EXPECT_EQ(authorize(Operation::SetupAdmin, ctx(Principal::anonymous(), false, false)),
-              Decision::Allow);
-    EXPECT_EQ(authorize(Operation::SetupAdmin, ctx(Principal::anonymous(), false, true)),
-              Decision::SetupClosed);
-    EXPECT_EQ(authorize(Operation::SetupAdmin, ctx(Principal::admin(), true, true)),
-              Decision::SetupClosed);
-    EXPECT_EQ(authorize(Operation::SetupAdmin, ctx(Principal::token(), true, true)),
-              Decision::SetupClosed);
-    // No admin yet doesn't open anything else.
-    EXPECT_EQ(authorize(Operation::RegisterDevice, ctx(Principal::anonymous(), false, false)),
-              Decision::Unauthenticated);
+TEST(AuthPolicy, UnreadableCredentialsAre503NotA401) {
+    RequestContext c;
+    c.credentialsUnavailable = true;
+    EXPECT_EQ(authorize(Operation::ListDevices, c), Decision::CredentialsUnavailable);
+    EXPECT_EQ(authorize(Operation::RegisterDevice, c), Decision::CredentialsUnavailable);
+    EXPECT_EQ(authorize(Operation::GetSession, c), Decision::Allow);
+    EXPECT_EQ(httpStatus(Decision::CredentialsUnavailable), 503);
 }
 
 TEST(AuthPolicy, InconsistentPrincipalsAreAnonymous) {
@@ -149,44 +128,51 @@ TEST(AuthPolicy, InconsistentPrincipalsAreAnonymous) {
 TEST(AuthPolicy, SimulatorBypassOnlyInSimulatorBuilds) {
     const Principal forged{Role::Admin, Credential::SimulatorBypass};
     if (kSimulatorNoAuthBuild) {
-        EXPECT_EQ(as(forged, Operation::RegisterDevice, false), Decision::Allow);
+        EXPECT_EQ(as(forged, Operation::RegisterDevice), Decision::Allow);
     } else {
         // Native test and firmware builds: the bypass credential gets exactly
         // what an anonymous caller gets.
         for (size_t i = 0; i < kOperationCount; i++) {
             const auto o = static_cast<Operation>(i);
-            EXPECT_EQ(as(forged, o, false), as(Principal::anonymous(), o, false))
+            EXPECT_EQ(as(forged, o), as(Principal::anonymous(), o))
                 << operationInfo(o).id;
         }
-        EXPECT_EQ(as(forged, Operation::RegisterDevice, false), Decision::Unauthenticated);
+        EXPECT_EQ(as(forged, Operation::RegisterDevice), Decision::Unauthenticated);
     }
 }
 
-TEST(AuthPolicy, MaxRequestBodyCoversEveryOperation) {
-    // Transports size their body buffers from this; it must cover restore.
+TEST(AuthPolicy, MaxRequestBodyCoversEveryJsonOperation) {
+    // The cap for unknown routes: it must cover restore. The firmware image
+    // is the one (binary) exception, bounded by the OTA slot.
     EXPECT_EQ(maxRequestBody(), operationInfo(Operation::RestoreBackup).maxBody);
     for (size_t i = 0; i < kOperationCount; i++) {
-        EXPECT_LE(operationInfo(static_cast<Operation>(i)).maxBody, maxRequestBody());
+        const auto &info = operationInfo(static_cast<Operation>(i));
+        if (info.operation == Operation::UpdateFirmware) continue;
+        EXPECT_EQ(info.body, Body::Json) << info.id;
+        EXPECT_LE(info.maxBody, maxRequestBody()) << info.id;
     }
+    const auto &update = operationInfo(Operation::UpdateFirmware);
+    EXPECT_EQ(update.body, Body::Binary);
+    EXPECT_EQ(update.maxBody, 0x640000u);  // the board's OTA slot
 }
 
 TEST(AuthPolicy, DecisionMapping) {
     EXPECT_EQ(httpStatus(Decision::Unauthenticated), 401);
     EXPECT_EQ(httpStatus(Decision::Forbidden), 403);
-    EXPECT_EQ(httpStatus(Decision::CsrfFailed), 403);
-    EXPECT_EQ(httpStatus(Decision::SetupClosed), 409);
-    EXPECT_STREQ(decisionCode(Decision::CsrfFailed), "csrf_failed");
-    EXPECT_STREQ(decisionCode(Decision::SetupClosed), "setup_already_done");
+    EXPECT_STREQ(decisionCode(Decision::Forbidden), "forbidden");
+    EXPECT_STREQ(decisionCode(Decision::CredentialsUnavailable), "storage_unavailable");
 }
 
 TEST(AuthCsrf, JsonContentType) {
-    EXPECT_TRUE(isJsonContentType("application/json"));
-    EXPECT_TRUE(isJsonContentType("Application/JSON; charset=utf-8"));
-    EXPECT_FALSE(isJsonContentType("text/plain"));
-    EXPECT_FALSE(isJsonContentType("application/x-www-form-urlencoded"));
-    EXPECT_FALSE(isJsonContentType("multipart/form-data; boundary=x"));
-    EXPECT_FALSE(isJsonContentType("application/jsonp"));
-    EXPECT_FALSE(isJsonContentType(""));
+    EXPECT_TRUE(isMediaType("application/json", mediaType(Body::Json)));
+    EXPECT_TRUE(isMediaType("Application/JSON; charset=utf-8", mediaType(Body::Json)));
+    EXPECT_FALSE(isMediaType("text/plain", mediaType(Body::Json)));
+    EXPECT_FALSE(isMediaType("application/x-www-form-urlencoded", mediaType(Body::Json)));
+    EXPECT_FALSE(isMediaType("multipart/form-data; boundary=x", mediaType(Body::Json)));
+    EXPECT_FALSE(isMediaType("application/jsonp", mediaType(Body::Json)));
+    EXPECT_FALSE(isMediaType("", mediaType(Body::Json)));
+    EXPECT_TRUE(isMediaType("application/octet-stream", mediaType(Body::Binary)));
+    EXPECT_FALSE(isMediaType("application/json", "application/octet-stream"));
 }
 
 TEST(AuthCsrf, Origin) {

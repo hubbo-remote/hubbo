@@ -23,39 +23,24 @@ std::string_view requestSessionId(const http::Request &request) {
     return request.headers ? cookieValue(request.headers->header("Cookie"), kSessionCookie) : std::string_view();
 }
 
-// Session body for a freshly created session (login/setup).
-void sendNewSession(ApiContext &ctx, const http::Request &request, http::Response &out, int status,
-                    const auth::NewSession &session) {
+// A new session (login, setup): the cookie and the Session body.
+void startSession(ApiContext &ctx, const http::Request &request, http::Response &out, int status) {
+    std::string id;
+    if (!ctx.sessions.create(ctx.clock.monotonicMs(), &id)) {
+        sendError(out, 500, "internal_error", "No entropy for a session id");
+        return;
+    }
     JsonDocument doc;
     doc["authenticated"] = true;
     doc["role"] = "admin";
     doc["username"] = ctx.credentials.username();
-    doc["csrf_token"] = session.csrf;
-    doc["expires_in_s"] = auth::SessionConfig{}.idleTimeoutMs / 1000;
+    doc["expires_in_s"] = auth::kSessionLifetimeMs / 1000;
     doc["setup_required"] = false;
     doc["auth_state"] = auth::credentialStateName(ctx.credentials.state());
     doc["auth_mode"] = authMode(ctx);
-    out.headers.emplace_back("Set-Cookie", sessionCookie(request, session.id));
+    out.headers.emplace_back("Set-Cookie", sessionCookie(request, id));
     out.headers.emplace_back("Cache-Control", "no-store");
     sendJson(out, status, doc);
-}
-
-bool startSession(ApiContext &ctx, http::Response &out, auth::NewSession *session) {
-    if (ctx.sessions.create(ctx.clock.monotonicMs(), session)) return true;
-    sendError(out, 500, "internal_error", "No entropy for a session id");
-    return false;
-}
-
-// 429 if the caller is locked out. Sets Retry-After.
-bool rateLimited(ApiContext &ctx, const http::Request &request, http::Response &out) {
-    const uint64_t waitMs = ctx.loginLimiter.retryAfterMs(request.clientKey, ctx.clock.monotonicMs());
-    if (waitMs == 0) return false;
-    const uint64_t seconds = (waitMs + 999) / 1000;
-    JsonDocument doc;
-    errorBody(doc, "rate_limited", "Too many failed attempts; try again later")["retry_after_s"] = seconds;
-    out.headers.emplace_back("Retry-After", std::to_string(seconds));
-    sendJson(out, 429, doc);
-    return true;
 }
 
 void sendCredentialError(http::Response &out, auth::CredentialResult result, const char *passwordPath = "/password") {
@@ -78,11 +63,8 @@ void sendCredentialError(http::Response &out, auth::CredentialResult result, con
             sendError(out, 409, "setup_required", "Create the admin account first");
             return;
         case auth::CredentialResult::Unavailable:
-            sendError(out, 503, "storage_unavailable", "Stored credentials can't be read right now; try again later");
-            return;
-        case auth::CredentialResult::Corrupt:
-            sendError(out, 409, "credentials_corrupt",
-                      "Stored credentials are damaged; the admin account can't be used or replaced from the network");
+            sendError(out, 503, "storage_unavailable",
+                      auth::decisionMessage(auth::Decision::CredentialsUnavailable));
             return;
         case auth::CredentialResult::LimitReached:
             sendError(out, 409, "limit_reached", "Revoke a token first (16 at most)");
@@ -112,6 +94,10 @@ void putToken(JsonObject t, const auth::StoredToken &info) {
 
 void addAuthRoutes(RouteSink &sink, ApiContext &ctx) {
     sink.add("/api/v1/auth/setup", auth::Operation::SetupAdmin, [&ctx](auto &request, auto &, auto &out) {
+        // Only a positively empty store takes a new admin (decided before the body is parsed).
+        if (const auto guard = ctx.credentials.setupGuard(); guard != auth::CredentialResult::Ok) {
+            return sendCredentialError(out, guard);
+        }
         JsonDocument doc;
         if (!readJson(request, out, doc)) return;
         ValidationReport report;
@@ -125,12 +111,10 @@ void addAuthRoutes(RouteSink &sink, ApiContext &ctx) {
             sendCredentialError(out, result);
             return;
         }
-        auth::NewSession session;
-        if (startSession(ctx, out, &session)) sendNewSession(ctx, request, out, 201, session);
+        startSession(ctx, request, out, 201);
     });
 
     sink.add("/api/v1/auth/login", auth::Operation::Login, [&ctx](auto &request, auto &, auto &out) {
-        if (rateLimited(ctx, request, out)) return;
         JsonDocument doc;
         if (!readJson(request, out, doc)) return;
         ValidationReport report;
@@ -139,22 +123,15 @@ void addAuthRoutes(RouteSink &sink, ApiContext &ctx) {
             return;
         }
         // Only Ok can check a password. Never answer 401 when the truth is
-        // "can't read the account" (Unavailable) or "damaged" (Corrupt).
-        switch (ctx.credentials.state()) {
-            case auth::CredentialState::Ok: break;
-            case auth::CredentialState::Fresh: return sendCredentialError(out, auth::CredentialResult::NoAdmin);
-            case auth::CredentialState::Unavailable:
-                return sendCredentialError(out, auth::CredentialResult::Unavailable);
-            case auth::CredentialState::Corrupt: return sendCredentialError(out, auth::CredentialResult::Corrupt);
+        // "can't read the account" (Unavailable).
+        if (const auto guard = ctx.credentials.adminGuard(); guard != auth::CredentialResult::Ok) {
+            return sendCredentialError(out, guard);
         }
         if (!ctx.credentials.verifyLogin(doc["username"].as<const char *>(), doc["password"].as<const char *>())) {
-            ctx.loginLimiter.recordFailure(request.clientKey, ctx.clock.monotonicMs());
             sendError(out, 401, "invalid_credentials", "Wrong username or password");
             return;
         }
-        ctx.loginLimiter.recordSuccess(request.clientKey);
-        auth::NewSession session;
-        if (startSession(ctx, out, &session)) sendNewSession(ctx, request, out, 200, session);
+        startSession(ctx, request, out, 200);
     });
 
     sink.add("/api/v1/auth/logout", auth::Operation::Logout, [&ctx](auto &request, auto &, auto &out) {
@@ -178,8 +155,6 @@ void addAuthRoutes(RouteSink &sink, ApiContext &ctx) {
             doc["role"] = nullptr;
         }
         if (who.credential == auth::Credential::SessionCookie) {
-            const std::string_view id = requestSessionId(request);
-            doc["csrf_token"] = ctx.sessions.csrfToken(id, ctx.clock.monotonicMs());
             doc["expires_in_s"] = request.context.sessionExpiresInMs / 1000;
         }
         // Only a positively empty store asks for setup; unreadable is not empty.
@@ -193,7 +168,6 @@ void addAuthRoutes(RouteSink &sink, ApiContext &ctx) {
 
     sink.add("/api/v1/admin/account/password", auth::Operation::ChangeAdminPassword,
              [&ctx](auto &request, auto &, auto &out) {
-                 if (rateLimited(ctx, request, out)) return;
                  JsonDocument doc;
                  if (!readJson(request, out, doc)) return;
                  ValidationReport report;
@@ -207,7 +181,6 @@ void addAuthRoutes(RouteSink &sink, ApiContext &ctx) {
                  const auto result = ctx.credentials.changePassword(doc["current_password"].as<const char *>(),
                                                                     doc["new_password"].as<const char *>());
                  if (result == auth::CredentialResult::WrongPassword) {
-                     ctx.loginLimiter.recordFailure(request.clientKey, ctx.clock.monotonicMs());
                      sendError(out, 401, "invalid_credentials", "Current password is wrong");
                      return;
                  }

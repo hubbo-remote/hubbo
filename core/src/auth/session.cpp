@@ -16,47 +16,41 @@ bool decodeSecret(std::string_view text, uint8_t out[kSessionSecretBytes]) {
 
 }  // namespace
 
-SessionStore::SessionStore(RandomSource &random, SessionConfig config)
-    : random_(random), config_(config) {}
+SessionStore::SessionStore(RandomSource &random, uint64_t lifetimeMs) : random_(random), lifetimeMs_(lifetimeMs) {}
 
 bool SessionStore::live(const Slot &slot, uint64_t nowMs) const {
-    if (!slot.used || nowMs < slot.lastSeenMs) {
+    if (!slot.used || nowMs < slot.createdMs) {
         return false;  // clock went backwards: treat as expired
     }
-    return nowMs - slot.lastSeenMs < config_.idleTimeoutMs &&
-           nowMs - slot.createdMs < config_.absoluteTimeoutMs;
+    return nowMs - slot.createdMs < lifetimeMs_;
 }
 
 void SessionStore::wipe(Slot &slot) {
     secureZero(slot.id, sizeof(slot.id));
-    secureZero(slot.csrf, sizeof(slot.csrf));
     slot.used = false;
     slot.createdMs = 0;
-    slot.lastSeenMs = 0;
 }
 
-bool SessionStore::create(uint64_t nowMs, NewSession *out) {
+bool SessionStore::create(uint64_t nowMs, std::string *id) {
     Slot fresh;
-    if (!random_.fill(fresh.id, sizeof(fresh.id)) || !random_.fill(fresh.csrf, sizeof(fresh.csrf))) {
+    if (!random_.fill(fresh.id, sizeof(fresh.id))) {
         return false;
     }
     fresh.used = true;
     fresh.createdMs = nowMs;
-    fresh.lastSeenMs = nowMs;
 
-    // Free or expired slot first, otherwise the least recently used.
+    // Free or expired slot first, otherwise the oldest.
     size_t target = 0;
     for (size_t i = 0; i < kMaxSessions; i++) {
         if (!live(slots_[i], nowMs)) {
             target = i;
             break;
         }
-        if (slots_[i].lastSeenMs < slots_[target].lastSeenMs) target = i;
+        if (slots_[i].createdMs < slots_[target].createdMs) target = i;
     }
     wipe(slots_[target]);
     slots_[target] = fresh;
-    out->id = base64UrlEncode(fresh.id, sizeof(fresh.id));
-    out->csrf = base64UrlEncode(fresh.csrf, sizeof(fresh.csrf));
+    *id = base64UrlEncode(fresh.id, sizeof(fresh.id));
     wipe(fresh);
     return true;
 }
@@ -80,32 +74,15 @@ int SessionStore::find(std::string_view id, uint64_t nowMs) const {
     return match;
 }
 
-SessionAuth SessionStore::authenticate(std::string_view id, std::string_view csrf,
-                                       uint64_t nowMs) {
+SessionAuth SessionStore::authenticate(std::string_view id, uint64_t nowMs) const {
     SessionAuth result;
     const int index = find(id, nowMs);
     if (index < 0) {
         return result;
     }
-    Slot &slot = slots_[index];
-    slot.lastSeenMs = nowMs;
     result.valid = true;
-    const uint64_t absoluteLeft = config_.absoluteTimeoutMs - (nowMs - slot.createdMs);
-    result.expiresInMs =
-        config_.idleTimeoutMs < absoluteLeft ? config_.idleTimeoutMs : absoluteLeft;
-    uint8_t presented[kSessionSecretBytes];
-    result.csrfValid = decodeSecret(csrf, presented) &&
-                       constantTimeEqual(presented, slot.csrf, kSessionSecretBytes);
-    secureZero(presented, sizeof(presented));
+    result.expiresInMs = lifetimeMs_ - (nowMs - slots_[index].createdMs);
     return result;
-}
-
-std::string SessionStore::csrfToken(std::string_view id, uint64_t nowMs) const {
-    const int index = find(id, nowMs);
-    if (index < 0) {
-        return {};
-    }
-    return base64UrlEncode(slots_[index].csrf, kSessionSecretBytes);
 }
 
 void SessionStore::remove(std::string_view id) {

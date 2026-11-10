@@ -5,7 +5,6 @@
 #include <vector>
 
 #include "auth_test_util.h"
-#include "hubbo/auth/rate_limit.h"
 #include "hubbo/auth/session.h"
 #include "hubbo/auth/token.h"
 
@@ -92,104 +91,77 @@ TEST(AuthToken, FailsClosedWithoutEntropy) {
 
 // ---------------------------------------------------------------- sessions
 
-TEST(AuthSession, CreateTouchCsrfLogout) {
+TEST(AuthSession, CreateAuthenticateLogout) {
     CountingRandom random;
     SessionStore store(random);
-    NewSession s;
-    ASSERT_TRUE(store.create(1000, &s));
-    EXPECT_EQ(s.id.size(), kSessionSecretLength);
-    EXPECT_EQ(s.csrf.size(), kSessionSecretLength);
-    EXPECT_NE(s.id, s.csrf);
+    std::string id;
+    ASSERT_TRUE(store.create(1000, &id));
+    EXPECT_EQ(id.size(), kSessionSecretLength);
 
-    const SessionAuth ok = store.authenticate(s.id, s.csrf, 2000);
+    const SessionAuth ok = store.authenticate(id, 2000);
     EXPECT_TRUE(ok.valid);
-    EXPECT_TRUE(ok.csrfValid);
-    EXPECT_EQ(ok.expiresInMs, SessionConfig{}.idleTimeoutMs);
-    EXPECT_TRUE(store.authenticate(s.id, "", 2000).valid) << "GET without CSRF header";
-    EXPECT_FALSE(store.authenticate(s.id, "", 2000).csrfValid);
-    EXPECT_FALSE(store.authenticate(s.id, s.id, 2000).csrfValid);
-    EXPECT_EQ(store.csrfToken(s.id, 2000), s.csrf);
+    EXPECT_EQ(ok.expiresInMs, kSessionLifetimeMs - 1000);
 
-    store.remove(s.id);
-    const SessionAuth gone = store.authenticate(s.id, s.csrf, 3000);
-    EXPECT_FALSE(gone.valid);
-    EXPECT_FALSE(gone.csrfValid);
-    EXPECT_EQ(store.csrfToken(s.id, 3000), "");
+    store.remove(id);
+    EXPECT_FALSE(store.authenticate(id, 3000).valid);
 }
 
-TEST(AuthSession, CsrfTokenOfAnotherSessionIsRejected) {
+TEST(AuthSession, OneAbsoluteLifetimeNoIdleTimer) {
     CountingRandom random;
-    SessionStore store(random);
-    NewSession a, b;
-    ASSERT_TRUE(store.create(0, &a));
-    ASSERT_TRUE(store.create(0, &b));
-    EXPECT_FALSE(store.authenticate(a.id, b.csrf, 1).csrfValid);
-    EXPECT_FALSE(store.authenticate(b.id, a.csrf, 1).csrfValid);
-}
-
-TEST(AuthSession, IdleAndAbsoluteExpiry) {
-    CountingRandom random;
-    SessionStore store(random, SessionConfig{2 * kHour, 5 * kHour});
-    NewSession s;
-    ASSERT_TRUE(store.create(0, &s));
-    // Kept alive by use every hour...
-    for (uint64_t t = kHour; t < 5 * kHour; t += kHour) {
-        EXPECT_TRUE(store.authenticate(s.id, "", t).valid) << t;
-    }
-    // ...but not past the absolute lifetime.
-    EXPECT_FALSE(store.authenticate(s.id, "", 5 * kHour).valid);
-
-    NewSession idle;
-    ASSERT_TRUE(store.create(10 * kHour, &idle));
-    EXPECT_TRUE(store.authenticate(idle.id, "", 10 * kHour + 2 * kHour - 1).valid);
-    EXPECT_FALSE(store.authenticate(idle.id, "", 10 * kHour + 4 * kHour).valid);
+    SessionStore store(random, 5 * kHour);
+    std::string id;
+    ASSERT_TRUE(store.create(0, &id));
+    // Unused for hours, still valid...
+    EXPECT_TRUE(store.authenticate(id, 5 * kHour - 1).valid);
+    // ...until the lifetime ends, however often it's used.
+    EXPECT_FALSE(store.authenticate(id, 5 * kHour).valid);
+    EXPECT_EQ(kSessionLifetimeMs, 7 * 24 * kHour);
     // Clock going backwards (shouldn't happen with uptime) fails closed.
-    NewSession back;
+    std::string back;
     ASSERT_TRUE(store.create(20 * kHour, &back));
-    EXPECT_FALSE(store.authenticate(back.id, "", 19 * kHour).valid);
+    EXPECT_FALSE(store.authenticate(back, 19 * kHour).valid);
 }
 
-TEST(AuthSession, CapacityEvictsLeastRecentlyUsed) {
+TEST(AuthSession, CapacityEvictsTheOldest) {
     CountingRandom random;
     SessionStore store(random);
-    std::vector<NewSession> sessions(kMaxSessions);
+    std::vector<std::string> sessions(kMaxSessions);
     for (size_t i = 0; i < kMaxSessions; i++) {
         ASSERT_TRUE(store.create(i, &sessions[i]));
     }
     EXPECT_EQ(store.activeCount(100), kMaxSessions);
-    EXPECT_TRUE(store.authenticate(sessions[0].id, "", 100).valid);  // 0 is now the most recent
-    NewSession extra;
+    std::string extra;
     ASSERT_TRUE(store.create(200, &extra));
     EXPECT_EQ(store.activeCount(200), kMaxSessions);
-    EXPECT_TRUE(store.authenticate(sessions[0].id, "", 201).valid);
-    EXPECT_FALSE(store.authenticate(sessions[1].id, "", 201).valid) << "LRU slot should have been evicted";
-    EXPECT_TRUE(store.authenticate(extra.id, "", 201).valid);
+    EXPECT_FALSE(store.authenticate(sessions[0], 201).valid) << "the oldest should have been evicted";
+    EXPECT_TRUE(store.authenticate(sessions[1], 201).valid);
+    EXPECT_TRUE(store.authenticate(extra, 201).valid);
 }
 
 TEST(AuthSession, RebootLosesEverythingAndGarbageIsRejected) {
     CountingRandom random;
-    NewSession s;
+    std::string id;
     {
         SessionStore store(random);
-        ASSERT_TRUE(store.create(0, &s));
+        ASSERT_TRUE(store.create(0, &id));
     }
     SessionStore afterReboot(random);  // RAM only: nothing survives
-    EXPECT_FALSE(afterReboot.authenticate(s.id, "", 1).valid);
-    EXPECT_FALSE(afterReboot.authenticate("", "", 1).valid);
-    EXPECT_FALSE(afterReboot.authenticate(std::string(kSessionSecretLength, 'A'), "", 1).valid)
+    EXPECT_FALSE(afterReboot.authenticate(id, 1).valid);
+    EXPECT_FALSE(afterReboot.authenticate("", 1).valid);
+    EXPECT_FALSE(afterReboot.authenticate(std::string(kSessionSecretLength, 'A'), 1).valid)
         << "an all-zero id must not match an empty slot";
-    EXPECT_FALSE(afterReboot.authenticate("../../etc/passwd", "", 1).valid);
+    EXPECT_FALSE(afterReboot.authenticate("../../etc/passwd", 1).valid);
 }
 
 TEST(AuthSession, RemoveAllExcept) {
     CountingRandom random;
     SessionStore store(random);
-    NewSession keep, other;
+    std::string keep, other;
     ASSERT_TRUE(store.create(0, &keep));
     ASSERT_TRUE(store.create(0, &other));
-    store.removeAllExcept(keep.id);
-    EXPECT_TRUE(store.authenticate(keep.id, "", 1).valid);
-    EXPECT_FALSE(store.authenticate(other.id, "", 1).valid);
+    store.removeAllExcept(keep);
+    EXPECT_TRUE(store.authenticate(keep, 1).valid);
+    EXPECT_FALSE(store.authenticate(other, 1).valid);
     store.clear();
     EXPECT_EQ(store.activeCount(1), 0u);
 }
@@ -198,75 +170,7 @@ TEST(AuthSession, FailsClosedWithoutEntropy) {
     CountingRandom random;
     SessionStore store(random);
     random.failing = true;
-    NewSession s;
-    EXPECT_FALSE(store.create(0, &s));
+    std::string id;
+    EXPECT_FALSE(store.create(0, &id));
     EXPECT_EQ(store.activeCount(0), 0u);
-}
-
-// ---------------------------------------------------------------- rate limit
-
-TEST(AuthRateLimit, FreeAttemptsThenDoublingLockout) {
-    LoginRateLimiter limiter;  // 5 free, 1 s base, 15 min cap
-    const uint64_t client = 0xC0A80138;
-    uint64_t now = 1000;
-    for (int i = 0; i < 5; i++) {
-        EXPECT_EQ(limiter.retryAfterMs(client, now), 0u) << i;
-        limiter.recordFailure(client, now);
-    }
-    EXPECT_EQ(limiter.retryAfterMs(client, now), 0u);
-    limiter.recordFailure(client, now);  // 6th
-    EXPECT_EQ(limiter.retryAfterMs(client, now), 1000u);
-    now += 1000;
-    EXPECT_EQ(limiter.retryAfterMs(client, now), 0u);
-    limiter.recordFailure(client, now);  // 7th
-    EXPECT_EQ(limiter.retryAfterMs(client, now), 2000u);
-    now += 2000;
-    limiter.recordFailure(client, now);  // 8th
-    EXPECT_EQ(limiter.retryAfterMs(client, now), 4000u);
-
-    // Other clients are unaffected.
-    EXPECT_EQ(limiter.retryAfterMs(client + 1, now), 0u);
-
-    // Success clears the record.
-    limiter.recordSuccess(client);
-    EXPECT_EQ(limiter.retryAfterMs(client, now), 0u);
-}
-
-TEST(AuthRateLimit, LockoutIsCapped) {
-    RateLimitConfig config;
-    config.globalMaxFailures = 1000000;
-    LoginRateLimiter limiter(config);
-    uint64_t now = 0;
-    for (int i = 0; i < 60; i++) {
-        now += limiter.retryAfterMs(7, now);
-        limiter.recordFailure(7, now);
-    }
-    EXPECT_EQ(limiter.retryAfterMs(7, now), config.maxLockoutMs);
-}
-
-TEST(AuthRateLimit, GlobalLimitStopsAddressRotation) {
-    LoginRateLimiter limiter;  // 30 failures per minute globally
-    for (uint64_t client = 0; client < 30; client++) {
-        EXPECT_EQ(limiter.retryAfterMs(client, 5000), 0u);
-        limiter.recordFailure(client, 5000);
-    }
-    EXPECT_EQ(limiter.retryAfterMs(999, 5000), 60000u);
-    EXPECT_EQ(limiter.retryAfterMs(999, 64999), 1u);
-    EXPECT_EQ(limiter.retryAfterMs(999, 65000), 0u);
-}
-
-TEST(AuthRateLimit, RecordsAreForgottenAndTableRecycles) {
-    LoginRateLimiter limiter;
-    for (int i = 0; i < 6; i++) limiter.recordFailure(1, 0);
-    EXPECT_GT(limiter.retryAfterMs(1, 0), 0u);
-    // After forgetAfterMs with no failures the counter starts over.
-    const uint64_t later = RateLimitConfig{}.forgetAfterMs + 1;
-    EXPECT_EQ(limiter.retryAfterMs(1, later), 0u);
-    limiter.recordFailure(1, later);
-    EXPECT_EQ(limiter.retryAfterMs(1, later), 0u) << "fresh record, first failure is free";
-
-    // More clients than slots: still bounded, still works.
-    for (uint64_t c = 100; c < 100 + 3 * LoginRateLimiter::kSlots; c++) {
-        limiter.recordFailure(c, later + 120000 * c);
-    }
 }

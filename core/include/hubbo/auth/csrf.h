@@ -2,8 +2,8 @@
 
 #include <string_view>
 
-// Browser request checks that complement the per-session CSRF token
-// (SessionStore::authenticate):
+// The browser request checks that stand in for a CSRF token (with the
+// SameSite=Strict session cookie):
 //
 // 1. Unsafe requests with a body must be `Content-Type: application/json`
 //    (parameters allowed). HTML forms cannot send that cross-origin without a
@@ -14,7 +14,8 @@
 //    POSTs.
 namespace hubbo::auth {
 
-bool isJsonContentType(std::string_view contentType);
+// `contentType` names `mediaType` (case-insensitive, parameters ignored).
+bool isMediaType(std::string_view contentType, std::string_view mediaType);
 
 // `origin` is the Origin header ("" if absent), `host` the Host header.
 // "null" origins are rejected.

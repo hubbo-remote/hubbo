@@ -83,7 +83,7 @@ void addBackupRoutes(RouteSink &sink, ApiContext &ctx) {
         out.headers.emplace_back("Cache-Control", "no-store");
     });
 
-    sink.add("/api/v1/admin/reset", auth::Operation::FactoryReset, [&ctx](auto &, auto &, auto &out) {
+    sink.add("/api/v1/admin/reset", auth::Operation::ResetConfiguration, [&ctx](auto &, auto &, auto &out) {
         const ConfigSpec empty;
         const ConfigSpec &defaults = ctx.factoryDefaults ? *ctx.factoryDefaults : empty;
         if (!forgetTokenForNewHaUrl(ctx, defaults, out)) return;

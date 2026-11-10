@@ -11,6 +11,7 @@
 #include <string>
 
 #include "auth_test_util.h"
+#include "firmware_image_util.h"
 #include "fake_ha.h"
 #include "fixtures.h"
 #include "hub.h"
@@ -73,7 +74,6 @@ protected:
     ApiTest() {
         seeded = hub.load(sim::fixtureConfig());
         creds.load();
-        router.setAllowedHosts({"localhost", "127.0.0.1"});
         api.registerRoutes(router);
     }
 
@@ -90,10 +90,7 @@ protected:
         headers.items = {{"host", "127.0.0.1"}};
         if (!body.empty()) headers.items["content-type"] = "application/json";
         if (!token.empty()) headers.items["authorization"] = "Bearer " + token;
-        if (!cookie.empty()) {
-            headers.items["cookie"] = "hubbo_session=" + cookie;
-            if (!csrf.empty()) headers.items["x-hubbo-csrf"] = csrf;
-        }
+        if (!cookie.empty()) headers.items["cookie"] = "hubbo_session=" + cookie;
         for (auto &h : extra) headers.items[h.first] = h.second;
         http::Request r;
         r.method = method;
@@ -104,7 +101,6 @@ protected:
         r.query = query;
         r.body = body;
         r.headers = &headers;
-        r.clientKey = 42;
         r.context = noAuth ? simulatorContext() : authn.authenticate(r);
         http::Response out;
         router.dispatch(r, out);
@@ -123,7 +119,6 @@ protected:
         c.principal = auth::Principal::simulator();
 #else
         c.principal = auth::Principal::admin();
-        c.csrfValid = true;
 #endif
         return c;
     }
@@ -138,7 +133,6 @@ protected:
         ASSERT_EQ(r.status, 200);
         const std::string set = r.headers["Set-Cookie"];
         cookie = set.substr(set.find('=') + 1, set.find(';') - set.find('=') - 1);
-        csrf = r.json["csrf_token"].as<std::string>();
     }
 
     // The integration task's loop, against the fake HA.
@@ -187,7 +181,6 @@ protected:
     auth::test::CountingRandom random;
     auth::Credentials creds{secrets, hash, random, auth::kMinPasswordIterations};
     auth::SessionStore sessions{random};
-    auth::LoginRateLimiter limiter;
     auth::test::FakeClock clock;
     api::Authenticator authn{creds, sessions, clock};
     // Phase 3 ports: the remote radio and a real HA client against the fake HA.
@@ -196,12 +189,14 @@ protected:
     sim::FakeHaServer haServer;
     sim::FakeHaTransport haTransport{haServer};
     integrations::HomeAssistantClient haClient{haTransport};
-    api::Api api{api::ApiContext{creds, sessions, limiter, clock, hub.configService(), runtime, {}, nullptr, &remote,
-                                 &haClient, &secrets, nullptr, &ble}};
+    api::SimulatedFirmwareUpdate firmware;
+    api::SimulatedFactoryReset factoryReset;
+    api::Api api{api::ApiContext{creds, sessions, clock, hub.configService(), runtime, {}, nullptr, &remote,
+                                 &haClient, &secrets, nullptr, &ble, &firmware, &factoryReset}};
     http::Router router;
 
     bool noAuth = true;  // simulated admin unless a test logs in
-    std::string token, cookie, csrf;
+    std::string token, cookie;
 };
 
 const char *kActivity = R"({"name":"Movie Night","startup":[
@@ -285,9 +280,9 @@ TEST_F(ApiTest, ValidationAndRequestLimits) {
     EXPECT_EQ(call(http::Method::Post, "/api/v1/activities", kActivity, {{"content-type", "text/plain"}}).status,
               415);
     EXPECT_EQ(call(http::Method::Post, "/api/v1/activities", std::string(40000, ' ')).status, 413);
-    EXPECT_EQ(call(http::Method::Post, "/api/v1/activities", kActivity, {{"origin", "http://evil.example"}}).status,
-              403);
-    EXPECT_EQ(call(http::Method::Get, "/api/v1/devices", "", {{"host", "evil.example"}}).status, 421);
+    r = call(http::Method::Post, "/api/v1/activities", kActivity, {{"origin", "http://evil.example"}});
+    EXPECT_EQ(r.status, 403);
+    EXPECT_EQ(r.code(), "csrf_failed");
 }
 
 TEST_F(ApiTest, DevicesCapabilitiesExecute) {
@@ -437,17 +432,17 @@ TEST_F(ApiTest, AuthFlowAndRoleMatrix) {
     loginAsAdmin();
     s = call(http::Method::Get, "/api/v1/auth/session");
     EXPECT_EQ(s.json["role"], "admin");
-    EXPECT_EQ(s.json["csrf_token"], csrf);
-    EXPECT_EQ(call(http::Method::Post, "/api/v1/auth/setup", R"({"username":"x","password":"another password"})")
-                  .status,
-              409);
+    EXPECT_TRUE(s.json["csrf_token"].isNull()) << "no CSRF token any more";
+    EXPECT_EQ(s.json["expires_in_s"], auth::kSessionLifetimeMs / 1000);
+    Reply r = call(http::Method::Post, "/api/v1/auth/setup", R"({"username":"x","password":"another password"})");
+    EXPECT_EQ(r.status, 409);
+    EXPECT_EQ(r.code(), "setup_already_done");
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/auth/setup", "{oops").status, 409) << "decided before the body";
 
-    const std::string savedCsrf = csrf;
-    csrf.clear();
-    Reply r = call(http::Method::Post, "/api/v1/admin/tokens", R"({"name":"agent"})");
+    // A cookie session needs no CSRF header; a cross-site Origin is refused.
+    r = call(http::Method::Post, "/api/v1/admin/tokens", R"({"name":"agent"})", {{"origin", "http://evil.example"}});
     EXPECT_EQ(r.status, 403);
     EXPECT_EQ(r.code(), "csrf_failed");
-    csrf = savedCsrf;
     r = call(http::Method::Post, "/api/v1/admin/tokens", R"({"name":"agent"})");
     ASSERT_EQ(r.status, 201);
     const std::string plaintext = r.json["token"].as<std::string>();
@@ -464,6 +459,14 @@ TEST_F(ApiTest, AuthFlowAndRoleMatrix) {
     EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/tokens").status, 403);
     EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/devices", "{}").status, 403);
     EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/backup").status, 403);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/firmware").status, 403);
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/firmware/update", hubbo::test::image(),
+                   {{"content-type", "application/octet-stream"}, {"content-length", "1"}})
+                  .status,
+              403);
+    EXPECT_EQ(firmware.status().state, api::FirmwareUpdateState::Idle) << "a token can't update firmware";
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/factory-reset").status, 403);
+    EXPECT_FALSE(factoryReset.pending()) << "a token can't factory reset";
 
     // Revoke and logout.
     token.clear();
@@ -480,19 +483,22 @@ TEST_F(ApiTest, AuthFlowAndRoleMatrix) {
     EXPECT_EQ(call(http::Method::Get, "/api/v1/devices").status, 401);
 }
 
-TEST_F(ApiTest, LoginRateLimitAndPasswordChange) {
+TEST_F(ApiTest, WrongPasswordsAndPasswordChange) {
     loginAsAdmin();
     const std::string adminCookie = cookie;
     cookie.clear();
     Reply r;
-    for (int i = 0; i < 10 && r.status != 429; i++) {
+    for (int i = 0; i < 10; i++) {  // no rate limit: the hash's cost slows guessing
         r = call(http::Method::Post, "/api/v1/auth/login", R"({"username":"admin","password":"wrong password!"})");
+        EXPECT_EQ(r.status, 401);
+        EXPECT_EQ(r.code(), "invalid_credentials");
     }
-    EXPECT_EQ(r.status, 429);
-    EXPECT_FALSE(r.headers["Retry-After"].empty());
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/auth/login",
+                   R"({"username":"admin","password":"correct horse battery"})")
+                  .status,
+              200);
 
     cookie = adminCookie;
-    clock.mono += 60ull * 60 * 1000;  // lockouts expire
     r = call(http::Method::Put, "/api/v1/admin/account/password",
              R"({"current_password":"correct horse battery","new_password":"short"})");
     EXPECT_EQ(r.status, 422);
@@ -657,17 +663,116 @@ TEST_F(ApiTest, BackupWorksWhenStorageFailsAfterAGoodLoad) {
     medium.setHealth(storage::Health::Available);
 }
 
-TEST_F(ApiTest, StatusAndUnimplemented) {
+TEST_F(ApiTest, Status) {
     Reply r = call(http::Method::Get, "/api/v1/status");
     ASSERT_EQ(r.status, 200);
     EXPECT_EQ(r.json["auth_mode"], "enforced");
     EXPECT_GT(r.json["integrations"].size(), 0u);
     r = call(http::Method::Get, "/api/v1/remote/buttons");
     EXPECT_EQ(r.json["buttons"].size(), remote::kButtonCount);
+}
+
+TEST_F(ApiTest, FirmwareUpdate) {
+    using hubbo::test::image;
+    using hubbo::test::ImageSpec;
+    auto upload = [&](const std::string &bytes, const char *type = "application/octet-stream") {
+        return call(http::Method::Post, "/api/v1/admin/firmware/update", bytes,
+                    {{"content-type", type}, {"content-length", std::to_string(bytes.size())}});
+    };
+    Reply r = call(http::Method::Get, "/api/v1/admin/firmware");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["update"]["state"], "idle");
+    EXPECT_EQ(r.json["update"]["progress"], 0);
+    EXPECT_TRUE(r.json["update"]["error"].isNull());
+
+    // Each refusal changes nothing.
+    EXPECT_EQ(upload(image(), "application/json").status, 415);
+    r = call(http::Method::Post, "/api/v1/admin/firmware/update", image(),
+             {{"content-type", "application/octet-stream"}});
+    EXPECT_EQ(r.status, 411);
+    EXPECT_EQ(r.code(), "length_required");
+    ImageSpec big;
+    big.padTo = api::simulatorFirmwareTarget().slotBytes;
+    EXPECT_EQ(upload(image(big)).code(), "payload_too_large");
+    ImageSpec s;
+    s.descMagic = 0;  // a merged factory .bin
+    r = upload(image(s));
+    EXPECT_EQ(r.status, 422);
+    EXPECT_EQ(r.code(), "invalid_image");
+    s = {};
+    s.marker = "HUBBO-IMAGE/1 board=waveshare_esp32_s3_eth layout=1 version=v9";
+    EXPECT_EQ(upload(image(s)).code(), "wrong_board");
+    s = {};
+    s.badHash = true;
+    EXPECT_EQ(upload(image(s)).code(), "invalid_image");
+    EXPECT_EQ(upload("").code(), "invalid_image");
+    EXPECT_EQ(firmware.status().state, api::FirmwareUpdateState::Idle);
+
+    r = upload(image());
+    ASSERT_EQ(r.status, 202) << dump(r);
+    EXPECT_EQ(r.json["update"]["state"], "writing");
+    r = upload(image());
+    EXPECT_EQ(r.status, 409);
+    EXPECT_EQ(r.code(), "update_in_progress");
+    firmware.advance(api::SimulatedFirmwareUpdate::kWriteMs / 4);
     r = call(http::Method::Get, "/api/v1/admin/firmware");
-    EXPECT_EQ(r.status, 501);
-    EXPECT_EQ(r.code(), "not_implemented");
-    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/firmware/update", "x").status, 501);
+    EXPECT_EQ(r.json["update"]["progress"], 25);
+    firmware.advance(api::SimulatedFirmwareUpdate::kWriteMs);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/firmware").json["update"]["state"], "rebooting");
+
+    firmware.advance(api::SimulatedFirmwareUpdate::kRebootMs);
+    firmware.failWrites = true;
+    ASSERT_EQ(upload(image()).status, 202);
+    firmware.advance(api::SimulatedFirmwareUpdate::kWriteMs);
+    r = call(http::Method::Get, "/api/v1/admin/firmware");
+    EXPECT_EQ(r.json["update"]["state"], "failed");
+    EXPECT_EQ(r.json["update"]["error"], "write_failed");
+    firmware.ready = false;
+    EXPECT_EQ(upload(image()).status, 503);
+}
+
+TEST_F(ApiTest, FactoryReset) {
+    ASSERT_EQ(creds.setupAdmin("hubbo-owner", "correct horse battery"), auth::CredentialResult::Ok);
+    ASSERT_TRUE(secrets.write(api::kHaTokenKey, "ha-secret"));
+    std::string sessionId;
+    ASSERT_TRUE(sessions.create(clock.mono, &sessionId));
+    factoryReset.erase = [&] {  // what hub-sim's restart does with the auth state
+        EXPECT_TRUE(auth::eraseAllSecrets(secrets));
+        creds.load();
+        sessions.clear();
+    };
+
+    // Refused during a firmware update, and when the platform can't.
+    ASSERT_EQ(call(http::Method::Post, "/api/v1/admin/firmware/update", hubbo::test::image(),
+                   {{"content-type", "application/octet-stream"},
+                    {"content-length", std::to_string(hubbo::test::image().size())}})
+                  .status,
+              202);
+    Reply r = call(http::Method::Post, "/api/v1/admin/factory-reset");
+    EXPECT_EQ(r.status, 409);
+    EXPECT_EQ(r.code(), "update_in_progress");
+    firmware.advance(api::SimulatedFirmwareUpdate::kWriteMs + api::SimulatedFirmwareUpdate::kRebootMs);
+    factoryReset.ready = false;
+    r = call(http::Method::Post, "/api/v1/admin/factory-reset");
+    EXPECT_EQ(r.status, 503);
+    EXPECT_EQ(r.code(), "unavailable");
+    EXPECT_FALSE(factoryReset.pending());
+
+    // 202 first; the erase comes with the simulated restart.
+    factoryReset.ready = true;
+    r = call(http::Method::Post, "/api/v1/admin/factory-reset");
+    ASSERT_EQ(r.status, 202) << dump(r);
+    EXPECT_TRUE(factoryReset.pending());
+    EXPECT_EQ(creds.state(), auth::CredentialState::Ok);
+    factoryReset.advance(api::SimulatedFactoryReset::kRestartMs - 1);
+    EXPECT_EQ(creds.state(), auth::CredentialState::Ok);
+    factoryReset.advance(1);
+    EXPECT_FALSE(factoryReset.pending());
+    EXPECT_EQ(creds.state(), auth::CredentialState::Fresh);
+    std::string value;
+    EXPECT_EQ(secrets.read(api::kHaTokenKey, &value), auth::SecretRead::NotFound);
+    EXPECT_FALSE(sessions.authenticate(sessionId, clock.mono).valid);
+    EXPECT_EQ(creds.setupGuard(), auth::CredentialResult::Ok) << "setup is open again";
 }
 
 TEST_F(ApiTest, RemoteEndpointAndHubScan) {

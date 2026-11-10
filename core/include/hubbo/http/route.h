@@ -44,10 +44,7 @@ struct Request {
     std::string_view body;
     const HeaderSource *headers = nullptr;
     auth::RequestContext context;  // set by the transport from the authenticator
-    // Set by the transport. clientKey identifies the caller for login rate
-    // limiting (IPv4 address, or a hash of the IPv6 /64); secure is true when
-    // the request arrived over TLS (cookies then get `Secure`).
-    uint64_t clientKey = 0;
+    // Set by the transport: the request arrived over TLS (cookies then get `Secure`).
     bool secure = false;
 };
 
@@ -104,29 +101,22 @@ public:
     void add(std::string pattern, auth::Operation operation, RouteHandler &handler);
 
     // A host-only tool route outside the API (e.g. hub-sim's /sim/*): admin
-    // only, CSRF-checked for cookie sessions, no body checks.
+    // only, Origin-checked, no body checks.
     void addHostRoute(Method method, std::string pattern, RouteHandler &handler);
 
-    // DNS-rebinding defence: requests whose Host header (port ignored,
-    // case-insensitive) isn't in this list get 421 host_not_allowed before
-    // any routing. Platforms set their own names: hub-sim "localhost",
-    // "127.0.0.1", "[::1]"; the hub its IP, mDNS name and hostname. An empty
-    // list disables the check (tests only).
-    void setAllowedHosts(std::vector<std::string> hosts) { allowedHosts_ = std::move(hosts); }
-    bool hostAllowed(std::string_view hostHeader) const;
-
-    // In order: 421 (Host not allowed), 404 (no path), 405 (path but not
-    // method), 403 (unsafe method with a foreign Origin), the policy
-    // decision (401/403/409), and for API operations with a JSON body
-    // 413 (over the table's maxBody) and 415 (not application/json). Then
-    // the handler.
+    // In order: 404 (no path), 405 (path but not method), 403 csrf_failed
+    // (unsafe method with a foreign Origin), the policy decision (401/403/
+    // 503), and for API operations with a body 413 (over the table's
+    // maxBody) and 415 (not application/json, or application/octet-stream
+    // for a Body::Binary operation). Then the handler.
     void dispatch(const Request &request, Response &response) const;
 
     // The largest body the route matching (method, path) accepts, for the
     // transport to check Content-Length before reading the body (and to
-    // size the read buffer). 0 for routes that take no body; the absolute
-    // cap auth::maxRequestBody() for unknown routes and host-only tools
-    // (dispatch then answers 404/405 or lets the tool decide).
+    // size the read buffer). 0 for routes that take no body; the firmware
+    // upload's is the OTA slot size; auth::maxRequestBody() for unknown
+    // routes and host-only tools (dispatch then answers 404/405 or lets the
+    // tool decide).
     size_t bodyLimit(Method method, std::string_view path) const;
 
 private:
@@ -150,7 +140,6 @@ private:
     static bool match(const Route &route, const Segments &path, PathParams *params);
     void addRoute(Route route, std::string_view pattern);
     std::vector<Route> routes_;
-    std::vector<std::string> allowedHosts_;
 };
 
 }  // namespace hubbo::http
