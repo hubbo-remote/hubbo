@@ -158,8 +158,7 @@ void sendOutcome(http::Response &out, const config::Outcome &outcome, std::strin
                 d["path"] = (r.activityId.empty() ? std::string("/global_bindings") : "/activities/" + r.activityId) +
                             r.path;
                 d["code"] = "referenced";
-                d["message"] = r.activityId.empty() ? std::string("Referenced by the global bindings")
-                                                    : "Referenced by activity " + r.activityId;
+                d["message"] = r.activityId.empty() ? std::string("Used by global buttons") : "Used by " + r.activityName;
             }
             return sendJson(out, 409, doc);
         }

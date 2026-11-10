@@ -39,14 +39,12 @@ void sendInstallError(http::Response &out, FirmwareInstallResult result) {
         case R::Busy: return sendError(out, 409, "update_in_progress", "An update is already running");
         case R::Unavailable: return sendError(out, 503, "unavailable", "The hub can't take an update right now");
         case R::TooLarge: return sendError(out, 413, "payload_too_large", "The image is larger than the update slot");
-        case R::WrongBoard: return sendError(out, 422, "wrong_board", "This Hubbo image is for another board");
-        case R::NotAnImage:
-            invalid = "Not an app image (use firmware.bin, not the merged factory image)";
-            break;
-        case R::WrongChip: invalid = "This image is for another chip or a newer chip revision"; break;
-        case R::ForeignImage: invalid = "Not a Hubbo firmware image"; break;
-        case R::WrongLayout: invalid = "This image needs another partition layout; flash it over USB"; break;
-        case R::Corrupt: invalid = "The image's checksum doesn't match; download it again"; break;
+        case R::WrongBoard: return sendError(out, 422, "wrong_board", "This update is for a different device");
+        case R::NotAnImage:  // e.g. the merged factory image instead of firmware.bin
+        case R::ForeignImage: invalid = "This isn't a Hubbo update file"; break;
+        case R::WrongChip: invalid = "This update is for a different device"; break;
+        case R::WrongLayout: invalid = "This update has to be installed over USB"; break;
+        case R::Corrupt: invalid = "This update file is damaged; download it again"; break;
     }
     sendError(out, 422, "invalid_image", invalid);
 }
