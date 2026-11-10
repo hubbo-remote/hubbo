@@ -494,6 +494,9 @@ void startApi() {
 #ifdef HUBBO_DEV_CONSOLE
     addDevEndpoints();
 #endif
+    if (!httpServer.serveWebAdmin()) {  // last: /api and /debug match first
+        con.println("http: web admin handler failed to register");
+    }
 
     // httpd housekeeping, once a second while there's something to do:
     //  - the active activity, saved 5 s after it settles (on a change or
