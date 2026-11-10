@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "update_in_progress",
+    "message": "An update is already running"
+  }
+}

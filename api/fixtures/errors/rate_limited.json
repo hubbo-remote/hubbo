@@ -1,7 +1,0 @@
-{
-  "error": {
-    "code": "rate_limited",
-    "message": "Too many failed logins; try again later",
-    "retry_after_s": 30
-  }
-}

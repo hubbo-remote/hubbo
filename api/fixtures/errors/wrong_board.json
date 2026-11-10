@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "wrong_board",
+    "message": "This Hubbo image is for another board"
+  }
+}

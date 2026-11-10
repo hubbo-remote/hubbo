@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "length_required",
+    "message": "Send the image whole, with Content-Length"
+  }
+}

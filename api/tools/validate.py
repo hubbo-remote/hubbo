@@ -3,10 +3,10 @@
 
 Run via api/lint.sh (Docker). Checks:
   1. The spec is valid OpenAPI 3.1.
-  2. Every operation has an operationId and x-hubbo-role; public/setup
-     operations declare `security: []`, the rest don't.
+  2. Every operation has an operationId and x-hubbo-role; public operations
+     declare `security: []`, the rest don't.
   3. The spec agrees with the C++ it mirrors: the policy table in
-     core/src/auth/policy.cpp (role, method, CSRF exemption), the button and
+     core/src/auth/policy.cpp (role, method, body limit and type), the button and
      event names (core/src/remote/), and the forbidden param names
      (core/src/ha/capabilities.cpp).
   4. Every fixture in fixtures/index.json validates against its operation's
@@ -37,7 +37,7 @@ SPEC_URI = "urn:hubbo:openapi"
 
 SECRET_KEYS = {"password", "current_password", "new_password", "access_token"}
 METHODS = ("get", "put", "post", "delete", "patch")
-ROLES = {"public", "setup", "token", "admin"}
+ROLES = {"public", "token", "admin"}
 TRANSITIONS = {"activate", "off"}
 
 # Which fixtures carry activities, by operation (kind is ignored).
@@ -85,7 +85,7 @@ def check_roles(spec):
         if role not in ROLES:
             fail(f"{where}: x-hubbo-role must be one of {sorted(ROLES)}")
         anonymous = op.get("security") == []
-        if role in ("public", "setup") and not anonymous:
+        if role == "public" and not anonymous:
             fail(f"{where}: role {role} needs `security: []`")
         if role in ("token", "admin") and anonymous:
             fail(f"{where}: role {role} must not set `security: []`")
@@ -99,8 +99,15 @@ DEFAULT_MAX_BODY = 16384  # the spec's default for a JSON body without x-hubbo-m
 
 
 def max_body(op):
+    """(limit, kind): a JSON body defaults to 16 KiB; a binary one must declare its limit."""
     body = op.get("requestBody", {}).get("content", {})
-    return op.get("x-hubbo-max-body", DEFAULT_MAX_BODY) if "application/json" in body else 0
+    if "application/json" in body:
+        return op.get("x-hubbo-max-body", DEFAULT_MAX_BODY), "Json"
+    if "application/octet-stream" in body:
+        if "x-hubbo-max-body" not in op:
+            fail(f"{op['operationId']}: a binary body needs x-hubbo-max-body")
+        return op.get("x-hubbo-max-body", 0), "Binary"
+    return 0, "Json"
 
 
 def cpp_constant(name, sources):
@@ -129,36 +136,31 @@ def check_policy_table(ops):
     source = read(os.path.join(CORE_SRC, "auth", "policy.cpp"))
     rows = re.findall(
         r'\{\s*Operation::\w+\s*,\s*"(\w+)"\s*,\s*Method::(\w+)\s*,\s*Requirement::(\w+)\s*,'
-        r'\s*Csrf::(\w+)\s*,\s*(\w+)\s*\}', source)
-    table = {op_id: (method.lower(), req, csrf, policy_limit(limit, source))
-             for op_id, method, req, csrf, limit in rows}
-    req_to_role = {"Public": "public", "SetupOnly": "setup", "TokenOrAdmin": "token", "AdminOnly": "admin"}
+        r'\s*(\w+)\s*(?:,\s*Body::(\w+)\s*)?\}', source)
+    table = {op_id: (method.lower(), req, (policy_limit(limit, source), body or "Json"))
+             for op_id, method, req, limit, body in rows}
+    req_to_role = {"Public": "public", "TokenOrAdmin": "token", "AdminOnly": "admin"}
     for op_id, op in ops.items():
         if op_id not in table:
             fail(f"policy.cpp: no entry for {op_id}")
             continue
-        method, req, csrf, limit = table[op_id]
+        method, req, limit = table[op_id]
         if req_to_role.get(req) != op["x-hubbo-role"]:
             fail(f"policy.cpp: {op_id} is {req}, spec says {op['x-hubbo-role']}")
         if method != op["_method"]:
             fail(f"policy.cpp: {op_id} method {method}, spec says {op['_method']}")
-        if (csrf == "Exempt") != bool(op.get("x-hubbo-csrf-exempt")):
-            fail(f"policy.cpp: {op_id} Csrf::{csrf} disagrees with x-hubbo-csrf-exempt")
         if limit != max_body(op):
-            fail(f"policy.cpp: {op_id} max body {limit}, spec says {max_body(op)}")
+            fail(f"policy.cpp: {op_id} body (limit, type) {limit}, spec says {max_body(op)}")
     for op_id in table:
         if op_id not in ops:
             fail(f"policy.cpp: {op_id} is not an operation in the spec")
 
 
 def check_not_implemented(ops):
-    """The 501 table in core/src/api/api.cpp is exactly the spec's x-hubbo-not-implemented set."""
-    text = read(os.path.join(CORE_SRC, "api", "api.cpp"))
-    table = text[text.index("kPending[]"):]
-    pending = set(re.findall(r'auth::Operation::(\w+)', table[:table.index("};")]))
-    marked = {op_id[0].upper() + op_id[1:] for op_id, op in ops.items() if op.get("x-hubbo-not-implemented")}
-    if pending != marked:
-        fail(f"api.cpp 501 table {sorted(pending)} != spec x-hubbo-not-implemented {sorted(marked)}")
+    """Every operation has a handler now; a placeholder needs a 501 table in core/src/api/ again."""
+    for op_id, op in ops.items():
+        if op.get("x-hubbo-not-implemented"):
+            fail(f"{op_id}: x-hubbo-not-implemented, but core has no 501 table")
 
 
 def check_core_names(spec):

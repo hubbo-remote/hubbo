@@ -14,33 +14,31 @@ info:
 
     * **Roles.** Every operation carries `x-hubbo-role`:
       * `public`: no credentials.
-      * `setup`: no credentials, and only while no admin account exists.
       * `token`: an API token **or** the admin session.
       * `admin`: the admin session only. API tokens get `403 forbidden`.
       The table is mirrored in `core/src/auth/policy.cpp`; `api/lint.sh` fails if
-      the two disagree. Cookie-authenticated POST/PUT/DELETE need the CSRF
-      header except where `x-hubbo-csrf-exempt: true` (login, setup).
+      the two disagree.
     * **Config state.** Every edit (activities, global bindings, devices) is
       refused with `409 config_blocked` while `/status` `config.state` is
       `blocked`, and with `503 storage_unavailable` while it is
       `storage_unavailable`. Restore and reset are the way out.
-    * **Not implemented yet:** operations marked `x-hubbo-not-implemented: true`
-      answer `501 not_implemented` and do nothing.
-    * **Credentials.** Browser: `hubbo_session` cookie from `POST /auth/login`
-      plus the `X-Hubbo-CSRF` header on every unsafe request (POST/PUT/DELETE).
-      Agents: `Authorization: Bearer hbt_...`. Bearer requests need no CSRF header.
+    * **Credentials.** Browser: the `hubbo_session` cookie from `POST /auth/login`
+      (HttpOnly, SameSite=Strict; 7 days, or until the hub reboots).
+      Agents: `Authorization: Bearer hbt_...`.
+    * **Cross-site requests.** A POST/PUT/DELETE whose `Origin` header names
+      another host gets `403 csrf_failed`. With SameSite=Strict and JSON-only
+      bodies, that's the whole defence; there's no CSRF token.
     * **Bodies.** Requests with a body must be `Content-Type: application/json`
-      (except firmware upload), otherwise `415 unsupported_media_type`. Unknown fields
-      are rejected. Default body limit
-      is 16 KiB; activity bodies 32 KiB; restore 640 KiB, the largest saved config
-      (512 KiB) plus headroom for the backup wrapper and pretty-printing
-      (`x-hubbo-max-body`).
-      JSON nesting deeper than 8 levels is rejected.
+      (the firmware upload: `application/octet-stream`), otherwise
+      `415 unsupported_media_type`. Unknown fields are rejected. Default body
+      limit is 16 KiB; activity bodies 32 KiB; restore 640 KiB, the largest
+      saved config (512 KiB) plus headroom for the backup wrapper and
+      pretty-printing; the firmware image the OTA slot, 6.25 MiB
+      (`x-hubbo-max-body`). JSON nesting deeper than 8 levels is rejected.
     * **Errors.** Every non-2xx response has the `Error` body. Any request can
-      also get `405 method_not_allowed` or, when its `Host` header is not one of
-      the hub's names (DNS-rebinding defence), `421 host_not_allowed`. A
-      body larger than the operation accepts (any body, for operations that
-      take none) is refused with `413 payload_too_large` before it is read.
+      also get `405 method_not_allowed`. A body larger than the operation
+      accepts (any body, for operations that take none) is refused with
+      `413 payload_too_large` before it is read.
     * **Optimistic concurrency.** Editable documents (activities, devices,
       integration settings) carry an integer `revision`. Replace/delete must send
       the revision they were based on; a stale one gets `409 revision_conflict`
@@ -132,13 +130,15 @@ paths:
     post:
       tags: [auth]
       operationId: setupAdmin
-      x-hubbo-role: setup
-      x-hubbo-csrf-exempt: true
+      x-hubbo-role: public
       x-hubbo-max-body: 1024
       summary: Create the admin account (first run only)
       description: |
-        Only succeeds while no admin exists; afterwards `409 setup_already_done`.
-        On success the caller is logged in (same response as login).
+        The caller picks the username and password (there's no default
+        username). Only succeeds while `auth_state` is `fresh`; afterwards
+        `409 setup_already_done`, and `503 storage_unavailable` while it's
+        `unavailable`. On success the caller is logged in (same response as
+        login).
       security: []
       requestBody:
         required: true
@@ -161,22 +161,19 @@ paths:
               schema: {$ref: '#/components/schemas/Session'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
-        '429': {$ref: '#/components/responses/RateLimited'}
 
   /auth/login:
     post:
       tags: [auth]
       operationId: login
       x-hubbo-role: public
-      x-hubbo-csrf-exempt: true
       x-hubbo-max-body: 1024
       summary: Log in as admin
       description: |
         Sets an HttpOnly, SameSite=Strict `hubbo_session` cookie (`Secure` when
-        served over HTTPS). The response carries the CSRF token the client must
-        echo in `X-Hubbo-CSRF`. Failed attempts are rate limited per client and
-        globally (`429` with `Retry-After`). The `Origin` header, when present,
-        must match the hub's host.
+        served over HTTPS) that lasts 7 days, or until the hub reboots. There's
+        no rate limit: the password hash's cost slows guessing. The `Origin`
+        header, when present, must match the hub's host.
       security: []
       requestBody:
         required: true
@@ -208,7 +205,6 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
-        '429': {$ref: '#/components/responses/RateLimited'}
 
   /auth/logout:
     post:
@@ -218,8 +214,6 @@ paths:
       summary: End the current session
       description: Idempotent. Clears the cookie; deletes the session if it exists.
       security: []
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       responses:
         '403': {$ref: '#/components/responses/Forbidden'}
         '204':
@@ -323,8 +317,6 @@ paths:
         A stale device (`availability: stale`: its HA entity is missing from
         the latest discovery) answers `200` with `status: failed` and
         `message: entity_not_found`; nothing is sent to HA.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
         required: true
         content:
@@ -366,8 +358,6 @@ paths:
       x-hubbo-max-body: 32768
       summary: Create an activity in one request
       description: Validated exactly like `POST /activities/validate`; nothing is stored unless valid.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
         required: true
         content:
@@ -404,8 +394,6 @@ paths:
         integration ownership, command IDs, param bounds, triggers) without
         storing anything. Returns `200` whether or not it is valid. `id` and
         `revision` may be present (for checking an edited copy) and are ignored.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
         required: true
         content:
@@ -443,8 +431,6 @@ paths:
         While the config is `blocked` (nothing runs) this answers `409
         config_blocked`. With the store unavailable, switching still works;
         the active activity just isn't saved.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       responses:
         '409': {$ref: '#/components/responses/Conflict'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -484,8 +470,6 @@ paths:
         `schema_version` may be echoed back unchanged, so GET → edit → PUT works.
         If this is the active activity the new mapping takes effect atomically;
         the startup sequence does not re-run.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
         required: true
         content:
@@ -514,7 +498,6 @@ paths:
       summary: Delete an activity
       description: Deleting the active activity switches the hub to the next activity (the one that takes its list position, wrapping to the first) and runs its startup. No shutdown runs. The hub is inactive only when no activities remain.
       parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
         - $ref: '#/components/parameters/RevisionQuery'
       responses:
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -547,8 +530,6 @@ paths:
         While the config is `blocked` (nothing runs) this answers `409
         config_blocked`. With the store unavailable, switching still works;
         the active activity just isn't saved.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       responses:
         '409': {$ref: '#/components/responses/Conflict'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -585,8 +566,6 @@ paths:
       x-hubbo-role: token
       x-hubbo-max-body: 32768
       summary: Atomically replace the global bindings
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
         required: true
         content:
@@ -666,8 +645,6 @@ paths:
         settings; `GET /integrations` shows its `state`. The hub connects to
         `<url>/api/websocket`: `ws://` for an `http://` URL, `wss://` for
         `https://`. An empty `url` unsets it (and clears the token).
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
         required: true
         content:
@@ -710,8 +687,6 @@ paths:
         integrations only (404 for others); `422` if `entity_id` isn't one
         `media_player`, `light` or `switch` entity; `503
         integration_unavailable` if HA isn't connected.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       responses:
         '202':
           description: Loading
@@ -756,8 +731,6 @@ paths:
         answers `202` at once. If a discovery is already running, answers
         `202` with that one. Poll `GET` for the result. `503
         integration_unavailable` while HA isn't connected.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       responses:
         '202':
           description: Running
@@ -813,8 +786,6 @@ paths:
       operationId: cancelDiscovery
       x-hubbo-role: admin
       summary: Cancel a running discovery and drop its candidates
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       responses:
         '204': {description: Cancelled (or nothing was running)}
         '401': {$ref: '#/components/responses/Unauthenticated'}
@@ -838,7 +809,6 @@ paths:
         while a window is open; 503 `integration_unavailable` when Bluetooth
         isn't running.
       parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
         - name: window_s
           in: query
           required: false
@@ -876,8 +846,6 @@ paths:
       x-hubbo-role: admin
       summary: Forget the bonded host (BLE HID)
       description: Closes any open window and deletes the bond. Remove Hubbo on the host too.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       responses:
         '204': {description: Bond removed}
         '401': {$ref: '#/components/responses/Unauthenticated'}
@@ -914,8 +882,6 @@ paths:
         `integration_unavailable`, and nothing is sent to HA) until an admin
         re-links it (`PUT /admin/devices/{id}` with a `provider`, which
         refreshes the capabilities the same way).
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
         required: true
         content:
@@ -956,8 +922,6 @@ paths:
         details_required` without them), and clears `availability: stale`. Until then a stale device's commands
         fail as `status: failed`, `message: entity_not_found`.
         `ha_capabilities` is never accepted (`unknown_field`).
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
         required: true
         content:
@@ -986,7 +950,6 @@ paths:
       summary: Remove a device
       description: Refused with `409 device_in_use` while any activity references it; `details` lists the references.
       parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
         - $ref: '#/components/parameters/RevisionQuery'
       responses:
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -1028,8 +991,6 @@ paths:
         (`0x` optional), not all zeros or ones, and its low byte not `55` or
         `AA`. Saved, and used at once. `409 busy` while a scan runs; `503`
         if the radio isn't working.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
         required: true
         content:
@@ -1076,8 +1037,6 @@ paths:
         Hub. The scan gives up after 120 s. Poll `GET /admin/remote/pair`.
         `409 busy` if a scan is already running; `503` if the radio isn't
         working.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       responses:
         '503': {$ref: '#/components/responses/Unavailable'}
         '202':
@@ -1093,8 +1052,6 @@ paths:
       operationId: cancelRemotePairing
       x-hubbo-role: admin
       summary: Stop scanning (keeps the current pairing)
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       responses:
         '503': {$ref: '#/components/responses/Unavailable'}
         '204': {description: Stopped}
@@ -1108,9 +1065,7 @@ paths:
       x-hubbo-role: admin
       x-hubbo-max-body: 1024
       summary: Change the admin password
-      description: Ends every other session. Rate limited like login.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
+      description: Ends every other session.
       requestBody:
         required: true
         content:
@@ -1126,7 +1081,6 @@ paths:
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
-        '429': {$ref: '#/components/responses/RateLimited'}
 
   /admin/tokens:
     get:
@@ -1149,8 +1103,6 @@ paths:
       x-hubbo-role: admin
       x-hubbo-max-body: 1024
       summary: Create an API token (secret shown once)
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
         required: true
         content:
@@ -1183,8 +1135,6 @@ paths:
       operationId: revokeToken
       x-hubbo-role: admin
       summary: Revoke an API token (effective immediately)
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       responses:
         '503': {$ref: '#/components/responses/Unavailable'}
         '500': {$ref: '#/components/responses/InternalError'}
@@ -1275,7 +1225,6 @@ paths:
         client holding an older revision gets 409. Restore works while the
         config is `blocked`.
       parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
         - name: dry_run
           in: query
           required: false
@@ -1303,19 +1252,18 @@ paths:
   /admin/reset:
     post:
       tags: [admin]
-      operationId: factoryReset
+      operationId: resetConfiguration
       x-hubbo-role: admin
-      summary: Reset the configuration to factory defaults
+      summary: Reset configuration
       description: |
-        Replaces devices, activities, global bindings and integration
-        settings with the defaults, stamped with a new generation (so every
-        client's old revisions get 409). Works while the config is `blocked`.
-        Credentials, tokens and pairings are kept. Like a restore it never
+        Reset configuration: replaces devices, activities, global bindings
+        and integration settings with the defaults, stamped with a new
+        generation (so every client's old revisions get 409). Works while the
+        config is `blocked`. The login, tokens, the Home Assistant token and
+        pairings are kept (`POST /admin/factory-reset` erases those too). Like a restore it never
         starts or stops an activity: the active activity stays active if the
         defaults have an activity with its id, otherwise the hub becomes
         inactive without running any startup or shutdown commands.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
       responses:
         '200':
           description: Reset
@@ -1327,16 +1275,44 @@ paths:
         '500': {$ref: '#/components/responses/InternalError'}
         '503': {$ref: '#/components/responses/Unavailable'}
 
+  /admin/factory-reset:
+    post:
+      tags: [admin]
+      operationId: factoryReset
+      x-hubbo-role: admin
+      summary: Factory reset
+      description: |
+        Erases everything and restarts into first-run setup: the login, every
+        API token, the Home Assistant token, BLE bonds, the remote endpoint
+        and the whole configuration. Answers `202` first; the hub then stops
+        answering for a few seconds and comes back with `auth_state` `fresh`
+        (every session gone), so the next step is `POST /auth/setup`. The
+        Apple TV still lists the old pairing: forget "Hubbo" there before
+        pairing again. Refused while a firmware update is running.
+      responses:
+        '202':
+          description: The reset will start once this response is sent
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409':
+          description: A firmware update is running (`update_in_progress`)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
   /admin/firmware:
     get:
       tags: [admin]
       operationId: getFirmwareStatus
-      x-hubbo-not-implemented: true
       x-hubbo-role: admin
       summary: Firmware version and update state
+      description: |
+        Poll it during an update. After `rebooting`, the hub stops answering
+        for a few seconds, then comes back `idle` with the new `version` (and
+        every session gone: log in again).
       responses:
         '503': {$ref: '#/components/responses/Unavailable'}
-        '501': {$ref: '#/components/responses/NotImplemented'}
         '200':
           description: Firmware status
           content:
@@ -1349,45 +1325,63 @@ paths:
     post:
       tags: [admin]
       operationId: updateFirmware
-      x-hubbo-not-implemented: true
       x-hubbo-role: admin
-      summary: Upload a signed firmware image
+      x-hubbo-max-body: 6553600
+      summary: Upload a firmware image
       description: |
-        Streams the app image into the inactive OTA slot, then verifies
-        signature, board ID and size before marking it bootable. `reboot=true`
-        reboots after a successful verify. A failed first boot rolls back.
-        Body limit is the OTA slot size.
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
-        - name: reboot
-          in: query
-          required: false
-          schema: {type: boolean, default: true}
-        - name: X-Hubbo-Image-Sha256
-          in: header
-          required: false
-          description: Hex SHA-256 of the image; checked after upload.
-          schema: {type: string, pattern: '^[0-9a-f]{64}$'}
+        The body is the app image (`firmware.bin` from the build, not the
+        merged factory image), sent whole with `Content-Length`. The hub
+        checks all of it before erasing anything: it fits the inactive OTA
+        slot, it's an ESP32-S3 app image for this chip revision, it carries the
+        Hubbo marker for this board and partition layout, and its appended
+        SHA-256 matches. Then it answers `202` and writes the image in the
+        background (`GET /admin/firmware` shows the progress), sets it to boot
+        and reboots. There's no rollback. During the write the remote may lag
+        for up to about 30 s. The body limit is the OTA slot size.
       requestBody:
         required: true
         content:
           application/octet-stream:
             schema: {type: string, contentEncoding: binary}
       responses:
-        '503': {$ref: '#/components/responses/Unavailable'}
-        '400': {$ref: '#/components/responses/MalformedJson'}
-        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
-        '501': {$ref: '#/components/responses/NotImplemented'}
         '202':
-          description: Verified; rebooting or ready to reboot
+          description: The image passed every check; the write has started
           content:
             application/json:
               schema: {$ref: '#/components/schemas/FirmwareStatus'}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
-        '409': {$ref: '#/components/responses/Conflict'}
+        '409':
+          description: An update is already running, or the hub is rebooting (`update_in_progress`)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '411':
+          description: No `Content-Length` header (`length_required`)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
-        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '415':
+          description: Body is not `Content-Type application/octet-stream` (`unsupported_media_type`)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '422':
+          description: |
+            Refused before anything was written. `wrong_board`: a Hubbo image
+            for another board. `invalid_image`: not an app image (a merged
+            factory .bin isn't one), the wrong chip, not a Hubbo image, another
+            partition layout, or a checksum that doesn't match (the message
+            says which).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '503':
+          description: This hub can't take an update now, e.g. no memory for the image (`unavailable`, `busy`)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
 
 components:
   securitySchemes:
@@ -1395,7 +1389,7 @@ components:
       type: apiKey
       in: cookie
       name: hubbo_session
-      description: Admin browser session. Unsafe methods also need `X-Hubbo-CSRF`.
+      description: Admin browser session (7 days, or until the hub reboots).
     bearerToken:
       type: http
       scheme: bearer
@@ -1408,12 +1402,6 @@ components:
       schema: {type: string}
 
   parameters:
-    CsrfHeader:
-      name: X-Hubbo-CSRF
-      in: header
-      required: false
-      description: Required when authenticating with the session cookie; ignored for Bearer tokens.
-      schema: {type: string, maxLength: 64}
     DeviceIdPath:
       name: device_id
       in: path
@@ -1448,7 +1436,7 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
     Forbidden:
-      description: Authenticated but not allowed (`forbidden`, `csrf_failed`)
+      description: 'Not allowed: `forbidden` (an API token on an admin operation) or `csrf_failed` (a cross-site `Origin`)'
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
@@ -1487,19 +1475,12 @@ components:
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
-    RateLimited:
-      description: Too many attempts (`rate_limited`)
-      headers:
-        Retry-After:
-          schema: {type: integer, minimum: 1}
-      content:
-        application/json:
-          schema: {$ref: '#/components/schemas/Error'}
     Unavailable:
       description: |
         Integration not connected, the engine is busy, the config store can't
         be written, or stored credentials can't be read so nobody can be
-        authenticated (`integration_unavailable`, `busy`, `storage_unavailable`).
+        authenticated, or (firmware) this hub has no update support
+        (`integration_unavailable`, `busy`, `storage_unavailable`, `unavailable`).
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
@@ -1573,24 +1554,26 @@ components:
         - unsupported_media_type
         - payload_too_large
         - method_not_allowed
-        - host_not_allowed
+        - length_required
         - unauthenticated
         - invalid_credentials
         - forbidden
         - csrf_failed
-        - rate_limited
         - not_found
         - revision_conflict
         - device_in_use
         - activity_in_use
         - config_blocked
         - storage_unavailable
-        - credentials_corrupt
         - limit_reached
         - busy
         - setup_required
         - setup_already_done
         - details_required
+        - update_in_progress
+        - invalid_image
+        - wrong_board
+        - unavailable
         - integration_unavailable
         - not_implemented
         - internal_error
@@ -1636,10 +1619,6 @@ components:
             current_revision:
               description: Present with `revision_conflict`.
               $ref: '#/components/schemas/Revision'
-            retry_after_s:
-              description: Present with `rate_limited` (mirrors `Retry-After`).
-              type: integer
-              minimum: 1
 
     # ---------- status ----------
     AuthState:
@@ -1647,12 +1626,12 @@ components:
         What the hub knows about its credentials. "Can't read" is never
         "doesn't exist": only `fresh` (the store is readable and holds no
         admin) allows `POST /auth/setup`.
-        `ok`: loaded. `unavailable`: the store can't be read; logins and
-        authenticated requests get `503 storage_unavailable` until it can.
-        `corrupt`: stored credentials are damaged; logins and setup get
-        `409 credentials_corrupt` (recovery needs physical access).
+        Read once at boot. `ok`: loaded. `unavailable`: the store couldn't be
+        read or holds damaged credentials; logins, setup and authenticated
+        requests get `503 storage_unavailable`. Recovery is a reboot or the
+        wipe (`bin/hubbo ota <ip> --wipe`).
       type: string
-      enum: [fresh, ok, unavailable, corrupt]
+      enum: [fresh, ok, unavailable]
     ConfigState:
       description: |
         Health of the saved configuration.
@@ -1858,10 +1837,6 @@ components:
           type: [string, 'null']
           enum: [admin, token, null]
         username: {type: string, maxLength: 32}
-        csrf_token:
-          description: Echo in `X-Hubbo-CSRF`. Present only for cookie sessions. Keep in memory, not browser storage.
-          type: string
-          maxLength: 64
         expires_in_s:
           type: integer
           minimum: 0
@@ -2733,14 +2708,32 @@ components:
     FirmwareStatus:
       type: object
       additionalProperties: false
-      required: [version, board, update_state]
+      required: [version, board, update]
       properties:
-        version: {type: string, maxLength: 32}
-        board: {type: string, maxLength: 32}
-        running_partition: {type: string, maxLength: 16}
-        update_state:
+        version:
+          description: The running firmware's version (`git describe`).
           type: string
-          enum: [idle, receiving, verifying, ready_to_reboot, rebooting, failed]
-        received_bytes: {type: integer, minimum: 0}
-        rollback_available: {type: boolean}
-        message: {type: string, maxLength: 200}
+          maxLength: 32
+        board: {type: string, maxLength: 32}
+        update:
+          type: object
+          additionalProperties: false
+          required: [state, progress, error]
+          properties:
+            state:
+              description: |
+                `idle`: nothing running. `writing`: erasing and writing the
+                inactive slot. `rebooting`: written and set to boot; the hub
+                restarts shortly. `failed`: the latest update stopped (`error`);
+                the running firmware stays and still boots.
+              type: string
+              enum: [idle, writing, rebooting, failed]
+            progress:
+              description: Percent of the image written (`writing`; 100 once `rebooting`).
+              type: integer
+              minimum: 0
+              maximum: 100
+            error:
+              description: '`failed` only: a short code such as `write_failed` or `verify_failed`.'
+              type: [string, 'null']
+              maxLength: 64
