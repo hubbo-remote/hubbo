@@ -2,14 +2,20 @@
 // and reject every malicious one, so UI built against the mock is built
 // against the spec.
 import { describe, expect, it } from 'vitest'
-import type { Activity, ApiErrorBody, DiscoverStatus, Session, Status, TransitionResult } from '../src/api/types.ts'
+import type { Activity, ApiErrorBody, DiscoverStatus, EntityDetailsStatus, Session, Status, TransitionResult } from '../src/api/types.ts'
 import { fixture } from './fixtures.ts'
 import { CSRF_HEADER } from '../src/api/constants.ts'
 import { createMock, type MockRequest, type MockResponse } from './handler.ts'
 
+/** Load an entity's details (POST, then GET: discoverDelayMs is 0 in these tests). */
+async function loadDetails(m: ReturnType<typeof createMock>, entityId: string) {
+  await m.handle(req('POST', `/admin/integrations/ha_main/entities/${entityId}/details`))
+  return (await m.handle(req('GET', `/admin/integrations/ha_main/entities/${entityId}/details`))).body as EntityDetailsStatus
+}
+
 const req = (method: string, path: string, body?: unknown, headers: Record<string, string> = { [CSRF_HEADER]: 'csrf-dev' }): MockRequest => {
   const [p, q] = path.split('?')
-  return { method, path: p!, query: new URLSearchParams(q ?? ''), headers, body, rawBody: new TextEncoder().encode(JSON.stringify(body ?? '')) }
+  return { method, path: p!, query: new URLSearchParams(q ?? ''), headers, body, rawBody: body === undefined ? undefined : new TextEncoder().encode(JSON.stringify(body)) }
 }
 
 const errorOf = (r: MockResponse) => (r.body as ApiErrorBody).error
@@ -36,7 +42,7 @@ describe('mock vs api/fixtures', () => {
     it(`accepts ${f.file}`, async () => {
       const [method, path] = ROUTES[f.operation]!
       const m = createMock({ random: () => 0.99, discoverDelayMs: 0 })
-      if (f.operation === 'registerDevice') await m.handle(req('POST', '/admin/integrations/ha_main/discover')) // HA devices snapshot the latest discovery
+      if (f.operation === 'registerDevice') await loadDetails(m, fixture<{ provider: { entity_id: string } }>(f.file).provider.entity_id) // HA devices snapshot the entity's details
       const r = await m.handle(req(method, path, fixture(f.file)))
       // The blocked-raw record fixture is from newer firmware (schema_version 2): well-formed, but this
       // firmware refuses it exactly as errors/restore_unsupported_schema.json documents.
@@ -194,6 +200,15 @@ describe('mock behaviour', () => {
     expect(errorOf(await m.handle(sized(640 * 1024 + 1))).code).toBe('payload_too_large')
   })
 
+  it('nesting: requests allow 8 levels, a restore (a file) 12, like the hub', async () => {
+    const m = createMock()
+    const nested = (n: number): unknown => (n === 0 ? 1 : { a: nested(n - 1) })
+    const raw = (path: string, n: number): MockRequest => ({ ...req('POST', path), headers: { [CSRF_HEADER]: 'csrf-dev', 'content-type': 'application/json' }, rawBody: new TextEncoder().encode(JSON.stringify(nested(n))) })
+    expect(errorOf(await m.handle(raw('/activities', 9))).code).toBe('malformed_json')
+    expect(errorOf(await m.handle(raw('/admin/restore?dry_run=true', 12))).code).not.toBe('malformed_json')
+    expect(errorOf(await m.handle(raw('/admin/restore?dry_run=true', 13))).code).toBe('malformed_json')
+  })
+
   it('restores a hubbo-config record this firmware reads', async () => {
     const m = createMock()
     await m.handle(req('POST', '/__mock/reset', { configState: 'blocked' }))
@@ -263,13 +278,19 @@ describe('mock behaviour', () => {
     expect((await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body).toEqual({ state: 'idle' })
     expect((await m.handle(req('POST', '/admin/integrations/ha_main/discover'))).status).toBe(202)
     const all = (await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body as DiscoverStatus
-    expect(all).toMatchObject({ state: 'done', total: 7, next_cursor: null })
     const fx = fixture<DiscoverStatus>('integrations/ha_main.discovery.json')
-    expect(all.candidates!.map((c) => [c.provider.entity_id, c.registered_device_id])).toEqual(fx.candidates!.map((c) => [c.provider.entity_id, c.registered_device_id]))
+    expect(all).toMatchObject({ state: 'done', total: fx.candidates!.length + 2, next_cursor: null }) // plus a free Denon and a YAML-only one
+    expect(all.candidates!.map((c) => [c.provider.entity_id, c.registered_device_id])).toEqual([...fx.candidates!.map((c) => [c.provider.entity_id, c.registered_device_id]), ['media_player.denon', null], ['switch.patio_fountain', null]])
+    // Candidates preview the domain commands; services, skipped ones and the registry id come with the details.
     const sonos = all.candidates!.find((c) => c.provider.entity_id === 'media_player.family_room_sonos')!
     expect(sonos).toMatchObject({ platform: 'sonos', dropped_options: 0 })
-    expect(sonos.command_ids).toContain('sonos.set_sleep_timer')
-    expect(sonos.skipped_services).toContain('sonos.snapshot')
+    expect(sonos.command_ids?.every((id) => id.startsWith('media_player.'))).toBe(true)
+    expect(sonos.provider).not.toHaveProperty('unique_id')
+    const details = await loadDetails(m, 'media_player.family_room_sonos')
+    expect(details).toMatchObject({ state: 'done', platform: 'sonos', provider: { unique_id: expect.any(String) } })
+    expect(details.command_ids).toContain('sonos.set_sleep_timer')
+    expect(details.skipped_services).toContain('sonos.snapshot')
+    expect(await loadDetails(m, 'switch.patio_fountain')).not.toHaveProperty('platform') // YAML-only
     const lights = (await m.handle(req('GET', '/admin/integrations/ha_main/discover?domain=light'))).body as DiscoverStatus
     expect(lights.candidates!.map((c) => c.domain)).toEqual(['light'])
     const page = (await m.handle(req('GET', '/admin/integrations/ha_main/discover?limit=2'))).body as DiscoverStatus
@@ -287,16 +308,21 @@ describe('mock behaviour', () => {
     expect((await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body).toMatchObject({ state: 'failed', error: expect.any(String) })
   })
 
-  it('registering needs the entity in the latest discovery (422 unknown_device), and HA connected (503)', async () => {
+  it('registering checks the id shape (422), then needs done details for that entity (409), then commands (422); HA connected (503)', async () => {
     const m = createMock({ discoverDelayMs: 0 })
     const backlight = { integration_id: 'ha_main', provider: { type: 'home_assistant', entity_id: 'switch.tv_backlight' }, name: 'Backlight', kind: 'switch' }
-    const before = await m.handle(req('POST', '/admin/devices', backlight))
-    expect([before.status, errorOf(before).details?.[0]]).toEqual([422, expect.objectContaining({ path: '/provider/entity_id', code: 'unknown_device' })])
-    await m.handle(req('POST', '/admin/integrations/ha_main/discover'))
+    const broadcast = errorOf(await m.handle(req('POST', '/admin/devices', { ...backlight, provider: { type: 'home_assistant', entity_id: 'light.all' } })))
+    expect(broadcast.details?.[0]).toEqual(expect.objectContaining({ path: '/provider/entity_id', code: 'pattern' }))
+    expect(errorOf(await m.handle(req('POST', '/admin/devices', backlight))).code).toBe('details_required') // no discovery needed, just details
+    expect(await loadDetails(m, 'switch.not_in_ha')).toMatchObject({ state: 'failed', error: 'Home Assistant has no entity switch.not_in_ha' })
+    await loadDetails(m, 'media_player.kitchen_display')
+    expect(errorOf(await m.handle(req('POST', '/admin/devices', backlight))).code).toBe('details_required') // another entity loaded last
     const noCommands = await m.handle(req('POST', '/admin/devices', { ...backlight, provider: { type: 'home_assistant', entity_id: 'media_player.kitchen_display' } }))
     expect(errorOf(noCommands).details?.[0]?.code).toBe('unknown_device')
+    await loadDetails(m, 'switch.tv_backlight')
+    expect((await m.handle(req('POST', '/admin/devices', backlight))).status).toBe(201)
     await m.handle(req('POST', '/__mock/ha?state=unreachable'))
-    expect((await m.handle(req('POST', '/admin/devices', backlight))).status).toBe(503)
+    expect((await m.handle(req('POST', '/admin/devices', { ...backlight, name: 'Again' }))).status).toBe(503)
   })
 
   it('a device update takes only DeviceUpdate fields (ha_capabilities is never round-tripped)', async () => {
@@ -308,12 +334,13 @@ describe('mock behaviour', () => {
 
   it('registering stores the entity’s commands, integration services with typed params included', async () => {
     const m = createMock({ discoverDelayMs: 0 })
-    await m.handle(req('POST', '/admin/integrations/ha_main/discover'))
+    await loadDetails(m, 'switch.tv_backlight')
     const d = (await m.handle(req('POST', '/admin/devices', { integration_id: 'ha_main', provider: { type: 'home_assistant', entity_id: 'switch.tv_backlight' }, name: 'Backlight', kind: 'switch' }))).body as { id: string }
     const caps = (await m.handle(req('GET', `/devices/${d.id}/capabilities`))).body as { commands: { command_id: string }[] }
     expect(caps.commands.map((c) => c.command_id).sort()).toEqual(['switch.turn_off', 'switch.turn_on'])
     // Re-linking (here: to the same entity) re-reads it, picking up its integration's typed services.
     const sonos = (await m.handle(req('GET', '/devices/dev_sonos'))).body as { revision: number; provider: object }
+    await loadDetails(m, 'media_player.family_room_sonos')
     expect((await m.handle(req('PUT', '/admin/devices/dev_sonos', { provider: sonos.provider, revision: sonos.revision }))).status).toBe(200)
     const caps2 = (await m.handle(req('GET', '/devices/dev_sonos/capabilities'))).body as { commands: { command_id: string; params: { type: string }[] }[] }
     expect(caps2.commands.find((c) => c.command_id === 'sonos.set_sleep_timer')?.params).toMatchObject([{ type: 'int', minimum: 0, maximum: 86400 }])
@@ -331,17 +358,31 @@ describe('mock behaviour', () => {
 
   it('a stale device’s commands fail as entity_not_found until it is re-linked', async () => {
     const m = createMock({ discoverDelayMs: 0 })
-    await m.handle(req('POST', '/__mock/ha?remove=media_player.family_room_lg_tv'))
+    await m.handle(req('POST', '/__mock/ha?rename=media_player.family_room_lg_tv&to=media_player.living_room_lg_tv'))
     expect(((await m.handle(req('GET', '/devices/dev_lg_tv'))).body as { availability: string }).availability).toBe('available') // not yet noticed
     await m.handle(req('POST', '/admin/integrations/ha_main/discover'))
-    expect(((await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body as DiscoverStatus).total).toBe(6)
+    expect(((await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body as DiscoverStatus).total).toBe(10) // renamed, not removed
     expect(((await m.handle(req('GET', '/devices/dev_lg_tv'))).body as { availability: string }).availability).toBe('stale')
     const exec = await m.handle(req('POST', '/devices/dev_lg_tv/commands/media_player.turn_on/execute', { params: {} }))
     expect([exec.status, exec.body]).toEqual([200, expect.objectContaining({ status: 'failed', message: 'entity_not_found' })])
     const d = (await m.handle(req('GET', '/devices/dev_lg_tv'))).body as { revision: number; provider: object }
-    expect(errorOf(await m.handle(req('PUT', '/admin/devices/dev_lg_tv', { provider: d.provider, revision: d.revision }))).details?.[0]?.code).toBe('unknown_device') // it's gone
-    const relinked = await m.handle(req('PUT', '/admin/devices/dev_lg_tv', { provider: { type: 'home_assistant', entity_id: 'switch.tv_backlight' }, revision: d.revision }))
+    expect((await loadDetails(m, 'media_player.family_room_lg_tv')).state).toBe('failed') // it's gone
+    expect(errorOf(await m.handle(req('PUT', '/admin/devices/dev_lg_tv', { provider: d.provider, revision: d.revision }))).code).toBe('details_required')
+    await loadDetails(m, 'switch.tv_backlight')
+    // Like the hub: a re-link that breaks an activity's steps is refused, with paths by activity index.
+    const breaks = errorOf(await m.handle(req('PUT', '/admin/devices/dev_lg_tv', { provider: { type: 'home_assistant', entity_id: 'switch.tv_backlight' }, revision: d.revision })))
+    expect(breaks.code).toBe('validation_failed')
+    expect(breaks.details?.[0]).toEqual(expect.objectContaining({ path: '/activities/0/startup/0/command_id', code: 'unknown_command' }))
+    // A global button on the LG TV: the hub's path is /global_bindings/<trigger>/<i>/… (no /bindings level).
+    const g = (await m.handle(req('GET', '/global-bindings'))).body as { revision: number; bindings: Record<string, unknown[]> }
+    const lgStep = { integration_id: 'ha_main', device_id: 'dev_lg_tv', command_id: 'media_player.turn_on', params: {} }
+    expect((await m.handle(req('PUT', '/global-bindings', { ...g, bindings: { ...g.bindings, 'tv:tap': [lgStep] } }))).status).toBe(200)
+    const breaksGlobal = errorOf(await m.handle(req('PUT', '/admin/devices/dev_lg_tv', { provider: { type: 'home_assistant', entity_id: 'switch.tv_backlight' }, revision: d.revision })))
+    expect(breaksGlobal.details?.map((x) => x.path)).toContain('/global_bindings/tv:tap/0/command_id')
+    await loadDetails(m, 'media_player.living_room_lg_tv')
+    const relinked = await m.handle(req('PUT', '/admin/devices/dev_lg_tv', { provider: { type: 'home_assistant', entity_id: 'media_player.living_room_lg_tv' }, revision: d.revision }))
     expect((relinked.body as { availability: string }).availability).toBe('available')
+    await loadDetails(m, 'media_player.xbox')
     const taken = await m.handle(req('PUT', '/admin/devices/dev_lg_tv', { provider: { type: 'home_assistant', entity_id: 'media_player.xbox' }, revision: (relinked.body as { revision: number }).revision }))
     expect(errorOf(taken).details?.[0]?.code).toBe('duplicate_id')
   })

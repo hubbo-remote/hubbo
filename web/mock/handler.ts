@@ -13,9 +13,10 @@ import type {
   Device,
   DeviceRegister,
   DeviceUpdate,
-  DiscoverCandidate,
   DiscoverStatus,
   ErrorCode,
+  EventKind,
+  ButtonId,
   ExecuteResult,
   GlobalBindings,
   IntegrationConfig,
@@ -31,8 +32,10 @@ import type {
   TokenSummary,
   TransitionResult,
   ValidationIssue,
+  BlePairingStatus as PairingStatus,
+  EntityDetailsStatus,
 } from '../src/api/types.ts'
-import { CSRF_HEADER, REMOTE_CHANNEL_MAX, REMOTE_SCAN_TIMEOUT_S } from '../src/api/constants.ts'
+import { BLE_PAIR_WINDOW_MAX_S, BLE_PAIR_WINDOW_MIN_S, BLE_PAIR_WINDOW_S, CSRF_HEADER, REMOTE_CHANNEL_MAX, REMOTE_SCAN_TIMEOUT_S } from '../src/api/constants.ts'
 import { forEachAction, validateActivity, validateBindings, type Catalog } from '../src/lib/activity.ts'
 import { addressProblem } from '../src/lib/remote.ts'
 import { fixture, fixtureBytes, loadSeed, type Seed } from './fixtures.ts'
@@ -92,6 +95,10 @@ const DEV_SID = 'dev'
 /** Requests refused while the config is blocked or unwritable (validate is a dry run, so it isn't one). */
 const EDITS = [/^\/activities(\/(?!validate$)[^/]+)?$/, /^\/activities\/[^/]+\/activate$/, /^\/global-bindings$/, /^\/admin\/devices/]
 const MAX_BODY = 32 * 1024
+/** Like the hub's JSON reader: deeper nesting is malformed (a restore is a file, so it gets the file limit). */
+const MAX_JSON_DEPTH = 8
+const MAX_FILE_DEPTH = 12
+const depth = (v: unknown): number => (v !== null && typeof v === 'object' ? 1 + Math.max(0, ...Object.values(v).map(depth)) : 0)
 /** Entity → platform, the integration services Hubbo would offer, and the ones it skips. */
 const PLATFORMS: [RegExp, string, Command[], string[]][] = [
   [/denon/, 'denonavr', [{ command_id: 'denonavr.set_dynamic_eq', label: 'Dynamic EQ', effect: 'momentary', params: [{ name: 'dynamic_eq', label: 'Dynamic EQ', type: 'bool', required: true }] }], ['denonavr.get_command']],
@@ -114,7 +121,7 @@ const BLOCKED_RECORD_SCHEMA = fixture<{ schema_version: number }>(BLOCKED_RECORD
 const fixtureError = (status: number, file: string): MockResponse => ({ status, body: fixture(file) })
 
 const err = (status: number, code: ErrorCode, message: string, extra: Record<string, unknown> = {}): MockResponse => ({ status, body: { error: { code, message, ...extra } } })
-const invalid = (details: ValidationIssue[]) => err(422, 'validation_failed', details[0]?.message ?? 'Invalid request', { details: details.slice(0, 32) })
+const invalid = (details: ValidationIssue[], message = details[0]?.message ?? 'Invalid request') => err(422, 'validation_failed', message, { details: details.slice(0, 32) })
 const ok = (body?: unknown, status = 200): MockResponse => ({ status: body === undefined ? 204 : status, body })
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] }
@@ -139,12 +146,28 @@ export function createMock(opts: MockOptions = {}) {
   let endpoint: RemoteEndpoint | null
   /** Simulated HA client state (POST /__mock/ha); cleared when its settings change, like the real client. */
   let haOverride: IntegrationState | null
+  /** Like hub-sim's POST /sim/ble?connected=0: the BLE host dropped (false: connected while bonded). */
+  let bleDown = false
+  /** The BLE pairing window (POST /admin/integrations/ble/pair); `failed` sticks until the next POST or DELETE. */
+  let blePair: { state: 'idle' } | { state: 'pairing'; endsAt: number } | { state: 'failed' } = { state: 'idle' }
+  /** Like hub-sim's /sim/ha?auth=reject and ?connect=stall: how the fake HA answers the next connect (after a save). */
+  let haNextConnect: 'ok' | 'reject' | 'stall' = 'ok'
   /** Entities HA has forgotten (POST /__mock/ha?remove=): their devices go stale at the next discovery. */
   let removedEntities: Set<string>
+  /** Each HA entity's own command variants (e.g. its source list), from the fixture device on it. */
+  let entityCommands: Map<string, Command[]>
+  /** What only an entity's details carry (§3b): its integration's services, the skipped ones, its registry id. */
+  let entityExtras: Map<string, { services: string[]; skipped: string[]; uniqueId?: string }>
+  /** The last details request (one at a time); dropped when the HA settings change. */
+  let details: { entityId: string; startedAt: number; state: 'running' | 'settled' } | null
+  /** A renamed entity's old id (POST /__mock/ha?rename=): like the hub's unique_id match, its details name the device. */
+  let renamedFrom: Map<string, string>
   /** On-demand HA discovery (POST/GET/DELETE …/discover). */
-  let discovery: { state: DiscoverStatus['state']; startedAt?: number }
+  let discovery: { state: DiscoverStatus['state']; startedAt?: number; elapsedMs?: number }
   let transitions: number // TransitionResult.generation
   let lastEventAt: number
+  /** The last remote event (POST /__mock/remote/…); the fixture's until then. */
+  let lastEvent: { button: ButtonId; kind: EventKind } | null
   // The config generation: every committed change bumps it, and the changed
   // object's revision is that generation (api/openapi.yaml ConfigState).
   let configGen: number
@@ -172,16 +195,31 @@ export function createMock(opts: MockOptions = {}) {
     pairing = mode.firstRun ? { state: 'idle', paired: false } : { ...db.remote.pairing }
     endpoint = mode.firstRun ? null : db.remote.endpoint
     haOverride = null
+    bleDown = false
+    blePair = { state: 'idle' }
+    haNextConnect = 'ok'
     discovery = { state: 'idle' }
     // The fixture's entities come from HA's `demo` platform, which has no services of its own. Give them
     // realistic platforms, with integration services and skipped ones, so the UI shows those too.
+    // Candidates preview only the domain commands; the services come with the entity's details.
+    entityExtras = new Map()
+    renamedFrom = new Map()
+    details = null
+    // A free Denon with integration services, the same entity hub-sim's fake HA has.
+    if (!haCandidate('media_player.denon')) db.discover.candidates.push({ provider: { type: 'home_assistant', entity_id: 'media_player.denon' }, name: 'Denon AVR-X3700H', domain: 'media_player', supported: true, command_ids: ['media_player.turn_on', 'media_player.turn_off', 'media_player.volume_set', 'media_player.select_source'], dropped_options: 0, registered_device_id: null })
     for (const c of db.discover.candidates) {
       const [, platform = 'unknown', services = [], skipped = []] = PLATFORMS.find(([re]) => re.test(c.provider.entity_id)) ?? []
-      Object.assign(c, { platform, skipped_services: skipped, dropped_options: 0, command_ids: [...(c.command_ids ?? []), ...services.map((s) => s.command_id)] })
+      entityExtras.set(c.provider.entity_id, { services: services.map((s) => s.command_id), skipped, uniqueId: c.provider.unique_id ?? `${platform}-${c.provider.entity_id.split('.')[1]}` })
+      delete c.provider.unique_id // details carry it
+      Object.assign(c, { platform, dropped_options: 0 })
     }
+    // A YAML-only entity (no registry entry, so no platform or unique_id), like hub-sim's fake HA.
+    if (!haCandidate('switch.patio_fountain')) db.discover.candidates.push({ provider: { type: 'home_assistant', entity_id: 'switch.patio_fountain' }, name: 'Patio Fountain', domain: 'switch', supported: true, command_ids: ['switch.turn_on', 'switch.turn_off'], dropped_options: 0, registered_device_id: null })
     removedEntities = new Set()
+    entityCommands = new Map(db.discover.candidates.flatMap((c) => (c.registered_device_id ? [[c.provider.entity_id, db.capabilities.get(c.registered_device_id)?.commands ?? []]] : [])))
     transitions = 17
     lastEventAt = Date.now() - 5230
+    lastEvent = null
     configGen = Math.max(1, db.globalBindings.revision, ...db.activities.map((a) => a.revision), ...db.devices.map((d) => d.revision), ...[...db.configs.values()].map((c) => c.revision))
     config = { state: 'ok', generation: configGen }
     if (mode.firstRun) {
@@ -239,7 +277,8 @@ export function createMock(opts: MockOptions = {}) {
     if (!c) return 'error'
     if (!c.enabled) return 'disabled'
     if (c.settings.type === 'home_assistant') return c.settings.has_access_token ? (haOverride ?? 'connected') : 'not_configured'
-    if (c.settings.type === 'ble_hid') return c.settings.bonded ? 'connected' : 'disconnected'
+    // Like hub-sim: pairing → connecting; no bond → not_configured; bonded → the link's state.
+    if (c.settings.type === 'ble_hid') return blePairStatus(c.settings).state === 'pairing' ? 'connecting' : !c.settings.bonded ? 'not_configured' : bleDown ? 'disconnected' : 'connected'
     return 'connected'
   }
 
@@ -256,18 +295,54 @@ export function createMock(opts: MockOptions = {}) {
     return rest
   }
 
-  /** An HA entity from the latest finished discovery, with commands to offer (what registering snapshots). */
+  /** A media_player, light or switch entity id; never a broadcast like `light.all`. */
+  function haEntityIdOk(id: string) {
+    return id.length <= 96 && /^(media_player|light|switch)\.[a-z0-9_]+$/.test(id) && !id.endsWith('.all')
+  }
+
+  /** An entity HA has now (whatever the latest discovery saw). */
+  function haCandidate(entityId: string) {
+    return db.discover.candidates.find((x) => x.provider.entity_id === entityId)
+  }
+
+  /** The details of the last requested entity (§3b); `idle` for any other. They settle after the discovery delay. */
+  function entityDetails(entityId: string): EntityDetailsStatus {
+    if (!details || details.entityId !== entityId) return { state: 'idle' }
+    if (details.state === 'running' && Date.now() - details.startedAt < (opts.discoverDelayMs ?? 1500)) return { state: 'running', entity_id: entityId }
+    details.state = 'settled'
+    const c = haCandidate(entityId)
+    if (!c) return { state: 'failed', entity_id: entityId, error: `Home Assistant has no entity ${entityId}` }
+    const x = entityExtras.get(entityId)
+    return {
+      state: 'done',
+      entity_id: entityId,
+      provider: { type: 'home_assistant', entity_id: entityId, ...(x?.uniqueId ? { unique_id: x.uniqueId } : {}) },
+      name: c.name,
+      domain: c.domain,
+      ...(c.platform ? { platform: c.platform } : {}),
+      supported: c.supported,
+      command_ids: [...(c.command_ids ?? []), ...(x?.services ?? [])],
+      dropped_options: c.dropped_options ?? 0,
+      skipped_services: x?.skipped ?? [],
+      // The list matches by entity_id only; the details also find a device on the renamed entity.
+      registered_device_id: c.registered_device_id ?? db.devices.find((d) => d.provider.type === 'home_assistant' && d.provider.entity_id === renamedFrom.get(entityId))?.id ?? null,
+    }
+  }
+
   /**
-   * The entity a register or re-link (by `selfId`) would snapshot: HA must be connected and the entity in
-   * the latest finished discovery, with commands to offer and no other device on it. Else the error.
+   * The entity a register or re-link (by `selfId`) would snapshot: HA connected, its details loaded
+   * (done, for this entity), with commands to offer and no other device on it. Else the error.
    */
-  function haEntity(entityId: string, selfId?: string): DiscoverCandidate | MockResponse {
+  type EntityWithCommands = EntityDetailsStatus & { command_ids: string[] }
+  function haEntity(entityId: string, selfId?: string): EntityWithCommands | MockResponse {
+    // Like the hub: the id's shape first, then the details, then the commands.
+    if (!haEntityIdOk(entityId)) return invalid([{ path: '/provider/entity_id', code: 'pattern', message: 'Not a media_player, light or switch entity id' }])
     if (integrationState('ha_main') !== 'connected') return err(503, 'integration_unavailable', 'Home Assistant is not connected')
-    settleDiscovery()
-    const c = discovery.state === 'done' ? db.discover.candidates.find((x) => x.provider.entity_id === entityId && x.supported && (x.command_ids?.length ?? 0) > 0) : undefined
-    if (!c) return invalid([{ path: '/provider/entity_id', code: 'unknown_device', message: `${entityId} isn’t in the latest discovery, or Hubbo offers no commands for it` }])
-    if (c.registered_device_id && c.registered_device_id !== selfId) return invalid([{ path: '/provider/entity_id', code: 'duplicate_id', message: `Already registered as ${c.registered_device_id}` }])
-    return c
+    const d = entityDetails(entityId)
+    if (d.state !== 'done') return err(409, 'details_required', `Load ${entityId}'s details first (POST …/entities/${entityId}/details)`)
+    if (!d.supported || !d.command_ids?.length) return invalid([{ path: '/provider/entity_id', code: 'unknown_device', message: `Hubbo offers no commands for ${entityId}` }])
+    if (d.registered_device_id && d.registered_device_id !== selfId) return invalid([{ path: '/provider/entity_id', code: 'duplicate_id', message: `Already registered as ${d.registered_device_id}; re-link that device instead` }])
+    return d as EntityWithCommands
   }
 
   function remoteConfig(): RemoteConfig {
@@ -278,7 +353,7 @@ export function createMock(opts: MockOptions = {}) {
   /** A running discovery finishes once its delay is up. */
   function settleDiscovery() {
     if (discovery.state === 'running' && Date.now() - (discovery.startedAt ?? 0) >= (opts.discoverDelayMs ?? 1500)) {
-      discovery = { state: mode.discoverFails ? 'failed' : 'done' }
+      discovery = { state: mode.discoverFails ? 'failed' : 'done', elapsedMs: Date.now() - (discovery.startedAt ?? Date.now()) }
       // Like hub-sim: a finished discovery is when the hub notices registered entities HA no longer has.
       if (discovery.state === 'done') for (const d of db.devices) if (d.provider.type === 'home_assistant' && removedEntities.has(d.provider.entity_id)) d.availability = 'stale'
     }
@@ -290,21 +365,40 @@ export function createMock(opts: MockOptions = {}) {
     if (discovery.state !== 'done') return ok({ state: discovery.state } satisfies DiscoverStatus)
     const text = q.get('q')?.toLowerCase() ?? ''
     const domain = q.get('domain')
+    if (domain && !['media_player', 'light', 'switch'].includes(domain)) return invalid([{ path: '/domain', code: 'invalid_enum_value', message: 'domain must be media_player, light or switch' }])
     const limit = Number(q.get('limit') ?? 50)
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) return invalid([{ path: '/limit', code: 'param_out_of_range', message: 'limit must be 1 to 100' }])
     const offset = Number(q.get('cursor') ?? 0) || 0
     const all = db.discover.candidates.filter((c) => (!text || c.name.toLowerCase().includes(text) || c.provider.entity_id.includes(text)) && (!domain || c.domain === domain))
     const page = all.slice(offset, offset + limit)
-    return ok({ state: 'done', total: db.discover.candidates.length, truncated: mode.discoverTruncated ?? 0, candidates: page, next_cursor: offset + limit < all.length ? String(offset + limit) : null } satisfies DiscoverStatus)
+    return ok({ state: 'done', elapsed_ms: discovery.elapsedMs ?? 0, total: db.discover.candidates.length, truncated: mode.discoverTruncated ?? 0, candidates: page, next_cursor: offset + limit < all.length ? String(offset + limit) : null } satisfies DiscoverStatus)
   }
 
   /** What registering an HA entity stores: its allowlisted built-ins, plus its integration's own services (design §3). */
-  function haCommands(c: DiscoverCandidate): Command[] {
+  function haCommands(c: { entity_id?: string; command_ids?: string[] }): Command[] {
     const all = new Map<string, Command>()
-    for (const caps of db.capabilities.values()) for (const cmd of caps.commands) if (cmd.command_id.includes('.')) all.set(cmd.command_id, cmd)
+    for (const caps of db.capabilities.values()) for (const cmd of caps.commands) if (cmd.command_id.includes('.') && !all.has(cmd.command_id)) all.set(cmd.command_id, cmd)
+    // The entity's own variant of a shared command wins (e.g. its source list), whichever device it's linked to.
+    for (const cmd of entityCommands.get(c.entity_id!) ?? []) all.set(cmd.command_id, cmd)
     // A built-in the fixtures never show (e.g. switch.turn_on): a plain momentary command.
     const plain = (id: string): Command => ({ command_id: id, label: id.split('.').pop()!.replace(/_/g, ' ').replace(/^./, (x) => x.toUpperCase()), effect: 'momentary', params: [] })
     return (c.command_ids ?? []).map((id) => all.get(id) ?? INTEGRATION_SERVICES.get(id) ?? plain(id))
+  }
+
+  /** The ble_hid integration's (mutable) settings, or null when `id` isn't one. */
+  function bleSettings(id: string) {
+    const c = db.configs.get(id)
+    return c?.settings.type === 'ble_hid' ? mut(c.settings) : null
+  }
+
+  function blePairStatus(st: { bonded: boolean; peer_name?: string | null }): PairingStatus {
+    if (blePair.state === 'pairing') {
+      const left = blePair.endsAt - Date.now()
+      if (left > 0) return { state: 'pairing', window_s: Math.ceil(left / 1000) }
+      blePair = { state: 'failed' } // the window closed with no bond
+    }
+    if (blePair.state === 'failed') return { state: 'failed' }
+    return st.bonded ? { state: 'paired', ...(st.peer_name ? { peer_name: st.peer_name } : {}) } : { state: 'idle' }
   }
 
   function integrations() {
@@ -351,7 +445,8 @@ export function createMock(opts: MockOptions = {}) {
     s.remote.paired = pairing.paired
     if (endpoint) s.remote.channel = endpoint.channel
     s.remote.last_packet_age_ms = Date.now() - lastEventAt
-    if (s.remote.last_event) s.remote.last_event.age_ms = Date.now() - lastEventAt
+    if (lastEvent) s.remote.last_event = { ...lastEvent, age_ms: Date.now() - lastEventAt }
+    else if (s.remote.last_event) s.remote.last_event.age_ms = Date.now() - lastEventAt
     const l = s.diagnostics.dispatch_latency
     if (l) s.diagnostics.dispatch_latency = { count: l.count + Math.floor((Date.now() - bootedAt) / 4000), p50_ms: jitter(l.p50_ms), p95_ms: jitter(l.p95_ms), p99_ms: jitter(l.p99_ms) }
     return s
@@ -408,7 +503,7 @@ export function createMock(opts: MockOptions = {}) {
     ['POST', /^\/auth\/logout$/, 'public', (req) => {
       const sid = sessionId(req)
       if (sid) sessions.delete(sid)
-      return { status: 204, headers: { 'set-cookie': 'hubbo_session=; Max-Age=0; Path=/' } }
+      return { status: 204, headers: { 'set-cookie': 'hubbo_session=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict' } }
     }],
 
     ['GET', /^\/status$/, 'token', () => ok(status())],
@@ -558,7 +653,10 @@ export function createMock(opts: MockOptions = {}) {
       } else if (s) return invalid([{ path: '/settings/type', code: 'wrong_type', message: `Settings type must be ${next.settings.type}` }])
       next.revision = commit()
       db.configs.set(c.id, next)
-      if (next.settings.type === 'home_assistant') haOverride = null // the client reconnects with the new settings
+      if (next.settings.type === 'home_assistant') {
+        details = null
+        haOverride = next.settings.has_access_token ? ({ ok: null, reject: 'auth_failed', stall: 'connecting' } as const)[haNextConnect] : null // the client reconnects with the new settings
+      }
       return ok(next)
     }],
     ['POST', /^\/admin\/integrations\/([^/]+)\/discover$/, 'admin', (_r, m) => {
@@ -573,14 +671,40 @@ export function createMock(opts: MockOptions = {}) {
       discovery = { state: 'idle' }
       return ok()
     }],
-    ['POST', /^\/admin\/integrations\/([^/]+)\/pair$/, 'admin', (_r, m) => {
-      if (m[1] !== 'ble') return err(404, 'not_found', 'This integration does not pair')
-      return ok({ state: 'pairing', window_s: 120 }, 202)
+    ['POST', /^\/admin\/integrations\/([^/]+)\/entities\/([^/]+)\/details$/, 'admin', (_r, m) => {
+      if (m[1] !== 'ha_main') return err(404, 'not_found', 'Only Home Assistant has entities')
+      const entityId = decodeURIComponent(m[2]!)
+      if (!haEntityIdOk(entityId)) return invalid([{ path: '/entity_id', code: 'pattern', message: 'Not a media_player, light or switch entity id' }])
+      if (integrationState('ha_main') !== 'connected') return err(503, 'integration_unavailable', 'Home Assistant is not connected')
+      // One at a time: this replaces any earlier request.
+      details = { entityId, startedAt: Date.now(), state: 'running' }
+      return ok({ state: 'running', entity_id: entityId } satisfies EntityDetailsStatus, 202)
+    }],
+    ['GET', /^\/admin\/integrations\/([^/]+)\/entities\/([^/]+)\/details$/, 'admin', (_r, m) => {
+      if (m[1] !== 'ha_main') return err(404, 'not_found', 'Only Home Assistant has entities')
+      return ok(entityDetails(decodeURIComponent(m[2]!)))
+    }],
+    ['GET', /^\/admin\/integrations\/([^/]+)\/pair$/, 'admin', (_r, m) => {
+      const st = bleSettings(m[1]!)
+      return st ? ok(blePairStatus(st)) : err(404, 'not_found', 'This integration does not pair')
+    }],
+    ['POST', /^\/admin\/integrations\/([^/]+)\/pair$/, 'admin', (req, m) => {
+      const st = bleSettings(m[1]!)
+      if (!st) return err(404, 'not_found', 'This integration does not pair')
+      const raw = req.query.get('window_s')
+      const windowS = raw === null ? BLE_PAIR_WINDOW_S : /^\d+$/.test(raw) ? Number(raw) : NaN
+      if (!(windowS >= BLE_PAIR_WINDOW_MIN_S && windowS <= BLE_PAIR_WINDOW_MAX_S)) return invalid([{ path: '/window_s', code: 'param_out_of_range', message: `window_s must be ${BLE_PAIR_WINDOW_MIN_S} to ${BLE_PAIR_WINDOW_MAX_S}` }])
+      if (blePairStatus(st).state === 'pairing') return err(409, 'busy', 'A pairing window is already open')
+      // A new bond replaces the old one.
+      st.bonded = false
+      delete st.peer_name
+      blePair = { state: 'pairing', endsAt: Date.now() + windowS * 1000 }
+      return ok({ state: 'pairing', window_s: windowS } satisfies PairingStatus, 202)
     }],
     ['DELETE', /^\/admin\/integrations\/([^/]+)\/pair$/, 'admin', (_r, m) => {
-      const c = db.configs.get(m[1]!)
-      if (c?.settings.type !== 'ble_hid') return err(404, 'not_found', 'This integration does not pair')
-      const st = mut(c.settings)
+      const st = bleSettings(m[1]!)
+      if (!st) return err(404, 'not_found', 'This integration does not pair')
+      blePair = { state: 'idle' }
       st.bonded = false
       delete st.peer_name
       return ok()
@@ -588,13 +712,18 @@ export function createMock(opts: MockOptions = {}) {
 
     ['POST', /^\/admin\/devices$/, 'admin', (req) => {
       const b = req.body as DeviceRegister
+      // Like the hub: only DeviceRegister's fields (a client-sent `ha_capabilities` is refused).
+      const extra = Object.keys(b ?? {}).filter((k) => !['name', 'integration_id', 'kind', 'provider'].includes(k))
+      if (extra.length) return invalid(extra.map((k) => ({ path: `/${k}`, code: 'unknown_field' as const, message: `Unknown field ${k}` })))
       if (!b?.name?.trim()) return invalid([{ path: '/name', code: 'required', message: 'Name is required' }])
       if (db.devices.length >= 64) return err(409, 'limit_reached', 'At most 64 devices')
       const p = b.provider
+      let hc: EntityWithCommands | null = null
       if (p?.type === 'home_assistant') {
         if (integrationState('ha_main') === 'connected' && b.integration_id !== 'ha_main') return invalid([{ path: '/integration_id', code: 'integration_mismatch', message: 'Home Assistant entities belong to ha_main' }])
         const c = haEntity(p.entity_id)
         if ('status' in c) return c
+        hc = c
       } else if (b.provider?.type !== 'ble_hid' || b.integration_id !== 'ble') return invalid([{ path: '/provider', code: 'integration_mismatch', message: 'Provider does not belong to that integration' }])
       let id = `dev_${slug(b.name)}`
       while (db.devices.some((d) => d.id === id)) id = `dev_${slug(b.name).slice(0, 20)}_${rand36(3)}`
@@ -606,7 +735,7 @@ export function createMock(opts: MockOptions = {}) {
       // Capabilities: reuse a fixture device of the same kind/integration, filtered to the discovered command IDs.
       const like = db.devices.find((x) => x.id !== id && x.integration_id === d.integration_id && x.kind === d.kind) ?? db.devices.find((x) => x.id !== id && x.integration_id === d.integration_id)
       const base = like ? db.capabilities.get(like.id)!.commands : []
-      db.capabilities.set(id, { device_id: id, integration_id: d.integration_id, commands: cand ? haCommands(cand) : base })
+      db.capabilities.set(id, { device_id: id, integration_id: d.integration_id, commands: hc ? haCommands(hc) : base })
       return { status: 201, body: d, headers: { location: `/api/v1/devices/${id}` } }
     }],
     ['PUT', /^\/admin\/devices\/([^/]+)$/, 'admin', (req, m) => {
@@ -627,9 +756,20 @@ export function createMock(opts: MockOptions = {}) {
         if (p.type === 'home_assistant') {
           const c = haEntity(p.entity_id, d.id)
           if ('status' in c) return c
+          // Like the hub: the whole config must stay valid with the entity's commands (paths by activity index).
+          const commands = haCommands(c)
+          const cat = catalog()
+          cat.capabilities = new Map(cat.capabilities).set(d.id, { device_id: d.id, integration_id: d.integration_id, commands })
+          const broken = db.activities.flatMap((a, ai) => validateActivity(a, cat).errors.map((x) => ({ ...x, path: `/activities/${ai}${x.path}` })))
+          const global: ValidationIssue[] = []
+          validateBindings(db.globalBindings.bindings, cat, global, [])
+          // The hub's shape: /global_bindings/<trigger>/<i>/… (no /bindings level).
+          broken.push(...global.map((x) => ({ ...x, path: `/global_bindings${x.path.replace(/^\/bindings/, '')}` })))
+          if (broken.length) return invalid(broken, 'The device is invalid')
           db.discover.candidates.forEach((x) => x.registered_device_id === d.id && (x.registered_device_id = null))
-          c.registered_device_id = d.id
-          db.capabilities.set(d.id, { device_id: d.id, integration_id: d.integration_id, commands: haCommands(c) })
+          const cand = haCandidate(p.entity_id)
+          if (cand) cand.registered_device_id = d.id
+          db.capabilities.set(d.id, { device_id: d.id, integration_id: d.integration_id, commands })
           availability = 'available'
         }
       }
@@ -789,22 +929,65 @@ export function createMock(opts: MockOptions = {}) {
       const ms = Number(req.query.get('ms'))
       if (!(ms >= 0)) return invalid([{ path: '/ms', code: 'wrong_type', message: 'ms must be a number' }])
       if (pairing.startedAt !== undefined) pairing.startedAt -= ms
+      if (blePair.state === 'pairing') blePair.endsAt -= ms
+      if (details) details.startedAt -= ms
       if (discovery.startedAt !== undefined) discovery.startedAt -= ms
       return ok()
     }],
     // The HA client's state, as the fake HA server would drive it (cleared by the next settings change).
-    // Like hub-sim's /sim/ha: ?remove=<entity_id> (HA forgets it) or ?state=<client state>.
+    // Like hub-sim's /sim/ha: ?remove=<entity_id> (HA forgets it), ?auth=reject|ok and
+    // ?connect=stall|ok (how the next connect after a save goes; reachable= is accepted and ignored), or ?state=<client state>.
+    // Mock-only: ?rename=<entity_id>&to=<new id>, an entity renamed in HA (its old id is gone).
     ['POST', /^\/__mock\/ha$/, 'public', (req) => {
-      const remove = req.query.get('remove')
+      const remove = req.query.get('remove') ?? req.query.get('rename')
       if (remove) {
+        const to = req.query.get('to')
         removedEntities.add(remove)
-        db.discover.candidates = db.discover.candidates.filter((c) => c.provider.entity_id !== remove)
+        if (to) {
+          // The same entity under a new id: its commands, services and device link move with it.
+          const own = entityCommands.get(remove)
+          if (own) entityCommands.set(to, own)
+          const extras = entityExtras.get(remove)
+          if (extras) entityExtras.set(to, extras)
+          renamedFrom.set(to, remove)
+        }
+        db.discover.candidates = db.discover.candidates.flatMap((c) => (c.provider.entity_id !== remove ? [c] : to ? [{ ...c, provider: { ...c.provider, entity_id: to }, registered_device_id: null }] : []))
+        return ok()
+      }
+      const auth = req.query.get('auth')
+      const connect = req.query.get('connect')
+      if (auth || connect) {
+        haNextConnect = connect === 'stall' ? 'stall' : auth === 'reject' ? 'reject' : 'ok'
         return ok()
       }
       const st = req.query.get('state') as IntegrationState | null
       if (!st || !['connecting', 'authenticating', 'connected', 'auth_failed', 'unreachable'].includes(st)) return invalid([{ path: '/state', code: 'wrong_type', message: 'state must be connecting, authenticating, connected, auth_failed or unreachable' }])
       haOverride = st === 'connected' ? null : st
       return ok()
+    }],
+    // Like hub-sim's /sim/remote/<button>/<press|release|tap>, but it only records the packet (the
+    // mock doesn't run bindings): "last press" becomes now.
+    ['POST', /^\/__mock\/remote\/([a-z0-9_]+)\/(press|release|tap)$/, 'public', (_req, m) => {
+      const action = m[2]
+      lastEvent = { button: m[1] as ButtonId, kind: action === 'press' ? 'down' : action === 'release' ? 'up' : 'tap' }
+      lastEventAt = Date.now()
+      return ok()
+    }],
+    // Like hub-sim's /sim/ble/bonded?peer=: a host bonds during the open window (or anytime: it's a test).
+    ['POST', /^\/__mock\/ble\/bonded$/, 'public', (req) => {
+      const st = bleSettings('ble')!
+      st.bonded = true
+      const peer = req.query.get('peer')
+      if (peer) st.peer_name = peer.slice(0, 48)
+      else delete st.peer_name
+      blePair = { state: 'idle' }
+      return ok()
+    }],
+    ['POST', /^\/__mock\/ble$/, 'public', (req) => {
+      const v = req.query.get('connected')
+      if (v !== '0' && v !== '1') return invalid([{ path: '/connected', code: 'wrong_type', message: 'connected must be 0 or 1' }])
+      bleDown = v === '0'
+      return ok({ connected: !bleDown })
     }],
     // Like hub-sim's POST /sim/storage?health=…: the store goes down or comes back at runtime.
     ['POST', /^\/__mock\/storage$/, 'public', (req) => {
@@ -821,8 +1004,20 @@ export function createMock(opts: MockOptions = {}) {
     if (base > 0) await new Promise((r) => setTimeout(r, base * (0.5 + rand())))
     // Per-route limits (x-hubbo-max-body): restore takes a whole config; firmware images are streamed.
     const limit = req.path.startsWith('/admin/restore') ? RESTORE_MAX_BODY : MAX_BODY
-    if (req.rawBody && req.rawBody.byteLength > limit && !req.path.startsWith('/admin/firmware')) {
+    const firmware = req.path.startsWith('/admin/firmware')
+    if (req.rawBody && req.rawBody.byteLength > limit && !firmware) {
       return err(413, 'payload_too_large', `Request bodies are limited to ${limit / 1024} KiB`)
+    }
+    // The Node adapter leaves parsing to here, after the size check (unit tests pass `body` already parsed).
+    if (req.body === undefined && req.rawBody?.byteLength && !firmware) {
+      if (!/^application\/json\b/i.test(req.headers['content-type'] ?? '')) return err(415, 'unsupported_media_type', 'Send the body as application/json')
+      try {
+        req = { ...req, body: JSON.parse(new TextDecoder().decode(req.rawBody)) }
+      } catch {
+        return err(400, 'malformed_json', 'Body is not valid JSON')
+      }
+      const max = req.path === '/admin/restore' ? MAX_FILE_DEPTH : MAX_JSON_DEPTH
+      if (depth(req.body) > max) return err(400, 'malformed_json', `JSON nesting is limited to ${max} levels`)
     }
     const hit = routes.find(([method, re]) => method === req.method && re.test(req.path))
     if (!hit) {
@@ -845,7 +1040,7 @@ export function createMock(opts: MockOptions = {}) {
       return err(403, 'forbidden', 'Origin does not match this hub')
     }
     if (role === 'token' || role === 'admin') {
-      if (!adminCreated) return err(409, 'setup_required', 'Finish first-run setup')
+      if (!adminCreated) return err(401, 'unauthenticated', 'Finish first-run setup first') // like the hub: setup_required is only a session field
       if (!sid) return err(401, 'unauthenticated', 'Sign in to continue')
       if (req.method !== 'GET' && req.headers[CSRF_HEADER] !== sessions.get(sid)!.csrf) return err(403, 'csrf_failed', 'Missing or wrong X-Hubbo-CSRF header')
     }
