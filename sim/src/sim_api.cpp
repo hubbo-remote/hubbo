@@ -34,9 +34,11 @@ api::HubInfo hubInfo(bool authEnabled) {
 api::ApiContext context(auth::Credentials &credentials, auth::SessionStore &sessions,
                         auth::LoginRateLimiter &limiter, const api::Clock &clock, config::ConfigService &config,
                         api::Runtime &runtime, bool authEnabled, api::RemotePort *remote,
-                        integrations::HomeAssistantClient *homeAssistant, auth::SecretStore *secrets) {
+                        api::BlePairingPort *blePairing, integrations::HomeAssistantClient *homeAssistant,
+                        auth::SecretStore *secrets) {
     api::ApiContext c{credentials, sessions, limiter, clock, config, runtime, hubInfo(authEnabled), nullptr, remote,
                       homeAssistant, secrets, nullptr};
+    c.blePairing = blePairing;
     return c;
 }
 
@@ -64,7 +66,7 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
       clock_(runner.hub()),
       runtime_(runner.hub()),
       api_(context(credentials_, sessions_, loginLimiter_, clock_, runner.hub().configService(), runtime_, authEnabled,
-                   &runner.hub().remote(), &runner.hub().haClient(), secrets)),
+                   &runner.hub().remote(), &runner.hub().blePairing(), &runner.hub().haClient(), secrets)),
       productionAuth_(credentials_, sessions_, clock_),
       noAuth_(credentials_) {
     router_.setAllowedHosts({"localhost", "127.0.0.1", "[::1]"});
@@ -103,9 +105,32 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
         }
         const std::string remove(http::queryValue(r.query, "remove"));
         if (!remove.empty()) hub.haServer().removeEntity(remove);
+        // auth=reject: auth_failed; connect=stall: held in connecting. Reconnect
+        // so the change shows at once (auth_failed never retries by itself).
+        const std::string auth = http::queryValue(r.query, "auth");
+        const std::string connect = http::queryValue(r.query, "connect");
+        if (!auth.empty()) hub.haServer().rejectAuth = auth == "reject";
+        if (!connect.empty()) hub.haServer().stallConnect = connect == "stall";
+        if (!auth.empty() || !connect.empty()) hub.haClient().reconnect();
         hub.serviceIntegrations();
         out.json(200, "{\"state\":" + jsonString(integrations::haStateName(hub.haClient().state())) +
                           ",\"calls\":" + std::to_string(hub.haServer().calls().size()) + "}");
+    });
+
+    host(Method::Post, "/sim/ble", [this](auto &r, auto &, auto &out) {
+        const std::string connected = http::queryValue(r.query, "connected");
+        if (connected != "0" && connected != "1") {
+            http::jsonError(out, 400, "bad_request", "connected must be 0 or 1");
+            return;
+        }
+        runner_.runLine(connected == "1" ? "ble connected" : "ble disconnected");
+        out.json(200, std::string("{\"connected\":") + (connected == "1" ? "true" : "false") + "}");
+    });
+
+    // A host bonds during the open pairing window (POST .../ble/pair).
+    host(Method::Post, "/sim/ble/bonded", [this](auto &r, auto &, auto &out) {
+        runner_.hub().blePairing().bonded(http::queryValue(r.query, "peer"));
+        out.json(200, "{}");
     });
 
     host(Method::Post, "/sim/remote/{button}/{action}", [this](auto &, auto &p, auto &out) {

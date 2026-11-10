@@ -39,6 +39,12 @@ api::RuntimeSnapshot SimRuntime::snapshot() const {
     s.ip = "127.0.0.1";
     s.remote.paired = true;
     s.remote.held = hub_.input().held();
+    s.remote.lastPacketAgeMs = hub_.lastPacketAgeMs();
+    if (const remote::RemoteEvent *event = hub_.lastEvent()) {
+        s.remote.hasLastEvent = true;
+        s.remote.lastEvent = *event;
+        s.remote.lastEventAgeMs = hub_.nowMs() - event->atMs;
+    }
     s.remote.badChecksums = hub_.input().badChecksumCount();
     s.remote.unknownCodes = hub_.input().unknownCodeCount();
     s.diagnostics.queueOverflows = engine.executor().stats().rejected;
@@ -52,10 +58,18 @@ const char *SimRuntime::integrationState(std::string_view integrationId) const {
         return integrations::haIntegrationState(hub_.haClient(), *integration);
     }
     if (!integration->enabled) return "disabled";
-    bool up = true;
-    if (integration->type == kBleHidType) up = hub_.hid().connected();
-    if (integration->type == kHomeAssistantType) up = hub_.homeAssistant().available();
-    return up ? "connected" : "disconnected";
+    if (integration->type == kBleHidType) {
+        // As the board's BleHid: the bond (the pairing port) first, then the link.
+        switch (hub_.blePairing().status().state) {
+            case api::BlePairState::NotReady: return "error";
+            case api::BlePairState::Pairing: return "connecting";
+            case api::BlePairState::Paired: return hub_.hid().connected() ? "connected" : "disconnected";
+            case api::BlePairState::Idle:
+            case api::BlePairState::Failed: return "not_configured";
+        }
+    }
+    if (integration->type == kHomeAssistantType && !hub_.homeAssistant().available()) return "disconnected";
+    return "connected";
 }
 
 const char *SimRuntime::deviceAvailability(const DeviceSpec &device) const {

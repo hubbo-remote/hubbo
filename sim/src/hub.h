@@ -31,6 +31,7 @@
 #include "hubbo/engine/active_persister.h"
 #include "hubbo/domain/config.h"
 #include "hubbo/engine/compiler.h"
+#include "hubbo/api/ble_pairing_port.h"
 #include "hubbo/api/remote_port.h"
 #include "hubbo/engine/engine.h"
 #include "hubbo/integrations/ha_adapter.h"
@@ -44,7 +45,7 @@ struct LogLine {
     std::string text;
 };
 
-class SimHub : public EngineObserver {
+class SimHub : public EngineObserver, private remote::EventSink {
 public:
     // Config and the active activity persist as records ("config",
     // "active_activity") in `storage` (e.g. a StdioStorage --data dir), or
@@ -74,7 +75,8 @@ public:
     // Factory reset in place: fixtures-style config replaces everything,
     // nothing is active, fake faults are cleared (the fake HA back to its
     // entities, the client reconnected), the BLE host reconnects, the remote
-    // radio is unpaired.
+    // radio is unpaired, BLE is bonded to kBondedHost again, no button stays
+    // held.
     // Persisted like any edit. References to the hub stay valid.
     ValidationReport factoryReset(const ConfigSpec &config);
     config::ConfigService &configService() { return service_; }
@@ -104,6 +106,8 @@ public:
     FakeHaTransport &haTransport() { return ha_.transport; }
     // The remote radio (the API's RemotePort); its scan clock is hub time.
     api::SimulatedRemote &remote() { return remote_; }
+    api::SimulatedBlePairing &blePairing() { return blePairing_; }
+    static constexpr const char *kBondedHost = "Apple TV";  // BLE's bond at start and after a reset
     // One turn of the integration task (transport, client, adapter) at the
     // current time, repeated while the client has work (discovery parse
     // steps). advance() runs it every ms.
@@ -111,6 +115,10 @@ public:
     RecordingHidTransport &hid() { return fakes_.hid; }
     integrations::BleHidAdapter &ble() { return fakes_.ble; }
     remote::RemoteInput &input() { return input_; }
+    // What the radio saw, as the board reports it in /remote/status: when
+    // the last payload arrived (-1: never) and the last remote event.
+    int64_t lastPacketAgeMs() const { return anyPacket_ ? static_cast<int64_t>(nowMs_ - lastPacketMs_) : -1; }
+    const remote::RemoteEvent *lastEvent() const { return hasLastEvent_ ? &lastEvent_ : nullptr; }
 
     std::vector<LogLine> &commands() { return commands_; }
     std::vector<LogLine> &events() { return events_; }
@@ -125,9 +133,13 @@ public:
     void onTransitionRejected(ErrorCode error, const char *activityId, uint32_t nowMs) override;
     void onConfigChanged(uint32_t revision, uint32_t nowMs) override;
     void onUnbound(const remote::RemoteEvent &event) override;
+    // remote::EventSink, as the firmware's EventTap: remember the event,
+    // then hand it to the engine.
+    void onRemoteEvent(const remote::RemoteEvent &event) override;
 
 private:
     void sendGroup(uint8_t group);
+    void resetBle();  // a fresh pairing port, bonded to kBondedHost
     void logCommand(std::string text);
     void logEvent(std::string text);
 
@@ -142,10 +154,11 @@ private:
     bool realHomeAssistant_;
     RealHa ha_;
     api::SimulatedRemote remote_;
+    api::SimulatedBlePairing blePairing_;
     FakeAdapters fakes_;
     Engine::Store store_;
     Engine engine_{store_, fakes_.set};
-    remote::RemoteInput input_{engine_};
+    remote::RemoteInput input_{*this};  // events go through onRemoteEvent() to the engine
     storage::MemoryStorage memory_;
     storage::Storage *storage_;
     storage::SlotRecordStore records_;
@@ -157,6 +170,9 @@ private:
 
     uint32_t nowMs_ = 0;
     uint32_t lastPacketMs_ = 0;
+    bool anyPacket_ = false;
+    bool hasLastEvent_ = false;
+    remote::RemoteEvent lastEvent_{};
     remote::ButtonSet held_ = 0;
     std::vector<LogLine> commands_;
     std::vector<LogLine> events_;

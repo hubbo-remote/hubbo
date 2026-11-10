@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <random>
 #include <sstream>
 
@@ -329,6 +330,79 @@ TEST(SimApi, RemotePairScanIsDrivenFromSimRoutes) {
     EXPECT_EQ(runner.hub().remote().status().scan, api::ScanState::TimedOut);
 }
 
+TEST(SimApi, SimulatedPressesShowInRemoteStatusLikeRadioPackets) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials);
+    const auto status = [&] {
+        const http::Response r = call(api, http::Method::Get, "/api/v1/remote/status");
+        EXPECT_EQ(r.status, 200) << r.body;
+        return r.body;
+    };
+    std::string s = status();
+    EXPECT_NE(s.find(R"("last_packet_age_ms":null)"), std::string::npos) << s;  // no packet yet
+    EXPECT_NE(s.find(R"("last_event":null)"), std::string::npos) << s;
+
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/advance", "ms=1000").status, 200);
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/remote/left/tap").status, 200);
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/advance", "ms=250").status, 200);
+    s = status();
+    EXPECT_NE(s.find(R"("last_packet_age_ms":250)"), std::string::npos) << s;
+    EXPECT_NE(s.find(R"("last_event":{"button":"left","kind":"tap","age_ms":)"), std::string::npos) << s;
+    EXPECT_NE(s.find(R"("held":[])"), std::string::npos) << s;
+
+    // A press without a release holds (the thumb stays down) until a reset.
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/remote/down/press").status, 200);
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/advance", "ms=500").status, 200);
+    s = status();
+    EXPECT_NE(s.find(R"("held":["down"])"), std::string::npos) << s;
+    EXPECT_NE(s.find(R"("last_packet_age_ms":)"), std::string::npos) << s;
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/reset").status, 200);
+    s = status();
+    EXPECT_NE(s.find(R"("held":[])"), std::string::npos) << s;
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/advance", "ms=1000").status, 200);
+    EXPECT_NE(status().find(R"("held":[])"), std::string::npos);  // and doesn't come back
+}
+
+TEST(SimApi, BlePairingIsDrivenFromSimRoutes) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials);
+    api::SimulatedBlePairing &ble = runner.hub().blePairing();
+    const auto state = [&] { return std::string(SimRuntime(runner.hub()).integrationState("ble")); };
+    // Bonded to the fixture host from the start.
+    EXPECT_EQ(ble.status().state, api::BlePairState::Paired);
+    EXPECT_EQ(state(), "connected");
+    ASSERT_EQ(ble.forget(), api::BlePairingResult::Accepted);
+    EXPECT_EQ(state(), "not_configured");
+    EXPECT_FALSE(runner.hub().hid().connected());  // no bond, no host
+
+    // A host bonds during the window.
+    ASSERT_EQ(ble.startPairing(api::kBlePairingMinWindowMs), api::BlePairingResult::Accepted);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/advance", "ms=1000").status, 200);
+    EXPECT_EQ(ble.status().state, api::BlePairState::Pairing);
+    EXPECT_EQ(state(), "connecting");
+    EXPECT_EQ(ble.status().windowRemainingMs, api::kBlePairingMinWindowMs - 1000);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble/bonded", "peer=AppleTV").status, 200);
+    EXPECT_EQ(ble.status().state, api::BlePairState::Paired);
+    EXPECT_EQ(ble.status().peerName, "AppleTV");
+    EXPECT_EQ(state(), "connected");
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble", "connected=0").status, 200);  // only the link
+    EXPECT_EQ(state(), "disconnected");
+    EXPECT_EQ(ble.status().state, api::BlePairState::Paired);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble", "connected=1").status, 200);
+
+    // No host: the window runs out on the hub clock.
+    ASSERT_EQ(ble.startPairing(api::kBlePairingMinWindowMs), api::BlePairingResult::Accepted);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/advance", "ms=30000").status, 200);
+    EXPECT_EQ(ble.status().state, api::BlePairState::Failed);
+    EXPECT_EQ(state(), "not_configured");
+
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/reset").status, 200);
+    EXPECT_EQ(runner.hub().blePairing().status().state, api::BlePairState::Paired);
+    EXPECT_EQ(state(), "connected");
+}
+
 TEST(SimApi, TheStoredTokenConnectsTheFakeHomeAssistant) {
     SimAuth a;
     ASSERT_TRUE(a.secrets.write(api::kHaTokenKey, "fake-ha-token"));
@@ -356,11 +430,13 @@ protected:
     }
     SimHub &hub() { return runner->hub(); }
     // An HA discovery through the API, run to its end.
-    void discover() {
+    http::Response discover() {
         EXPECT_EQ(call(*api, http::Method::Post, "/api/v1/admin/integrations/ha_main/discover").status, 202);
-        const http::Response r = call(*api, http::Method::Get, "/api/v1/admin/integrations/ha_main/discover");
+        http::Response r = call(*api, http::Method::Get, "/api/v1/admin/integrations/ha_main/discover");
         EXPECT_NE(r.body.find("\"done\""), std::string::npos) << r.body;
+        return r;
     }
+    std::string state(const char *integration) { return SimRuntime(hub()).integrationState(integration); }
     http::Response volume(const char *level = "0.3") {
         const std::string body = std::string(R"({"params":{"level":)") + level + "}}";
         return call(*api, http::Method::Post, "/api/v1/devices/dev_denon/commands/media_player.volume_set/execute", "",
@@ -375,7 +451,7 @@ protected:
 TEST_F(RealHa, ActionsGoThroughTheClientToTheFakeServer) {
     ASSERT_TRUE(hub().realHomeAssistant());
     ASSERT_EQ(hub().haClient().state(), integrations::HaState::Connected);
-    EXPECT_STREQ(SimRuntime(hub()).integrationState("ha_main"), "connected");
+    EXPECT_EQ(state("ha_main"), "connected");
     http::Response r = volume();
     EXPECT_EQ(r.status, 200) << r.body;
     EXPECT_NE(r.body.find("\"accepted\""), std::string::npos) << r.body;
@@ -405,7 +481,7 @@ TEST_F(RealHa, DownRefusedAndUnansweredCallsFail) {
 
     // HA down: adapter_unavailable at once, and the integration says so.
     call(*api, http::Method::Post, "/sim/ha", "reachable=0");
-    EXPECT_STRNE(SimRuntime(hub()).integrationState("ha_main"), "connected");
+    EXPECT_NE(state("ha_main"), "connected");
     const uint32_t before = hub().nowMs();
     r = volume();
     EXPECT_NE(r.body.find("adapter_unavailable"), std::string::npos) << r.body;
@@ -457,6 +533,82 @@ TEST_F(RealHa, VerifyTlsReachesTheTransport) {
     EXPECT_EQ(hub().haClient().state(), integrations::HaState::Connected);
     EXPECT_FALSE(hub().haTransport().lastOptions.verifyTls);
     EXPECT_GT(hub().haTransport().connectAttempts, before);
+}
+
+TEST_F(RealHa, TheFakeHomeAssistantLooksReal) {
+    // Discovery: real names, platforms and player attributes.
+    const http::Response r = discover();
+    EXPECT_NE(r.body.find("\"platform\":\"denonavr\""), std::string::npos) << r.body;
+    EXPECT_NE(r.body.find("\"platform\":\"sonos\""), std::string::npos) << r.body;
+    EXPECT_NE(r.body.find("Family Room Denon"), std::string::npos) << r.body;
+    EXPECT_NE(r.body.find(FakeHaServer::kYamlOnlyEntity), std::string::npos) << r.body;  // pickable
+    EXPECT_EQ(hub().haServer().subscriptions(), 0u);
+
+    // Commands, integration services included, one per selector kind; a
+    // text field skips its service.
+    IntegrationAdapter *ha = hub().adapters().at(hub().adapters().find("ha_main"));
+    ConfigSpec c;
+    c.devices = {sim::haDevice("dev_receiver", "Receiver", "receiver", "media_player.family_room_denon"),
+                 sim::haDevice("dev_speaker", "Speaker", "speaker", "media_player.family_room_sonos"),
+                 sim::haDevice("dev_tv", "TV", "tv", "media_player.family_room_lg_tv"),
+                 sim::haDevice("dev_light", "Light", "light", "light.family_room")};
+    addFakeHaSnapshots(&c, hub().haServer());
+    // The first param's type; nullopt if the device lacks the command.
+    const auto firstParam = [&](const DeviceSpec &d, const char *command) -> std::optional<ParamType> {
+        const CommandCatalog catalog = ha->commandsFor(d);
+        const int i = catalog.find(command);
+        if (i < 0) return std::nullopt;
+        EXPECT_GT(catalog.items[i].paramCount, 0) << command;
+        return catalog.items[i].paramCount > 0 ? catalog.items[i].params[0].type : ParamType::ActivityRef;
+    };
+    const auto has = [&](const DeviceSpec &d, const char *command) { return ha->commandsFor(d).find(command) >= 0; };
+    EXPECT_EQ(firstParam(c.devices[0], "denonavr.set_dynamic_eq"), ParamType::Bool);
+    EXPECT_TRUE(has(c.devices[0], "denonavr.update_audyssey"));
+    EXPECT_FALSE(has(c.devices[0], "denonavr.get_command"));  // a text field
+    EXPECT_EQ(firstParam(c.devices[0], "media_player.select_source"), ParamType::Enum);
+    EXPECT_EQ(firstParam(c.devices[1], "sonos.set_sleep_timer"), ParamType::Int);
+    EXPECT_EQ(firstParam(c.devices[1], "sonos.set_option"), ParamType::Bool);
+    EXPECT_FALSE(has(c.devices[1], "denonavr.set_dynamic_eq"));  // not its integration
+    EXPECT_EQ(firstParam(c.devices[2], "webostv.select_sound_output"), ParamType::Enum);
+    EXPECT_TRUE(has(c.devices[3], "light.turn_on"));
+    EXPECT_TRUE(has(c.devices[3], "light.turn_off"));
+    EXPECT_EQ(firstParam(c.devices[3], "light.brightness_step"), ParamType::Int);
+}
+
+TEST_F(RealHa, EveryDashboardStateCanBeProduced) {
+    const auto post = [&](const char *path, const char *query) { return call(*api, http::Method::Post, path, query).status; };
+    EXPECT_EQ(state("ha_main"), "connected");
+    EXPECT_EQ(state("ble"), "connected");
+
+    EXPECT_EQ(post("/sim/ha", "connect=stall"), 200);
+    hub().advance(5000);
+    EXPECT_EQ(state("ha_main"), "connecting");
+    EXPECT_EQ(post("/sim/ha", "connect=ok"), 200);
+    EXPECT_EQ(state("ha_main"), "connected");
+
+    EXPECT_EQ(post("/sim/ha", "auth=reject"), 200);
+    hub().advance(5000);
+    EXPECT_EQ(state("ha_main"), "auth_failed");
+    EXPECT_EQ(post("/sim/ha", "auth=ok"), 200);
+    EXPECT_EQ(state("ha_main"), "connected");
+
+    EXPECT_EQ(post("/sim/ha", "reachable=0"), 200);
+    EXPECT_EQ(state("ha_main"), "unreachable");
+
+    EXPECT_EQ(post("/sim/ble", "connected=0"), 200);
+    EXPECT_EQ(state("ble"), "disconnected");
+    EXPECT_EQ(post("/sim/ble", "connected=maybe"), 400);
+    // What the dashboard reads.
+    const std::string status = call(*api, http::Method::Get, "/api/v1/status").body;
+    EXPECT_NE(status.find(R"({"id":"ha_main","type":"home_assistant","state":"unreachable")"), std::string::npos) << status;
+
+    // /sim/reset brings all of it back.
+    post("/sim/ha", "auth=reject");
+    post("/sim/ha", "connect=stall");
+    EXPECT_EQ(post("/sim/reset", ""), 200);
+    hub().serviceIntegrations();
+    EXPECT_EQ(state("ha_main"), "connected");
+    EXPECT_EQ(state("ble"), "connected");
 }
 
 namespace {
