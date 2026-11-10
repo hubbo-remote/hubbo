@@ -1,7 +1,7 @@
 # hubbo-firmware: working notes
 
-Current as of the Phase 4 gate (passed), on branch `phase-4`; Phase 3 merged. Not a log: state,
-numbers and traps. Design: `docs/design/phase3-home-assistant.md`.
+Current as of Phase 5 in progress, on branch `phase-5`; Phases 3 and 4 merged. Not a log: state,
+numbers and traps. Design: `docs/design/phase5-appliance.md`.
 
 ## State
 
@@ -54,7 +54,8 @@ numbers and traps. Design: `docs/design/phase3-home-assistant.md`.
     or forget (console too). `pair stop` reads Idle.
   - `forget()` clears `secured`, so a forgotten host isn't Connected while its disconnect lands.
 - Gate wipes: `HUBBO_WIPE_ON_BOOT=1` in the build environment makes `scripts/wipe_on_boot.py`
-  define `HUBBO_WIPE_ON_BOOT`, which compiles in `wipeForGate()` early in `setup()`.
+  define `HUBBO_WIPE_ON_BOOT`, which makes `factory_reset::wipeIfRequested()` wipe on every boot,
+  early in `setup()` (the same wipe the Phase 5 factory reset uses).
   - It erases all NVS, then calls `flash_fs::requestFormatAtBoot()` (the `fs format` path), so
     `mountFilesystem()` formats at once. It logs `WIPE: factory reset build; ...`.
   - OTA survives, because its password hash is compiled in.
@@ -76,6 +77,82 @@ numbers and traps. Design: `docs/design/phase3-home-assistant.md`.
 - The HA client has its own clock (`haNowMs`), and the service reads it after
   `transport.poll()`. A connect blocks up to 15 s, so a time taken before it made the auth
   deadline stale.
+
+## Phase 5 (branch `phase-5`, in progress; design `docs/design/phase5-appliance.md`)
+
+User decisions: **no rollback** (no `verifyRollbackLater()`, no health timer, no verifying state;
+Arduino marks the image valid before `setup()`). Logging in again after an update and about 30 s
+of remote lag during the write are accepted.
+
+- Image marker: `HUBBO_FW_VERSION` in the build environment (passed by docker-compose) replaces git
+  describe, with the same sanitizing; gate builds use it to make two images that differ in version.
+  `scripts/image_marker.py` generates `$BUILD_DIR/image_gen/image_marker.cpp` (rewritten
+  only when `git describe --tags --always --dirty` changes) with `HUBBO-IMAGE/1
+  board=waveshare_esp32_s3_eth layout=1 version=...`. Board is `board::kName`, with underscores like
+  the API fixtures; the design doc's dashes are wrong. Layout is `HUBBO_PARTITION_LAYOUT` in
+  `board.h`; bump it when the partition table changes. A post-link check fails the build unless the
+  .bin holds exactly one marker. `image::version()` feeds `HubInfo.version` and the banner.
+- `firmware_update.*`: `FirmwareUpdate` implements `api::FirmwareUpdatePort` (core's header, by
+  hubbo-api) and is set as `ApiContext.firmware`. Validation is core's `validateFirmwareImage()`
+  with `EspHash` (`esp_hash.h`: hardware SHA-256 via mbedTLS, now also the global auth hash; HMAC and
+  PBKDF2 stay portable). The order is claim → Busy, slot → Unavailable, validate, PSRAM copy,
+  `esp_ota_begin(OTA_WITH_SEQUENTIAL_WRITES)` (no erase), then the `fw_write` task (core 0, prio 3,
+  4 KB internal stack: flash writes need the cache off). The task writes 4 KB via an internal buffer,
+  `vTaskDelay(1)` per sector, then `esp_ota_end`, set boot, `requestReboot("firmware update")`.
+  Failed errors: write_failed, verify_failed, boot_select_failed, no_memory.
+- Owner flag (`ota::claim/release`): `claim()` refuses everyone once a reboot is pending
+  (`ota::setRebootPending`, set in `setup()`). ArduinoOTA claims around each `handle()` (its
+  whole transfer runs in one call). A web update keeps its claim through the reboot. While Web
+  holds it, the loop skips `handle()` and `ota_watch` drains the packets. The drain stays in the
+  watcher, not the loop: no lwIP calls on the RF loop.
+- BLE: `BlePairingRuntime::publish(nowMs)` reads `BleHid` once, maps the state and caches the peer
+  address (re-read only on a state change). `link()` feeds `EngineRuntime`, which uses core's
+  `ble_state.h`. `RuntimeStatus` no longer carries BLE fields.
+- Auth trim applied: no `clientKey`, no `setAllowedHosts`/static 421, no `loginLimiter`, no
+  `CredentialState::Corrupt`. The body limit is `Router::bodyLimit()` alone (the update route's is
+  the slot size). `statusLine` gained 411, lost 421 and 429. `NvsSecretStore` had no `reload()` or
+  `mediumHealth()` overrides.
+- Factory reset (`factory_reset.*`, the user's decision at the board test; built, not yet on the
+  board): `FactoryReset` implements `api::FactoryResetPort` and is set as `ApiContext.factoryReset`.
+  - `requestFactoryReset()` on httpd: a repeat request returns true. Then it claims
+    `ota::Owner::Reset`, so it's false while an update holds the flag or a reboot is pending. It
+    saves one NVS flag (`hubbo_reset/requested`), calls `requestReboot("factory reset")`, and
+    returns true. The normal reboot path releases keys and the 202 goes out first.
+  - The wipe itself runs at the next boot: `factory_reset::wipeIfRequested()` early in `setup()`,
+    before NVS, the fs or the radio are used. It's the gate wipe: `nvs_flash_erase`, init,
+    `flash_fs::requestFormatAtBoot`. The erase clears the flag.
+  - Why not wipe in the post-response flush job: `pollReboot()`'s 5 s deadline restarts without it,
+    and that would lose an answered reset. The flag also survives a power cut.
+  - `ota_watch` drains OTA packets whenever someone other than ArduinoOTA holds the flag, or a reboot
+    is pending, so the loop never spins on an unanswerable packet.
+  - Board check at the gate: after the reset, the log shows `WIPE: factory reset; ...` and then
+    `flash_fs` formatting on request, and GET /status shows `auth_state` fresh.
+- Loop stats across a restart: every deliberate restart goes through `restartNow()` in main.cpp,
+  which prints the `loop: max gap ...` line and keeps it in RTC no-init memory
+  (`diag::keepLoopStatsAcrossRestart`). At boot, `diag::printPreviousRun()` logs
+  `previous run (restart: <why>): loop: max gap ...` right after the reset reason. A power cycle or
+  a crash has no such line. To measure a web update's write stall: `lat reset`, update, then read
+  `/debug/log` after the reboot (the RAM ring itself doesn't survive a restart).
+- /simplify done (no behaviour change). Both envs build: default 1.87 MB flash, 83.9 KB static
+  RAM; `_ota` 1.90 MB.
+- Skipped from /simplify: handing the transport's body buffer to the writer instead of copying
+  (port change in core; the lead accepted the copy).
+- Validator check against real files: `firmware/.pio/vcheck/` (not in git) builds core's
+  `validateFirmwareImage()` natively and runs it on files. Results: both .bins Accepted with the
+  marker's version; one flipped byte Corrupt; another board WrongBoard; a merged factory image and
+  the bootloader NotAnImage. Rebuild with `g++ -std=c++17 -Icore/include main.cpp
+  core/src/api/firmware_update_port.cpp core/src/auth/crypto.cpp`.
+- Pending: the board test (an update from Settings, wrong files refused, the per-sector loop stall
+  during a write, the remote afterwards). Don't flash until the lead says so.
+- Facts from the feasibility check:
+  - Rollback is on in the prebuilt bootloader, unused.
+  - Partitions: app0 0x10000 and app1 0x650000, 0x640000 each.
+  - The lib builder's `esp_app_desc_t` doesn't identify Hubbo, hence the marker.
+  - A merged factory .bin has no app-desc magic at offset 32.
+  - Flash ops stall **both** cores, the loop included (no auto-suspend, no PSRAM XIP).
+    `YIELD_DURING_ERASE` is on. A web update's per-sector erase stall isn't measured yet (the board
+    test will measure it).
+- The transport buffer plus the copy means an image over about 3 MB gets Unavailable. Ours is 1.9 MB.
 
 ## Task layout (priorities)
 
@@ -113,9 +190,17 @@ numbers and traps. Design: `docs/design/phase3-home-assistant.md`.
   to leave it). That sets the floor: about 6 ms to connect, 15 ms to the first byte.
 - DNS through DHCP: 7–16 ms. An unresolvable `.local` name takes about 7 s (HA task only).
 
+- Config save (Phase 5, measured by the lead): `lat reset`, five `PUT /global-bindings` saves
+  (revisions 15–19, about 70 ms each), then `lat`: loop max gap 2077 us, 0 over 5 ms. A LittleFS
+  config save costs the loop about 2 ms, about the same as the idle `printStatus()` peak.
+
 ## Gotchas
 
 - Toolchain: Docker only.
+  - `bin/hubbo fw run` rebuilds web/dist first when it's stale, so a broken web build blocks the
+    firmware build. To build anyway against the existing dist, keep both locks:
+    `flock build/firmware.lock flock build/web-dist.lock bin/hubbo fw --no-ansi run -e ...`
+    (a global pio option first skips the script's own `run` branch).
   - `bin/hubbo fw ...` holds `build/firmware.lock`; don't work around it.
   - Flash only with `bin/hubbo ota 192.168.1.196`.
   - espota picks a random host port. "Address already in use" is a one-off collision; just retry.
