@@ -178,6 +178,7 @@ void BleHid::loop(uint32_t nowMs) {
     if (pairing_ && nowMs - pairingStartedMs_ >= pairingWindowMs_) {
         con.println("ble: pairing window closed");
         stopPairing();
+        pairingFailed_ = true;
     }
 
     if (bondsChanged) {
@@ -285,6 +286,7 @@ bool BleHid::startPairing(uint32_t nowMs, uint32_t windowMs) {
         forget();
     }
     pairing_ = true;
+    pairingFailed_ = false;
     bondingOpen_ = false;  // loop() opens it once any bond deletion is done
     pairingStartedMs_ = nowMs;
     pairingWindowMs_ = windowMs;
@@ -318,9 +320,11 @@ void BleHid::forget() {
     }
     con.println("ble: forgetting bonded hosts");
     stopPairing();
+    pairingFailed_ = false;
     releaseAll();
     const uint16_t handle = connHandle;
     if (handle != BLE_HS_CONN_HANDLE_NONE) {
+        secured = false;  // no longer trusted: not connected() while the disconnect lands
         server->disconnect(handle);
     }
     runBondJob([] { NimBLEDevice::deleteAllBonds(); });

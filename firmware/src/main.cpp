@@ -59,6 +59,7 @@
 #include "nvs_secret_store.h"
 #include "ota.h"
 #include "remote_radio.h"
+#include "ble_pairing_runtime.h"
 #include "remote_runtime.h"
 #include "ws_transport.h"
 
@@ -183,6 +184,7 @@ public:
 InputFeeder feeder;
 RemoteRadio radio(feeder);
 RemoteRuntime remoteRuntime(radio);  // the admin API's view of the radio
+BlePairingRuntime blePairing(ble);   // the admin API's view of BLE pairing
 EthernetLink ethernet;
 
 // --- Config/HTTP side ----------------------------------------------------------
@@ -476,6 +478,7 @@ void startApi() {
     info.hostname = hostname;
     hubbo::api::ApiContext context{credentials, sessions, loginLimiter, apiClock, *configService, runtime, info};
     context.remote = &remoteRuntime;
+    context.blePairing = &blePairing;
     context.homeAssistant = &haClient;
     context.secrets = &secretStore;
     api = std::make_unique<hubbo::api::Api>(std::move(context));
@@ -577,8 +580,10 @@ void publishRuntime() {
         ble.peerAddress(s.blePeer, sizeof(s.blePeer));  // allocates; only on change
         s.bleState = bleState;
     }
+    const uint32_t nowMs = millis();
     runtime.publish(s);
-    remoteRuntime.publish(millis());
+    remoteRuntime.publish(nowMs);
+    blePairing.publish(nowMs, s.blePeer);
 }
 
 // --- Serial console ------------------------------------------------------------
@@ -1072,6 +1077,9 @@ void loop() {
     if (!stopping) {
         input.poll(nowMs);
         remoteRuntime.poll(nowMs);
+        if (blePairing.poll(nowMs)) {
+            publishRuntime();  // status() shows the effect at once
+        }
     }
     engine.poll(nowMs);
     pollReboot();

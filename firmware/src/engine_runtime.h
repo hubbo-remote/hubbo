@@ -28,6 +28,8 @@
 #include "hubbo/integrations/ha_client.h"
 #include "hubbo/remote/input.h"
 
+#include "ble_hid.h"
+
 namespace hubbo::fw {
 
 // What the engine task publishes. Plain data only.
@@ -49,7 +51,7 @@ struct RuntimeStatus {
     float p50Ms = 0, p95Ms = 0, p99Ms = 0;
 
     uint8_t bleState = 0;  // BleHid::State
-    char blePeer[18] = {};
+    char blePeer[BleHid::kAddressSize] = {};
 };
 
 class EngineRuntime : public hubbo::api::Runtime {
