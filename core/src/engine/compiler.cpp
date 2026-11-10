@@ -247,10 +247,13 @@ public:
             if (hold.command == nullptr || hold.command->effect != CommandEffect::Hold || hold.release == nullptr) {
                 continue;
             }
+            // Pairing is a property of the bindings: a disabled integration's
+            // actions (Unavailable) pair the same way, so disabling never fails.
             bool paired = false;
             for (uint8_t j = 0; j < up.count && !paired; j++) {
                 const CompiledAction &r = actions_[up.offset + j];
-                if (r.op != ActionOp::Adapter || r.adapterIndex != hold.adapterIndex ||
+                const bool adapterAction = r.op == ActionOp::Adapter || r.op == ActionOp::Unavailable;
+                if (!adapterAction || r.adapterIndex != hold.adapterIndex ||
                     r.deviceIndex != hold.deviceIndex || r.commandIndex != hold.releaseIndex) {
                     continue;
                 }
