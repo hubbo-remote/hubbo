@@ -13,7 +13,7 @@ import { ThemeToggle } from '@/components/AppShell'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Field, Input } from '@/components/ui/input'
+import { Field, Input, ShowErrors } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { Tabs } from '@/components/ui/tabs'
 import { toast, toastError } from '@/components/ui/toast'
@@ -62,9 +62,11 @@ function Account() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const mismatch = confirm.length > 0 && confirm !== next
+  const [attempted, setAttempted] = useState(false) // errors show from the first submit on
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
+    setAttempted(true)
     if (mismatch) return
     setBusy(true)
     setError(null)
@@ -84,6 +86,7 @@ function Account() {
   return (
     <div className="grid gap-4">
       <Section title="Admin password" description="The single admin account manages devices, integrations, pairing, tokens, backups and firmware.">
+        <ShowErrors.Provider value={attempted}>
         <form onSubmit={submit} className="grid max-w-sm gap-4">
           {error && <Alert variant="error">{error}</Alert>}
           <Field label="Current password" htmlFor="cp">
@@ -96,14 +99,15 @@ function Account() {
             <Input id="np2" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} aria-invalid={mismatch} required />
           </Field>
           <div>
-            <Button type="submit" disabled={busy || mismatch}>
+            <Button type="submit" disabled={busy}>
               {busy && <Loader2 className="animate-spin" />} Change password
             </Button>
           </div>
         </form>
+        </ShowErrors.Provider>
       </Section>
-      <Section title="Setup wizard" description="Walk through network, remote pairing, Home Assistant and devices again.">
-        <a href="#/setup" className="text-sm font-medium text-primary underline-offset-4 hover:underline">
+      <Section title="Setup wizard" description="Walk through network, remote pairing and Home Assistant again.">
+        <a href="#/setup/network" className="text-sm font-medium text-primary underline-offset-4 hover:underline">
           Run setup again
         </a>
       </Section>
@@ -520,7 +524,7 @@ function Diagnostics() {
         ) : !d.last_errors?.length ? (
           <p className="text-sm text-muted-foreground">No errors since boot.</p>
         ) : (
-          <pre className="max-h-96 overflow-auto rounded-lg bg-muted p-3 font-mono text-xs leading-relaxed">
+          <pre tabIndex={0} aria-label="Recent errors" className="max-h-96 overflow-auto rounded-lg bg-muted p-3 font-mono text-xs leading-relaxed outline-none focus-visible:ring-2 focus-visible:ring-ring">
             {d.last_errors.map((e) => `${e.at ?? '-'}  ${(e.source ?? '').padEnd(10)} ${e.code.padEnd(12)} ${e.message}`).join('\n')}
           </pre>
         )}
@@ -548,7 +552,7 @@ function Diagnostics() {
             <RefreshCw /> Refresh
           </Button>
         </div>
-        <pre className="max-h-96 overflow-auto rounded-lg bg-muted p-3 font-mono text-xs">{status.data ? JSON.stringify(status.data, null, 2) : 'Loading…'}</pre>
+        <pre tabIndex={0} aria-label="Raw status" className="max-h-96 overflow-auto rounded-lg bg-muted p-3 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">{status.data ? JSON.stringify(status.data, null, 2) : 'Loading…'}</pre>
       </Section>
     </div>
   )

@@ -1,4 +1,5 @@
 import { REMOTE_CHANNEL_MAX } from '../api/constants.ts'
+import type { RemoteStatus } from '../api/types.ts'
 
 /** Channel 0–124, decimal, like the console's `radio set`. */
 export function parseChannel(s: string): number | null {
@@ -31,3 +32,12 @@ export function addressProblem(a: string): string | null {
 
 /** `FC5C97550F` → `FC:5C:97:55:0F`. */
 export const formatAddress = (a: string) => a.match(/../g)?.join(':') ?? a
+
+export type RemoteEvent = NonNullable<RemoteStatus['last_event']>
+
+/**
+ * Whether `ev` happened after `prev` (both from /remote/status). Ages only grow until the next
+ * event, so a smaller age or a different event is a new one. The first read is the baseline.
+ */
+export const isNewEvent = (prev: RemoteEvent | null | undefined, ev: RemoteEvent | null | undefined) =>
+  !!ev && (!prev || ev.age_ms < prev.age_ms || ev.button !== prev.button || ev.kind !== prev.kind)
