@@ -2,7 +2,7 @@
 
 Current state, not a log. Update when a piece of work lands.
 
-## State of the web admin (Phase 4 done on `phase-4`, not committed)
+## State of the web admin (Phase 5 in progress on `phase-5`, not committed)
 
 - React 19 + TS + Vite + Tailwind, shadcn-style components in `web/src/components/ui`. wouter with
   hash URLs. Our own small query cache in `src/api/hooks.ts`: `useQuery(key, fn, { pollMs,
@@ -53,6 +53,47 @@ Current state, not a log. Update when a piece of work lands.
     them into "Watch Apple TV, startup step 4: …".
   - Accessibility: axe (WCAG 2 A/AA, light and dark) clean of serious/critical on the main pages;
     the test waits for CSS transitions (axe measured mid-fade). Phone keys have ≥ 24 px hit areas.
+- Phase 5 (docs/design/phase5-appliance.md §1–2):
+  - **Auth trim**: no CSRF token (client sends none; the hub checks Origin → 403 `csrf_failed`),
+    no 429, no `corrupt`. `CredentialsProblem` has one screen (`unavailable`: restart or wipe).
+    Credentials are read once at boot, so a session outlives storage going down: `storage.spec`
+    now runs under `--auth` too, and `storage-auth.spec` and the `last` project are gone.
+  - Setup and Login start with an **empty username** (autofocus there; `autoComplete` username /
+    new-password / current-password). The mock's set-up admin and e2e `ADMIN` are the login
+    fixture's (`hubbo-owner`, like api/tools/contract.py).
+  - **Firmware** (`components/admin/FirmwareUpdate.tsx`, Settings → Firmware): version and board;
+    a .bin picker that reads the file's marker (`lib/firmware.ts readMarker`) to say "Hubbo vX for
+    <board>" (the hub decides; nothing blocks client-side); `api.uploadFirmware` is XHR for
+    `upload.onprogress` (the browser sets Content-Length). After the 202 it polls GET
+    /admin/firmware every 1 s: writing % → rebooting → network errors/502/504 = "Restarting…" →
+    idle, or a 401 = the hub restarted and sessions are gone (the app shows Login). Module memory
+    `pending` = {from, expected: the file's marker version}; after the sign-in the section remounts
+    and polls again for a fresh answer. "Update installed" only if the running version is the
+    expected one; otherwise "The update didn't take" (a reset mid-write or a crashing image boots
+    the old one, and the RAM-only `failed` state is gone). Every 4xx/503 is shown as "Nothing was
+    written". A `failed` state shows "still running X". A reload mid-update picks the poll up
+    again. `run` (a ref counter) lets only the latest upload/watch update the section.
+  - **Mock firmware**: `mock/firmware.ts` builds real-layout fake images (`buildFirmwareImage`,
+    used by unit tests and e2e) and checks 0xE9, the marker, the board and the SHA. Like
+    SimulatedFirmwareUpdate: 2 s write, 1 s reboot, in hub time = `/__mock/advance` plus real
+    time × `timeScale` (default 1/3; e2e env `HUBBO_MOCK_TIME_SCALE=0`; the factory reset uses it too). The second
+    half of the reboot drops connections (`status: 0` → socket destroyed); at its end the
+    version changes and every session is cleared. `/__mock/firmware?fail=&ready=` mirrors
+    `/sim/firmware`; mock-only `?revert=1` reboots into the old version.
+- **Backup & reset** (Settings, after the board test):
+  - "Reset configuration" (POST /admin/reset, `api.resetConfiguration`): devices, activities,
+    global buttons and integration settings go; login, tokens and pairings stay. Typed `reset`.
+  - "Factory reset" (`components/admin/FactoryReset.tsx`, POST /admin/factory-reset): erases
+    everything; typed `erase`; says to forget "Hubbo" on the Apple TV. After the 202 it shows
+    "Erasing… the hub is restarting", polls the public /auth/session (not /status: sessions are
+    gone) until `fresh`, then reloads into setup. Refusals show "Nothing was erased".
+  - After a restore, if ha_main has a URL but no token, a notice links to Integrations (backups
+    never hold the token; the hub keeps a stored token only when the restored URL is the same).
+  - Mock: restore applies ha_main settings with that token rule; factory reset is down for 1000 ms
+    of hub time, then a first-run hub (no admin, sessions, tokens, remote, config; BLE unbonded);
+    `/__mock/factory-reset?ready=0` mirrors `/sim/factory-reset` (503).
+  - Both typed confirms use `TypedWordField` (common.tsx) and `typedMatches` (lib/utils.ts);
+    `sleep` is shared from lib/utils.ts too.
 - Bundle: ~155 KB gzipped (`bin/hubbo web build` prints sizes).
 
 ## Modes
@@ -68,8 +109,8 @@ Current state, not a log. Update when a piece of work lands.
 ## Mock controls (never in the real API)
 
 - `POST /__mock/reset` body = `ResetFlags`: `firstRun`, `requireAuth`, `configState`,
-  `configDamaged`, `startupRejected`, `authState`, `discoverFails`, `scanNeverFinds`.
-- Mirroring hub-sim's `/sim/…`: `storage?health=`, `ha?state=|remove=|auth=&connect=`,
+  `configDamaged`, `startupRejected`, `authState` (unavailable), `discoverFails`, `scanNeverFinds`.
+- Mirroring hub-sim's `/sim/…`: `factory-reset?ready=`, `firmware?fail=&ready=`, `storage?health=`, `ha?state=|remove=|auth=&connect=`,
   `ble?connected=`, `ble/bonded?peer=`, `radio/found?channel&address`, `advance?ms` (also runs
   down the BLE window and entity details), `remote/<button>/<press|release|tap>` (only records
   `last_event`; no bindings run).
@@ -89,27 +130,32 @@ Current state, not a log. Update when a piece of work lands.
   asks for a state and the test skips where the target can't produce it. Target-neutral helpers:
   `connectHa`, `setHaState`, `fakeHaNextConnect`, `letHaConnect`, `setBle`, `hubAnswersScan`,
   `advance`, `setStorage`, `registerHa`, `removeHaEntity`, `discoverHa`, `api(page)`, all over
-  `control(page, path)` (`/sim/<path>` or `/__mock/<path>`, with CSRF).
-- Projects: first-run → seeded → app and phone (both depend on seeded) → last (depends on both).
-  `workers: 1` (one shared hub). `phone` (390×844, touch) runs dashboard, activate, activity,
-  devices, remote, ble and a11y. `board` is read-only against a real board (`HUBBO_E2E_BASE_URL`),
+  `control(page, path)` (`/sim/<path>` or `/__mock/<path>`).
+- Projects: first-run → seeded → app and phone (both depend on seeded; phone on the mock only).
+  `phone` (390×844, touch) runs dashboard, remote, ble and a11y.
+  `workers: 1` (one shared hub). `board` is read-only against a real board (`HUBBO_E2E_BASE_URL`),
   keeps no trace/screenshot/video, and **the normal projects must never point at a board**.
 - A file filter is a substring (`ble` matches `unavailable.spec.ts`; use `ble.spec`). Project
   regexes are anchored (`board` once matched `dashboard.spec.ts`).
-- **Foreground only, ≤ ~165 s per command, one e2e run per command** (longer gets backgrounded).
-  Build the sim first with `bin/hubbo sim --help`, start it detached, wait for
-  `/api/v1/auth/session`, run chunks, stop it:
-  ```sh
-  docker compose run --rm -T --name hubbo-sim-web-e2e toolchain bash -c \
-    'cp build/native/sim/hub-sim /tmp/hub-sim && exec /tmp/hub-sim "$@"' _ serve --data build/sim-e2e --reset [--auth] &
-  ```
-  Chunks (with `--project=first-run --project=seeded --project=app`):
-  - A: setup blocked storage-boot credentials-corrupt activate activity backup conflict dashboard devices
-  - B: ha login remote storage tokens unavailable watch-apple-tv ble.spec (+ a11y on the mock);
-    on hub-sim run `--project=app a11y` separately
-  - then `--project=phone`, then `--project=last --no-deps` (under `--auth`).
-- Under `--auth` use a fresh `--data` dir so setup.spec sees no admin. Each first-run test needs
-  its own fresh hub: the resume test runs alone (`setup.spec.ts:82`). hub-sim starts paired, so
+- **One whole pass per command** (foreground, `timeout` 600000; see "Testing without waiting
+  around" in CLAUDE.md). While working, run only the specs a change touches. The phase gate is
+  `bin/hubbo gate web`: check, build, then
+  - mock, desktop and phone (~4.2 min): `bin/hubbo web e2e`
+  - hub-sim `--auth`, desktop (~2.6 min): `bin/hubbo web e2e --sim --auth`
+  - hub-sim no-auth, only the `noauth` project (~15 s): `bin/hubbo web e2e --sim --project=noauth`
+  If a long run moves to the background, wait for its completion notice; don't split it.
+  `--sim` builds hub-sim, starts it on fresh data on :8780, sets `HUBBO_API_TARGET` and removes
+  it afterwards; never start a sim by hand. A single spec: `bin/hubbo web e2e --sim [--auth] <file>`.
+- Projects against hub-sim: no `phone` (layout and touch are the mock's job); `noauth` (no
+  dependencies) matches the specs that behave differently without auth: firmware (no sign-in
+  after the reboot) and tokens (the no-auth sim has no admin until `ensureAdmin`). Under `--auth`
+  its tests skip themselves (`hub` fixture). Add a spec there when its no-auth behaviour differs.
+- Why a pass is slow: `workers: 1` (one shared hub, reset per test) and real-time polls (1–3 s)
+  and HA/BLE waits inside tests. Backlog: one hub per worker (a mock per worker, or a hub-sim port
+  per worker) for `workers > 1` or sharding.
+- Under `--auth` use a fresh `--data` dir so setup.spec sees no admin. In a full pass only the
+  first setup test runs; the others need their own fresh hub (`setup.spec.ts:83` and `:132`, each
+  alone), when setup changes. hub-sim starts paired, so
   that test opens `#/setup/remote` by URL there.
 - Blocked seeds: `bin/hubbo sim write-record --data DIR --name config --file
   sim/fixtures/config.newer-schema.json`, then `serve` without `--reset`, then `--project seeded
@@ -123,12 +169,19 @@ Current state, not a log. Update when a piece of work lands.
   - `/sim/reset` restores entities, BLE and the radio, and releases held buttons. Specs tap.
   - A re-link is checked against the activities that use the device: re-link a fresh device.
 - Auth: no-auth sim = AUTH DISABLED; `--auth` is the production authenticator. Login specs skip
-  without auth; storage-down specs split between storage.spec and storage-auth.spec (runs last).
+  without auth.
+  - hub-sim's firmware version doesn't change after an update (so there the UI says "didn't
+    take") and its sessions survive the simulated reboot; the reboot can fall between two 1 s
+    polls. firmware.spec allows for all three.
+  - hub-sim answers no 501s now: `unavailable.spec` (stubbed 501s) runs on the mock only.
 
 ## Key decisions
 
-- Secrets: the CSRF token lives in memory only; nothing secret in browser storage; the HA token is
-  write-only. e2e checks with `expectNotStoredInBrowser`.
+- **No UI copy or UX changes until the polish pass** unless the lead relays a functional need. The
+  user finds the UI has far too many notes; UX and copy get reworked in the polish pass (fast,
+  without the board). A Bluetooth line in the restore note was added and reverted for this reason.
+
+- Secrets: nothing secret in browser storage (no CSRF token any more); the HA token is write-only. e2e checks with `expectNotStoredInBrowser`.
 - Backups are an opaque blob; restore sends the file exactly as chosen.
 - Never round-trip `ha_capabilities` (422 unknown_field): PUTs send name/kind/provider/revision.
 - HA TLS: "Verify certificate" (`verify_tls`, https only) is real; no CA field.
@@ -140,8 +193,14 @@ Current state, not a log. Update when a piece of work lands.
 
 ## Open items
 
-- Phase 4 web work isn't committed. `/simplify` done and gates green (2026-11-09). Use `/commits`
-  on `web/` only, when the commit instruction comes.
+- Phase 5 web work isn't committed; `/simplify` done. `bin/hubbo gate web` green on this tree
+  2026-11-09 (mock 93 passed; `--sim --auth` 59; `noauth` 4), plus contract mock + mock-auth.
+- Skipped in /simplify: drive the firmware poll through `useQuery` pollMs (drops the run ref and
+  eslint-disables); a shared ProgressBar (PairRemote has the same markup) and key/value `Facts`
+  component; one mock clock for every timer; hub-sim reporting the new version and dropping
+  sessions after a simulated reboot (core/API ask) would remove the `SIM_URL` branches.
+- Flaky once each, passed on rerun: `activity.spec:163` (mock), `watch-apple-tv` (hub-sim).
+- Board check of the firmware flow is pending (the real reboot: network errors, then a 401).
 - Typed params can't be previewed before registering (candidates carry only command ids).
 - Closing the Duplicate dialog mid-save doesn't navigate to the copy.
 - Possible later trims (skipped in /simplify):
