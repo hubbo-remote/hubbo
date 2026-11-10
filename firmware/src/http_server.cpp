@@ -1,6 +1,5 @@
 #include "http_server.h"
 
-#include "hubbo/auth/policy.h"
 #include "console.h"
 #include "web_assets.h"
 
@@ -8,9 +7,7 @@
 #include <esp_heap_caps.h>
 #include <esp_http_server.h>
 #include <esp_timer.h>
-#include <lwip/sockets.h>
 
-#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <deque>
@@ -100,12 +97,11 @@ const char *statusLine(int status) {
         case 404: return "404 Not Found";
         case 405: return "405 Method Not Allowed";
         case 409: return "409 Conflict";
+        case 411: return "411 Length Required";
         case 412: return "412 Precondition Failed";
         case 413: return "413 Payload Too Large";
         case 415: return "415 Unsupported Media Type";
-        case 421: return "421 Misdirected Request";
         case 422: return "422 Unprocessable Entity";
-        case 429: return "429 Too Many Requests";
         case 501: return "501 Not Implemented";
         case 503: return "503 Service Unavailable";
         default: return "500 Internal Server Error";
@@ -120,34 +116,6 @@ esp_err_t send(httpd_req_t *req, const http::Response &response) {
         httpd_resp_set_hdr(req, header.first.c_str(), header.second.c_str());
     }
     return httpd_resp_send(req, response.body.data(), static_cast<ssize_t>(response.body.size()));
-}
-
-// The peer's IPv4 address, or its IPv6 /64 prefix; 0 if unknown.
-uint64_t clientKey(httpd_req_t *req) {
-    sockaddr_storage addr = {};
-    socklen_t length = sizeof(addr);
-    if (getpeername(httpd_req_to_sockfd(req), reinterpret_cast<sockaddr *>(&addr), &length) != 0) {
-        return 0;
-    }
-    if (addr.ss_family == AF_INET) {
-        return ntohl(reinterpret_cast<const sockaddr_in &>(addr).sin_addr.s_addr);
-    }
-#if LWIP_IPV6
-    if (addr.ss_family == AF_INET6) {
-        const uint8_t *bytes = reinterpret_cast<const sockaddr_in6 &>(addr).sin6_addr.s6_addr;
-        static const uint8_t kV4Mapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF};
-        if (memcmp(bytes, kV4Mapped, sizeof(kV4Mapped)) == 0) {
-            return (uint32_t{bytes[12]} << 24) | (uint32_t{bytes[13]} << 16) | (uint32_t{bytes[14]} << 8) |
-                   bytes[15];
-        }
-        uint64_t prefix = 0;
-        for (int i = 0; i < 8; i++) {
-            prefix = (prefix << 8) | bytes[i];
-        }
-        return prefix;
-    }
-#endif
-    return 0;
 }
 
 esp_err_t sendError(httpd_req_t *req, int status, std::string_view code, std::string_view message) {
@@ -184,9 +152,6 @@ int HttpServer::serveStatic(void *raw) {
     requests_ = requests_ + 1;
 
     const EspHeaders headers(req);
-    if (!router_->hostAllowed(headers.header("Host"))) {
-        return sendError(req, 421, "host_not_allowed", "Host header is not one of this hub's names");
-    }
     std::string_view path(req->uri);
     path = path.substr(0, path.find('?'));
     if (path == "/") {
@@ -360,8 +325,7 @@ int HttpServer::serve(void *raw) {
 
     // The matched route's limit (policy table), checked before any body byte
     // is read. One request at a time on httpd, so at most one buffer exists.
-    const size_t limit = std::min<size_t>(router_->bodyLimit(request.method, request.path),
-                                          hubbo::auth::maxRequestBody());
+    const size_t limit = router_->bodyLimit(request.method, request.path);
     const size_t length = req->content_len;
     if (length > limit) {
         return sendError(req, 413, "payload_too_large",
@@ -391,7 +355,6 @@ int HttpServer::serve(void *raw) {
 
     EspHeaders headers(req);
     request.headers = &headers;
-    request.clientKey = clientKey(req);
     if (authenticator_ != nullptr) {
         request.context = authenticator_->authenticate(request);
     }

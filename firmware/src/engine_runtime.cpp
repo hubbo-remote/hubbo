@@ -3,8 +3,8 @@
 #include <Arduino.h>
 #include <esp_timer.h>
 
-#include "ble_hid.h"
 #include "hubbo/domain/config.h"
+#include "hubbo/integrations/ble_state.h"
 #include "hubbo/integrations/ha_adapter.h"
 #include "console.h"
 
@@ -18,23 +18,6 @@ bool isBle(std::string_view integrationId) {
 
 bool isHomeAssistant(std::string_view integrationId) {
     return integrationId == hubbo::api::kHaIntegrationId;
-}
-
-struct BleStateText {
-    const char *state;   // api/openapi.yaml IntegrationState
-    const char *detail;  // the peer address is appended when non-null
-    bool withPeer;
-};
-
-const BleStateText &bleText(uint8_t state) {
-    static const BleStateText kText[] = {
-        {"error", "Bluetooth failed to start", false},   // Off
-        {"not_configured", "No host paired", false},     // NotPaired
-        {"connecting", "Pairing window open", false},    // Pairing
-        {"disconnected", "Waiting for ", true},          // Waiting
-        {"connected", "Connected to ", true},            // Connected
-    };
-    return kText[state < sizeof(kText) / sizeof(kText[0]) ? state : 0];
 }
 
 }  // namespace
@@ -100,30 +83,31 @@ hubbo::api::RuntimeSnapshot EngineRuntime::snapshot() const {
     return out;
 }
 
-uint8_t EngineRuntime::bleState() const {
-    portENTER_CRITICAL(&lock_);
-    const uint8_t state = status_.bleState;
-    portEXIT_CRITICAL(&lock_);
-    return state;
+BlePairingRuntime::Link EngineRuntime::bleLink() const {
+    return blePairing_ != nullptr ? blePairing_->link() : BlePairingRuntime::Link{};
 }
 
 const char *EngineRuntime::integrationState(std::string_view integrationId) const {
-    if (isHomeAssistant(integrationId)) {
-        const hubbo::IntegrationSpec *integration =
-            config_ != nullptr ? config_->findIntegration(integrationId) : nullptr;
-        return integration != nullptr ? hubbo::integrations::haIntegrationState(homeAssistant_, *integration)
-                                      : "not_configured";
+    const hubbo::IntegrationSpec *integration = config_ != nullptr ? config_->findIntegration(integrationId) : nullptr;
+    if (integration == nullptr) {
+        return "not_configured";
     }
-    return isBle(integrationId) ? bleText(bleState()).state : "not_configured";
+    if (isHomeAssistant(integrationId)) {
+        return hubbo::integrations::haIntegrationState(homeAssistant_, *integration);
+    }
+    if (isBle(integrationId)) {
+        const BlePairingRuntime::Link link = bleLink();
+        return hubbo::integrations::bleIntegrationState(*integration, link.pairing, link.hostConnected);
+    }
+    return "not_configured";
 }
 
 std::string EngineRuntime::integrationDetail(std::string_view integrationId) const {
     if (!isBle(integrationId)) {
         return {};
     }
-    const RuntimeStatus s = read();
-    const BleStateText &text = bleText(s.bleState);
-    return text.withPeer ? std::string(text.detail) + s.blePeer : std::string(text.detail);
+    const BlePairingRuntime::Link link = bleLink();
+    return hubbo::integrations::bleIntegrationDetail(link.pairing, link.hostConnected, link.peer);
 }
 
 const char *EngineRuntime::deviceAvailability(const hubbo::DeviceSpec &device) const {
@@ -133,7 +117,8 @@ const char *EngineRuntime::deviceAvailability(const hubbo::DeviceSpec &device) c
     if (!isBle(device.integrationId)) {
         return "unknown";
     }
-    return static_cast<BleHid::State>(bleState()) == BleHid::State::Connected ? "available" : "unavailable";
+    const BlePairingRuntime::Link link = bleLink();
+    return hubbo::integrations::bleDeviceAvailability(link.pairing, link.hostConnected);
 }
 
 }  // namespace hubbo::fw

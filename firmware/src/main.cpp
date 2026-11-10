@@ -8,9 +8,6 @@
 #include <ESPmDNS.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
-#ifdef HUBBO_WIPE_ON_BOOT
-#include <nvs_flash.h>
-#endif
 #include <esp_timer.h>
 #ifdef HUBBO_DEV_CONSOLE
 #include <esp_core_dump.h>
@@ -31,17 +28,20 @@
 #include "diagnostics.h"
 #include "engine_runtime.h"
 #include "esp_clock.h"
+#include "esp_hash.h"
 #include "esp_random_source.h"
 #include "ethernet_link.h"
+#include "factory_reset.h"
+#include "firmware_update.h"
 #include "flash_fs.h"
 #include "ha_task.h"
 #include "http_server.h"
+#include "image_marker.h"
 #include "hubbo/api/api.h"
 #include "hubbo/api/remote_port.h"
 #include "hubbo/api/authenticator.h"
 #include "hubbo/auth/credentials.h"
 #include "hubbo/auth/crypto.h"
-#include "hubbo/auth/rate_limit.h"
 #include "hubbo/auth/session.h"
 #include "hubbo/config/boot.h"
 #include "hubbo/config/service.h"
@@ -195,13 +195,12 @@ EthernetLink ethernet;
 // touches it (directly in handlers, or through httpServer.post()/every()).
 
 EspRandomSource randomSource;
-hubbo::auth::SoftwareHash hash;
+EspHash hash;  // hardware SHA-256
 NvsSecretStore secretStore;
 EspClock apiClock;
 hubbo::auth::Credentials credentials(secretStore, hash, randomSource);
 hubbo::auth::SessionStore sessions(randomSource);
 hubbo::api::Authenticator authenticator(credentials, sessions, apiClock);
-hubbo::auth::LoginRateLimiter loginLimiter;
 // Durable records ("config", "active") as slot files on LittleFS. If the
 // filesystem isn't mounted the store reports Unavailable and every save
 // fails; nothing falls back to RAM. Secrets stay in NVS (nvs_secret_store.h).
@@ -290,12 +289,19 @@ void releaseOutputs() {
     adapters.releaseAll(nowMs);
 }
 
+// Every deliberate restart ends here (any task): the loop's stats survive it
+// (diag::keepLoopStatsAcrossRestart), so a stall before it can be read later.
+void restartNow() {
+    diag::keepLoopStatsAcrossRestart(rebootReason.load(std::memory_order_acquire));
+    flushSerial();
+    esp_restart();
+}
+
 void flushAndRestart() {
     activePersister.flush(engine.activeActivityIdShared(),
                           configService && configService->state() == hubbo::config::ConfigState::Ok);
     con.println("restarting");
-    flushSerial();
-    esp_restart();
+    restartNow();
 }
 
 // Any task. `why` must be a string literal.
@@ -330,14 +336,16 @@ void pollReboot() {
     // without the flush (at worst the last seconds of active-activity state).
     if (millis() - requestedAtMs >= kRestartDeadlineMs) {
         con.println("reboot: deadline passed, restarting without the flush");
-        flushSerial();
-        esp_restart();
+        restartNow();
     }
 }
 
 void onOtaWritten() {
     requestReboot("ota");
 }
+
+FirmwareUpdate firmwareUpdate(&requestReboot, hash);  // updates from the web admin
+FactoryReset factoryReset(&requestReboot);           // POST /admin/factory-reset
 
 // --- Boot ----------------------------------------------------------------------
 
@@ -406,26 +414,8 @@ void printCredentialState() {
         case hubbo::auth::CredentialState::Unavailable:
             con.println(" (SECRETS UNREADABLE: login and setup refused)");
             break;
-        case hubbo::auth::CredentialState::Corrupt:
-            con.println(" (SECRETS CORRUPT: login and setup refused)");
-            break;
     }
 }
-
-#ifdef HUBBO_WIPE_ON_BOOT
-// Gate builds only (scripts/wipe_on_boot.py): factory-fresh state on every
-// boot. Erases all of NVS (admin credentials, API tokens, the HA token, BLE
-// bonds, the Hub endpoint), then requests flash_fs's own format at boot, which
-// mountFilesystem() runs next. OTA keeps working: its password hash is
-// compiled in. Runs before anything opens NVS or the fs.
-void wipeForGate() {
-    const esp_err_t nvs = nvs_flash_erase();
-    const esp_err_t init = nvs_flash_init();
-    const bool format = flash_fs::requestFormatAtBoot();
-    con.printf("WIPE: factory reset build; nvs erase %s, init %s, fs format %s\n",
-               esp_err_to_name(nvs), esp_err_to_name(init), format ? "requested" : "NOT requested");
-}
-#endif
 
 // The one boot path (core's bootHub): config, then credentials, then the
 // active activity, restored without its startup only when the config is Ok
@@ -492,11 +482,14 @@ void configureHomeAssistant() {
 
 void startApi() {
     hubbo::api::HubInfo info;
+    info.version = image::version();
     info.board = board::kName;
     info.hostname = hostname;
-    hubbo::api::ApiContext context{credentials, sessions, loginLimiter, apiClock, *configService, runtime, info};
+    hubbo::api::ApiContext context{credentials, sessions, apiClock, *configService, runtime, info};
     context.remote = &remoteRuntime;
     context.blePairing = &blePairing;
+    context.firmware = &firmwareUpdate;
+    context.factoryReset = &factoryReset;
     context.homeAssistant = &haClient;
     context.secrets = &secretStore;
     api = std::make_unique<hubbo::api::Api>(std::move(context));
@@ -557,25 +550,23 @@ void startApi() {
 
 // --- Running -----------------------------------------------------------------
 
-// A new address: Host allow-list and mDNS on httpd (MDNS.begin can block for
+// A new address: mDNS on httpd (MDNS.begin can block for
 // tens of ms, and the router belongs to httpd); OTA here (cheap, and its
 // handle() runs on this task).
 void onAddressChanged() {
-    httpServer.post([ip = std::string(ethernet.ipText())] {
+    httpServer.post([] {
         static bool mdnsStarted = false;
         if (!mdnsStarted && MDNS.begin(hostname)) {
             mdnsStarted = true;
             MDNS.addService("http", "tcp", HttpServer::kPort);
         }
-        const std::string name(hostname);
-        router.setAllowedHosts({ip, name, name + ".local"});
     });
     ota::begin(hostname, &releaseOutputs, &onOtaWritten);  // no-op if disabled or already started
 }
 
 // Status for the API, copied for the HTTP task a few times a second.
 void publishRuntime() {
-    static RuntimeStatus s;  // keeps the cached BLE peer between publishes
+    RuntimeStatus s;
     s.linkUp = ethernet.up();
     memcpy(s.ip, ethernet.ipText(), sizeof(s.ip));
     const RadioEndpoint ep = radio.endpoint();
@@ -593,15 +584,10 @@ void publishRuntime() {
     s.p50Ms = latency.p50 / 1000.0f;
     s.p95Ms = latency.p95 / 1000.0f;
     s.p99Ms = latency.p99 / 1000.0f;
-    const auto bleState = static_cast<uint8_t>(ble.state());
-    if (bleState != s.bleState) {
-        ble.peerAddress(s.blePeer, sizeof(s.blePeer));  // allocates; only on change
-        s.bleState = bleState;
-    }
     const uint32_t nowMs = millis();
     runtime.publish(s);
     remoteRuntime.publish(nowMs);
-    blePairing.publish(nowMs, s.blePeer);
+    blePairing.publish(nowMs);
 }
 
 // --- Serial console ------------------------------------------------------------
@@ -1018,17 +1004,16 @@ void setup() {
     }
     snprintf(hostname, sizeof(hostname), "hubbo-%012llX", static_cast<unsigned long long>(ESP.getEfuseMac()));
 
-    con.printf("\nHubbo on %s (%s)\n", board::kName, hostname);
+    con.printf("\nHubbo %s on %s (%s)\n", image::version(), board::kName, hostname);
     con.printf("reset reason: %s\n", resetReasonName(esp_reset_reason()));
+    diag::printPreviousRun();
     con.printf("chip %s rev %u, %u cores, %lu MHz, flash %lu MB, psram %lu KB\n", ESP.getChipModel(),
                   ESP.getChipRevision(), ESP.getChipCores(), static_cast<unsigned long>(ESP.getCpuFreqMHz()),
                   static_cast<unsigned long>(ESP.getFlashChipSize() >> 20),
                   static_cast<unsigned long>(ESP.getPsramSize() >> 10));
     con.printf("sdk %s\n", ESP.getSdkVersion());
 
-#ifdef HUBBO_WIPE_ON_BOOT
-    wipeForGate();
-#endif
+    factory_reset::wipeIfRequested();  // POST /admin/factory-reset before this restart, or a gate build
     mountFilesystem();
     if (!radio.begin()) {
         con.println("radio: failed; check wiring and the 10 uF capacitor. Continuing without it.");
@@ -1050,6 +1035,8 @@ void setup() {
     engine.setObserver(&engineLog);
     bootState();
     runtime.setConfig(configService.get());
+    runtime.setBlePairing(&blePairing);
+    ota::setRebootPending([] { return rebootReason.load(std::memory_order_acquire) != nullptr; });
     beginEthernetOnCore0();
     startApi();
     EspWsTransport::useExternalTlsMemory();
