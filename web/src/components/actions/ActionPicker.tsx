@@ -78,10 +78,11 @@ export function ActionPicker({ value, onChange, catalog, context, allowHold = fa
   )
 }
 
-export function TestButton({ action, size = 'sm' }: { action: Action; size?: 'sm' | 'default' }) {
+export function TestButton({ action, size = 'sm', onRun }: { action: Action; size?: 'sm' | 'default'; onRun?: () => void }) {
   const [busy, setBusy] = useState(false)
   const [res, setRes] = useState<ExecuteResult | { status: 'error'; message: string } | null>(null)
   const run = async () => {
+    onRun?.()
     if (!action.device_id) return
     setBusy(true)
     setRes(null)
@@ -101,7 +102,7 @@ export function TestButton({ action, size = 'sm' }: { action: Action; size?: 'sm
       </Button>
       <span aria-live="polite" className="text-sm">
         {res && (
-          <span className={cn(res.status === 'accepted' ? 'text-success' : res.status === 'timeout' ? 'text-warning' : 'text-destructive')}>
+          <span className={cn(res.status === 'accepted' ? 'text-success' : res.status === 'timeout' ? 'text-[color-mix(in_oklch,var(--warning),black_35%)] dark:text-warning' : 'text-destructive')}>
             {res.status === 'accepted' ? 'Accepted' : res.status === 'timeout' ? 'Timed out' : res.status === 'failed' ? 'Failed' : 'Not sent'}
             {'elapsed_ms' in res && <span className="text-muted-foreground"> · {res.elapsed_ms} ms</span>}
             {res.message && <span className="text-muted-foreground"> · {res.message}</span>}

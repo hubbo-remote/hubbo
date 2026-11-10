@@ -82,7 +82,7 @@ export function BindingsEditor({
             selected={selected}
             onSelect={onSelect}
             errors={errorButtons}
-            className="mx-auto max-h-[70dvh] max-w-[15rem] md:max-h-[calc(100dvh-9rem)]"
+            className="mx-auto max-w-[19rem] md:max-h-[calc(100dvh-9rem)] md:max-w-[15rem]" // phones: full width, so keys are big enough to tap
             label={`Remote. ${boundCount} of ${BUTTONS.length} buttons bound. Use arrow keys to move between buttons, Enter to edit.`}
           />
           <EventLegend className="mt-3 justify-center" />

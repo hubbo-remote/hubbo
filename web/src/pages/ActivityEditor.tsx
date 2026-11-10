@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
+import { Input, ShowErrors } from '@/components/ui/input'
 import { Kbd, Skeleton } from '@/components/ui/misc'
 import { Tabs } from '@/components/ui/tabs'
 import { toast, toastError } from '@/components/ui/toast'
@@ -57,7 +57,10 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
   const isNew = !draft.id
   const dirty = useMemo(() => !same(draft, saved), [draft, saved])
   const local = useMemo(() => validateActivity(draft, catalog), [draft, catalog])
-  const errors = serverIssues ?? local.errors
+  // Errors show from the first Save (or Validate) on, then update live; never before.
+  const [attempted, setAttempted] = useState(false)
+  const showErrors = attempted || serverIssues !== null
+  const errors = showErrors ? (serverIssues ?? local.errors) : []
 
   const update = useCallback((patch: Partial<ActivityDraft>) => {
     setDraft((d) => ({ ...d, ...patch }))
@@ -75,6 +78,8 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
   const countFor = (prefix: string) => errors.filter((e) => e.path.startsWith(prefix)).length
 
   const save = async (overwriteRevision?: number) => {
+    setAttempted(true)
+    if (!local.valid) return
     setBusy('save')
     try {
       const result = isNew ? await api.createActivity(draft) : await api.replaceActivity(draft.id!, draft, overwriteRevision ?? draft.revision!)
@@ -82,6 +87,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
       setSaved(next)
       setDraft(next)
       setServerIssues(null)
+      setAttempted(false)
       setConflict(null)
       setQueryData(`activity/${result.id}`, result)
       invalidate('activities', 'status')
@@ -107,6 +113,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
   }
 
   const dryRun = async () => {
+    setAttempted(true)
     setBusy('validate')
     try {
       const r = await api.validateActivity(draft)
@@ -122,7 +129,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
   // Cmd/Ctrl+S saves. The listener is attached once and reads the latest state through a ref.
   const onSaveKey = useRef<() => void>(() => {})
   onSaveKey.current = () => {
-    if ((dirty || isNew) && !busy && local.valid && !lock.locked) void save()
+    if ((dirty || isNew) && !busy && !lock.locked) void save()
   }
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -147,7 +154,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
   const nameError = errors.find((e) => e.path === '/name')
 
   return (
-    <>
+    <ShowErrors.Provider value={showErrors}>
       <PageHeader
         back={{ href: '/activities', label: 'Activities' }}
         title={
@@ -162,7 +169,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
               maxLength={LIMITS.nameMax}
               onChange={(e) => update({ name: e.target.value })}
               aria-invalid={!!nameError}
-              className="h-10 w-[min(22rem,70vw)] border-transparent bg-transparent px-2 text-2xl font-semibold shadow-none hover:border-input md:text-2xl"
+              className="h-10 w-[min(22rem,70vw)] border-transparent bg-transparent px-2 text-2xl font-semibold shadow-none placeholder:text-base placeholder:font-normal hover:border-input md:text-2xl"
             />
             <Pencil className="size-4 shrink-0 text-muted-foreground" aria-hidden />
           </span>
@@ -188,7 +195,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
               {busy === 'validate' ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
               Validate
             </Button>
-            <Button onClick={() => save()} disabled={!!busy || (!dirty && !isNew) || !local.valid || lock.locked} title={lock.title ?? 'Save (Ctrl+S)'}>
+            <Button onClick={() => save()} disabled={!!busy || (!dirty && !isNew) || lock.locked} title={lock.title ?? 'Save (Ctrl+S)'}>
               {busy === 'save' ? <Loader2 className="animate-spin" /> : <Save />}
               {isNew ? 'Create' : 'Save'}
               <Kbd className="hidden border-primary-foreground/30 bg-transparent text-primary-foreground/70 lg:inline">⌘S</Kbd>
@@ -278,7 +285,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
         }}
         onOverwrite={() => conflict && save(conflict.revision)}
       />
-    </>
+    </ShowErrors.Provider>
   )
 }
 
