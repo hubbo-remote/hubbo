@@ -2,7 +2,7 @@
 
 ## The agent team
 
-Hubbo is always built by a lead session and four agents. This holds in every session, and after
+Hubbo is always built by a lead session and its agents. This holds in every session, and after
 compaction. Nobody needs to ask for it or explain it.
 
 - **The lead** (the main session) plans, writes the design docs, relays interfaces between agents,
@@ -19,6 +19,7 @@ compaction. Nobody needs to ask for it or explain it.
   | `hubbo-api` | the HTTP API, auth, `ha/` capabilities, `api/` (spec, fixtures, contract), `docs/security.md`, `docs/agent-api.md`, `docs/ha-capabilities.md` |
   | `hubbo-firmware` | `firmware/`, `docs/hardware/`, the dev board |
   | `hubbo-frontend` | `web/` (the web admin, its mock and e2e) |
+  | `hubbo-spec` | the device profile spec, its schema and the profiles, in `~/src/hubbo-devices` |
 
 - At the start of a session, or when work begins, the lead spawns the agents the work needs. If an
   agent from this session is still alive, the lead messages it instead.

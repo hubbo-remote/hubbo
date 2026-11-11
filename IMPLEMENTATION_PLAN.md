@@ -213,6 +213,22 @@ Version 0.1 • 2026-11-04
 **6.4 Docs:** installation, wiring, first-run, pairing, API/OpenAPI, LLM agent instructions, troubleshooting, backup/OTA recovery, security threat model and explicit MVP limitations.
 **Gate:** new user can flash from browser, configure devices, create an activity, use remote, OTA update, backup/restore, and reproduce tests.
 
+## Several Bluetooth devices (before polish round 2)
+Up to four Bluetooth hosts, each a device with its own pairing, all connected at once (user decision, 2026-11-10). Design: `docs/design/multi-bluetooth.md`.
+
+## Device profiles (after several Bluetooth devices)
+**A profile is a device** (user, 2026-11-10). A device on the hub is a profile that's been added: manufacturer, model, platform, commands, power and timing, plus local fields (id, name, Bluetooth pairing). The hub's device record mirrors the profile, so adding a device is close to a copy. Profiles come from the Harmony database (converted) at scale, and are hand-written for Bluetooth. Spec and profiles: the spec agent, in `~/src/hubbo-devices`. Research: `docs/design/research-device-catalog.md`.
+- **Platforms are shared:** a profile's platform is the hub's (`ble_hid`, later `ir`). What happens after adding depends on the platform alone: Bluetooth opens the hub's one pairing flow, and IR is just added.
+- **Every profile is complete.** No inheritance, no brand aliases. Generic profiles (Apple TV, Android TV / Google TV, Fire TV, Other) are ordinary profiles; people who can't find their exact device pick one.
+- **Contributions** by pull request or feedback on hubbo-devices.
+- **The hub bundles copies** of the generic profiles, so adding works offline.
+- **The add flow:** Add device → find or browse a profile → added (→ pairing for Bluetooth).
+- Commands come from the device's profile, so an activity's buttons can be pre-filled.
+- **Device kinds mirror Harmony's device types** (user, 2026-11-10), about 30, so the whole database fits. A kind is only a label, an icon and a browse category. Home Assistant doesn't change.
+
+## Hubbo site (its own phase)
+A new repo next to hubbo, with a site agent: the marketing site (what Hubbo does, how it works, where to get it, docs) that also serves the device documents (user, 2026-11-10).
+
 ## Polish pass (before Phase 6)
 Round 1 (copy and navigation) is `docs/design/polish-ux.md`. Phase 6 comes after the polish pass (user decision, 2026-11-10). Visual polish and a redesign were deferred in Phase 4 (user decision, 2026-11-09). Collected from
 the Phase 4 board gate, where the user set up a wiped board on an iPhone:
