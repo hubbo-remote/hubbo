@@ -103,7 +103,7 @@ TEST(Resolver, ChecksExistenceTypeAndAdapter) {
         if (i.id == "ha_main") i.type = "ble_hid";
     }
     DeviceSpec bleOnHa = tv;
-    bleOnHa.provider = {"ble_hid", "", "", ""};
+    bleOnHa.provider = {"ble_hid", "", ""};
     EXPECT_EQ(resolveIntegration(cfg, fakes.set, bleOnHa).error, ErrorCode::IntegrationMismatch);
 }
 

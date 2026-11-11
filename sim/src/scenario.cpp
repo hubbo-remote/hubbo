@@ -62,13 +62,14 @@ bool parseUint(const std::string &s, uint32_t *out) {
 
 ScenarioRunner::ScenarioRunner(std::ostream *trace, storage::Storage *storage, bool pinned, const ConfigSpec *seed,
                                storage::StateStore *state, auth::Credentials *credentials,
-                               bool realHomeAssistant)
+                               bool realHomeAssistant, storage::Storage *bonds)
     : trace_(trace),
       storage_(storage != nullptr ? storage : &ownStorage_),
       state_(state),
       credentials_(credentials),
       pinned_(pinned),
       realHomeAssistant_(realHomeAssistant),
+      bonds_(bonds != nullptr ? bonds : &ownBonds_),
       seed_(seed != nullptr ? *seed : fixtureConfig()) {
     // The real adapter only has commands for devices with a snapshot.
     if (realHomeAssistant_) addFakeHaSnapshots(&seed_, FakeHaServer());
@@ -82,7 +83,7 @@ ScenarioRunner::ScenarioRunner(std::ostream *trace, storage::Storage *storage, b
 }
 
 void ScenarioRunner::newHub() {
-    hub_ = std::make_unique<SimHub>(storage_, state_, realHomeAssistant_);
+    hub_ = std::make_unique<SimHub>(storage_, state_, realHomeAssistant_, bonds_);
     if (trace_ == nullptr) return;
     std::ostream *out = trace_;
     hub_->onLog = [out](const char *kind, const LogLine &line) {
@@ -106,7 +107,7 @@ void ScenarioRunner::reset() {
     }
     commandCursor_ = hub_->commands().size();
     eventCursor_ = hub_->events().size();
-    hidCursor_ = hub_->hid().reports().size();
+    hidCursor_ = hub_->bleHosts().reports().size();
     lastResult_ = ErrorCode::Ok;
 }
 
@@ -235,10 +236,15 @@ bool ScenarioRunner::runLine(const std::string &raw) {
         return true;
     }
     if (verb == "ble") {
-        if (words.size() != 1 || (words[0] != "connected" && words[0] != "disconnected")) {
-            return fail("usage: ble connected|disconnected");
+        if (words.empty() || words.size() > 2 || (words[0] != "connected" && words[0] != "disconnected")) {
+            return fail("usage: ble connected|disconnected [device_id]");
         }
-        hub.hid().setConnected(words[0] == "connected");
+        const bool connected = words[0] == "connected";
+        if (words.size() == 1) {
+            hub.bleHosts().setAllConnected(connected);
+        } else if (!hub.bleHosts().setConnected(words[1], connected)) {
+            return fail("no Bluetooth host is bonded to " + words[1]);
+        }
         return true;
     }
     if (verb == "expect") {
@@ -272,10 +278,17 @@ bool ScenarioRunner::runLine(const std::string &raw) {
         return true;
     }
     if (verb == "expect_hid") {
-        auto &log = hub.hid().reports();
+        auto &log = hub.bleHosts().reports();
+        std::string report = rest;
+        std::string device;  // "@dev_x consumer 0x0042": also check whose host got it
+        if (!words.empty() && words[0].size() > 1 && words[0][0] == '@') {
+            device = words[0].substr(1);
+            report = rest.substr(rest.find(words[0]) + words[0].size());
+        }
         if (hidCursor_ >= log.size()) return fail("expected HID '" + rest + "', but no more reports");
-        if (normalize(log[hidCursor_]) != normalize(rest)) {
-            return fail("expected HID '" + rest + "', got '" + log[hidCursor_] + "'");
+        const std::string &to = hub.bleHosts().reportDevices()[hidCursor_];
+        if (normalize(log[hidCursor_]) != normalize(report) || (!device.empty() && to != device)) {
+            return fail("expected HID '" + rest + "', got '@" + to + " " + log[hidCursor_] + "'");
         }
         hidCursor_++;
         return true;
@@ -294,7 +307,7 @@ bool ScenarioRunner::runLine(const std::string &raw) {
     if (verb == "drain") {
         commandCursor_ = hub.commands().size();
         eventCursor_ = hub.events().size();
-        hidCursor_ = hub.hid().reports().size();
+        hidCursor_ = hub.bleHosts().reports().size();
         return true;
     }
     if (verb == "print") {

@@ -521,38 +521,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/admin/integrations/{integration_id}/pair": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                integration_id: components["parameters"]["IntegrationIdPath"];
-            };
-            cookie?: never;
-        };
-        /** Pairing state (BLE HID) */
-        get: operations["getIntegrationPairing"];
-        put?: never;
-        /**
-         * Open a pairing window (BLE HID)
-         * @description Forgets the bonded host, then advertises and accepts a new bond for
-         *     `window_s` seconds: a new bond replaces the old one. Poll
-         *     `GET .../pair` until it's `paired` or `failed` (the window closed with
-         *     no bond). `ble_hid` integrations only (404 for others); 409 `busy`
-         *     while a window is open; 503 `integration_unavailable` when Bluetooth
-         *     isn't running.
-         */
-        post: operations["startIntegrationPairing"];
-        /**
-         * Forget the bonded host (BLE HID)
-         * @description Closes any open window and deletes the bond. Remove Hubbo on the host too.
-         */
-        delete: operations["forgetIntegrationPairing"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/admin/devices": {
         parameters: {
             query?: never;
@@ -585,6 +553,11 @@ export interface paths {
          *     `integration_unavailable`, and nothing is sent to HA) until an admin
          *     re-links it (`PUT /admin/devices/{id}` with a `provider`, which
          *     refreshes the capabilities the same way).
+         *
+         *     Bluetooth (`provider: {type: ble_hid}`, `integration_id: ble`): no
+         *     discovery; the device starts `not_paired` (pair it with `POST
+         *     /admin/devices/{id}/pair`). At most 4 Bluetooth devices: a fifth is
+         *     `422` with `too_many_devices` at `/integration_id`.
          */
         post: operations["registerDevice"];
         delete?: never;
@@ -616,9 +589,73 @@ export interface paths {
         post?: never;
         /**
          * Remove a device
-         * @description Refused with `409 device_in_use` while any activity references it; `details` lists the references.
+         * @description Refused with `409 device_in_use` while any activity references it;
+         *     `details` lists the references. A Bluetooth device's bond is forgotten
+         *     with it.
          */
         delete: operations["deleteDevice"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/devices/{device_id}/pair": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: components["parameters"]["DeviceIdPath"];
+            };
+            cookie?: never;
+        };
+        /**
+         * A Bluetooth device's pairing and connection status
+         * @description The same status as the device's `bluetooth` field.
+         */
+        get: operations["getDevicePairing"];
+        put?: never;
+        /**
+         * Open a pairing window for a Bluetooth device
+         * @description Advertises for `window_s` seconds. The first new host that bonds
+         *     becomes this device's host and replaces only this device's own bond;
+         *     a host already paired with another device stays with that device.
+         *     Poll `GET .../pair` until it isn't `pairing`: a window that closes
+         *     with no new bond (it timed out, or the hub already holds 4 bonds)
+         *     leaves the device as it was. Bluetooth devices only (`404 not_found`
+         *     for any other device); `409 busy` while any device's window is open;
+         *     `503 integration_unavailable` when Bluetooth isn't working.
+         */
+        post: operations["startDevicePairing"];
+        /**
+         * Close this device's pairing window
+         * @description Keeps any bond it had. `204` when no window was open for it.
+         */
+        delete: operations["cancelDevicePairing"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/devices/{device_id}/pairing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: components["parameters"]["DeviceIdPath"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Forget a Bluetooth device's host
+         * @description Closes its window if open and deletes only this device's bond
+         *     (disconnecting that host). The device stays, `not_paired`. Remove
+         *     Hubbo on the host too. `204` when it had no bond. Deleting the device
+         *     forgets it as well.
+         */
+        delete: operations["forgetDevicePairing"];
         options?: never;
         head?: never;
         patch?: never;
@@ -870,8 +907,8 @@ export interface paths {
          *     and the whole configuration. Answers `202` first; the hub then stops
          *     answering for a few seconds and comes back with `auth_state` `fresh`
          *     (every session gone), so the next step is `POST /auth/setup`. The
-         *     Apple TV still lists the old pairing: forget "Hubbo" there before
-         *     pairing again. Refused while a firmware update is running.
+         *     paired hosts (an Apple TV, say) still list the old pairing: forget
+         *     "Hubbo" on each before pairing again. Refused while a firmware update is running.
          */
         post: operations["factoryReset"];
         delete?: never;
@@ -1357,8 +1394,6 @@ export interface components {
              * @enum {string}
              */
             type: "ble_hid";
-            /** @description Name of the bonded host, if known. Keys are never exposed. */
-            peer_name?: string;
         };
         Provider: components["schemas"]["HomeAssistantProvider"] | components["schemas"]["BleHidProvider"];
         /** @description Shared by Device and StoredDevice (open; each closes it). */
@@ -1406,7 +1441,7 @@ export interface components {
             /**
              * @description `available` / `unavailable`: the integration is connected or not.
              *     `stale`: the provider no longer knows this target (an HA entity
-             *     missing from the latest discovery; a BLE bond gone). Commands
+             *     missing from the latest discovery). Commands
              *     fail (`entity_not_found`) until an admin re-links it. Runtime
              *     state, never saved, and only as current as the last discovery:
              *     Home Assistant answers a call to a missing entity with success,
@@ -1416,6 +1451,8 @@ export interface components {
              * @enum {string}
              */
             availability: "available" | "unavailable" | "stale" | "unknown";
+            /** @description Bluetooth devices only (runtime state, never saved). */
+            bluetooth?: components["schemas"]["BluetoothStatus"];
         } & components["schemas"]["DeviceFields"];
         DeviceList: {
             devices: components["schemas"]["Device"][];
@@ -1481,10 +1518,8 @@ export interface components {
              * @enum {string}
              */
             type: "ble_hid";
-            /** @description Advertised Bluetooth name. */
+            /** @description The name hosts see when pairing. Bonds live on each device (`bluetooth`). */
             device_name: string;
-            readonly bonded: boolean;
-            readonly peer_name?: string;
         };
         SystemSettings: {
             /**
@@ -1596,15 +1631,15 @@ export interface components {
             next_cursor?: string | null;
         } & (unknown & unknown);
         /**
-         * @description `idle` (no bond), `pairing` (window open, `window_s` left), `paired`
-         *     (a bonded host, `peer_name` if known) or `failed` (the latest window
-         *     closed with no bond; until the next pair or forget).
+         * @description One Bluetooth device's host. `not_paired`: no bond. `pairing`: its
+         *     window is open, `window_s` left. `connected` / `not_connected`: a
+         *     bonded host, connected now or not (its keys are `unavailable` until it
+         *     reconnects).
          */
-        PairingStatus: {
+        BluetoothStatus: {
             /** @enum {string} */
-            state: "idle" | "pairing" | "paired" | "failed";
+            state: "not_paired" | "pairing" | "connected" | "not_connected";
             window_s?: number;
-            peer_name?: string;
         };
         /**
          * @description The latest scan: `idle` (none since boot), `scanning`, `found` (the
@@ -2646,86 +2681,6 @@ export interface operations {
             503: components["responses"]["Unavailable"];
         };
     };
-    getIntegrationPairing: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                integration_id: components["parameters"]["IntegrationIdPath"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The bond and any open window */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PairingStatus"];
-                };
-            };
-            401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            503: components["responses"]["Unavailable"];
-        };
-    };
-    startIntegrationPairing: {
-        parameters: {
-            query?: {
-                window_s?: number;
-            };
-            header?: never;
-            path: {
-                integration_id: components["parameters"]["IntegrationIdPath"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Pairing window open */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PairingStatus"];
-                };
-            };
-            401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            422: components["responses"]["ValidationFailed"];
-            503: components["responses"]["Unavailable"];
-        };
-    };
-    forgetIntegrationPairing: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                integration_id: components["parameters"]["IntegrationIdPath"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Bond removed */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            503: components["responses"]["Unavailable"];
-        };
-    };
     registerDevice: {
         parameters: {
             query?: never;
@@ -2823,6 +2778,110 @@ export interface operations {
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationFailed"];
             500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    getDevicePairing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: components["parameters"]["DeviceIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Its status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BluetoothStatus"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    startDevicePairing: {
+        parameters: {
+            query?: {
+                window_s?: number;
+            };
+            header?: never;
+            path: {
+                device_id: components["parameters"]["DeviceIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pairing window open */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BluetoothStatus"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationFailed"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    cancelDevicePairing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: components["parameters"]["DeviceIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Closed (or no window was open) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    forgetDevicePairing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: components["parameters"]["DeviceIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Forgotten */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             503: components["responses"]["Unavailable"];
         };
     };

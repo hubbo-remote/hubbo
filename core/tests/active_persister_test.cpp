@@ -121,7 +121,7 @@ TEST_F(RebootTest, RestoresSilently) {
     EXPECT_STREQ(hub->engine().activeActivityId(), "act_watch_apple_tv");
     EXPECT_EQ(hub->engine().activeActivityIdShared(), "act_watch_apple_tv");
     EXPECT_TRUE(hub->commands().empty());       // no startup
-    EXPECT_TRUE(hub->hid().reports().empty());  // no releaseAll
+    EXPECT_TRUE(hub->bleHosts().reports().empty());  // no releaseAll
     EXPECT_EQ(hub->engine().generation(), 0u);
     EXPECT_EQ(hub->engine().executor().stats().enqueued, 0u);
 }

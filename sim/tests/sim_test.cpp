@@ -391,53 +391,150 @@ TEST(SimApi, SimulatedPressesShowInRemoteStatusLikeRadioPackets) {
     EXPECT_NE(status().find(R"("held":[])"), std::string::npos);  // and doesn't come back
 }
 
-TEST(SimApi, BlePairingIsDrivenFromSimRoutes) {
+// Through the engine: an activity's key goes only to its own device's host;
+// a host that isn't connected makes the action unavailable and nothing is
+// sent anywhere; an activity change releases what was held on the other host.
+TEST(SimHubBluetooth, KeysGoOnlyToTheNamedHost) {
+    SimHub hub;
+    ConfigSpec c = fixtureConfig();
+    c.devices.push_back(bleDevice("dev_shield", "Shield", "streamer"));
+    ActivitySpec shield;
+    shield.id = "act_watch_shield";
+    shield.name = "Watch Shield";
+    shield.revision = 1;
+    shield.bindings.push_back(bind("play:tap", {bleKey("key_tap", "PLAY_PAUSE", "dev_shield")}));
+    c.activities.push_back(shield);
+    ASSERT_TRUE(hub.load(c).ok());
+    SimulatedBleHosts &hosts = hub.bleHosts();
+    hosts.bond("dev_shield", "SHIELD");
+
+    ASSERT_EQ(hub.activate("act_watch_shield"), ErrorCode::Ok);
+    hub.advance(100);
+    const size_t before = hosts.reports().size();
+    hub.tap(remote::Button::Play);
+    hub.advance(100);
+    ASSERT_EQ(hosts.reports().size(), before + 2);  // down, up
+    EXPECT_EQ(hosts.reportDevices()[before], "dev_shield");
+    EXPECT_EQ(hosts.reportDevices()[before + 1], "dev_shield");
+
+    hosts.setConnected("dev_shield", false);
+    hub.tap(remote::Button::Play);
+    hub.advance(100);
+    EXPECT_EQ(hosts.reports().size(), before + 2);  // unavailable: nothing sent anywhere
+    EXPECT_NE(hub.commands().back().text.find("adapter_unavailable"), std::string::npos)
+        << hub.commands().back().text;
+
+    // A key held on the Apple TV is released when the activity changes.
+    ASSERT_EQ(hub.activate("act_watch_apple_tv"), ErrorCode::Ok);
+    hub.advance(2000);
+    hub.press(remote::Button::Up);
+    hub.advance(100);
+    EXPECT_EQ(hub.ble().heldConsumer("dev_apple_tv"), 0x42);
+    ASSERT_EQ(hub.activate("act_watch_shield"), ErrorCode::Ok);
+    hub.advance(100);
+    EXPECT_EQ(hub.ble().heldConsumer("dev_apple_tv"), 0);
+    EXPECT_EQ(hosts.reports().back(), "consumer 0x0000");
+    EXPECT_EQ(hosts.reportDevices().back(), "dev_apple_tv");
+    hub.release(remote::Button::Up);
+}
+
+// Bonds survive a restart, as in the board's NVS: a host pruned by the
+// config stays gone, and only a first start gets the fixture's bond.
+TEST(SimHubBluetooth, BondsSurviveARestart) {
+    storage::MemoryStorage config;
+    storage::MemoryStorage nvs;
+    {
+        SimHub hub(&config, nullptr, false, &nvs);
+        hub.boot(fixtureConfig());
+        EXPECT_TRUE(hub.bleHosts().status(SimHub::kBondedDevice).bonded);  // first start
+        ASSERT_TRUE(hub.load(fixtureConfigWithoutBluetooth()).ok());  // prunes the Apple TV's host
+        ASSERT_TRUE(hub.load(fixtureConfig()).ok());
+        EXPECT_FALSE(hub.bleHosts().status(SimHub::kBondedDevice).bonded);
+        hub.bleHosts().bond(SimHub::kBondedDevice, "Another Apple TV");
+        ASSERT_EQ(hub.bleHosts().forget(SimHub::kBondedDevice), integrations::BleHostResult::Accepted);
+    }
+    SimHub hub(&config, nullptr, false, &nvs);
+    hub.boot(fixtureConfig());
+    EXPECT_FALSE(hub.bleHosts().status(SimHub::kBondedDevice).bonded);  // still gone
+    hub.bleHosts().bond(SimHub::kBondedDevice, SimHub::kBondedHost);
+    SimHub again(&config, nullptr, false, &nvs);
+    again.boot(fixtureConfig());
+    EXPECT_TRUE(again.bleHosts().status(SimHub::kBondedDevice).bonded);
+}
+
+// Several Bluetooth hosts, each bonded to its own device, driven from /sim.
+TEST(SimApi, BluetoothHostsAreDrivenFromSimRoutes) {
     SimAuth a;
     ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
     SimApi api(runner, false, a.credentials);
-    api::SimulatedBlePairing &ble = runner.hub().blePairing();
-    const auto state = [&] { return std::string(SimRuntime(runner.hub()).integrationState("ble")); };
-    // Bonded to the fixture host from the start.
-    EXPECT_EQ(ble.status().state, api::BlePairState::Paired);
-    EXPECT_EQ(state(), "connected");
-    ASSERT_EQ(ble.forget(), api::BlePairingResult::Accepted);
-    EXPECT_EQ(state(), "not_configured");
-    EXPECT_FALSE(runner.hub().hid().connected());  // no bond, no host
+    SimHub &hub = runner.hub();
+    SimulatedBleHosts &hosts = hub.bleHosts();
+    const SimRuntime runtime(hub);
+    const auto line = [&](const char *device) {
+        const integrations::BleDeviceState state = integrations::bleDeviceState(hosts.status(device));
+        return std::string(state.state) + (state.windowS != 0 ? " " + std::to_string(state.windowS) : "");
+    };
+    const DeviceSpec shield = bleDevice("dev_shield", "Shield", "streamer");
+    const auto pairShield = [&] { return hosts.startPairing("dev_shield", integrations::kBlePairingMinWindowMs); };
 
-    // A host bonds during the window.
-    ASSERT_EQ(ble.startPairing(api::kBlePairingMinWindowMs), api::BlePairingResult::Accepted);
+    // The fixture world: the Apple TV bonded and connected; the radio working.
+    EXPECT_EQ(line("dev_apple_tv"), "connected");
+    EXPECT_STREQ(runtime.integrationState("ble"), "connected");
+    EXPECT_EQ(runtime.integrationDetail("ble"), "");
+    EXPECT_EQ(line("dev_shield"), "not_paired");
+    EXPECT_STREQ(runtime.deviceAvailability(shield), "unavailable");
+
+    // Pair a second host; the window runs on hub time.
+    ASSERT_EQ(pairShield(), integrations::BleHostResult::Accepted);
+    EXPECT_EQ(hosts.startPairing("dev_apple_tv", integrations::kBlePairingMinWindowMs),
+              integrations::BleHostResult::Busy);  // one window at a time
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/advance", "ms=500").status, 200);
+    EXPECT_EQ(hosts.startPairing("dev_shield", integrations::kBlePairingMaxWindowMs),
+              integrations::BleHostResult::Accepted);  // its own window: no change
     EXPECT_EQ(call(api, http::Method::Post, "/sim/advance", "ms=1000").status, 200);
-    EXPECT_EQ(ble.status().state, api::BlePairState::Pairing);
-    EXPECT_EQ(state(), "connecting");
-    EXPECT_EQ(ble.status().windowRemainingMs, api::kBlePairingMinWindowMs - 1000);
-    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble/bonded", "peer=AppleTV").status, 200);
-    EXPECT_EQ(ble.status().state, api::BlePairState::Paired);
-    EXPECT_EQ(ble.status().peerName, "AppleTV");
-    EXPECT_EQ(state(), "connected");
-    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble", "connected=0").status, 200);  // only the link
-    EXPECT_EQ(state(), "disconnected");
-    EXPECT_EQ(ble.status().state, api::BlePairState::Paired);
-    // Detail and device availability come from the same shared mapping.
-    const SimRuntime runtime(runner.hub());
-    const DeviceSpec *appleTv = runner.hub().configService().findDevice("dev_apple_tv");
-    ASSERT_NE(appleTv, nullptr);
-    EXPECT_EQ(runtime.integrationDetail("ble"), "Waiting for AppleTV");
-    EXPECT_STREQ(runtime.deviceAvailability(*appleTv), "unavailable");
-    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble", "connected=1").status, 200);
-    EXPECT_EQ(runtime.integrationDetail("ble"), "Connected to AppleTV");
-    EXPECT_STREQ(runtime.deviceAvailability(*appleTv), "available");
+    EXPECT_EQ(line("dev_shield"), "pairing 29");
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble/bond", "device=dev_shield&host=Apple TV").status, 409);  // tied to dev_apple_tv
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble/bond", "device=dev_shield&host=SHIELD").status, 200);
+    EXPECT_EQ(line("dev_shield"), "connected");
+    EXPECT_STREQ(runtime.deviceAvailability(shield), "available");
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble/bond", "device=dev_shield").status, 409);  // no window
 
-    // No host: the window runs out on the hub clock.
-    ASSERT_EQ(ble.startPairing(api::kBlePairingMinWindowMs), api::BlePairingResult::Accepted);
+    // One host's link drops; the other stays.
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble/link", "device=dev_shield&up=0").status, 200);
+    EXPECT_EQ(line("dev_shield"), "not_connected");
+    EXPECT_EQ(line("dev_apple_tv"), "connected");
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble/link", "device=dev_nope&up=1").status, 404);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble/link", "device=dev_shield&up=1").status, 200);
+    EXPECT_EQ(line("dev_shield"), "connected");
+
+    // Re-pairing with the host it already had is a success.
+    ASSERT_EQ(pairShield(), integrations::BleHostResult::Accepted);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble/bond", "device=dev_shield&host=SHIELD").status, 200);
+    EXPECT_EQ(line("dev_shield"), "connected");
+
+    // A re-pair that times out keeps the old host; a forget drops only its own bond.
+    ASSERT_EQ(pairShield(), integrations::BleHostResult::Accepted);
     EXPECT_EQ(call(api, http::Method::Post, "/sim/advance", "ms=30000").status, 200);
-    EXPECT_EQ(ble.status().state, api::BlePairState::Failed);
-    EXPECT_EQ(state(), "not_configured");
+    EXPECT_EQ(line("dev_shield"), "connected");
+    ASSERT_EQ(hosts.forget("dev_shield"), integrations::BleHostResult::Accepted);
+    EXPECT_EQ(line("dev_shield"), "not_paired");
+    EXPECT_EQ(line("dev_apple_tv"), "connected");
+
+    // A first pair that times out is still not paired.
+    ASSERT_EQ(pairShield(), integrations::BleHostResult::Accepted);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/advance", "ms=30000").status, 200);
+    EXPECT_EQ(line("dev_shield"), "not_paired");
+
+    // The radio.
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/ble/radio", "ready=0").status, 200);
+    EXPECT_STREQ(runtime.integrationState("ble"), "error");
+    EXPECT_EQ(runtime.integrationDetail("ble"), "Bluetooth isn't working");
+    EXPECT_EQ(pairShield(), integrations::BleHostResult::NotReady);
 
     EXPECT_EQ(call(api, http::Method::Post, "/sim/reset").status, 200);
-    EXPECT_EQ(runner.hub().blePairing().status().state, api::BlePairState::Paired);
-    EXPECT_EQ(state(), "connected");
+    EXPECT_TRUE(hosts.radioReady());
+    EXPECT_EQ(line("dev_apple_tv"), "connected");
 }
-
 TEST(SimApi, FirmwareFaultsAreDrivenFromSimRoutes) {
     SimAuth a;
     ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
@@ -556,7 +653,7 @@ TEST(SimApi, FactoryResetErasesEverythingAfterTheRestart) {
     EXPECT_EQ(a.secrets.read(api::kHaTokenKey, &token), auth::SecretRead::NotFound);
     EXPECT_EQ(hub.haClient().state(), integrations::HaState::NotConfigured);
     EXPECT_FALSE(hub.remote().status().hasEndpoint);
-    EXPECT_EQ(hub.blePairing().status().state, api::BlePairState::Idle);
+    EXPECT_FALSE(hub.bleHosts().status(SimHub::kBondedDevice).bonded);
     EXPECT_FALSE(hub.engine().hasActiveActivity());
     // The board's first boot, through bootHub(): its defaults (only the
     // built-ins), saved as generation 1, nothing saved active.
@@ -774,9 +871,9 @@ TEST_F(RealHa, EveryDashboardStateCanBeProduced) {
     EXPECT_EQ(post("/sim/ha", "reachable=0"), 200);
     EXPECT_EQ(state("ha_main"), "unreachable");
 
-    EXPECT_EQ(post("/sim/ble", "connected=0"), 200);
-    EXPECT_EQ(state("ble"), "disconnected");
-    EXPECT_EQ(post("/sim/ble", "connected=maybe"), 400);
+    EXPECT_EQ(post("/sim/ble/radio", "ready=0"), 200);
+    EXPECT_EQ(state("ble"), "error");
+    EXPECT_EQ(post("/sim/ble/radio", "ready=maybe"), 400);
     // What the dashboard reads.
     const std::string status = call(*api, http::Method::Get, "/api/v1/status").body;
     EXPECT_NE(status.find(R"({"id":"ha_main","type":"home_assistant","state":"unreachable")"), std::string::npos) << status;

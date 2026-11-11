@@ -78,9 +78,10 @@ const DIALOGS: [string, (page: Page) => Promise<void>, ShotOpts][] = [
   [
     '11-ble-pair',
     async (page) => {
-      await open(page, '/integrations')
-      await page.getByRole('button', { name: /pair/i }).first().click()
-      await expect(page.getByText(/s left$/)).toBeVisible()
+      await open(page, '/devices/dev_apple_tv')
+      await page.getByRole('button', { name: 'Pair again' }).click()
+      await page.getByRole('dialog').getByRole('button', { name: 'Pair', exact: true }).click()
+      await expect(page.getByTestId('bluetooth-state')).toContainText('Ready to pair')
     },
     { dialog: true },
   ],

@@ -793,66 +793,6 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '503': {$ref: '#/components/responses/Unavailable'}
 
-  /admin/integrations/{integration_id}/pair:
-    parameters:
-      - $ref: '#/components/parameters/IntegrationIdPath'
-    post:
-      tags: [admin]
-      operationId: startIntegrationPairing
-      x-hubbo-role: admin
-      summary: Open a pairing window (BLE HID)
-      description: |
-        Forgets the bonded host, then advertises and accepts a new bond for
-        `window_s` seconds: a new bond replaces the old one. Poll
-        `GET .../pair` until it's `paired` or `failed` (the window closed with
-        no bond). `ble_hid` integrations only (404 for others); 409 `busy`
-        while a window is open; 503 `integration_unavailable` when Bluetooth
-        isn't running.
-      parameters:
-        - name: window_s
-          in: query
-          required: false
-          schema: {type: integer, minimum: 30, maximum: 300, default: 120}
-      responses:
-        '202':
-          description: Pairing window open
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/PairingStatus'}
-        '401': {$ref: '#/components/responses/Unauthenticated'}
-        '403': {$ref: '#/components/responses/Forbidden'}
-        '404': {$ref: '#/components/responses/NotFound'}
-        '409': {$ref: '#/components/responses/Conflict'}
-        '422': {$ref: '#/components/responses/ValidationFailed'}
-        '503': {$ref: '#/components/responses/Unavailable'}
-    get:
-      tags: [admin]
-      operationId: getIntegrationPairing
-      x-hubbo-role: admin
-      summary: Pairing state (BLE HID)
-      responses:
-        '200':
-          description: The bond and any open window
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/PairingStatus'}
-        '401': {$ref: '#/components/responses/Unauthenticated'}
-        '403': {$ref: '#/components/responses/Forbidden'}
-        '404': {$ref: '#/components/responses/NotFound'}
-        '503': {$ref: '#/components/responses/Unavailable'}
-    delete:
-      tags: [admin]
-      operationId: forgetIntegrationPairing
-      x-hubbo-role: admin
-      summary: Forget the bonded host (BLE HID)
-      description: Closes any open window and deletes the bond. Remove Hubbo on the host too.
-      responses:
-        '204': {description: Bond removed}
-        '401': {$ref: '#/components/responses/Unauthenticated'}
-        '403': {$ref: '#/components/responses/Forbidden'}
-        '404': {$ref: '#/components/responses/NotFound'}
-        '503': {$ref: '#/components/responses/Unavailable'}
-
   /admin/devices:
     post:
       tags: [admin]
@@ -882,6 +822,11 @@ paths:
         `integration_unavailable`, and nothing is sent to HA) until an admin
         re-links it (`PUT /admin/devices/{id}` with a `provider`, which
         refreshes the capabilities the same way).
+
+        Bluetooth (`provider: {type: ble_hid}`, `integration_id: ble`): no
+        discovery; the device starts `not_paired` (pair it with `POST
+        /admin/devices/{id}/pair`). At most 4 Bluetooth devices: a fifth is
+        `422` with `too_many_devices` at `/integration_id`.
       requestBody:
         required: true
         content:
@@ -948,7 +893,10 @@ paths:
       operationId: deleteDevice
       x-hubbo-role: admin
       summary: Remove a device
-      description: Refused with `409 device_in_use` while any activity references it; `details` lists the references.
+      description: |
+        Refused with `409 device_in_use` while any activity references it;
+        `details` lists the references. A Bluetooth device's bond is forgotten
+        with it.
       parameters:
         - $ref: '#/components/parameters/RevisionQuery'
       responses:
@@ -960,6 +908,92 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+
+  /admin/devices/{device_id}/pair:
+    parameters:
+      - $ref: '#/components/parameters/DeviceIdPath'
+    post:
+      tags: [admin]
+      operationId: startDevicePairing
+      x-hubbo-role: admin
+      summary: Open a pairing window for a Bluetooth device
+      description: |
+        Advertises for `window_s` seconds. The first new host that bonds
+        becomes this device's host and replaces only this device's own bond;
+        a host already paired with another device stays with that device.
+        Poll `GET .../pair` until it isn't `pairing`: a window that closes
+        with no new bond (it timed out, or the hub already holds 4 bonds)
+        leaves the device as it was. Starting again while this device's own
+        window is open answers `202` with its status. Bluetooth devices only
+        (`404 not_found` for any other device); `409 busy` while another
+        device's window is open; `503 integration_unavailable` when Bluetooth
+        isn't working, `503 busy` when it can't take the request right now
+        (try again).
+      parameters:
+        - name: window_s
+          in: query
+          required: false
+          schema: {type: integer, minimum: 30, maximum: 300, default: 120}
+      responses:
+        '202':
+          description: Pairing window open
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BluetoothStatus'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    get:
+      tags: [admin]
+      operationId: getDevicePairing
+      x-hubbo-role: admin
+      summary: A Bluetooth device's pairing and connection status
+      description: The same status as the device's `bluetooth` field.
+      responses:
+        '200':
+          description: Its status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BluetoothStatus'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    delete:
+      tags: [admin]
+      operationId: cancelDevicePairing
+      x-hubbo-role: admin
+      summary: Close this device's pairing window
+      description: Keeps any bond it had. `204` when no window was open for it.
+      responses:
+        '204': {description: Closed (or no window was open)}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/devices/{device_id}/pairing:
+    parameters:
+      - $ref: '#/components/parameters/DeviceIdPath'
+    delete:
+      tags: [admin]
+      operationId: forgetDevicePairing
+      x-hubbo-role: admin
+      summary: Forget a Bluetooth device's host
+      description: |
+        Closes its window if open and deletes only this device's bond
+        (disconnecting that host). The device stays, `not_paired`. Remove
+        Hubbo on the host too. `204` when it had no bond. Deleting the device
+        forgets it as well.
+      responses:
+        '204': {description: Forgotten}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/Unavailable'}
 
   /admin/remote:
     get:
@@ -1287,8 +1321,8 @@ paths:
         and the whole configuration. Answers `202` first; the hub then stops
         answering for a few seconds and comes back with `auth_state` `fresh`
         (every session gone), so the next step is `POST /auth/setup`. The
-        Apple TV still lists the old pairing: forget "Hubbo" there before
-        pairing again. Refused while a firmware update is running.
+        paired hosts (an Apple TV, say) still list the old pairing: forget
+        "Hubbo" on each before pairing again. Refused while a firmware update is running.
       responses:
         '202':
           description: The reset will start once this response is sent
@@ -2172,10 +2206,6 @@ components:
       required: [type]
       properties:
         type: {const: ble_hid}
-        peer_name:
-          description: Name of the bonded host, if known. Keys are never exposed.
-          type: string
-          maxLength: 48
     Provider:
       oneOf:
         - $ref: '#/components/schemas/HomeAssistantProvider'
@@ -2252,7 +2282,7 @@ components:
           description: |
             `available` / `unavailable`: the integration is connected or not.
             `stale`: the provider no longer knows this target (an HA entity
-            missing from the latest discovery; a BLE bond gone). Commands
+            missing from the latest discovery). Commands
             fail (`entity_not_found`) until an admin re-links it. Runtime
             state, never saved, and only as current as the last discovery:
             Home Assistant answers a call to a missing entity with success,
@@ -2261,6 +2291,9 @@ components:
             the integration can't tell.
           type: string
           enum: [available, unavailable, stale, unknown]
+        bluetooth:
+          description: Bluetooth devices only (runtime state, never saved).
+          $ref: '#/components/schemas/BluetoothStatus'
       unevaluatedProperties: false
     DeviceList:
       type: object
@@ -2350,16 +2383,14 @@ components:
     BleHidSettings:
       type: object
       additionalProperties: false
-      required: [type, device_name, bonded]
+      required: [type, device_name]
       properties:
         type: {const: ble_hid}
         device_name:
-          description: Advertised Bluetooth name.
+          description: The name hosts see when pairing. Bonds live on each device (`bluetooth`).
           type: string
           minLength: 1
           maxLength: 29
-        bonded: {type: boolean, readOnly: true}
-        peer_name: {type: string, maxLength: 48, readOnly: true}
     SystemSettings:
       type: object
       additionalProperties: false
@@ -2541,18 +2572,18 @@ components:
           maxItems: 100
           items: {$ref: '#/components/schemas/DiscoverCandidate'}
         next_cursor: {type: [string, 'null'], maxLength: 64}
-    PairingStatus:
+    BluetoothStatus:
       description: |
-        `idle` (no bond), `pairing` (window open, `window_s` left), `paired`
-        (a bonded host, `peer_name` if known) or `failed` (the latest window
-        closed with no bond; until the next pair or forget).
+        One Bluetooth device's host. `not_paired`: no bond. `pairing`: its
+        window is open, `window_s` left. `connected` / `not_connected`: a
+        bonded host, connected now or not (its keys are `unavailable` until it
+        reconnects).
       type: object
       additionalProperties: false
       required: [state]
       properties:
-        state: {type: string, enum: [idle, pairing, paired, failed]}
+        state: {type: string, enum: [not_paired, pairing, connected, not_connected]}
         window_s: {type: integer, minimum: 0}
-        peer_name: {type: string, maxLength: 48}
     RemotePairStatus:
       description: |
         The latest scan: `idle` (none since boot), `scanning`, `found` (the
@@ -2623,11 +2654,6 @@ components:
           properties:
             url: {$ref: '#/components/schemas/HomeAssistantSettings/properties/url'}
             verify_tls: {type: boolean}
-            ca_cert_pem:
-              description: Ignored (older backups).
-              deprecated: true
-              type: [string, 'null']
-              maxLength: 4096
             device_name: {$ref: '#/components/schemas/BleHidSettings/properties/device_name'}
     Backup:
       type: object

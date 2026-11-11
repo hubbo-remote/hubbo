@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "busy",
+    "message": "Another device is pairing"
+  }
+}

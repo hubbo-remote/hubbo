@@ -31,7 +31,6 @@
 #include "hubbo/engine/active_persister.h"
 #include "hubbo/domain/config.h"
 #include "hubbo/engine/compiler.h"
-#include "hubbo/api/ble_pairing_port.h"
 #include "hubbo/api/factory_reset_port.h"
 #include "hubbo/api/firmware_update_port.h"
 #include "hubbo/api/remote_port.h"
@@ -52,9 +51,13 @@ public:
     // Config and the active activity persist as records ("config",
     // "active_activity") in `storage` (e.g. a StdioStorage --data dir), or
     // in memory when null; `state` overrides where the active activity goes
-    // (tests). Nothing is loaded yet: call boot() or load().
+    // (tests). `bonds` (optional) keeps the Bluetooth bonds across restarts,
+    // as the board's NVS does: apart from the config's medium, so its health
+    // doesn't touch them. Without one, or on a first start, the fixture
+    // world's bond. Nothing is loaded yet: call boot() or load().
     explicit SimHub(storage::Storage *storage = nullptr, storage::StateStore *state = nullptr,
-                    bool realHomeAssistant = false);
+                    bool realHomeAssistant = false, storage::Storage *bonds = nullptr);
+    static constexpr const char *kBondsFile = "ble_bonds";
 
     // Simulated power-on through bootHub() (config/boot.h), the same path
     // as the firmware: load the config record (else `defaults`), the
@@ -76,14 +79,15 @@ public:
 
     // Factory reset in place: fixtures-style config replaces everything,
     // nothing is active, fake faults are cleared (the fake HA back to its
-    // entities, the client reconnected), the BLE host reconnects, the remote
-    // radio is unpaired, BLE is bonded to kBondedHost again, no button stays
+    // entities, the client reconnected), the remote
+    // radio is unpaired, Bluetooth is back to kBondedDevice bonded to
+    // kBondedHost and connected (the radio working), no button stays
     // held.
     // Persisted like any edit. References to the hub stay valid.
     ValidationReport factoryReset(const ConfigSpec &config);
     // The hub side of a real factory reset (POST /admin/factory-reset), as a
     // wiped board's restart: no key held, nothing active, the remote endpoint
-    // and the BLE bond forgotten, the config record gone, then boot() with
+    // and every Bluetooth bond forgotten, the config record gone, then boot() with
     // the firmware's defaults (an empty config plus the built-ins), saved as
     // generation 1. Erase the secrets first: boot() reloads `credentials`.
     void wipe(auth::Credentials *credentials);
@@ -114,8 +118,12 @@ public:
     FakeHaTransport &haTransport() { return ha_.transport; }
     // The remote radio (the API's RemotePort); its scan clock is hub time.
     api::SimulatedRemote &remote() { return remote_; }
-    api::SimulatedBlePairing &blePairing() { return blePairing_; }
-    static constexpr const char *kBondedHost = "Apple TV";  // BLE's bond at start and after a reset
+    // The Bluetooth radio and its hosts (the API's BleHostPort and the BLE
+    // adapter's transport); the pairing window runs on hub time.
+    SimulatedBleHosts &bleHosts() { return fakes_.bleHosts; }
+    // The fixture world's bond, at start and after a reset: the Apple TV.
+    static constexpr const char *kBondedDevice = "dev_apple_tv";
+    static constexpr const char *kBondedHost = "Apple TV";
     // Firmware updates (the API's FirmwareUpdatePort); writes and the
     // simulated reboot run on hub time. A reset gives a fresh one.
     api::SimulatedFirmwareUpdate &firmware() { return firmware_; }
@@ -131,7 +139,6 @@ public:
     // current time, repeated while the client has work (discovery parse
     // steps). advance() runs it every ms.
     void serviceIntegrations();
-    RecordingHidTransport &hid() { return fakes_.hid; }
     integrations::BleHidAdapter &ble() { return fakes_.ble; }
     remote::RemoteInput &input() { return input_; }
     // What the radio saw, as the board reports it in /remote/status: when
@@ -158,7 +165,7 @@ public:
 
 private:
     void sendGroup(uint8_t group);
-    void resetBle();  // a fresh pairing port, bonded to kBondedHost
+    void resetBle();  // fresh Bluetooth hosts: kBondedDevice bonded to kBondedHost, connected
     void stopEverything();  // keys released, nothing active or saved active, remote unpaired
     api::SimulatedFactoryReset freshFactoryResetPort();  // erase calls onFactoryReset
     void advanceFirmware(uint32_t ms);
@@ -176,10 +183,10 @@ private:
     bool realHomeAssistant_;
     RealHa ha_;
     api::SimulatedRemote remote_;
-    api::SimulatedBlePairing blePairing_;
     api::SimulatedFirmwareUpdate firmware_;
     api::SimulatedFactoryReset factoryReset_;
     FakeAdapters fakes_;
+    integrations::BleHostReconciler bleReconciler_{fakes_.bleHosts};  // hosts follow the saved config
     Engine::Store store_;
     Engine engine_{store_, fakes_.set};
     remote::RemoteInput input_{*this};  // events go through onRemoteEvent() to the engine

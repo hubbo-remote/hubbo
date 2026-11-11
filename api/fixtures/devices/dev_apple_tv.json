@@ -4,10 +4,12 @@
   "integration_id": "ble",
   "kind": "streamer",
   "provider": {
-    "type": "ble_hid",
-    "peer_name": "Family Room"
+    "type": "ble_hid"
   },
   "availability": "available",
+  "bluetooth": {
+    "state": "connected"
+  },
   "schema_version": 1,
   "revision": 1
 }

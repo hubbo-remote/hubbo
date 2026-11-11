@@ -262,14 +262,44 @@
       "kind": "409"
     },
     {
-      "file": "integrations/ble.pair.json",
-      "operation": "startIntegrationPairing",
+      "file": "admin/device_pair.json",
+      "operation": "startDevicePairing",
       "kind": "202"
     },
     {
-      "file": "integrations/ble.pair.paired.json",
-      "operation": "getIntegrationPairing",
+      "file": "admin/device_pair.connected.json",
+      "operation": "getDevicePairing",
       "kind": "200"
+    },
+    {
+      "file": "admin/device_pair.not_paired.json",
+      "operation": "getDevicePairing",
+      "kind": "200"
+    },
+    {
+      "file": "errors/pairing_busy.json",
+      "operation": "startDevicePairing",
+      "kind": "409"
+    },
+    {
+      "file": "errors/not_bluetooth.json",
+      "operation": "startDevicePairing",
+      "kind": "404"
+    },
+    {
+      "file": "errors/bluetooth_unavailable.json",
+      "operation": "startDevicePairing",
+      "kind": "503"
+    },
+    {
+      "file": "errors/bluetooth_busy.json",
+      "operation": "startDevicePairing",
+      "kind": "503"
+    },
+    {
+      "file": "errors/too_many_bluetooth_devices.json",
+      "operation": "registerDevice",
+      "kind": "422"
     },
     {
       "file": "admin/register_device.request.json",

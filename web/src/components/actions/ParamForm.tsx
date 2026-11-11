@@ -3,6 +3,7 @@ import type { ActionParams, ParamSpec, ParamValue } from '@/api/types'
 import { Field, Input, Select } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { checkParam, paramLabel } from '@/lib/activity'
+import { paramValueLabel } from '@/lib/keys'
 
 /** Form fields generated from a command's parameter schema (ParamSpec). */
 export function ParamForm({ params, values, onChange, activities = [], compact }: { params: ParamSpec[]; values: ActionParams; onChange: (v: ActionParams) => void; activities?: { id: string; name: string }[]; compact?: boolean }) {
@@ -25,7 +26,7 @@ export function ParamForm({ params, values, onChange, activities = [], compact }
         switch (p.type) {
           case 'enum':
           case 'activity_ref': {
-            const opts = p.type === 'enum' ? (p.options ?? []).map((o) => ({ value: o, label: o })) : activities.map((a) => ({ value: a.id, label: a.name }))
+            const opts = p.type === 'enum' ? (p.options ?? []).map((o) => ({ value: o, label: paramValueLabel(p.name, o) })) : activities.map((a) => ({ value: a.id, label: a.name }))
             // What's shown is always what's stored. Unset shows as "Choose…"/"Not set" (never as the first
             // option, which picking again wouldn't set); a stored value that isn't an option shows as
             // itself, so it can be seen and changed or cleared. Refs aren't judged before the list loads.

@@ -262,9 +262,7 @@ bool decodeProvider(JsonVariantConst json, ProviderSpec *out, ValidationReport *
         if (out->type == kHomeAssistantType) {
             f.string("entity_id", &out->entityId, true);
             f.string("unique_id", &out->uniqueId, false, limits::kMaxUniqueIdLength);
-        } else if (out->type == kBleHidType) {
-            f.string("peer_name", &out->peerName, false, limits::kMaxPeerNameLength);
-        } else {
+        } else if (out->type != kBleHidType) {  // ble_hid: only its type
             f.failAt(ErrorCode::WrongType, "type");
         }
     }
@@ -276,8 +274,6 @@ void encodeProvider(const ProviderSpec &provider, JsonObject out) {
     if (provider.type == kHomeAssistantType) {
         out["entity_id"] = provider.entityId;
         if (!provider.uniqueId.empty()) out["unique_id"] = provider.uniqueId;
-    } else if (!provider.peerName.empty()) {
-        out["peer_name"] = provider.peerName;
     }
 }
 
@@ -319,9 +315,6 @@ bool decodeIntegrationAs(JsonVariantConst json, IntegrationShape shape, Integrat
         if (ha || !stored) {
             s.string("url", &out->url, stored, limits::kMaxUrlLength);
             s.boolean("verify_tls", &out->verifyTls, stored);
-            // Retired (never had a UI): a record or backup that has it still
-            // loads, and the next save leaves it out.
-            s.get("ca_cert_pem", false);
         }
         if (out->type == kBleHidType || !stored) {
             s.string("device_name", &out->deviceName, stored, limits::kMaxBleNameLength);
@@ -392,30 +385,6 @@ void encodeSections(const ConfigSpec &config, IntegrationShape integrations, Jso
                          doc["global_bindings"].to<JsonObject>());
     JsonArray activities = doc["activities"].to<JsonArray>();
     for (const auto &a : config.activities) encodeActivity(a, activities.add<JsonObject>());
-}
-
-// BLE HID key params renamed after config version 1: DIGIT_n -> KEY_n.
-// Walks every action's params in activities and global bindings.
-void renameLegacyKeys(JsonDocument &doc) {
-    auto fixActions = [](JsonVariant actions) {
-        for (JsonVariant action : actions.as<JsonArray>()) {
-            JsonVariant key = action["params"]["key"];
-            if (!key.is<const char *>()) continue;
-            const std::string value = key.as<const char *>();
-            if (value.size() == 7 && value.rfind("DIGIT_", 0) == 0 && value[6] >= '0' && value[6] <= '9') {
-                key.set(std::string("KEY_") + value[6]);
-            }
-        }
-    };
-    auto fixBindings = [&](JsonVariant bindings) {
-        for (JsonPair kv : bindings.as<JsonObject>()) fixActions(kv.value());
-    };
-    for (JsonVariant activity : doc["activities"].as<JsonArray>()) {
-        fixActions(activity["startup"]);
-        fixActions(activity["shutdown"]);
-        fixBindings(activity["bindings"]);
-    }
-    fixBindings(doc["global_bindings"]["bindings"]);
 }
 
 std::string toText(const JsonDocument &doc, bool trailingNewline) {
@@ -549,7 +518,6 @@ bool decodeDevice(JsonVariantConst json, DeviceShape shape, DeviceSpec *out, Val
         f.string("id", &out->id, true, limits::kMaxIdLength);
         f.schemaVersion(true);
         f.revision("revision", &out->revision, !backup, backup);
-        if (!backup) f.get("availability", false);  // runtime state; accepted and dropped
     }
     f.string("name", &out->name, true, limits::kMaxNameLength);
     f.string("integration_id", &out->integrationId, true, limits::kMaxIdLength);
@@ -606,10 +574,8 @@ void encodeIntegration(const IntegrationSpec &integration, JsonObject out) {
     encodeIntegrationAs(integration, IntegrationShape::Stored, out);
 }
 
-ErrorCode migrateConfig(JsonDocument &doc, int fromVersion) {
-    if (fromVersion < 1) return ErrorCode::MigrationFailed;
-    if (fromVersion < 2) renameLegacyKeys(doc);
-    return ErrorCode::Ok;
+ErrorCode migrateConfig(JsonDocument &, int) {
+    return ErrorCode::MigrationFailed;  // nothing released yet: no older version to upgrade from
 }
 
 std::string serializeConfig(const ConfigSpec &config) {
@@ -701,7 +667,6 @@ ParseResult parseBackup(std::string_view text, ConfigSpec *out, BackupInfo *info
         return result;
     }
     result.schemaVersion = 1;
-    renameLegacyKeys(doc);  // backups made before config version 2
 
     ConfigSpec config;
     BackupInfo meta;

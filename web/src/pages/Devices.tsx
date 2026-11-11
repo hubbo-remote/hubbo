@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Link, useLocation } from 'wouter'
 import { AddDeviceDialog } from '@/components/admin/AddDeviceDialog'
 import { EmptyState, ErrorState, HealthDot, PageHeader } from '@/components/common'
-import { INTEGRATION_ICON, providerRef } from '@/lib/health'
+import { bluetoothDot, bluetoothLabel, INTEGRATION_ICON, providerRef } from '@/lib/health'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -55,9 +55,15 @@ export default function Devices() {
                     <Link key={d.id} href={`/devices/${d.id}`} className="flex items-center gap-3 px-4 py-3 outline-none hover:bg-accent/50 focus-visible:bg-accent">
                       <div className="min-w-0 flex-1">
                         <p className="truncate font-medium">{d.name}</p>
-                        <p className="truncate font-mono text-xs text-muted-foreground">{providerRef(d.provider)}</p>
+                        {d.bluetooth ? (
+                          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <HealthDot state={bluetoothDot(d.bluetooth)} /> {bluetoothLabel(d.bluetooth)}
+                          </p>
+                        ) : (
+                          <p className="truncate font-mono text-xs text-muted-foreground">{providerRef(d.provider)}</p>
+                        )}
                       </div>
-                      {d.availability !== 'available' && <Badge variant={d.availability === 'stale' ? 'destructive' : 'secondary'}>{d.availability === 'stale' ? 'Needs re-link' : d.availability}</Badge>}
+                      {!d.bluetooth && d.availability !== 'available' && <Badge variant={d.availability === 'stale' ? 'destructive' : 'secondary'}>{d.availability === 'stale' ? 'Needs re-link' : d.availability}</Badge>}
                       <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
                     </Link>
                   ))}

@@ -18,6 +18,7 @@ import type {
   ValidationIssue,
 } from '../api/types.ts'
 import { buttonLabel, isButtonId } from './buttons.ts'
+import { humanize } from './utils.ts'
 
 export const EVENT_ORDER: readonly EventKind[] = ['down', 'up', 'tap', 'hold']
 export const LIMITS = { maxSequence: 32, maxBindingActions: 32, nameMax: 64, paramStringMax: 32 } as const
@@ -82,7 +83,7 @@ export function defaultParams(params: ParamSpec[]): ActionParams {
 }
 
 /** `label` is optional in the spec; fall back to a readable form of the name (`duration_ms` → `Duration ms`). */
-export const paramLabel = (p: ParamSpec) => p.label ?? p.name.charAt(0).toUpperCase() + p.name.slice(1).replace(/_/g, ' ')
+export const paramLabel = (p: ParamSpec) => p.label ?? humanize(p.name)
 
 export function checkParam(p: ParamSpec, v: ParamValue | undefined, activityIds?: ReadonlySet<string>): string | null {
   const label = paramLabel(p)

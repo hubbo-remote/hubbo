@@ -1,5 +1,7 @@
 #include "fixtures.h"
 
+#include <algorithm>
+
 #include "hubbo/domain/limits.h"
 
 namespace hubbo::sim {
@@ -55,11 +57,11 @@ DeviceSpec device(std::string id, std::string name, std::string integration, std
 
 DeviceSpec haDevice(std::string id, std::string name, std::string kind, std::string entityId) {
     return device(std::move(id), std::move(name), "ha_main", std::move(kind),
-                  {"home_assistant", std::move(entityId), "", ""});
+                  {"home_assistant", std::move(entityId), ""});
 }
 
 DeviceSpec bleDevice(std::string id, std::string name, std::string kind) {
-    return device(std::move(id), std::move(name), "ble", std::move(kind), {"ble_hid", "", "", ""});
+    return device(std::move(id), std::move(name), "ble", std::move(kind), {"ble_hid", "", ""});
 }
 
 IntegrationSpec integration(std::string id, std::string type, std::string name) {
@@ -166,6 +168,16 @@ ConfigSpec fixtureConfig() {
         bind("light_1:tap", {haAction("dev_lights", "light.turn_on")}),
         bind("light_2:tap", {haAction("dev_lights", "light.turn_off")}),
     };
+    return c;
+}
+
+ConfigSpec fixtureConfigWithoutBluetooth() {
+    ConfigSpec c = fixtureConfig();
+    c.activities.clear();
+    c.globalBindings.clear();
+    c.devices.erase(std::remove_if(c.devices.begin(), c.devices.end(),
+                                   [](const DeviceSpec &d) { return d.provider.type == kBleHidType; }),
+                    c.devices.end());
     return c;
 }
 

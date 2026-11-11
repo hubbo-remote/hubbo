@@ -185,7 +185,7 @@ protected:
     api::Authenticator authn{creds, sessions, clock};
     // Phase 3 ports: the remote radio and a real HA client against the fake HA.
     api::SimulatedRemote remote;
-    api::SimulatedBlePairing ble;
+    sim::SimulatedBleHosts &ble = hub.bleHosts();
     sim::FakeHaServer haServer;
     sim::FakeHaTransport haTransport{haServer};
     integrations::HomeAssistantClient haClient{haTransport};
@@ -823,41 +823,86 @@ TEST_F(ApiTest, RemoteEndpointAndHubScan) {
 }
 
 TEST_F(ApiTest, BluetoothPairing) {
-    const std::string pair = "/api/v1/admin/integrations/ble/pair";
-    Reply r = call(http::Method::Get, pair);
+    const std::string apple = "/api/v1/admin/devices/dev_apple_tv/pair";
+    auto state = [&](const std::string &id) {
+        return call(http::Method::Get, "/api/v1/devices/" + id).json["bluetooth"]["state"].as<std::string>();
+    };
+    Reply r = call(http::Method::Get, apple);
     ASSERT_EQ(r.status, 200) << dump(r);
-    EXPECT_EQ(r.json["state"], "idle");
+    EXPECT_EQ(r.json["state"], "connected");  // the fixture world's bonded Apple TV
+    EXPECT_FALSE(call(http::Method::Get, "/api/v1/devices/dev_denon").json["bluetooth"].is<JsonObject>());
+
+    r = call(http::Method::Post, "/api/v1/admin/devices", R"({"name":"Shield","integration_id":"ble","kind":"streamer",
+                                                              "provider":{"type":"ble_hid"}})");
+    ASSERT_EQ(r.status, 201) << dump(r);
+    EXPECT_EQ(r.json["bluetooth"]["state"], "not_paired");
+    const std::string shield = r.json["id"];
+    const std::string pair = "/api/v1/admin/devices/" + shield + "/pair";
 
     r = call(http::Method::Post, pair);
     ASSERT_EQ(r.status, 202) << dump(r);
     EXPECT_EQ(r.json["state"], "pairing");
     EXPECT_EQ(r.json["window_s"], 120);
-    r = call(http::Method::Post, pair);
+    EXPECT_EQ(state(shield), "pairing");
+    EXPECT_EQ(call(http::Method::Post, pair).status, 202) << "its own window: same answer";
+    r = call(http::Method::Post, apple);
     EXPECT_EQ(r.status, 409);
     EXPECT_EQ(r.code(), "busy");
-    ble.advance(119500);
-    EXPECT_EQ(call(http::Method::Get, pair).json["window_s"], 1);
-    ble.advance(500);
-    EXPECT_EQ(call(http::Method::Get, pair).json["state"], "failed") << "the window closed with no bond";
 
-    // A host bonds during the window; a new window replaces it.
+    // A host bonds: connected, then not.
+    ASSERT_TRUE(ble.bonded("Shield"));
+    EXPECT_EQ(call(http::Method::Get, pair).json["state"], "connected");
+    ASSERT_TRUE(ble.setConnected(shield, false));
+    EXPECT_EQ(state(shield), "not_connected");
+    EXPECT_EQ(state("dev_apple_tv"), "connected") << "only its own host";
+
+    // A re-pair that's cancelled or runs out keeps the old host; forget drops it.
     ASSERT_EQ(call(http::Method::Post, pair + "?window_s=30").json["window_s"], 30);
-    ble.bonded("Living Room");
-    r = call(http::Method::Get, pair);
-    EXPECT_EQ(r.json["state"], "paired");
-    EXPECT_EQ(r.json["peer_name"], "Living Room");
     EXPECT_EQ(call(http::Method::Delete, pair).status, 204);
-    EXPECT_EQ(call(http::Method::Get, pair).json["state"], "idle");
+    EXPECT_EQ(state(shield), "not_connected");
+    ASSERT_EQ(call(http::Method::Post, pair).status, 202);
+    ble.advance(120000);
+    EXPECT_EQ(state(shield), "not_connected");
+    EXPECT_EQ(call(http::Method::Delete, "/api/v1/admin/devices/" + shield + "/pairing").status, 204);
+    EXPECT_EQ(state(shield), "not_paired");
+
+    // At most 4 Bluetooth devices.
+    std::vector<std::string> added{shield};
+    for (const char *name : {"Fire TV", "Office TV"}) {
+        r = call(http::Method::Post, "/api/v1/admin/devices",
+                 std::string(R"({"integration_id":"ble","kind":"streamer","provider":{"type":"ble_hid"},"name":")") +
+                     name + "\"}");
+        ASSERT_EQ(r.status, 201) << dump(r);
+        added.push_back(r.json["id"]);
+    }
+    r = call(http::Method::Post, "/api/v1/admin/devices",
+             R"({"name":"Fifth","integration_id":"ble","kind":"streamer","provider":{"type":"ble_hid"}})");
+    EXPECT_EQ(r.status, 422);
+    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/integration_id");
+    EXPECT_EQ(r.json["error"]["details"][0]["code"], "too_many_devices");
+    EXPECT_EQ(r.json["error"]["message"], "You can add up to 4 Bluetooth devices");
+
+    // Deleting a Bluetooth device forgets its host.
+    ASSERT_EQ(call(http::Method::Post, pair).status, 202);
+    ASSERT_TRUE(ble.bonded("Shield"));
+    for (const std::string &id : added) {
+        const uint32_t rev = hub.configService().findDevice(id)->revision;
+        ASSERT_EQ(call(http::Method::Delete, "/api/v1/admin/devices/" + id + "?revision=" + std::to_string(rev)).status,
+                  204);
+    }
+    EXPECT_FALSE(ble.status(shield).bonded);
 
     for (const char *bad : {"29", "301", "x", "1000", "-5"}) {
-        r = call(http::Method::Post, pair + "?window_s=" + bad);
+        r = call(http::Method::Post, apple + "?window_s=" + bad);
         EXPECT_EQ(r.status, 422) << bad;
     }
-    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/integrations/ha_main/pair").status, 404);
-    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/nope/pair").status, 404);
+    r = call(http::Method::Post, "/api/v1/admin/devices/dev_denon/pair");
+    EXPECT_EQ(r.status, 404) << "not a Bluetooth device";
+    EXPECT_EQ(r.code(), "not_found");
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/devices/nope/pair").status, 404);
     ble.ready = false;
-    EXPECT_EQ(call(http::Method::Post, pair).status, 503);
-    EXPECT_EQ(call(http::Method::Delete, pair).status, 503);
+    EXPECT_EQ(call(http::Method::Post, apple).status, 503);
+    EXPECT_EQ(call(http::Method::Delete, "/api/v1/admin/devices/dev_apple_tv/pairing").status, 503);
 }
 
 TEST_F(ApiTest, TheHomeAssistantTokenIsWriteOnly) {
@@ -914,7 +959,7 @@ TEST_F(ApiTest, TheHomeAssistantTokenIsWriteOnly) {
     EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/integrations/nope").status, 404);
     r = call(http::Method::Get, "/api/v1/admin/integrations/ble");
     EXPECT_EQ(r.json["settings"]["device_name"], "Hubbo");
-    EXPECT_TRUE(r.json["settings"]["bonded"].is<bool>());
+    EXPECT_FALSE(r.json["settings"]["bonded"].is<bool>()) << "bonds live on the devices";
 
     // A failed token write leaves no token and says so.
     secrets.failWrites = true;

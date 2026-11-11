@@ -129,7 +129,7 @@ TEST_F(EngineTest, ButtonsDispatchThroughTheActiveTable) {
     EXPECT_TRUE(take().empty());  // held: tvOS repeats, we don't
     hub.release(Button::Up);
     EXPECT_EQ(take(), (Lines{"ble dev_apple_tv key_up key=ARROW_UP"}));
-    EXPECT_EQ(hub.ble().heldConsumer(), 0);
+    EXPECT_EQ(hub.ble().heldConsumer("dev_apple_tv"), 0);
 }
 
 TEST_F(EngineTest, UnboundTriggersAreNoOps) {
@@ -176,12 +176,12 @@ TEST_F(EngineTest, HeldKeysAreReleasedOnActivitySwitch) {
     hub.advance(1000);
     hub.press(Button::Up);
     hub.advance(100);
-    ASSERT_EQ(hub.ble().heldConsumer(), 0x42);
-    const size_t reports = hub.hid().reports().size();
+    ASSERT_EQ(hub.ble().heldConsumer("dev_apple_tv"), 0x42);
+    const size_t reports = hub.bleHosts().reports().size();
     hub.activate("act_play_xbox");  // e.g. from the API while the thumb is still down
-    EXPECT_EQ(hub.ble().heldConsumer(), 0);
-    ASSERT_GT(hub.hid().reports().size(), reports);
-    EXPECT_EQ(hub.hid().reports().back(), "consumer 0x0000");
+    EXPECT_EQ(hub.ble().heldConsumer("dev_apple_tv"), 0);
+    ASSERT_GT(hub.bleHosts().reports().size(), reports);
+    EXPECT_EQ(hub.bleHosts().reports().back(), "consumer 0x0000");
     EXPECT_EQ(hub.engine().openHolds(), 0u);
     hub.release(Button::Up);  // Play Xbox has no up:up binding; nothing else happens
 }
@@ -192,7 +192,7 @@ TEST_F(EngineTest, OffAlsoReleasesHeldKeys) {
     hub.press(Button::Number1);  // unbound, keep up held on keypad via another button
     hub.press(Button::Up);
     hub.off();
-    EXPECT_EQ(hub.ble().heldConsumer(), 0);
+    EXPECT_EQ(hub.ble().heldConsumer("dev_apple_tv"), 0);
 }
 
 TEST_F(EngineTest, LostReleaseTimesOutAndReleasesKeys) {
@@ -203,7 +203,7 @@ TEST_F(EngineTest, LostReleaseTimesOutAndReleasesKeys) {
     hub.advance(200);
     hub.advance(600, /*silent=*/true);  // release packet lost, then silence
     EXPECT_EQ(take(), (Lines{"ble dev_apple_tv key_down key=ARROW_RIGHT", "ble dev_apple_tv key_up key=ARROW_RIGHT"}));
-    EXPECT_EQ(hub.ble().heldConsumer(), 0);
+    EXPECT_EQ(hub.ble().heldConsumer("dev_apple_tv"), 0);
     EXPECT_EQ(hub.engine().openHolds(), 0u);
 }
 
@@ -219,7 +219,7 @@ TEST_F(EngineTest, OverflowOnReleaseStillReleasesKeys) {
     hub.activate("act_watch_apple_tv");
     hub.advance(1000);
     hub.press(Button::Up);  // key_down goes out before the lane is blocked
-    ASSERT_EQ(hub.ble().heldConsumer(), 0x42);
+    ASSERT_EQ(hub.ble().heldConsumer("dev_apple_tv"), 0x42);
     const Button fillers[] = {Button::Number0, Button::Number1, Button::Number2, Button::Number3,
                               Button::Number4, Button::Number5, Button::Number6, Button::Number7,
                               Button::Number8, Button::Number9, Button::NumberEnter, Button::NumberDotDash};
@@ -233,7 +233,7 @@ TEST_F(EngineTest, OverflowOnReleaseStillReleasesKeys) {
     ASSERT_GT(hub.engine().executor().stats().rejected, 0u);
     hub.release(Button::Up);  // up:up is rejected too...
     EXPECT_GT(hub.engine().stats().forcedReleases, 0u);
-    EXPECT_EQ(hub.ble().heldConsumer(), 0);  // ...but the key is released anyway
+    EXPECT_EQ(hub.ble().heldConsumer("dev_apple_tv"), 0);  // ...but the key is released anyway
     EXPECT_EQ(hub.engine().openHolds(), 0u);
 }
 
@@ -265,17 +265,17 @@ TEST_F(EngineTest, AGlobalHoldIsReleasedWhenTheActivityOverridesOnlyTheUp) {
     take();
     hub.press(Button::Select);
     hub.advance(100);
-    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 1u);
+    EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 1u);
     EXPECT_EQ(hub.engine().openHolds(), 1u);
     hub.release(Button::Select);
     hub.advance(100);
     const Lines lines = take();
     EXPECT_TRUE(anyContains(lines, "ha_main dev_lights light.turn_on"));
     EXPECT_TRUE(anyContains(lines, "ble dev_apple_tv key_up key=ENTER"));
-    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 0u);
+    EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 0u);
     EXPECT_EQ(hub.engine().openHolds(), 0u);
-    ASSERT_FALSE(hub.hid().reports().empty());
-    EXPECT_EQ(hub.hid().reports().back(), kNoKeys);
+    ASSERT_FALSE(hub.bleHosts().reports().empty());
+    EXPECT_EQ(hub.bleHosts().reports().back(), kNoKeys);
 }
 
 // Review high #3: the up sequence fails before its own release.
@@ -291,15 +291,15 @@ TEST_F(EngineTest, AHoldIsReleasedWhenItsUpSequenceFailsFirst) {
     take();
     hub.press(Button::Play);
     hub.advance(100);
-    ASSERT_EQ(hub.ble().heldKeyboardKeys(), 1u);
+    ASSERT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 1u);
     hub.homeAssistant().failNext("light.turn_on", ErrorCode::AdapterFailed);
     const uint32_t forced = hub.engine().stats().forcedReleases;
     hub.release(Button::Play);
     hub.advance(100);
-    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 0u);
+    EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 0u);
     EXPECT_EQ(hub.engine().openHolds(), 0u);
     EXPECT_EQ(hub.engine().stats().forcedReleases, forced + 1);  // the ledger, not the binding
-    EXPECT_EQ(hub.hid().reports().back(), kNoKeys);
+    EXPECT_EQ(hub.bleHosts().reports().back(), kNoKeys);
 }
 
 // A slow but correct up sequence releases the key itself: the ledger
@@ -315,9 +315,9 @@ TEST_F(EngineTest, TheBindingsOwnReleaseClosesTheHold) {
     const uint32_t forced = hub.engine().stats().forcedReleases;
     hub.tap(Button::Play);
     hub.advance(1000);
-    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 1u);  // still the binding's to release
+    EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 1u);  // still the binding's to release
     hub.advance(1100);
-    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 0u);
+    EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 0u);
     EXPECT_EQ(hub.engine().openHolds(), 0u);
     EXPECT_EQ(hub.engine().stats().forcedReleases, forced);
 }
@@ -333,9 +333,9 @@ TEST_F(EngineTest, AHoldIsReleasedWhenItsUpSequenceIsCancelled) {
     hub.advance(1000);
     hub.tap(Button::Play);
     hub.advance(100);
-    ASSERT_EQ(hub.ble().heldKeyboardKeys(), 1u);
+    ASSERT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 1u);
     hub.activate("act_play_xbox");
-    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 0u);
+    EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 0u);
     EXPECT_EQ(hub.engine().openHolds(), 0u);
     take();
     hub.advance(6000);
@@ -361,7 +361,7 @@ TEST_F(EngineTest, AHoldThatDoesNotFitTheLedgerIsReleasedAtOnce) {
     hub.release(Button::Play);
     hub.advance(100);
     EXPECT_EQ(hub.engine().openHolds(), 0u);
-    EXPECT_EQ(hub.ble().heldKeyboardKeys(), 0u);
+    EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 0u);
 }
 
 TEST(HoldLedgerTest, FixedCapacityTakeOneAtATime) {
@@ -528,7 +528,7 @@ TEST_F(EngineTest, StartupFailureStopsTheSequenceAndIsReported) {
 TEST_F(EngineTest, BleUnavailableIsAFailureNotFakeSuccess) {
     hub.activate("act_watch_apple_tv");
     hub.advance(1000);
-    hub.hid().setConnected(false);
+    hub.bleHosts().setAllConnected(false);
     hub.press(Button::Select);
     ASSERT_FALSE(hub.commands().empty());
     EXPECT_EQ(hub.commands().back().text, "ble dev_apple_tv key_down key=SELECT -> failed adapter_unavailable");
@@ -582,7 +582,7 @@ TEST_F(EngineTest, ConfigSwapDuringDispatchFromAnotherThread) {
     writer.join();
     hub.advance(1);
     EXPECT_STREQ(hub.engine().activeActivityId(), "act_watch_apple_tv");
-    EXPECT_EQ(hub.ble().heldConsumer(), 0);
+    EXPECT_EQ(hub.ble().heldConsumer("dev_apple_tv"), 0);
     size_t downs = 0, ups = 0;
     for (const auto &c : hub.commands()) {
         downs += c.text.find("key_down key=ARROW_DOWN") != std::string::npos;
@@ -681,7 +681,7 @@ TEST_F(EngineTest, ExecuteRequestRepliesWhenTheResultIsKnown) {
     EXPECT_EQ(lost.command().status, ExecStatus::Timeout);
 
     hub.homeAssistant().setLatency(0);
-    hub.hid().setConnected(false);
+    hub.bleHosts().setAllConnected(false);
     EngineRequest ble;
     ble.execute(compile(hub, "dev_apple_tv", "key_tap", {param("key", "SELECT")}));
     hub.engine().submit(ble);
@@ -760,7 +760,7 @@ protected:
         adapters.add(adapter);
         ConfigSpec cfg;
         cfg.integrations = {integration("async", "async", "Async")};
-        cfg.devices = {device("dev", "Dev", "async", "other", {"async", "ref.dev", "", ""})};
+        cfg.devices = {device("dev", "Dev", "async", "other", {"async", "ref.dev", ""})};
         cfg.globalBindings = {sim::bind("play:down", {action("async", "dev", "hold", {param("k", 5)})}),
                               sim::bind("play:up", {action("async", "dev", "let_go", {param("k", 5)})})};
         ValidationReport report;

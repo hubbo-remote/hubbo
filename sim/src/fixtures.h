@@ -40,6 +40,9 @@ IntegrationSpec integration(std::string id, std::string type, std::string name);
 // movie:tap -> act_watch_apple_tv, music:tap -> act_play_xbox,
 // light_1:tap / light_2:tap -> lights on/off.
 ConfigSpec fixtureConfig();
+// fixtureConfig() with no Bluetooth devices (and no activities or global
+// bindings, which use them).
+ConfigSpec fixtureConfigWithoutBluetooth();
 
 // The Home Assistant entities behind the fixture's ha_main devices, as HA
 // would describe them (feature bits, source lists), with the name and

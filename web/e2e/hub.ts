@@ -137,8 +137,12 @@ export const letHaConnect = async (page: Page) => {
   if (SIM_URL) await advance(page, 2_000)
 }
 
-/** Drop or restore the Bluetooth host connection (hub-sim: /sim/ble). */
-export const setBle = (page: Page, connected: boolean) => control(page, `ble?connected=${connected ? 1 : 0}`)
+/** A host bonds in that device's open pairing window, and connects (hub-sim: /sim/ble/bond). */
+export const bondHost = (page: Page, deviceId: string) => control(page, `ble/bond?device=${deviceId}`)
+/** A paired device's host drops or comes back (hub-sim: /sim/ble/link). */
+export const setHostLink = (page: Page, deviceId: string, up: boolean) => control(page, `ble/link?device=${deviceId}&up=${up ? 1 : 0}`)
+/** The Bluetooth radio goes down or comes back (hub-sim: /sim/ble/radio). */
+export const setBleRadio = (page: Page, ready: boolean) => control(page, `ble/radio?ready=${ready ? 1 : 0}`)
 
 /** Run a discovery and wait for it to finish (register and re-link use the latest one). */
 export async function discoverHa(page: Page) {
@@ -148,6 +152,13 @@ export async function discoverHa(page: Page) {
 }
 
 /** Register an HA entity as a device through the API: its details first (§3b), then POST /admin/devices. */
+/** Add a Bluetooth device through the API; returns its id. */
+export async function addBle(page: Page, name: string): Promise<string> {
+  const r = await api(page).post('/admin/devices', { name, integration_id: 'ble', kind: 'streamer', provider: { type: 'ble_hid' } })
+  expect(r.status(), await r.text()).toBe(201)
+  return (await r.json()).id
+}
+
 export async function registerHa(page: Page, entityId: string, name: string, kind = 'other') {
   const hub = api(page)
   const path = `/admin/integrations/ha_main/entities/${entityId}/details`

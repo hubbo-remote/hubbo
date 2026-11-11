@@ -864,26 +864,89 @@ def remote_flow(c):
 
 
 def ble_pairing_flow(c):
-    """BLE HID pairing: a window that a host bonds in (the `ble/bonded` control),
-    one that runs out, and forgetting the bond."""
-    pair = "/admin/integrations/ble/pair"
-    c.call("getIntegrationPairing", "GET", pair, expect=200)
-    c.call("startIntegrationPairing", "POST", pair + "?window_s=29", expect=422, label="pair window too short")
-    c.call("startIntegrationPairing", "POST", "/admin/integrations/ha_main/pair", expect=404, label="pair HA")
-    _, opened, _ = c.call("startIntegrationPairing", "POST", pair, expect=202)
+    """Bluetooth hosts, one per device: pairing a device's own host (the
+    `ble/bond` control bonds one in the open window), one window at a time,
+    a re-pair that runs out keeping the old host, forget, the limit of 4,
+    and the radio going down (`ble/radio`)."""
+    c.call("getDevicePairing", "GET", "/admin/devices/dev_apple_tv/pair", expect=200)
+    c.call("startDevicePairing", "POST", "/admin/devices/dev_apple_tv/pair?window_s=29", expect=422,
+           label="pair window too short")
+    _, body, _ = c.call("startDevicePairing", "POST", "/admin/devices/dev_denon/pair", expect=404,
+                        label="pair a non-Bluetooth device")
+    expect(error_code(body) == "not_found", f"pair a non-Bluetooth device: {body}")
+    c.call("getDevicePairing", "GET", "/admin/devices/dev_nope/pair", expect=404, label="pair an unknown device")
+
+    ble = {"integration_id": "ble", "kind": "streamer", "provider": {"type": "ble_hid"}}
+    _, dev, _ = c.call("registerDevice", "POST", "/admin/devices", dict(ble, name="Shield"), expect=201,
+                       label="add a Bluetooth device")
+    if not dev:
+        return
+    shield = dev["id"]
+    expect(dev.get("bluetooth") == {"state": "not_paired"}, f"a new Bluetooth device: {dev}")
+    pair = f"/admin/devices/{shield}/pair"
+    status = lambda label: (c.call("getDevicePairing", "GET", pair, expect=200, label=label)[1] or {}).get("state")
+
+    _, opened, _ = c.call("startDevicePairing", "POST", pair, expect=202)
     expect((opened or {}).get("state") == "pairing" and opened.get("window_s") == 120, f"pair: {opened}")
-    c.call("startIntegrationPairing", "POST", pair, expect=409, label="pair while pairing")
-    c.control("ble/bonded?peer=Living%20Room")
-    _, paired, _ = c.call("getIntegrationPairing", "GET", pair, expect=200, label="after bonding")
-    expect((paired or {}).get("state") == "paired" and paired.get("peer_name") == "Living Room", f"bonded: {paired}")
-    # A window nobody bonds in ends `failed`; the new window already dropped the old bond.
-    c.call("startIntegrationPairing", "POST", pair + "?window_s=30", expect=202, label="short window")
+    _, again, _ = c.call("startDevicePairing", "POST", pair, expect=202, label="pair again while its window is open")
+    expect((again or {}).get("state") == "pairing", f"pair again: {again}")
+    _, body, _ = c.call("startDevicePairing", "POST", "/admin/devices/dev_apple_tv/pair", expect=409,
+                        label="pair while another device pairs")
+    expect(error_code(body) == "busy", f"second window: {body}")
+    c.control(f"ble/bond?device={shield}")
+    expect(status("after bonding") == "connected", "a bonded host is connected")
+    _, listed, _ = c.call("listDevices", "GET", "/devices", expect=200, label="devices with Bluetooth status")
+    mine = next((d for d in (listed or {}).get("devices", []) if d["id"] == shield), {})
+    expect(mine.get("bluetooth") == {"state": "connected"} and mine.get("availability") == "available",
+           f"listed Bluetooth device: {mine}")
+    c.control(f"ble/link?device={shield}&up=0")
+    _, got, _ = c.call("getDevice", "GET", f"/devices/{shield}", expect=200, label="host dropped")
+    expect((got or {}).get("bluetooth") == {"state": "not_connected"} and got.get("availability") == "unavailable",
+           f"a dropped host: {got}")
+    c.control(f"ble/link?device={shield}&up=1")
+
+    # A re-pair that runs out, or is cancelled, keeps the old host.
+    c.call("startDevicePairing", "POST", pair + "?window_s=30", expect=202, label="re-pair")
     c.control("advance?ms=30000")
-    _, failed, _ = c.call("getIntegrationPairing", "GET", pair, expect=200, label="window ran out")
-    expect((failed or {}).get("state") == "failed", f"window ran out: {failed}")
-    c.call("forgetIntegrationPairing", "DELETE", pair, expect=204)
-    _, idle, _ = c.call("getIntegrationPairing", "GET", pair, expect=200, label="after forget")
-    expect((idle or {}).get("state") == "idle", f"after forget: {idle}")
+    expect(status("re-pair ran out") == "connected", "a re-pair that ran out keeps the old host")
+    c.call("startDevicePairing", "POST", pair, expect=202, label="re-pair again")
+    c.call("cancelDevicePairing", "DELETE", pair, expect=204)
+    expect(status("re-pair cancelled") == "connected", "a cancelled re-pair keeps the old host")
+    c.call("forgetDevicePairing", "DELETE", f"/admin/devices/{shield}/pairing", expect=204)
+    expect(status("after forget") == "not_paired", "forget drops only this device's host")
+
+    # At most 4 Bluetooth devices.
+    _, devices, _ = c.call("listDevices", "GET", "/devices", expect=200, label="count Bluetooth devices")
+    count = sum(1 for d in (devices or {}).get("devices", []) if d["integration_id"] == "ble")
+    extra = []
+    for n in range(count, 4):
+        _, d, _ = c.call("registerDevice", "POST", "/admin/devices", dict(ble, name=f"Host {n + 1}"), expect=201,
+                         label="Bluetooth device up to the limit")
+        if d:
+            extra.append(d)
+    _, body, _ = c.call("registerDevice", "POST", "/admin/devices", dict(ble, name="Fifth"), expect=422,
+                        label="a fifth Bluetooth device")
+    detail = ((body or {}).get("error", {}).get("details") or [{}])[0]
+    expect(detail.get("code") == "too_many_devices" and detail.get("path") == "/integration_id",
+           f"a fifth Bluetooth device: {body}")
+    limit_text = "You can add up to 4 Bluetooth devices"
+    expect(detail.get("message") == limit_text and (body or {}).get("error", {}).get("message") == limit_text,
+           f"a fifth Bluetooth device's message: {body}")
+    for d in extra + [dev]:
+        _, cur, _ = c.call("getDevice", "GET", f"/devices/{d['id']}", expect=200, label="before removing")
+        c.call("deleteDevice", "DELETE", f"/admin/devices/{d['id']}?revision={(cur or d)['revision']}", expect=204,
+               label="remove a Bluetooth device")
+
+    # The radio down: 503, and the integration says so.
+    if c.control("ble/radio?ready=0"):
+        _, body, _ = c.call("startDevicePairing", "POST", "/admin/devices/dev_apple_tv/pair", expect=503,
+                            label="pair with the radio down")
+        expect(error_code(body) == "integration_unavailable", f"radio down: {body}")
+        _, ints, _ = c.call("listIntegrations", "GET", "/integrations", expect=200, label="radio down")
+        radio = next((i for i in (ints or {}).get("integrations", []) if i["id"] == "ble"), {})
+        expect(radio.get("state") == "error" and radio.get("detail") == "Bluetooth isn't working",
+               f"radio down: {radio}")
+        c.control("ble/radio?ready=1")
 
 
 def noauth(c, checker):

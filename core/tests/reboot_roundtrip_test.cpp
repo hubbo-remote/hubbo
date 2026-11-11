@@ -92,7 +92,7 @@ std::string diffConfig(const ConfigSpec &a, const ConfigSpec &b) {
         const auto &y = b.devices[i];
         if (x.id != y.id || x.name != y.name || x.integrationId != y.integrationId || x.kind != y.kind ||
             x.provider.type != y.provider.type || x.provider.entityId != y.provider.entityId ||
-            x.provider.uniqueId != y.provider.uniqueId || x.provider.peerName != y.provider.peerName ||
+            x.provider.uniqueId != y.provider.uniqueId ||
             x.revision != y.revision) {
             return "device " + x.id;
         }
@@ -424,16 +424,12 @@ TEST(RebootRoundTrip, DeletingTheActiveActivityFallsBackAndThatSurvives) {
     EXPECT_STREQ(box.hub->engine().activeActivityId(), "act_watch_apple_tv");
 }
 
-// A config saved by an older firmware (document version 1, with the old
-// DIGIT_n key names) is migrated once, saved as a new generation, and then
-// boots clean.
-TEST(RebootRoundTrip, SchemaMigrationIsSavedOnceThenBootsClean) {
+// Nothing is released yet, so there are no migrations: a record from an
+// older document version boots Blocked and is never overwritten.
+TEST(RebootRoundTrip, AnOlderSchemaBootsBlockedUntouched) {
     storage::MemoryStorage disk;
-    ConfigSpec old = fixtureConfig();
-    old.activities[0].bindings.push_back(bind("number_1:tap", {bleKey("key_tap", "KEY_1")}));
-    std::string v1 = config::serializeConfig(old);
+    std::string v1 = config::serializeConfig(fixtureConfig());
     v1.replace(v1.find("\"schema_version\":2"), 18, "\"schema_version\":1");
-    v1.replace(v1.find("\"KEY_1\""), 7, "\"DIGIT_1\"");
     {
         storage::SlotRecordStore records(disk, config::kMaxConfigFileBytes);
         ASSERT_EQ(records.save(config::ConfigService::kRecordName, 7, v1), ErrorCode::Ok);
@@ -444,18 +440,12 @@ TEST(RebootRoundTrip, SchemaMigrationIsSavedOnceThenBootsClean) {
         storage::SlotRecordStore records(disk, config::kMaxConfigFileBytes);
         config::ConfigService service(records, fakes.set, store);
         const config::LoadReport r = service.load(ConfigSpec{});
-        ASSERT_EQ(r.state, ConfigState::Ok);
-        const ActivitySpec &a = *service.findActivity("act_watch_apple_tv");
-        EXPECT_EQ(a.bindings.back().actions[0].params[0].value.string, "KEY_1");
-        if (boot == 0) {
-            EXPECT_EQ(r.migratedFrom, 1);
-            EXPECT_TRUE(r.saved);
-            EXPECT_EQ(r.generation, 8u);  // saved once, as a new generation
-        } else {
-            EXPECT_EQ(r.migratedFrom, -1);
-            EXPECT_FALSE(r.saved);
-            EXPECT_EQ(r.generation, 8u);
-        }
+        EXPECT_EQ(r.state, ConfigState::Blocked);
+        EXPECT_EQ(r.reason, ErrorCode::MigrationFailed);
+        EXPECT_FALSE(r.saved);
+        storage::Record record;
+        ASSERT_EQ(records.load(config::ConfigService::kRecordName, &record), ErrorCode::Ok);
+        EXPECT_EQ(record.generation, 7u);
     }
 }
 
@@ -687,9 +677,9 @@ TEST(RebootRoundTrip, FieldsThatDontApplyToTheTypeAreNotKept) {
     ble.url = "http://not-for-ble";
     ble.verifyTls = false;
     ASSERT_TRUE(svc().replaceIntegration("ble", ble, ble.revision).ok());
-    DeviceSpec tv = haDevice("", "Den TV", "tv", "media_player.family_room_lg_tv");
-    tv.provider.peerName = "not-for-ha";
-    ASSERT_TRUE(svc().createDevice(tv).ok());
+    DeviceSpec shield = bleDevice("", "Den Shield", "streamer");
+    shield.provider.entityId = "media_player.not_for_ble";
+    ASSERT_TRUE(svc().createDevice(shield).ok());
     EXPECT_REBOOT_CLEAN(box);
 }
 

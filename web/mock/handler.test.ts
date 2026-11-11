@@ -506,3 +506,87 @@ describe('contract details', () => {
     expect((await m.handle(req('GET', '/devices/dev_denon'))).body).not.toHaveProperty('ha_capabilities')
   })
 })
+
+describe('Bluetooth devices', () => {
+  const bt = async (m: ReturnType<typeof createMock>, id: string) => ((await m.handle(req('GET', `/devices/${id}`))).body as { bluetooth?: { state: string } }).bluetooth?.state
+  const add = (m: ReturnType<typeof createMock>, name: string) => m.handle(req('POST', '/admin/devices', { name, integration_id: 'ble', kind: 'streamer', provider: { type: 'ble_hid' } }))
+
+  it('a new device is not paired; pairing bonds the window’s device; forget and delete drop only its host', async () => {
+    const m = createMock()
+    expect(await bt(m, 'dev_apple_tv')).toBe('connected') // seeded paired
+    const shield = (await add(m, 'Shield')).body as { id: string; bluetooth: { state: string } }
+    expect(shield.bluetooth.state).toBe('not_paired')
+    expect((await m.handle(req('POST', `/admin/devices/${shield.id}/pair`))).body).toMatchObject({ state: 'pairing', window_s: 120 })
+    expect(errorOf(await m.handle(req('POST', '/admin/devices/dev_apple_tv/pair'))).code).toBe('busy') // one window at a time
+    await m.handle(req('POST', `/__mock/ble/bond?device=${shield.id}`))
+    expect(await bt(m, shield.id)).toBe('connected')
+    expect(await bt(m, 'dev_apple_tv')).toBe('connected')
+    await m.handle(req('POST', `/__mock/ble/link?device=${shield.id}&up=0`))
+    expect(await bt(m, shield.id)).toBe('not_connected')
+    expect((await m.handle(req('POST', `/devices/${shield.id}/commands/key_tap/execute`, { params: { key: 'PLAY_PAUSE' } }))).body).toMatchObject({ status: 'failed', message: 'adapter_unavailable' })
+    expect((await m.handle(req('DELETE', `/admin/devices/${shield.id}/pairing`))).status).toBe(204)
+    expect(await bt(m, shield.id)).toBe('not_paired')
+    expect(await bt(m, 'dev_apple_tv')).toBe('connected')
+    expect((await m.handle(req('GET', '/devices/dev_denon'))).body).not.toHaveProperty('bluetooth')
+  })
+
+  it('pairing the device whose window is open is its status again; reset and delete leave no stale bonds', async () => {
+    const m = createMock()
+    await m.handle(req('POST', '/admin/devices/dev_apple_tv/pair'))
+    const again = await m.handle(req('POST', '/admin/devices/dev_apple_tv/pair'))
+    expect([again.status, (again.body as { state: string }).state]).toEqual([202, 'pairing'])
+    await m.handle(req('DELETE', '/admin/devices/dev_apple_tv/pair'))
+    expect((await m.handle(req('POST', '/admin/reset'))).status).toBe(200)
+    // A new device reusing the old id starts unpaired.
+    const r = await add(m, 'Family Room Apple TV')
+    expect((r.body as { id: string; bluetooth: { state: string } }).bluetooth.state).toBe('not_paired')
+  })
+
+  it('a re-pair that’s cancelled or runs out keeps the old host', async () => {
+    const m = createMock()
+    await m.handle(req('POST', '/admin/devices/dev_apple_tv/pair'))
+    expect(await bt(m, 'dev_apple_tv')).toBe('pairing')
+    expect((await m.handle(req('DELETE', '/admin/devices/dev_apple_tv/pair'))).status).toBe(204)
+    expect(await bt(m, 'dev_apple_tv')).toBe('connected')
+    await m.handle(req('POST', '/admin/devices/dev_apple_tv/pair'))
+    await advance(m, 125_000)
+    expect(await bt(m, 'dev_apple_tv')).toBe('connected')
+  })
+
+  it('refusals are the hub’s (api/fixtures)', async () => {
+    const m = createMock()
+    const both = (r: MockResponse) => [r.status, r.body]
+    for (const n of ['B', 'C', 'D']) expect((await add(m, n)).status).toBe(201) // the seed has one
+    expect(both(await add(m, 'E'))).toEqual([422, fixture('errors/too_many_bluetooth_devices.json')])
+    expect(both(await m.handle(req('POST', '/admin/devices/dev_denon/pair')))).toEqual([404, fixture('errors/not_bluetooth.json')])
+    expect((await m.handle(req('POST', '/admin/devices/dev_apple_tv/pair'))).body).toEqual(fixture('admin/device_pair.json'))
+    expect(both(await m.handle(req('POST', '/admin/devices/dev_b/pair')))).toEqual([409, fixture('errors/pairing_busy.json')])
+    await m.handle(req('POST', '/__mock/ble/radio?ready=0'))
+    expect(both(await m.handle(req('POST', '/admin/devices/dev_b/pair')))).toEqual([503, fixture('errors/bluetooth_unavailable.json')])
+    expect(await bt(m, 'dev_apple_tv')).toBe('not_connected')
+  })
+
+  it('runtime device fields are refused in request bodies', async () => {
+    const m = createMock()
+    const got = (await m.handle(req('GET', '/devices/dev_apple_tv'))).body as Record<string, unknown>
+    const put = await m.handle(req('PUT', '/admin/devices/dev_apple_tv', { name: 'TV', revision: got.revision, availability: 'available' }))
+    expect(errorOf(put).details![0]).toMatchObject({ path: '/availability', code: 'unknown_field' })
+    const backup = (await m.handle(req('GET', '/admin/backup'))).body as { devices: Record<string, unknown>[] }
+    backup.devices[0]!.bluetooth = { state: 'connected' }
+    expect(errorOf(await m.handle(req('POST', '/admin/restore?dry_run=true', backup))).details![0]).toMatchObject({ path: '/devices/0/bluetooth', code: 'unknown_field' })
+  })
+
+  it('the pair routes are for Bluetooth devices only; a restore keeps bonds only for devices it keeps', async () => {
+    const m = createMock()
+    expect((await m.handle(req('POST', '/admin/integrations/ble/pair'))).status).toBe(404)
+    const backup = (await m.handle(req('GET', '/admin/backup'))).body as { devices: { id: string }[]; activities: unknown[] }
+    expect(JSON.stringify(backup)).not.toContain('bluetooth')
+    expect((await m.handle(req('POST', '/admin/restore?dry_run=false', backup))).status).toBe(200)
+    expect(await bt(m, 'dev_apple_tv')).toBe('connected')
+    // A restore without the device drops its bond, so bringing it back starts unpaired.
+    const without = { ...backup, devices: backup.devices.filter((d) => d.id !== 'dev_apple_tv'), activities: [] }
+    expect((await m.handle(req('POST', '/admin/restore?dry_run=false', without))).status).toBe(200)
+    expect((await m.handle(req('POST', '/admin/restore?dry_run=false', backup))).status).toBe(200)
+    expect(await bt(m, 'dev_apple_tv')).toBe('not_paired')
+  })
+})

@@ -68,12 +68,11 @@ int indexOfId(const std::vector<T> &items, std::string_view id, size_t end = sta
 
 // Where a device lives in its integration. `type` matches the integration
 // type: "home_assistant" (entityId, optional uniqueId) or "ble_hid"
-// (optional peerName).
+// (nothing else: the device is its own host, bonded by the radio).
 struct ProviderSpec {
     std::string type;
     std::string entityId;
     std::string uniqueId;
-    std::string peerName;
 };
 
 struct DeviceSpec {

@@ -113,7 +113,6 @@ std::vector<Referrer> referrersOf(const ConfigSpec &config, Match match) {
 // they must not live in the running config either).
 void dropInapplicableFields(ConfigSpec *config) {
     for (auto &d : config->devices) {
-        if (d.provider.type == kHomeAssistantType) d.provider.peerName.clear();
         if (d.provider.type == kBleHidType) {
             d.provider.entityId.clear();
             d.provider.uniqueId.clear();
@@ -247,7 +246,7 @@ LoadReport ConfigService::load(const ConfigSpec &defaults) {
     state_ = ConfigState::Ok;
     report.state = ConfigState::Ok;
     if (upgraded) {
-        // Saved once, as a new generation.
+        // Saved once, as a new generation (the commit tells the listener).
         const Outcome saved = commit(std::move(next), {}, "", CommitKind::Edit);
         report.saved = saved.ok();
         if (saved.ok()) {
@@ -256,6 +255,7 @@ LoadReport ConfigService::load(const ConfigSpec &defaults) {
             report.reason = saved.code;
         }
     }
+    if (!report.saved && listener_ != nullptr) listener_->configSaved(config_);  // the intact record
     load_ = report;
     return report;
 }
@@ -365,6 +365,7 @@ Outcome ConfigService::commit(ConfigSpec next, Outcome outcome, const std::strin
     state_ = ConfigState::Ok;
     if (store_.publish(compiled) != ErrorCode::Ok) return failure(ErrorCode::Internal);
     runningNothing_ = false;
+    if (listener_ != nullptr) listener_->configSaved(config_);
     outcome.code = ErrorCode::Ok;
     return outcome;
 }

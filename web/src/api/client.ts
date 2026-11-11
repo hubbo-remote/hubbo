@@ -7,7 +7,7 @@ import type {
   ActivityList,
   ActionParams,
   ApiErrorBody,
-  BlePairingStatus,
+  BluetoothStatus,
   EntityDetailsStatus,
   Capabilities,
   ConfigState,
@@ -56,7 +56,8 @@ export const toApiError = (e: unknown): ApiError => (e instanceof ApiError ? e :
 /** Human message for any thrown value; with `details`, appends the hub's per-field messages. */
 export function errorMessage(e: unknown, opts: { details?: boolean } = {}): string {
   const err = toApiError(e)
-  return opts.details && err.details.length ? [err.message, ...err.details.map((d) => `· ${d.message}`)].join('\n') : err.message
+  const extra = opts.details ? err.details.filter((d) => d.message !== err.message) : [] // the hub may repeat its one reason
+  return extra.length ? [err.message, ...extra.map((d) => `· ${d.message}`)].join('\n') : err.message
 }
 
 /** The hub answered 501: the feature exists in the API but this hub (e.g. hub-sim today) doesn't implement it yet. */
@@ -227,9 +228,12 @@ export const api = {
   discoverCancel: (id: string) => del(`/admin/integrations/${enc(id)}/discover`),
   entityDetailsStart: (integration: string, entityId: string) => post<EntityDetailsStatus>(`/admin/integrations/${enc(integration)}/entities/${enc(entityId)}/details`),
   entityDetails: (integration: string, entityId: string) => get<EntityDetailsStatus>(`/admin/integrations/${enc(integration)}/entities/${enc(entityId)}/details`),
-  blePairStatus: (id: string) => get<BlePairingStatus>(`/admin/integrations/${enc(id)}/pair`),
-  blePairStart: (id: string) => post<BlePairingStatus>(`/admin/integrations/${enc(id)}/pair`),
-  bleForget: (id: string) => del(`/admin/integrations/${enc(id)}/pair`),
+  /** A Bluetooth device's pairing window: its status, open it, cancel it (an existing host stays). */
+  pairStatus: (deviceId: string) => get<BluetoothStatus>(`/admin/devices/${enc(deviceId)}/pair`),
+  pairStart: (deviceId: string) => post<BluetoothStatus>(`/admin/devices/${enc(deviceId)}/pair`),
+  pairCancel: (deviceId: string) => del(`/admin/devices/${enc(deviceId)}/pair`),
+  /** Forget a Bluetooth device's host; the device stays, not paired. */
+  forgetHost: (deviceId: string) => del(`/admin/devices/${enc(deviceId)}/pairing`),
 
   // remote pairing
   remotePairStatus: () => get<RemotePairStatus>('/admin/remote/pair'),

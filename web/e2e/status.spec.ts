@@ -1,4 +1,4 @@
-import { connectHa, expect, open, setBle, setHaState, SIM_URL, test } from './hub.ts'
+import { connectHa, expect, open, setHaState, SIM_URL, test } from './hub.ts'
 
 test('Status shows the remote, Bluetooth, Home Assistant and Ethernet as they are', async ({ page }) => {
   await connectHa(page)
@@ -6,15 +6,10 @@ test('Status shows the remote, Bluetooth, Home Assistant and Ethernet as they ar
   const tile = (name: string) => page.getByRole('region', { name, exact: true })
   await expect(tile('Remote')).toContainText('Paired')
   await expect(tile('Ethernet')).toContainText(/\d+\.\d+\.\d+\.\d+/)
-  await expect(tile('Bluetooth')).toContainText('Connected')
+  await expect(tile('Bluetooth')).toContainText('Connected') // the radio: hosts come and go on their device pages
   await expect(tile('Home Assistant')).toContainText('Connected')
   await expect(page.getByText('Response time')).toBeVisible()
   await expect(page.getByText('Recent errors')).toBeVisible()
-
-  await setBle(page, false)
-  await expect(tile('Bluetooth')).toContainText('Disconnected')
-  await setBle(page, true)
-  await expect(tile('Bluetooth')).toContainText('Connected')
 
   for (const [state, label] of [['unreachable', 'Unreachable'], ['connecting', 'Connecting'], ['auth_failed', 'Token rejected'], ['connected', 'Connected']] as const) {
     await setHaState(page, state)

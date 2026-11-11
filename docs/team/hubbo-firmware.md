@@ -42,17 +42,6 @@ numbers and traps. Design: `docs/design/phase5-appliance.md`.
       else a JSON 404.
     - `httpd_resp_send` sends straight from flash.
   - `max_open_sockets` is 7.
-- §3a: `ble_pairing_runtime.*`, an
-  `api::BlePairingPort` over BleHid (`ApiContext.blePairing`), built like `RemoteRuntime`.
-  - httpd posts Start or Forget into a single-slot mailbox. The loop runs `ble.startPairing()` or
-    `ble.forget()`, the console's `pair` and `ble forget` paths, so bond deletion still goes
-    through BleHid's httpd offload.
-  - `status()` reads a snapshot built in `publishRuntime()` from what it already reads (state,
-    cached peer, `ble.pairingFailed()`); no second copy of BLE state. After a request the loop
-    publishes at once, and a request not yet taken shows in `status()` already.
-  - Failed lives in BleHid: set when a window times out with no bond, cleared by startPairing
-    or forget (console too). `pair stop` reads Idle.
-  - `forget()` clears `secured`, so a forgotten host isn't Connected while its disconnect lands.
 - Gate wipes: `HUBBO_WIPE_ON_BOOT=1` in the build environment makes `scripts/wipe_on_boot.py`
   define `HUBBO_WIPE_ON_BOOT`, which makes `factory_reset::wipeIfRequested()` wipe on every boot,
   early in `setup()` (the same wipe the Phase 5 factory reset uses).
@@ -105,9 +94,6 @@ of remote lag during the write are accepted.
   whole transfer runs in one call). A web update keeps its claim through the reboot. While Web
   holds it, the loop skips `handle()` and `ota_watch` drains the packets. The drain stays in the
   watcher, not the loop: no lwIP calls on the RF loop.
-- BLE: `BlePairingRuntime::publish(nowMs)` reads `BleHid` once, maps the state and caches the peer
-  address (re-read only on a state change). `link()` feeds `EngineRuntime`, which uses core's
-  `ble_state.h`. `RuntimeStatus` no longer carries BLE fields.
 - Auth trim applied: no `clientKey`, no `setAllowedHosts`/static 421, no `loginLimiter`, no
   `CredentialState::Corrupt`. The body limit is `Router::bodyLimit()` alone (the update route's is
   the slot size). `statusLine` gained 411, lost 421 and 429. `NvsSecretStore` had no `reload()` or
@@ -153,6 +139,58 @@ of remote lag during the write are accepted.
     `YIELD_DURING_ERASE` is on. A web update's per-sector erase stall isn't measured yet (the board
     test will measure it).
 - The transport buffer plus the copy means an image over about 3 MB gets Unavailable. Ours is 1.9 MB.
+
+## Multi-Bluetooth (branch `multi-bluetooth`, built, not on the board yet; design `docs/design/multi-bluetooth.md`)
+
+- Limits: 5 connections and 5 bonds (4 hosts plus one). A window needs a free connection when all 4
+  hosts are connected, and a re-pair's new bond lands before the old one is deleted. Core's device
+  limit stays 4. CCCDs 32.
+  - All three in `include/sdkconfig.h`, which shadows the framework's (`#include_next`, then
+    redefine; a `-D` loses to sdkconfig.h). PlatformIO puts `include/` only on our sources' path, so
+    `scripts/sdkconfig_shadow.py` prepends it for libraries too. Without that, NimBLE built with 3
+    and NimBLEServer's `std::array` disagreed with ours (ODR). `static_assert`s in ble_hid.cpp.
+  - Verified in the ELF: `ble_hs_conn_elem_mem` 0x258 (5 x 120), `ble_store_config_our_secs` 0x1b8
+    (5 x 88), `ble_store_config_cccds` 0x200. `bt_cfg.ble_max_act` follows at runtime.
+- Store full: `NimBLEDeviceCallbacks::onStoreStatus` returns `BLE_HS_ESTORE_CAP` on OVERFLOW (the
+  default deletes the oldest bond). `adoptBond()` checks `isBonded()` and fails the window.
+- `BleHid`: the host table (`hubbo-ble`/`hosts`), no handle table. Sends call
+  `ble_gap_conn_find_by_addr(identity)` (matches a resolved RPA) plus an encrypted check, then
+  `notify(..., handle)`. `connected(id)` is the `linked` flag `refreshLinks()` sets on link events.
+  - Callbacks only set `linksChanged`. `refreshLinks()` adopts a new bond (window open) or drops
+    and deletes it (no window), then refreshes `linked`.
+  - Advertising: whenever a paired host is unlinked or a window is open, and fewer than 5 links.
+    Whitelist-only connects outside a window. The whitelist is rebuilt (advertising stopped)
+    after the table changes. Checked on link events and once a second.
+  - Window: bonding is allowed only while open. A host already paired to another device stays
+    tied to it. The first new bond goes to the window's device, and only then is its old bond
+    deleted and old link dropped. The device's own host re-bonding (an auth-complete on its
+    handle: `authenticated` bitmask from the callback) also closes it, deleting nothing. A
+    timeout, cancel or full store keeps what was there. No failed state.
+  - NVS (bond deletes, table writes) goes to httpd via the offload, in order (`pendingJobs_`
+    when the queue is full). Boot runs it inline.
+- Key release on disconnect: core's `BleHidAdapter` drops a device's held keys when
+  `connected(id)` turns false (confirmed by the lead, covered by core's tests); nothing in firmware.
+- `BleHostRuntime` (`ApiContext.bleHosts`): a snapshot of every non-default device status and a
+  queue of 8 requests under a spinlock. `status(id)` and Busy see pending requests applied:
+  `windowLocked()` replays the queue once for the window's owner; forgets clear bonds. Start: Accepted with no change if that device's window is open,
+  Busy if another's is, Full if the queue is. Cancel and forget are never Busy.
+  - `retainOnly(set)`: one latest-wins slot (never Full), applied after the queue once the radio
+    is up; `status()` already shows it. `retainSeq_` tells `store()` whether a newer set came in. `BleHostReconciler` is the ConfigService listener (set in
+    `bootState()` before `bootHub`), so the boot load and every commit forget removed devices.
+- Ids are `IdString` in memory (refuses over-long ids); the NVS record keeps a fixed `char[33]`.
+- `EngineRuntime` uses `bleRadioState/bleRadioDetail` and `bleDeviceAvailability(status(id))`.
+- No migration: the old single bond has no device, so the first boot deletes it. Re-pair.
+  `main.cpp` still prints `migratedFrom` (core keeps the migration framework).
+- Board test passed (Fire TV + Apple TV; keys per activity, Pair/Cancel, Apple TV reboot, power
+  cycle). Loop: 2.2 ms after boot. A ~10 ms stall now and then is a flash erase on core 0 (LittleFS
+  `active` save after a switch, NimBLE NVS): IDF pauses core 1 for up to
+  `CONFIG_SPI_FLASH_ERASE_YIELD_DURATION_MS` (10). Accepted by the user; not a fix item.
+- Open (next firmware work): after a boot the Fire TV's link stayed unencrypted for about 40 s
+  (presses failed adapter_unavailable). Log connect / encryption result / disconnect per host with
+  the time, then re-request security (and drop the link) if a paired host stays unencrypted ~3 s.
+- To measure on the board (section 7): loop max gap and over-5 ms with 4 hosts, sends to each,
+  the whitelist with RPA hosts (Apple TV), store-full refusal, re-pair keeping the old host on
+  cancel/timeout.
 
 ## Task layout (priorities)
 

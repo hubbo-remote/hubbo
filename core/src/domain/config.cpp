@@ -6,10 +6,8 @@ namespace hubbo {
 
 std::string providerRef(const DeviceSpec &device) {
     if (device.provider.type == kHomeAssistantType) return device.provider.entityId;
-    if (device.provider.type == kBleHidType) {
-        return device.provider.peerName.empty() ? "bonded_host" : device.provider.peerName;
-    }
-    return device.provider.entityId.empty() ? device.provider.peerName : device.provider.entityId;
+    if (device.provider.type == kBleHidType) return device.id;  // its own host, bonded by device id
+    return device.provider.entityId;
 }
 
 void ensureBuiltinIntegrations(ConfigSpec *config) {

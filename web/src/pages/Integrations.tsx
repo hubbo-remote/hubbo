@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { api } from '@/api/client'
 import { getQueryData, invalidate, setQueryData } from '@/api/hooks'
 import type { Integration, IntegrationConfig } from '@/api/types'
-import { BlePanel } from '@/components/admin/BlePanel'
 import { HomeAssistantSettings } from '@/components/admin/HomeAssistantForm'
 import { ErrorState, HealthDot, PageHeader } from '@/components/common'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -88,7 +87,6 @@ function IntegrationCard({ integration: i }: { integration: Integration }) {
       <CardContent className="grid gap-4">
         <p className="text-sm text-muted-foreground">{plural(i.device_count, 'device')}</p>
         {i.type === 'home_assistant' && <HomeAssistantSettings id={i.id} />}
-        {i.type === 'ble_hid' && <BlePanel id={i.id} />}
       </CardContent>
     </Card>
   )

@@ -32,11 +32,11 @@ import type {
   TokenSummary,
   TransitionResult,
   ValidationIssue,
-  BlePairingStatus as PairingStatus,
+  BluetoothStatus,
   EntityDetailsStatus,
   FirmwareStatus,
 } from '../src/api/types.ts'
-import { BLE_PAIR_WINDOW_MAX_S, BLE_PAIR_WINDOW_MIN_S, BLE_PAIR_WINDOW_S, REMOTE_CHANNEL_MAX, REMOTE_SCAN_TIMEOUT_S } from '../src/api/constants.ts'
+import { BLE_MAX_DEVICES, BLE_PAIR_WINDOW_MAX_S, BLE_PAIR_WINDOW_MIN_S, BLE_PAIR_WINDOW_S, REMOTE_CHANNEL_MAX, REMOTE_SCAN_TIMEOUT_S } from '../src/api/constants.ts'
 import { forEachAction, validateActivity, validateBindings, type Catalog } from '../src/lib/activity.ts'
 import { addressProblem } from '../src/lib/remote.ts'
 import { checkFirmwareImage } from './firmware.ts'
@@ -133,6 +133,8 @@ const BLOCKED_RECORD = 'admin/restore.blocked-raw.request.json'
 const BLOCKED_RECORD_SCHEMA = fixture<{ schema_version: number }>(BLOCKED_RECORD).schema_version
 /** An error response straight from api/fixtures/errors. */
 const fixtureError = (status: number, file: string): MockResponse => ({ status, body: fixture(file) })
+/** The hub's refusal of fields a body may not carry, at `at` (e.g. `/devices/0`). */
+const unknownFields = (keys: string[], at = '') => keys.map((k) => ({ path: `${at}/${k}`, code: 'unknown_field' as const, message: `Unknown field ${k}` }))
 
 const err = (status: number, code: ErrorCode, message: string, extra: Record<string, unknown> = {}): MockResponse => ({ status, body: { error: { code, message, ...extra } } })
 const invalid = (details: ValidationIssue[], message = details[0]?.message ?? 'Invalid request') => err(422, 'validation_failed', message, { details: details.slice(0, 32) })
@@ -161,10 +163,12 @@ export function createMock(opts: MockOptions = {}) {
   let endpoint: RemoteEndpoint | null
   /** Simulated HA client state (POST /__mock/ha); cleared when its settings change, like the real client. */
   let haOverride: IntegrationState | null
-  /** Like hub-sim's POST /sim/ble?connected=0: the BLE host dropped (false: connected while bonded). */
-  let bleDown = false
-  /** The BLE pairing window (POST /admin/integrations/ble/pair); `failed` sticks until the next POST or DELETE. */
-  let blePair: { state: 'idle' } | { state: 'pairing'; endsAt: number } | { state: 'failed' } = { state: 'idle' }
+  /** Bonded Bluetooth hosts by device id, and whether each is connected (like hub-sim's fake hosts). */
+  let bleHosts = new Map<string, { connected: boolean }>()
+  /** Like hub-sim's /sim/ble/radio?ready=0: the radio is down (no host connects, pairing is refused). */
+  let bleRadioDown = false
+  /** The one pairing window (POST /admin/devices/{id}/pair). When it ends unbonded, the device keeps its old host, if any. */
+  let blePair: { device: string; endsAt: number } | null = null
   /** Like hub-sim's /sim/ha?auth=reject and ?connect=stall: how the fake HA answers the next connect (after a save). */
   let haNextConnect: 'ok' | 'reject' | 'stall' = 'ok'
   /** A firmware update in hub time: `advancedMs` from /__mock/advance plus scaled real time since `startedAt`. */
@@ -212,6 +216,7 @@ export function createMock(opts: MockOptions = {}) {
   function reset(flags: ResetFlags = {}) {
     mode = { ...flags, firstRun: flags.firstRun ?? opts.firstRun, requireAuth: flags.requireAuth ?? opts.requireAuth }
     db = loadSeed()
+    for (const d of db.devices) delete d.bluetooth // runtime status, computed by live()
     adminCreated = !mode.firstRun
     // A set-up mock hub's admin is the login fixture's (the user picked the name; there's no default).
     ;({ username, password } = fixture<{ username: string; password: string }>('auth/login.request.json'))
@@ -221,8 +226,10 @@ export function createMock(opts: MockOptions = {}) {
     pairing = mode.firstRun ? { state: 'idle', paired: false } : { ...db.remote.pairing }
     endpoint = mode.firstRun ? null : db.remote.endpoint
     haOverride = null
-    bleDown = false
-    blePair = { state: 'idle' }
+    // Like hub-sim: every seeded Bluetooth device starts paired and connected.
+    bleHosts = new Map(db.devices.filter((d) => d.provider.type === 'ble_hid').map((d) => [d.id, { connected: true }]))
+    blePair = null
+    bleRadioDown = false
     haNextConnect = 'ok'
     fw = { state: 'idle' }
     fwFail = false
@@ -309,8 +316,8 @@ export function createMock(opts: MockOptions = {}) {
     if (!c) return 'error'
     if (!c.enabled) return 'disabled'
     if (c.settings.type === 'home_assistant') return c.settings.has_access_token ? (haOverride ?? 'connected') : 'not_configured'
-    // Like hub-sim: pairing → connecting; no bond → not_configured; bonded → the link's state.
-    if (c.settings.type === 'ble_hid') return blePairStatus(c.settings).state === 'pairing' ? 'connecting' : !c.settings.bonded ? 'not_configured' : bleDown ? 'disconnected' : 'connected'
+    // ble is the radio: working (connected) while enabled, `error` when it's down.
+    if (c.settings.type === 'ble_hid') return bleRadioDown ? 'error' : 'connected'
     return 'connected'
   }
 
@@ -417,35 +424,46 @@ export function createMock(opts: MockOptions = {}) {
     return (c.command_ids ?? []).map((id) => all.get(id) ?? INTEGRATION_SERVICES.get(id) ?? plain(id))
   }
 
-  /** The ble_hid integration's (mutable) settings, or null when `id` isn't one. */
-  function bleSettings(id: string) {
-    const c = db.configs.get(id)
-    return c?.settings.type === 'ble_hid' ? mut(c.settings) : null
+  /** Like the hub: drop pairings (and a window) whose device is no longer in config. */
+  function pruneBonds() {
+    const ble = new Set(db.devices.filter((d) => d.provider.type === 'ble_hid').map((d) => d.id))
+    for (const id of bleHosts.keys()) if (!ble.has(id)) bleHosts.delete(id)
+    if (blePair && !ble.has(blePair.device)) blePair = null
   }
 
-  function blePairStatus(st: { bonded: boolean; peer_name?: string | null }): PairingStatus {
-    if (blePair.state === 'pairing') {
-      const left = blePair.endsAt - Date.now()
-      if (left > 0) return { state: 'pairing', window_s: Math.ceil(left / 1000) }
-      blePair = { state: 'failed' } // the window closed with no bond
-    }
-    if (blePair.state === 'failed') return { state: 'failed' }
-    return st.bonded ? { state: 'paired', ...(st.peer_name ? { peer_name: st.peer_name } : {}) } : { state: 'idle' }
+  /** The open pairing window, or null once it has run out. */
+  function bleWindow() {
+    if (blePair && blePair.endsAt <= Date.now()) blePair = null
+    return blePair
   }
 
-  /** The hub's BLE detail line (core's bleIntegrationDetail): from the pairing state and the link, never the enabled flag. */
-  function bleDetail(st: { bonded: boolean; peer_name?: string | null }): string {
-    const pair = blePairStatus(st).state
-    if (pair === 'pairing') return 'Ready to pair'
-    if (pair !== 'paired') return 'Not paired'
-    return `${bleDown ? 'Waiting for' : 'Connected to'} ${st.peer_name ?? 'your device'}`
+  /** A Bluetooth device's status (core's per-device status function). */
+  function bleStatus(id: string): BluetoothStatus {
+    const w = bleWindow()
+    if (w?.device === id) return { state: 'pairing', window_s: Math.ceil((w.endsAt - Date.now()) / 1000) }
+    const h = bleHosts.get(id)
+    return { state: !h ? 'not_paired' : h.connected && !bleRadioDown ? 'connected' : 'not_connected' }
+  }
+
+  /** A device as the API shows it: Bluetooth devices carry their live status and availability. */
+  function live(d: Device): Device {
+    if (d.provider.type !== 'ble_hid') return d
+    const bluetooth = bleStatus(d.id)
+    return { ...d, availability: bluetooth.state === 'connected' ? 'available' : 'unavailable', bluetooth }
+  }
+
+  /** 404 unless `id` is a Bluetooth device, in the hub's words; null when it is one. */
+  function notBle(id: string): MockResponse | null {
+    const d = db.devices.find((x) => x.id === id)
+    if (!d) return err(404, 'not_found', 'No such device')
+    return d.provider.type === 'ble_hid' ? null : err(404, 'not_found', `${d.name} isn't a Bluetooth device`)
   }
 
   function integrations() {
     return db.integrations.map((i) => {
       const c = db.configs.get(i.id)
       const state = integrationState(i.id)
-      const detail = c?.settings.type === 'ble_hid' ? bleDetail(c.settings) : state === 'not_configured' ? 'Not set up' : i.detail
+      const detail = state === 'not_configured' ? 'Not set up' : i.type === 'ble_hid' ? (state === 'error' ? "Bluetooth isn't working" : undefined) : i.detail
       return { ...i, name: c?.name ?? i.name, enabled: c?.enabled ?? i.enabled, state, detail, device_count: db.devices.filter((d) => d.integration_id === i.id).length }
     })
   }
@@ -482,8 +500,7 @@ export function createMock(opts: MockOptions = {}) {
     if (!erase) return false
     if (hubMs(erase) < ERASE_RESTART_MS) return true
     reset({ firstRun: true, requireAuth: mode.requireAuth }) // no admin, sessions, tokens, remote or config
-    const ble = db.configs.get('ble')
-    if (ble?.settings.type === 'ble_hid') ble.settings = { ...ble.settings, bonded: false, peer_name: undefined }
+    bleHosts = new Map() // erased with everything else
     return false
   }
 
@@ -596,10 +613,10 @@ export function createMock(opts: MockOptions = {}) {
     ['GET', /^\/remote\/buttons$/, 'token', () => ok(db.buttons)],
 
     // devices
-    ['GET', /^\/devices$/, 'token', () => ok({ devices: db.devices })],
+    ['GET', /^\/devices$/, 'token', () => ok({ devices: db.devices.map(live) })],
     ['GET', /^\/devices\/([^/]+)$/, 'token', (_r, m) => {
       const d = db.devices.find((x) => x.id === m[1])
-      return d ? ok(d) : err(404, 'not_found', 'No such device')
+      return d ? ok(live(d)) : err(404, 'not_found', 'No such device')
     }],
     ['GET', /^\/devices\/([^/]+)\/capabilities$/, 'token', (_r, m) => {
       const c = db.capabilities.get(m[1]!)
@@ -614,6 +631,8 @@ export function createMock(opts: MockOptions = {}) {
       const v = shape.length ? shape : validateActivity({ name: 'x', startup: [a], shutdown: [], bindings: {} }, catalog()).errors
       if (v.length) return invalid(v.map((e) => ({ ...e, path: e.path.replace(/^\/startup\/0/, '') })))
       if (integrationState(d.integration_id) !== 'connected') return err(503, 'integration_unavailable', `${d.integration_id} is not connected`)
+      // Like the hub: a key for a host that isn't connected is sent nowhere.
+      if (d.provider.type === 'ble_hid' && bleStatus(d.id).state !== 'connected') return ok({ status: 'failed', device_id: d.id, command_id: a.command_id, elapsed_ms: 0, message: 'adapter_unavailable' } satisfies ExecuteResult)
       // A stale device's entity is gone from HA: the call is made and fails (decided 2026-11-09, like hub-sim).
       if (d.availability === 'stale') return ok({ status: 'failed', device_id: d.id, command_id: a.command_id, elapsed_ms: 1, message: 'entity_not_found' } satisfies ExecuteResult)
       // Error cases come from the contract fixtures: that device + command gets that result.
@@ -769,37 +788,39 @@ export function createMock(opts: MockOptions = {}) {
       if (m[1] !== 'ha_main') return err(404, 'not_found', 'Only Home Assistant has entities')
       return ok(entityDetails(decodeURIComponent(m[2]!)))
     }],
-    ['GET', /^\/admin\/integrations\/([^/]+)\/pair$/, 'admin', (_r, m) => {
-      const st = bleSettings(m[1]!)
-      return st ? ok(blePairStatus(st)) : err(404, 'not_found', 'This integration does not pair')
-    }],
-    ['POST', /^\/admin\/integrations\/([^/]+)\/pair$/, 'admin', (req, m) => {
-      const st = bleSettings(m[1]!)
-      if (!st) return err(404, 'not_found', 'This integration does not pair')
+    // Bluetooth pairing, per device: one window at a time; its first new bond becomes that device's host.
+    ['GET', /^\/admin\/devices\/([^/]+)\/pair$/, 'admin', (_r, m) => (notBle(m[1]!) ?? ok(bleStatus(m[1]!)))],
+    ['POST', /^\/admin\/devices\/([^/]+)\/pair$/, 'admin', (req, m) => {
+      const no = notBle(m[1]!)
+      if (no) return no
       const raw = req.query.get('window_s')
       const windowS = raw === null ? BLE_PAIR_WINDOW_S : /^\d+$/.test(raw) ? Number(raw) : NaN
       if (!(windowS >= BLE_PAIR_WINDOW_MIN_S && windowS <= BLE_PAIR_WINDOW_MAX_S)) return invalid([{ path: '/window_s', code: 'param_out_of_range', message: `window_s must be ${BLE_PAIR_WINDOW_MIN_S} to ${BLE_PAIR_WINDOW_MAX_S}` }])
-      if (blePairStatus(st).state === 'pairing') return err(409, 'busy', 'A pairing window is already open')
-      // A new bond replaces the old one.
-      st.bonded = false
-      delete st.peer_name
-      blePair = { state: 'pairing', endsAt: Date.now() + windowS * 1000 }
-      return ok({ state: 'pairing', window_s: windowS } satisfies PairingStatus, 202)
+      if (integrationState('ble') !== 'connected') return fixtureError(503, 'errors/bluetooth_unavailable.json')
+      const open = bleWindow()
+      if (open?.device === m[1]) return ok(bleStatus(m[1]!), 202) // already its window
+      if (open) return fixtureError(409, 'errors/pairing_busy.json')
+      blePair = { device: m[1]!, endsAt: Date.now() + windowS * 1000 }
+      return ok(bleStatus(m[1]!), 202)
     }],
-    ['DELETE', /^\/admin\/integrations\/([^/]+)\/pair$/, 'admin', (_r, m) => {
-      const st = bleSettings(m[1]!)
-      if (!st) return err(404, 'not_found', 'This integration does not pair')
-      blePair = { state: 'idle' }
-      st.bonded = false
-      delete st.peer_name
-      return ok()
+    ['DELETE', /^\/admin\/devices\/([^/]+)\/pair$/, 'admin', (_r, m) => {
+      const no = notBle(m[1]!)
+      if (no) return no
+      if (blePair?.device === m[1]) blePair = null // the old host, if any, stays
+      return { status: 204 }
+    }],
+    ['DELETE', /^\/admin\/devices\/([^/]+)\/pairing$/, 'admin', (_r, m) => {
+      const no = notBle(m[1]!)
+      if (no) return no
+      bleHosts.delete(m[1]!)
+      return { status: 204 }
     }],
 
     ['POST', /^\/admin\/devices$/, 'admin', (req) => {
       const b = req.body as DeviceRegister
       // Like the hub: only DeviceRegister's fields (a client-sent `ha_capabilities` is refused).
       const extra = Object.keys(b ?? {}).filter((k) => !['name', 'integration_id', 'kind', 'provider'].includes(k))
-      if (extra.length) return invalid(extra.map((k) => ({ path: `/${k}`, code: 'unknown_field' as const, message: `Unknown field ${k}` })))
+      if (extra.length) return invalid(unknownFields(extra))
       if (!b?.name?.trim()) return invalid([{ path: '/name', code: 'required', message: 'Name is required' }])
       if (db.devices.length >= 64) return err(409, 'limit_reached', 'At most 64 devices')
       const p = b.provider
@@ -810,9 +831,11 @@ export function createMock(opts: MockOptions = {}) {
         if ('status' in c) return c
         hc = c
       } else if (b.provider?.type !== 'ble_hid' || b.integration_id !== 'ble') return invalid([{ path: '/provider', code: 'integration_mismatch', message: 'Provider does not belong to that integration' }])
+      else if (db.devices.filter((d) => d.provider.type === 'ble_hid').length >= BLE_MAX_DEVICES)
+        return fixtureError(422, 'errors/too_many_bluetooth_devices.json')
       let id = `dev_${slug(b.name)}`
       while (db.devices.some((d) => d.id === id)) id = `dev_${slug(b.name).slice(0, 20)}_${rand36(3)}`
-      const d: Device = { id, name: b.name.trim(), integration_id: b.integration_id, kind: b.kind ?? 'other', provider: b.provider, availability: 'available', schema_version: 1, revision: commit() }
+      const d: Device = { id, name: b.name.trim(), integration_id: b.integration_id, kind: b.kind ?? 'other', provider: p.type === 'ble_hid' ? { type: 'ble_hid' } : p, availability: 'available', schema_version: 1, revision: commit() }
       db.devices.push(d)
       const prov = b.provider
       const cand = prov.type === 'home_assistant' ? db.discover.candidates.find((x) => x.provider.entity_id === prov.entity_id) : undefined
@@ -821,7 +844,7 @@ export function createMock(opts: MockOptions = {}) {
       const like = db.devices.find((x) => x.id !== id && x.integration_id === d.integration_id && x.kind === d.kind) ?? db.devices.find((x) => x.id !== id && x.integration_id === d.integration_id)
       const base = like ? db.capabilities.get(like.id)!.commands : []
       db.capabilities.set(id, { device_id: id, integration_id: d.integration_id, commands: hc ? haCommands(hc) : base })
-      return { status: 201, body: d, headers: { location: `/api/v1/devices/${id}` } }
+      return { status: 201, body: live(d), headers: { location: `/api/v1/devices/${id}` } }
     }],
     ['PUT', /^\/admin\/devices\/([^/]+)$/, 'admin', (req, m) => {
       const i = db.devices.findIndex((x) => x.id === m[1])
@@ -830,7 +853,7 @@ export function createMock(opts: MockOptions = {}) {
       const b = req.body as DeviceUpdate
       // Like the hub: only DeviceUpdate's fields (e.g. `ha_capabilities` is never accepted back).
       const extra = Object.keys(b ?? {}).filter((k) => !['name', 'kind', 'provider', 'revision'].includes(k))
-      if (extra.length) return invalid(extra.map((k) => ({ path: `/${k}`, code: 'unknown_field' as const, message: `Unknown field ${k}` })))
+      if (extra.length) return invalid(unknownFields(extra))
       if (b?.revision !== d.revision) return err(409, 'revision_conflict', `Device changed since revision ${b?.revision}`, { current_revision: d.revision })
       if (b.name !== undefined && !b.name.trim()) return invalid([{ path: '/name', code: 'required', message: 'Name is required' }])
       let availability = d.availability
@@ -859,7 +882,7 @@ export function createMock(opts: MockOptions = {}) {
         }
       }
       db.devices[i] = { ...d, availability, ...(b.name ? { name: b.name.trim() } : {}), ...(b.kind ? { kind: b.kind } : {}), ...(b.provider ? { provider: b.provider } : {}), revision: commit() }
-      return ok(db.devices[i])
+      return ok(live(db.devices[i]!))
     }],
     ['DELETE', /^\/admin\/devices\/([^/]+)$/, 'admin', (req, m) => {
       const d = db.devices.find((x) => x.id === m[1])
@@ -870,6 +893,7 @@ export function createMock(opts: MockOptions = {}) {
       const refs = references((x) => x.device_id === d.id)
       if (refs.length) return err(409, 'device_in_use', 'The device is used elsewhere; remove those references first', { details: refs.slice(0, 32) })
       db.devices = db.devices.filter((x) => x.id !== d.id)
+      pruneBonds() // deleting a device forgets its host
       db.capabilities.delete(d.id)
       db.discover.candidates.forEach((c) => c.registered_device_id === d.id && (c.registered_device_id = null))
       return ok()
@@ -975,12 +999,16 @@ export function createMock(opts: MockOptions = {}) {
       }
       const b = req.body as Partial<Backup>
       if (!Array.isArray(b.devices) || !Array.isArray(b.activities)) return invalid([{ path: '', code: 'required', message: 'Backup is missing devices or activities' }])
+      // Runtime device fields are never stored, so a backup can't carry them (like the hub).
+      const runtime = b.devices.flatMap((d, i) => unknownFields(['availability', 'bluetooth'].filter((k) => k in d), `/devices/${i}`))
+      if (runtime.length) return invalid(runtime)
       const dry = req.query.get('dry_run') === 'true'
       const result = { dry_run: dry, devices: b.devices.length, activities: b.activities.length, integrations: b.integrations?.length ?? 0, migrated_from: null, requires: ['home_assistant_token', 'ble_pairing', 'api_tokens'], warnings: [] }
       if (!dry) {
         // Revisions in the backup may be missing or 0; stampAll() replaces them all.
         // A backup's StoredDevice carries ha_capabilities; a Device (what the API returns) never does.
         db.devices = b.devices.map(({ ha_capabilities: _, ...d }) => ({ ...d, availability: 'unknown' as const, revision: 0 }))
+        pruneBonds() // a restored device keeps its bond on this hub; others are dropped
         db.activities = b.activities.map((a) => ({ ...a, schema_version: 1 as const, revision: 0 }))
         db.globalBindings = { bindings: b.global_bindings?.bindings ?? {}, revision: 0 }
         // Integration settings come back without secrets (a backup never has the HA token). Like the
@@ -999,6 +1027,7 @@ export function createMock(opts: MockOptions = {}) {
     }],
     ['POST', /^\/admin\/reset$/, 'admin', () => {
       factoryDefaults()
+      pruneBonds()
       stampAll()
       return ok(config)
     }],
@@ -1052,7 +1081,7 @@ export function createMock(opts: MockOptions = {}) {
       const ms = Number(req.query.get('ms'))
       if (!(ms >= 0)) return invalid([{ path: '/ms', code: 'wrong_type', message: 'ms must be a number' }])
       if (pairing.startedAt !== undefined) pairing.startedAt -= ms
-      if (blePair.state === 'pairing') blePair.endsAt -= ms
+      if (blePair) blePair.endsAt -= ms
       if (details) details.startedAt -= ms
       if (discovery.startedAt !== undefined) discovery.startedAt -= ms
       if (fw.state === 'writing') fw.advancedMs += ms
@@ -1098,21 +1127,29 @@ export function createMock(opts: MockOptions = {}) {
       lastEventAt = Date.now()
       return ok()
     }],
-    // Like hub-sim's /sim/ble/bonded?peer=: a host bonds during the open window (or anytime: it's a test).
-    ['POST', /^\/__mock\/ble\/bonded$/, 'public', (req) => {
-      const st = bleSettings('ble')!
-      st.bonded = true
-      const peer = req.query.get('peer')
-      if (peer) st.peer_name = peer.slice(0, 48)
-      else delete st.peer_name
-      blePair = { state: 'idle' }
+    // Like hub-sim's fake Bluetooth hosts (/sim/ble/...): a host bonds in that device's open window
+    // and connects; a paired host drops or comes back; the radio goes down or comes back.
+    ['POST', /^\/__mock\/ble\/bond$/, 'public', (req) => {
+      const id = req.query.get('device') ?? ''
+      if (bleWindow()?.device !== id) return err(409, 'busy', 'That device has no pairing window open')
+      bleHosts.set(id, { connected: true })
+      blePair = null
       return ok()
     }],
-    ['POST', /^\/__mock\/ble$/, 'public', (req) => {
-      const v = req.query.get('connected')
-      if (v !== '0' && v !== '1') return invalid([{ path: '/connected', code: 'wrong_type', message: 'connected must be 0 or 1' }])
-      bleDown = v === '0'
-      return ok({ connected: !bleDown })
+    ['POST', /^\/__mock\/ble\/link$/, 'public', (req) => {
+      const h = bleHosts.get(req.query.get('device') ?? '')
+      const up = req.query.get('up')
+      if (!h) return err(404, 'not_found', 'That device has no host')
+      if (up !== '0' && up !== '1') return invalid([{ path: '/up', code: 'wrong_type', message: 'up must be 0 or 1' }])
+      h.connected = up === '1'
+      return ok({ up: h.connected })
+    }],
+    ['POST', /^\/__mock\/ble\/radio$/, 'public', (req) => {
+      const v = req.query.get('ready')
+      if (v !== '0' && v !== '1') return invalid([{ path: '/ready', code: 'wrong_type', message: 'ready must be 0 or 1' }])
+      bleRadioDown = v === '0'
+      if (bleRadioDown) blePair = null
+      return ok({ ready: !bleRadioDown })
     }],
     // Like hub-sim's POST /sim/storage?health=…: the store goes down or comes back at runtime.
     ['POST', /^\/__mock\/storage$/, 'public', (req) => {

@@ -10,8 +10,8 @@ Current as of polish round 1 (after Phase 5). Not a log: rewrite sections as the
 - Routes in `core/src/api/`, one file per area:
   - `registry_routes.cpp`: devices and registration;
   - `integration_routes.cpp`: HA settings, discovery, entity details, `applyHomeAssistantSettings()`;
-  - `remote_routes.cpp` / `ble_routes.cpp`: the remote and BLE pairing, over `RemotePort` /
-    `BlePairingPort` (with `SimulatedRemote` / `SimulatedBlePairing`);
+  - `remote_routes.cpp` / `ble_routes.cpp`: the remote, and Bluetooth device pairing over core's
+    `integrations::BleHostPort` (`ctx.bleHosts`; `SimulatedRemote` / hub-sim's hosts);
   - `firmware_routes.cpp`: GET /admin/firmware and POST /admin/firmware/update over
     `FirmwareUpdatePort` (`firmware_update_port.h`, with `SimulatedFirmwareUpdate`);
   - backup, auth, status and activity routes, with shared helpers in `support.h`.
@@ -101,12 +101,19 @@ Current as of polish round 1 (after Phase 5). Not a log: rewrite sections as the
   POST, a DELETE or a reboot; the cursor is a decimal offset into the filtered list.
 - **The `text` selector is unsupported in Phase 3** (decision): ParamSpec has no string type.
   Any field that can't be typed skips the whole service.
-- **BLE pairing follows RemotePort:** httpd-task calls that never block; 202 reports the window
-  as asked (the loop opens it shortly). `?window_s=30..300` (default 120), a query value since
-  the policy row allows no body. `failed` = the latest window closed with no bond. `ble_hid`
-  only (404), 409 `busy` while open, 503 with no port or BLE not running. `blePairing` is the
-  last ApiContext field so positional initializers still compile. The config's
-  `settings.bonded` still comes from `Runtime::integrationState`, not the port.
+- **Bluetooth pairing is per device** (multi-bluetooth.md): `POST/GET/DELETE
+  /admin/devices/{id}/pair` (start, status, cancel), `DELETE .../pairing` (forget). Calls never
+  block; 202 reports the window as asked. `?window_s=30..300` (default 120). 404 `not_found` for
+  a non-Bluetooth device (picked over 422), 409 `busy` while any window is open, 503
+  `integration_unavailable` with no port or the radio down. `BluetoothStatus` {state:
+  not_paired|pairing|connected|not_connected, window_s} is both the pair routes' body and each
+  ble_hid device's `bluetooth` field (`putBluetoothStatus`, same order as core's
+  `bleDeviceStatus`; a failed window shows what's left, there's no `failed` state). Deleting a
+  ble_hid device calls `forget(id)`. The ble integration's settings are only `device_name`.
+  At most 4 Bluetooth devices: core reports TooManyDevices at `/devices/N/integration_id`
+  (the 64 cap is at `/devices`); registerDevice rebases it to 422 `too_many_devices` at
+  `/integration_id`, "You can add up to 4 Bluetooth devices". Tests use `hub.bleHosts()`
+  (sim::SimulatedBleHosts; dev_apple_tv bonded to "Apple TV").
 - **One remote endpoint rule:** `isValidRemoteEndpoint()`. The address is optional `0x` plus up
   to 10 hex digits; responses use 10 uppercase digits.
 - **Whole-config replacement (restore, factory reset)** follows the same token rule:
@@ -181,7 +188,8 @@ Current as of polish round 1 (after Phase 5). Not a log: rewrite sections as the
 - `contract.sh` runs one at a time (`flock`): runs share container names and ports. It builds
   hub-sim in build/native under `build/native.lock` (like `bin/hubbo sim`) and runs a private copy
   from build/contract-ctl, so a later rebuild can't swap the binary mid-run.
-- `ble_pairing_flow` uses the `ble/bonded?peer=` and `advance?ms=` controls.
+- `ble_pairing_flow` uses the `ble/bond?device=`, `ble/link?device=&up=0|1`, `ble/radio?ready=`
+  and `advance?ms=` controls (hub-sim `/sim/...`, the mock `/__mock/...`).
 - Mock modes: see the `contract.sh` header and `contract.py` docstring. Test controls go through
   `Client.control()` (`/sim/` or `/api/v1/__mock/`); what the mock can't do goes through `skip()`.
 - Agent messages are never the user's consent. Commits happen only on a lead-relayed

@@ -13,6 +13,9 @@ export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /** Structural equality for plain JSON data (drafts vs saved copies). */
 export const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
+/** `arrow_up` → "Arrow up": first letter capitalised, underscores to spaces. */
+export const humanize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ')
+
 /** `3 bindings`, `1 binding`. */
 export const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`
 

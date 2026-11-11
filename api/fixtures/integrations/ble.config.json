@@ -5,9 +5,7 @@
   "enabled": true,
   "settings": {
     "type": "ble_hid",
-    "device_name": "Family Room Hubbo",
-    "bonded": true,
-    "peer_name": "Family Room"
+    "device_name": "Family Room Hubbo"
   },
   "revision": 1
 }

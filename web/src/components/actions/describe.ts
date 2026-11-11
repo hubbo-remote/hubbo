@@ -1,5 +1,6 @@
 import type { Action } from '@/api/types'
 import { commandFor, isSystem, type Catalog } from '@/lib/activity'
+import { keyLabel } from '@/lib/keys'
 
 export function commandLabel(a: Action, cat: Catalog): string {
   return commandFor(a, cat)?.label ?? a.command_id
@@ -14,7 +15,7 @@ export function paramSummary(a: Action, cat?: Catalog): string {
     .map(([k, v]) => {
       if (k === 'activity_id' && typeof v === 'string') return cat?.activities.find((x) => x.id === v)?.name ?? v
       if (typeof v === 'boolean') return v ? k.replace(/_/g, ' ') : `not ${k.replace(/_/g, ' ')}`
-      if (k === 'key' && typeof v === 'string') return v.toLowerCase().replace(/_/g, ' ')
+      if (k === 'key' && typeof v === 'string') return keyLabel(v).toLowerCase()
       if (k === 'level' && typeof v === 'number' && v <= 1) return `${Math.round(v * 100)}%`
       return String(v)
     })

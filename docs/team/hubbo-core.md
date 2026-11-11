@@ -1,17 +1,40 @@
 # hubbo-core: working notes
 
-Current as of Phase 5, on branch `phase-5`, not yet committed (Phase 4 is merged). Design:
-`docs/design/phase5-appliance.md`. This file covers state, decisions and traps only.
+Current as of the multi-Bluetooth phase, on branch `multi-bluetooth`, not yet committed (Phase 5
+and polish round 1 are committed). Design: `docs/design/multi-bluetooth.md`. This file covers state,
+decisions and traps only.
 
 ## State
 
-- Phase 5 (design section 4, plus the hub-sim side of section 2):
-  - `integrations/ble_state.*`: the shared ble_hid mapping. `bleIntegrationState(spec, pairState,
-    hostConnected)` ("disabled" first), `bleIntegrationDetail(...)` (the board's old bleText lines),
-    and `bleDeviceAvailability(...)`. hub-sim uses all three (SimRuntime). The firmware should map
-    BleHid::State onto them: Off is NotReady, NotPaired is Idle/Failed, Waiting is Paired with the
-    link down, Connected is Paired with the link up. hub-sim's ble_hid devices now report
-    available/unavailable, not unknown.
+- Several Bluetooth hosts (multi-bluetooth):
+  - `integrations/ble_hosts.*` (replaces `ble_state.*`): `BleHostPort` (radioReady, status, start
+    and cancel pairing, forget, retainOnly; all by device id), `BleHostStatus` {bonded, connected,
+    pairing, windowRemainingMs}, `BleHostResult` {Accepted, NotReady, Busy (start only: another
+    device's window), Full (request queue full: try again)}. One status mapping for the API,
+    `bleDeviceState()` -> {not_paired|pairing|connected|not_connected, windowS rounded up}, plus
+    `bleDeviceAvailability()`, `bleRadioState()`, `bleRadioDetail()`. No failed state: a cancel,
+    timeout or full store keeps what was there (old host, or not paired). Re-bonding the same host
+    is a success. A start for the device whose window is open is Accepted, no change.
+  - Orphan hosts: `ConfigService::setListener(ConfigListener*)` (set before load) is told of every
+    saved config the hub runs (intact record at load, every commit; never Blocked or unsaved).
+    `BleHostReconciler` is that listener and calls `retainOnly(bleDeviceIds(config))`, so a host
+    whose device is gone is forgotten at boot and after every commit. SimHub wires it; the
+    firmware must too. retainOnly is never refused (firmware: a latest-wins slot, not a queue entry).
+  - hub-sim keeps bonds across restarts like NVS: `SimHub(..., bonds)` / `ScenarioRunner(..., bonds)`
+    take a separate Storage (main passes the raw --data disk, not the switchable medium) and
+    write `ble_bonds` on every bond change; the runner defaults to its own memory, so a scenario
+    `reboot` keeps bonds too. Only a start with no saved bonds, or `--reset`, gets the fixture's
+    Apple TV bond. Without it, every restart re-bonded the fixture, so a host pruned by
+    the config came back after a restart (the contract's restart checks caught it).
+  - `HidTransport` is per device (`connected/sendKeyboard/sendConsumer(deviceId, ...)`).
+    `BleHidAdapter` keeps held keys per device in `limits::kMaxBleDevices` fixed slots (no
+    allocation on the engine task), frees a slot when nothing's held, drops a host's keys when its
+    link is down (poll or execute), and releases every host on releaseAll (activity change).
+  - At most 4 Bluetooth devices: the compiler adds `TooManyDevices` at
+    `/devices/<i>/integration_id` for each ble_hid device past 4 (the 64-device cap is at `/devices`).
+  - `ProviderSpec::peerName` is gone; a ble_hid provider is only its type, and `providerRef()` is
+    the device id.
+  - 13 new keys appended to the key table (FAST_FORWARD ... ESCAPE); never reorder.
   - SimHub owns an `api::SimulatedFirmwareUpdate` (`firmware()`), advanced with hub time and
     replaced on factoryReset. It's passed as `ApiContext::firmware`. `POST /sim/firmware?fail=0|1&ready=0|1`
     sets failWrites/ready (400 without a valid one). When a simulated reboot finishes an update
@@ -61,8 +84,6 @@ Current as of Phase 5, on branch `phase-5`, not yet committed (Phase 4 is merged
     `DeviceSpec::haCapabilities`; `execute` pushes into an SPSC ring (Pending, or AdapterUnavailable
     at once); `service()` runs on the integration task; results come back through a second ring.
   - `ErrorCode::EntityNotFound` ("entity_not_found"): HA doesn't know the target entity.
-  - `ca_cert_pem` is retired: the stored and backup decoders accept and drop it (old boards' records
-    must load, or the hub boots Blocked), and it's never written. `verify_tls` stays.
   - `DeviceSpec::haCapabilities` is stored as `ha_capabilities` (json.cpp); the ConfigService drops
     it for non-HA devices. The backup `remote` block is checked with `api::isValidRemoteEndpoint`.
 - hub-sim:
@@ -92,14 +113,15 @@ Current as of Phase 5, on branch `phase-5`, not yet committed (Phase 4 is merged
     - `/sim/radio/found?channel=&address=`
     - `/sim/ha?reachable=&commands=&fail=&remove=&auth=reject|ok&connect=stall|ok`. With auth or
       connect, the client reconnects at once: auth_failed, or held in connecting.
-    - `/sim/ble?connected=0|1` runs the scenario verb `ble connected|disconnected`.
-    - `/sim/ble/bonded?peer=` completes an open BLE pairing window (`api::SimulatedBlePairing`, in
-      SimHub as `blePairing()`, passed as `ApiContext::blePairing`). `advance()` runs the window
-      timeout on the hub clock, like the remote scan.
-    - The pairing port is the one source of the bond: RecordingHidTransport::connected() needs
-      Paired, and SimRuntime's BLE state follows the board's (`not_configured`, `connecting`,
-      `connected`, `disconnected`, `error`). `/sim/ble?connected=` is only the host link. The hub
-      starts bonded to `SimHub::kBondedHost`, and factoryReset() bonds it again.
+    - Bluetooth (names fixed by the API contract): `/sim/ble/bond?device=&host=` (a host bonds
+      in that device's open window, connected; 409 otherwise), `/sim/ble/link?device=&up=0|1`,
+      `/sim/ble/radio?ready=0|1`; `/sim/advance` runs a window out.
+    - `sim::SimulatedBleHosts` (fakes.h, `SimHub::bleHosts()`) is both the API's `BleHostPort`
+      (`ApiContext::bleHosts`) and the adapter's `HidTransport`. It records `reports()` and
+      `reportDevices()`. The hub starts with `kBondedDevice` (dev_apple_tv) bonded to `kBondedHost`
+      and connected; /sim/reset restores that; a factory reset leaves no bonds.
+    - Scenario verbs: `ble connected|disconnected [device_id]` (default every host) and
+      `expect_hid [@device_id] <report>`.
   - The fake HA answers the lean protocol (list_for_display, entity_registry/get,
     subscribe_entities in HA's compressed form, unsubscribe_events, get_services) and has one
     YAML-only entity, `switch.patio_fountain` (`FakeHaServer::kYamlOnlyEntity`).
@@ -111,6 +133,13 @@ Current as of Phase 5, on branch `phase-5`, not yet committed (Phase 4 is merged
     `api::applyHomeAssistantSettings` at construction.
 
 ## Decisions (and why)
+
+- **No backwards compatibility before the first release** (user, 2026-11-10). No retired-field
+  tolerance and no migration steps: a record or backup with an unknown field (`ca_cert_pem`,
+  `peer_name`, runtime state such as `availability` or `bluetooth`, ...) is unknown_field, and an
+  older `schema_version` is MigrationFailed (Blocked, never overwritten). The migration hook and
+  the newer-schema -> Blocked path stay for later. `ensureBuiltinIntegrations` on load is an
+  invariant, not a shim, and stays.
 
 - **`ha_main` is a built-in integration**, like `system` and `ble` (`ensureBuiltinIntegrations`,
   `kHomeAssistantIntegrationId`). It's added with no URL and enabled to any config that lacks it: when
@@ -193,5 +222,6 @@ Current as of Phase 5, on branch `phase-5`, not yet committed (Phase 4 is merged
 - Firmware: pass the client a millis Clock and use `haIntegrationState()` in EngineRuntime (check).
 - In real mode, `ha latency` and `ha fail` scenario verbs are refused; only `ha available|unavailable`
   works. Use /sim/ha for faults.
-- Firmware: switch engine_runtime's bleText to `integrations/ble_state.h` (hubbo-firmware's job).
+- Firmware: implement `BleHostPort` and the per-device `HidTransport`, and use the
+  `ble_hosts.h` status functions (hubbo-firmware's job).
 - At the phase commit: /commits with only this area's files, staged by path.
