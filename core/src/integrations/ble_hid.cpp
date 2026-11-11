@@ -1,6 +1,5 @@
 #include "hubbo/integrations/ble_hid.h"
 
-#include <cstring>
 #include <iterator>
 
 #include "hubbo/domain/config.h"
@@ -69,7 +68,20 @@ namespace {
     X("KEY_W", Keyboard, 0x1A)                                   \
     X("KEY_X", Keyboard, 0x1B)                                   \
     X("KEY_Y", Keyboard, 0x1C)                                   \
-    X("KEY_Z", Keyboard, 0x1D)
+    X("KEY_Z", Keyboard, 0x1D)                                   \
+    X("FAST_FORWARD", Consumer, 0x00B3)                          \
+    X("REWIND", Consumer, 0x00B4)                                \
+    X("STOP", Consumer, 0x00B7)                                  \
+    X("AC_BACK", Consumer, 0x0224)                               \
+    X("AC_SEARCH", Consumer, 0x0221)                             \
+    X("MENU_ESCAPE", Consumer, 0x0046)   /* Exit */              \
+    X("CHANNEL_UP", Consumer, 0x009C)    /* Channel Increment */ \
+    X("CHANNEL_DOWN", Consumer, 0x009D)  /* Channel Decrement */ \
+    X("INFO", Consumer, 0x01BD)          /* AL OEM Features (Info) */ \
+    X("SLEEP", Consumer, 0x0034)                                 \
+    X("KEYPAD_ENTER", Keyboard, 0x58)                            \
+    X("BACKSPACE", Keyboard, 0x2A)                               \
+    X("ESCAPE", Keyboard, 0x29)
 
 #define HUBBO_KEY_ENTRY(name, page, usage) {name, HidPage::page, usage},
 #define HUBBO_KEY_NAME(name, page, usage) name,
@@ -124,109 +136,151 @@ CommandCatalog BleHidAdapter::commandsFor(const DeviceSpec &device) const {
 }
 
 ExecResult BleHidAdapter::execute(const ExecRequest &request) {
-    if (request.command == nullptr || request.params == nullptr || request.commandIndex >= std::size(kCommands)) {
+    if (request.command == nullptr || request.params == nullptr || request.deviceId == nullptr ||
+        request.commandIndex >= std::size(kCommands)) {
         return ExecResult::failed(ErrorCode::Internal);
     }
     const uint16_t option = request.params[0].asOption();
     if (option >= kKeyCount) {
         return ExecResult::failed(ErrorCode::Internal);
     }
-    if (forgetIfDisconnected()) {
+    const std::string_view deviceId = request.deviceId;
+    if (!transport_.connected(deviceId)) {
+        // Whatever its host thought was held went with the link.
+        if (Host *gone = find(deviceId)) *gone = Host{};
         return ExecResult::failed(ErrorCode::AdapterUnavailable);
     }
+    Host *host = findOrAdd(deviceId);
+    if (host == nullptr) return ExecResult::failed(ErrorCode::CapacityExceeded);  // more hosts than bonds
     const HidKey &key = kKeys[option];
+    ExecResult result = ExecResult::failed(ErrorCode::Internal);
     switch (static_cast<BleHidCommand>(request.commandIndex)) {
         case BleHidCommand::KeyDown:
-            return press(key);
+            result = press(*host, key);
+            break;
         case BleHidCommand::KeyUp:
-            return release(key);
-        case BleHidCommand::KeyTap: {
-            const ExecResult down = press(key);
-            if (down.status != ExecStatus::Accepted) return down;
-            return release(key);
-        }
+            result = release(*host, key);
+            break;
+        case BleHidCommand::KeyTap:
+            result = press(*host, key);
+            if (result.status == ExecStatus::Accepted) result = release(*host, key);
+            break;
     }
-    return ExecResult::failed(ErrorCode::Internal);
+    if (!host->holding()) *host = Host{};  // free the slot
+    return result;
 }
 
-ExecResult BleHidAdapter::press(const HidKey &key) {
+ExecResult BleHidAdapter::press(Host &host, const HidKey &key) {
     if (key.page == HidPage::Consumer) {
-        if (consumer_ == key.usage) return ExecResult::accepted();
-        consumer_ = key.usage;  // one consumer usage at a time: replaces
-        return sent(transport_.sendConsumer(consumer_));
+        if (host.consumer == key.usage) return ExecResult::accepted();
+        host.consumer = key.usage;  // one consumer usage at a time: replaces
+        return sent(transport_.sendConsumer(host.deviceId.view(), host.consumer));
     }
     const auto usage = static_cast<uint8_t>(key.usage);
-    for (uint8_t k : keys_) {
+    for (uint8_t k : host.keys) {
         if (k == usage) return ExecResult::accepted();
     }
-    for (auto &k : keys_) {
+    for (auto &k : host.keys) {
         if (k == 0) {
             k = usage;
-            return sent(flushKeyboard());
+            return sent(flushKeyboard(host));
         }
     }
     return ExecResult::failed(ErrorCode::CapacityExceeded);  // 6-key rollover
 }
 
-ExecResult BleHidAdapter::release(const HidKey &key) {
+ExecResult BleHidAdapter::release(Host &host, const HidKey &key) {
     if (key.page == HidPage::Consumer) {
-        if (consumer_ != key.usage) return ExecResult::accepted();  // not held (or replaced)
-        consumer_ = 0;
-        return sent(transport_.sendConsumer(0));
+        if (host.consumer != key.usage) return ExecResult::accepted();  // not held (or replaced)
+        host.consumer = 0;
+        return sent(transport_.sendConsumer(host.deviceId.view(), 0));
     }
     const auto usage = static_cast<uint8_t>(key.usage);
-    for (auto &k : keys_) {
+    for (auto &k : host.keys) {
         if (k == usage) {
             k = 0;
-            return sent(flushKeyboard());
+            return sent(flushKeyboard(host));
         }
     }
     return ExecResult::accepted();
 }
 
-bool BleHidAdapter::flushKeyboard() {
+bool BleHidAdapter::flushKeyboard(const Host &host) {
     uint8_t report[8] = {};
     size_t n = 2;
-    for (uint8_t k : keys_) {
+    for (uint8_t k : host.keys) {
         if (k != 0) report[n++] = k;
     }
-    return transport_.sendKeyboard(report);
+    return transport_.sendKeyboard(host.deviceId.view(), report);
+}
+
+void BleHidAdapter::releaseHost(Host &host) {
+    const std::string_view id = host.deviceId.view();
+    if (transport_.connected(id)) {
+        if (host.keyCount() != 0) {
+            const uint8_t empty[8] = {};
+            transport_.sendKeyboard(id, empty);
+        }
+        if (host.consumer != 0) transport_.sendConsumer(id, 0);
+    }
+    host = Host{};
 }
 
 void BleHidAdapter::releaseAll(uint32_t nowMs) {
     (void)nowMs;
-    const bool anyKeyboard = heldKeyboardKeys() != 0;
-    const bool anyConsumer = consumer_ != 0;
-    clearHeld();
-    if (!transport_.connected()) return;
-    if (anyKeyboard) {
-        const uint8_t empty[8] = {};
-        transport_.sendKeyboard(empty);
+    for (Host &host : hosts_) {
+        if (host.holding()) releaseHost(host);
     }
-    if (anyConsumer) transport_.sendConsumer(0);
 }
 
 void BleHidAdapter::poll(uint32_t nowMs, CompletionSink &sink) {
     (void)nowMs;
     (void)sink;
-    forgetIfDisconnected();  // so a stale key isn't re-sent after a reconnect
+    // A host that dropped loses its held state, so a stale key isn't re-sent
+    // after it reconnects.
+    for (Host &host : hosts_) {
+        if (host.holding() && !transport_.connected(host.deviceId.view())) host = Host{};
+    }
 }
 
-bool BleHidAdapter::forgetIfDisconnected() {
-    if (transport_.connected()) return false;
-    clearHeld();  // whatever the host thought was held went with the link
-    return true;
-}
-
-void BleHidAdapter::clearHeld() {
-    std::memset(keys_, 0, sizeof(keys_));
-    consumer_ = 0;
-}
-
-size_t BleHidAdapter::heldKeyboardKeys() const {
+size_t BleHidAdapter::Host::keyCount() const {
     size_t n = 0;
-    for (uint8_t k : keys_) n += k != 0 ? 1 : 0;
+    for (uint8_t k : keys) n += k != 0 ? 1 : 0;
     return n;
+}
+
+bool BleHidAdapter::Host::holding() const { return consumer != 0 || keyCount() != 0; }
+
+BleHidAdapter::Host *BleHidAdapter::find(std::string_view deviceId) {
+    for (Host &host : hosts_) {
+        if (!host.deviceId.empty() && host.deviceId == deviceId) return &host;
+    }
+    return nullptr;
+}
+
+const BleHidAdapter::Host *BleHidAdapter::find(std::string_view deviceId) const {
+    return const_cast<BleHidAdapter *>(this)->find(deviceId);
+}
+
+BleHidAdapter::Host *BleHidAdapter::findOrAdd(std::string_view deviceId) {
+    if (Host *found = find(deviceId)) return found;
+    for (Host &host : hosts_) {
+        if (host.deviceId.empty()) {
+            if (!host.deviceId.assign(deviceId)) return nullptr;
+            return &host;
+        }
+    }
+    return nullptr;
+}
+
+size_t BleHidAdapter::heldKeyboardKeys(std::string_view deviceId) const {
+    const Host *host = find(deviceId);
+    return host != nullptr ? host->keyCount() : 0;
+}
+
+uint16_t BleHidAdapter::heldConsumer(std::string_view deviceId) const {
+    const Host *host = find(deviceId);
+    return host != nullptr ? host->consumer : 0;
 }
 
 }  // namespace hubbo::integrations

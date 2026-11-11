@@ -62,7 +62,7 @@ protected:
     void build(std::vector<std::vector<ActionSpec>> sequences) {
         ConfigSpec cfg;
         cfg.integrations = {sim::integration("fake", "fake", "Fake")};
-        cfg.devices = {sim::device("dev", "Dev", "fake", "other", {"fake", "ref.dev", "", ""})};
+        cfg.devices = {sim::device("dev", "Dev", "fake", "other", {"fake", "ref.dev", ""})};
         for (size_t i = 0; i < sequences.size(); i++) {
             ActivitySpec a;
             a.id = "s" + std::to_string(i);

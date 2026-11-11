@@ -2,8 +2,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 #include "hubbo/domain/adapter.h"
+#include "hubbo/domain/ids.h"
+#include "hubbo/domain/limits.h"
 #include "hubbo/domain/params.h"
 
 // Generic BLE HID keyboard integration (Apple TV paired as a keyboard).
@@ -16,11 +19,14 @@
 // Harmonizer spike verified on tvOS (Harmony's "BT Apple TV 5" profile and
 // pyatv), not guesses.
 //
-// BleHidAdapter holds the report state (6-key keyboard rollover plus one
-// consumer usage) and talks to the radio through HidTransport, which the
-// firmware implements with NimBLE and the simulator records. Held keys are
-// released on releaseAll() (activity switch, lost release) and dropped as
-// soon as poll() or execute() sees the host disconnected. Not connected -> Failed(AdapterUnavailable), never fake
+// Each Bluetooth device is its own host (docs/design/multi-bluetooth.md):
+// a key goes to the host of the device its action names, never elsewhere.
+// BleHidAdapter holds the report state per device (6-key keyboard rollover
+// plus one consumer usage) and talks to the radio through HidTransport,
+// which the firmware implements with NimBLE and the simulator records. Held
+// keys are released on releaseAll() (activity switch, lost release) and a
+// device's are dropped as soon as poll() or execute() sees its host
+// disconnected. Host not connected -> Failed(AdapterUnavailable), never fake
 // success.
 namespace hubbo::integrations {
 
@@ -39,14 +45,18 @@ int bleHidKeyIndex(const char *name);   // -1 if unknown
 enum class BleHidCommand : uint8_t { KeyDown, KeyUp, KeyTap };
 CommandCatalog bleHidCatalog();  // indices match BleHidCommand
 
+// The radio, per host: `deviceId` is the hub device whose bonded host gets
+// the report (the firmware finds that host's live connection by its identity
+// address at send time). Called on the engine task; never blocks.
 class HidTransport {
 public:
     virtual ~HidTransport() = default;
-    virtual bool connected() const = 0;
-    // Keyboard input report: [modifiers, reserved, k1..k6]. Must not block.
-    virtual bool sendKeyboard(const uint8_t report[8]) = 0;
-    // Consumer control: one 16-bit usage, 0 = released. Must not block.
-    virtual bool sendConsumer(uint16_t usage) = 0;
+    // That device's host is bonded and connected.
+    virtual bool connected(std::string_view deviceId) const = 0;
+    // Keyboard input report: [modifiers, reserved, k1..k6].
+    virtual bool sendKeyboard(std::string_view deviceId, const uint8_t report[8]) = 0;
+    // Consumer control: one 16-bit usage, 0 = released.
+    virtual bool sendConsumer(std::string_view deviceId, uint16_t usage) = 0;
 };
 
 class BleHidAdapter : public IntegrationAdapter {
@@ -60,20 +70,31 @@ public:
     void releaseAll(uint32_t nowMs) override;
     void poll(uint32_t nowMs, CompletionSink &sink) override;
 
-    size_t heldKeyboardKeys() const;
-    uint16_t heldConsumer() const { return consumer_; }
+    // What's held on one device's host.
+    size_t heldKeyboardKeys(std::string_view deviceId) const;
+    uint16_t heldConsumer(std::string_view deviceId) const;
 
 private:
-    ExecResult press(const HidKey &key);
-    ExecResult release(const HidKey &key);
-    bool flushKeyboard();
-    bool forgetIfDisconnected();  // true (and held state cleared) if not connected
-    void clearHeld();
+    // One host's report state. A slot is free when nothing is held.
+    struct Host {
+        IdString deviceId;
+        uint8_t keys[6] = {};
+        uint16_t consumer = 0;
+        size_t keyCount() const;  // keyboard keys held
+        bool holding() const;
+    };
+
+    ExecResult press(Host &host, const HidKey &key);
+    ExecResult release(Host &host, const HidKey &key);
+    bool flushKeyboard(const Host &host);
+    void releaseHost(Host &host);  // send releases (if connected), then free the slot
+    Host *find(std::string_view deviceId);
+    const Host *find(std::string_view deviceId) const;
+    Host *findOrAdd(std::string_view deviceId);  // nullptr: no free slot
 
     const char *id_;
     HidTransport &transport_;
-    uint8_t keys_[6] = {};
-    uint16_t consumer_ = 0;
+    Host hosts_[limits::kMaxBleDevices];
 };
 
 }  // namespace hubbo::integrations

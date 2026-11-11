@@ -201,9 +201,9 @@ TEST_F(CompilerTest, DuplicateIds) {
 
 TEST_F(CompilerTest, DeviceRegistryChecks) {
     ConfigSpec cfg = fixtureConfig();
-    cfg.devices.push_back(device("dev_sys", "Sys", "system", "other", {"system", "x", "", ""}));
+    cfg.devices.push_back(device("dev_sys", "Sys", "system", "other", {"system", "x", ""}));
     cfg.devices.push_back(haDevice("dev_noref", "No ref", "tv", ""));
-    cfg.devices.push_back(device("dev_wrong", "Wrong", "ha_main", "tv", {"ble_hid", "", "", "x"}));
+    cfg.devices.push_back(device("dev_wrong", "Wrong", "ha_main", "tv", {"ble_hid", "", ""}));
     cfg.integrations.push_back(integration("ha_main", "home_assistant", "Duplicate"));
     cfg.integrations.push_back(integration("ghost", "home_assistant", "Ghost"));
     compile(cfg);
@@ -291,6 +291,25 @@ TEST_F(CompilerTest, DisablingAnIntegrationKeepsItsHoldsPaired) {
     EXPECT_EQ(compileConfig(c, adapters, &unpaired), nullptr);
     ASSERT_FALSE(unpaired.ok());
     EXPECT_EQ(unpaired.issues()[0].code, ErrorCode::UnpairedHold);
+}
+
+// At most 4 Bluetooth devices: the radio holds that many bonds. A fifth is
+// too_many_devices at its integration_id; other devices don't count.
+TEST_F(CompilerTest, AtMostFourBluetoothDevices) {
+    ConfigSpec c = fixtureConfig();
+    size_t bluetooth = 0;
+    for (const auto &d : c.devices) bluetooth += d.provider.type == kBleHidType ? 1 : 0;
+    for (size_t i = bluetooth; i < limits::kMaxBleDevices; i++) {
+        c.devices.push_back(bleDevice("dev_bt_" + std::to_string(i), "Host " + std::to_string(i), "streamer"));
+    }
+    EXPECT_NE(compile(c), nullptr) << (report.ok() ? "" : report.issues()[0].path);
+
+    c.devices.push_back(bleDevice("dev_bt_fifth", "Fifth", "streamer"));
+    ValidationReport r;
+    EXPECT_EQ(compileConfig(c, adapters, &r), nullptr);
+    ASSERT_FALSE(r.ok());
+    EXPECT_EQ(r.issues()[0].code, ErrorCode::TooManyDevices);
+    EXPECT_EQ(r.issues()[0].path, "/devices/" + std::to_string(c.devices.size() - 1) + "/integration_id");
 }
 
 TEST(JsonPointer, Escapes) {

@@ -28,6 +28,7 @@ protected:
         store->attach(*engineReader);
         records = std::make_unique<storage::SlotRecordStore>(mem, kMaxConfigFileBytes);
         service = std::make_unique<ConfigService>(*records, fakes.set, *store);
+        service->setListener(listener);
         report = service->load(fixtureConfig());
     }
 
@@ -48,6 +49,7 @@ protected:
     storage::MemoryStorage mem;
     std::unique_ptr<storage::SlotRecordStore> records;
     FakeAdapters fakes;
+    ConfigListener *listener = nullptr;  // set before a boot()
 
     // Both slot files of the config record, to check nothing was written.
     std::string slots() { return mem.files()["config.a"] + "|" + mem.files()["config.b"]; }
@@ -457,6 +459,51 @@ TEST_F(ServiceTest, RefreshBacksOffWhileASlotStaysUnreadable) {
 }
 
 // ---- absence needs proof (design part 6) ----
+
+// Bluetooth hosts follow the saved config: a host whose device isn't in it
+// is forgotten at boot and after every commit, so a delete doesn't need
+// forget() to succeed. Nothing is forgotten while Blocked.
+TEST_F(ServiceTest, BluetoothHostsFollowTheSavedConfig) {
+    sim::SimulatedBleHosts &hosts = fakes.bleHosts;
+    integrations::BleHostReconciler reconciler(hosts);
+    listener = &reconciler;
+    const auto bonded = [&](const char *device) { return hosts.status(device).bonded; };
+
+    // Boot: an orphan (a device no longer in the config) goes; the Apple TV stays.
+    hosts.bond("dev_apple_tv", "Apple TV");
+    hosts.bond("dev_gone", "Old TV");
+    guard.reset();
+    service.reset();
+    boot();
+    ASSERT_EQ(report.state, ConfigState::Ok);
+    EXPECT_TRUE(bonded("dev_apple_tv"));
+    EXPECT_FALSE(bonded("dev_gone"));
+
+    // A delete drops its host, and an open window for a device that's gone closes.
+    const Outcome created = service->createDevice(bleDevice("", "Shield", "streamer"));
+    ASSERT_TRUE(created.ok());
+    hosts.bond(created.id, "SHIELD");
+    ASSERT_EQ(hosts.startPairing(created.id, integrations::kBlePairingMinWindowMs),
+              integrations::BleHostResult::Accepted);
+    ASSERT_TRUE(service->deleteDevice(created.id, created.revision).ok());
+    EXPECT_FALSE(bonded(created.id.c_str()));
+    EXPECT_FALSE(hosts.status(created.id).pairing);
+    EXPECT_TRUE(bonded("dev_apple_tv"));
+
+    // A restore without the Apple TV drops it.
+    ASSERT_TRUE(service->restore(fixtureConfigWithoutBluetooth()).ok());
+    EXPECT_FALSE(bonded("dev_apple_tv"));
+
+    // Blocked: no proof of what's gone, so nothing is forgotten.
+    hosts.bond("dev_apple_tv", "Apple TV");
+    mem.files()["config.a"] = "garbage";
+    mem.files()["config.b"] = "garbage";
+    guard.reset();
+    service.reset();
+    boot();
+    ASSERT_EQ(report.state, ConfigState::Blocked);
+    EXPECT_TRUE(bonded("dev_apple_tv"));
+}
 
 TEST_F(ServiceTest, ACorruptRecordBlocksAndIsNeverOverwrittenWithDefaults) {
     std::string newerFormat = storage::encodeSlot(7, "{}");

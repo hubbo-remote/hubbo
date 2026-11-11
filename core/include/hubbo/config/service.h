@@ -57,6 +57,16 @@
 namespace hubbo::config {
 
 enum class ConfigState : uint8_t { Fresh, Ok, Blocked, StorageUnavailable };
+
+// Told of each saved config the hub starts running, on the config task: an
+// intact record at load, and every commit (edits, restore, reset, the fresh
+// defaults once saved). Never while Blocked, and never for a config that
+// isn't saved, so a listener can treat what's missing from it as gone.
+class ConfigListener {
+public:
+    virtual ~ConfigListener() = default;
+    virtual void configSaved(const ConfigSpec &config) = 0;
+};
 const char *configStateName(ConfigState state);  // "fresh", "ok", "blocked", "storage_unavailable"
 
 // Where something refers to a device or activity: the activity id ("" for
@@ -105,6 +115,8 @@ public:
     // Boot: load the newest intact "config" record (or start Fresh from
     // `defaults`), migrate, compile and publish. See the states above.
     LoadReport load(const ConfigSpec &defaults);
+    // At most one; set it before load(). nullptr: none.
+    void setListener(ConfigListener *listener) { listener_ = listener; }
 
     ConfigState state() const;  // live; see above
     // Retries a load that failed on storage (see above). Cheap otherwise:
@@ -197,6 +209,7 @@ private:
     Migration migrate_;
     ConfigState state_ = ConfigState::Fresh;
     LoadReport load_;
+    ConfigListener *listener_ = nullptr;
     bool runningNothing_ = false;  // the published snapshot is the empty config
     // refresh() backoff while a load keeps failing on an available medium.
     static constexpr uint64_t kFirstRetryMs = 1000;

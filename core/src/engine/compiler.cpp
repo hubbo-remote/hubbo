@@ -87,10 +87,16 @@ public:
             report.add(ErrorCode::TooManyDevices, prefix);
             return;
         }
+        size_t bluetooth = 0;
         for (size_t i = 0; i < devices.size(); i++) {
             const DeviceSpec &d = devices[i];
             const std::string path = prefix + "/" + std::to_string(i);
             bool ok = true;
+            // One host per Bluetooth device, and the radio holds kMaxBleDevices bonds.
+            if (d.provider.type == kBleHidType && ++bluetooth > limits::kMaxBleDevices) {
+                report.add(ErrorCode::TooManyDevices, path + "/integration_id");
+                ok = false;
+            }
             if (!isValidId(d.id)) {
                 report.add(ErrorCode::InvalidId, path + "/id");
                 ok = false;
