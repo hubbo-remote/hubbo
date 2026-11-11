@@ -18,6 +18,7 @@ import { Skeleton } from '@/components/ui/misc'
 import { toast, toastError } from '@/components/ui/toast'
 import { useCapabilities, useConfigLock, useDevice, useIntegrations } from '@/hooks/data'
 import { KIND_LABEL, providerRef } from '@/lib/health'
+import { BluetoothPairing } from '@/components/admin/BluetoothPairing'
 import { defaultParams } from '@/lib/activity'
 import { haDeviceError, loadEntityDetails } from '@/lib/ha'
 import { cn } from '@/lib/utils'
@@ -37,7 +38,7 @@ export default function DeviceDetail({ id }: { id: string }) {
       <PageHeader
         back={{ href: '/devices', label: 'Devices' }}
         title={d?.name ?? <Skeleton className="h-8 w-56" />}
-        description={d ? `${integration?.name ?? d.integration_id} · ${providerRef(d.provider)}` : undefined}
+        description={d ? [integration?.name ?? d.integration_id, providerRef(d.provider)].filter(Boolean).join(' · ') : undefined}
       />
       {d?.availability === 'stale' && (
         <Alert variant="error" title="Device not found" className="mb-4" action={d.provider.type === 'home_assistant' ? <HaRelink device={d} /> : undefined}>
@@ -58,7 +59,12 @@ export default function DeviceDetail({ id }: { id: string }) {
             ))}
           </CardContent>
         </Card>
-        {d && <DeviceAdmin device={d} />}
+        {d && (
+          <div className="grid content-start gap-4">
+            {d.provider.type === 'ble_hid' && <BluetoothPairing device={d} />}
+            <DeviceAdmin device={d} />
+          </div>
+        )}
       </div>
     </>
   )

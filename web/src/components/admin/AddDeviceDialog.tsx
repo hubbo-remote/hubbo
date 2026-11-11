@@ -6,27 +6,26 @@ import { invalidate } from '@/api/hooks'
 import type { Device, DeviceKind, DiscoverCandidate, Provider } from '@/api/types'
 import { EntityPreview, HaCandidates } from '@/components/admin/HaCandidates'
 import { haDeviceError, loadEntityDetails, type EntityDetails } from '@/lib/ha'
-import { ErrorState } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, Select } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
-import { useDevices, useIntegrationConfig, useIntegrations } from '@/hooks/data'
-import { INTEGRATION_ICON, isUserIntegration, KIND_LABEL } from '@/lib/health'
+import { useDevices, useIntegrations } from '@/hooks/data'
+import { INTEGRATION_ICON, isUserIntegration, KIND_LABEL, providerRef } from '@/lib/health'
 
 const KINDS: DeviceKind[] = ['tv', 'receiver', 'speaker', 'streamer', 'console', 'light', 'switch', 'other']
 const guessKind = (c: DiscoverCandidate): DeviceKind => (c.domain === 'light' ? 'light' : c.domain === 'switch' ? 'switch' : /tv|oled|bravia|webos/i.test(c.name) ? 'tv' : /denon|marantz|yamaha|onkyo|receiver|avr/i.test(c.name) ? 'receiver' : /sonos|speaker/i.test(c.name) ? 'speaker' : 'other')
 
 interface Pick {
   provider: Provider
-  label: string
-  ref: string
+  /** HA only: the entity's name, shown above the name field with its entity id. */
+  label?: string
   /** HA only: the entity's details, loaded once it's picked (registering needs them). */
   details?: { state: 'loading' } | { state: 'done'; d: EntityDetails } | { state: 'failed'; error: string }
 }
 
-/** Integration → discovered target → name. Only discovered targets can be registered. */
+/** Integration → discovered target → name (Bluetooth: integration → name; pairing is on the device's page). */
 export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onClose: () => void; onAdded?: (d: Device) => void }) {
   const integrations = useIntegrations()
   const options = (integrations.data ?? []).filter((i) => isUserIntegration(i) && i.enabled)
@@ -66,6 +65,15 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
   }, [open])
 
   const type = options.find((i) => i.id === integration)?.type
+  const choose = (id: string, t: string) => {
+    setIntegration(id)
+    // Bluetooth has nothing to discover: straight to the name.
+    if (t === 'ble_hid') {
+      setPick({ provider: { type: 'ble_hid' } })
+      setName('')
+      setKind('streamer')
+    }
+  }
   const submit = async () => {
     if (!integration || !pick) return
     setBusy(true)
@@ -77,7 +85,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
       onClose()
     } catch (e) {
       // Already a device (e.g. the entity was renamed in HA): reload the details, which name it.
-      if (pick.provider.type === 'home_assistant' && toApiError(e).details.some((d) => d.code === 'duplicate_id')) return void loadDetails(pick.ref)
+      if (pick.provider.type === 'home_assistant' && toApiError(e).details.some((d) => d.code === 'duplicate_id')) return void loadDetails(pick.provider.entity_id)
       setError(pick.provider.type === 'home_assistant' ? await haDeviceError(e) : errorMessage(e, { details: true }))
     } finally {
       setBusy(false)
@@ -85,6 +93,12 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
   }
 
   const step = !integration ? 1 : !pick ? 2 : 3
+  // Back from a picked entity goes to the list; Bluetooth has no list, so it goes to the start.
+  const back = () => {
+    setPick(null)
+    if (step === 3 && type === 'home_assistant') cancelDetails()
+    else setIntegration(null)
+  }
   return (
     <Dialog
       open={open}
@@ -94,7 +108,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
       footer={
         <>
           {step > 1 && (
-            <Button variant="ghost" className="mr-auto" onClick={() => (step === 3 ? (cancelDetails(), setPick(null)) : setIntegration(null))}>
+            <Button variant="ghost" className="mr-auto" onClick={back}>
               Back
             </Button>
           )}
@@ -116,11 +130,11 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
           {options.map((i) => {
             const Icon = INTEGRATION_ICON[i.type]
             return (
-              <button key={i.id} onClick={() => setIntegration(i.id)} className="flex items-center gap-3 rounded-lg border p-3 text-left outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 cursor-pointer">
+              <button key={i.id} onClick={() => choose(i.id, i.type)} className="flex items-center gap-3 rounded-lg border p-3 text-left outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 cursor-pointer">
                 <Icon className="size-5 text-muted-foreground" />
                 <div>
                   <p className="font-medium">{i.name}</p>
-                  <p className="text-xs text-muted-foreground">{i.type === 'home_assistant' ? 'Media players, lights and switches' : 'The paired Bluetooth device'}</p>
+                  <p className="text-xs text-muted-foreground">{i.type === 'home_assistant' ? 'Media players, lights and switches' : 'TV boxes and streamers'}</p>
                 </div>
               </button>
             )
@@ -132,29 +146,21 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
         <HaCandidates
           integration={integration!}
           onPick={(c) => {
-            setPick({ provider: c.provider, label: c.name, ref: c.provider.entity_id })
+            setPick({ provider: c.provider, label: c.name })
             setName(c.name.slice(0, 64))
             setKind(guessKind(c))
             void loadDetails(c.provider.entity_id)
           }}
         />
       )}
-      {step === 2 && type === 'ble_hid' && (
-        <BleCandidate
-          integration={integration!}
-          onPick={(peer) => {
-            setPick({ provider: { type: 'ble_hid', ...(peer ? { peer_name: peer } : {}) }, label: peer ?? 'Bluetooth device', ref: 'Bluetooth' })
-            setName(peer ?? 'Bluetooth device')
-            setKind('streamer')
-          }}
-        />
-      )}
       {step === 3 && pick && (
         <div className="grid gap-4">
-          <div className="rounded-lg bg-muted px-3 py-2 text-sm">
-            <p className="font-medium">{pick.label}</p>
-            <p className="font-mono text-xs text-muted-foreground">{pick.ref}</p>
-          </div>
+          {pick.label && (
+            <div className="rounded-lg bg-muted px-3 py-2 text-sm">
+              <p className="font-medium">{pick.label}</p>
+              <p className="font-mono text-xs text-muted-foreground">{providerRef(pick.provider)}</p>
+            </div>
+          )}
           {pick.details?.state === 'loading' && (
             <p className="flex items-center gap-2 rounded-lg border px-3 py-3 text-sm" role="status">
               <Loader2 className="size-4 animate-spin text-primary" /> Loading commands…
@@ -166,7 +172,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
             loaded && <EntityPreview c={loaded} />
           )}
           {pick.details?.state === 'failed' && (
-            <Alert variant="error" title="Couldn’t load its commands" action={<Button size="sm" variant="outline" onClick={() => void loadDetails(pick.ref)}>Retry</Button>}>
+            <Alert variant="error" title="Couldn’t load its commands" action={<Button size="sm" variant="outline" onClick={() => void loadDetails(providerRef(pick.provider))}>Retry</Button>}>
               {pick.details.error}
             </Alert>
           )}
@@ -186,24 +192,6 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
         </div>
       )}
     </Dialog>
-  )
-}
-
-function BleCandidate({ integration, onPick }: { integration: string; onPick: (peer: string | undefined) => void }) {
-  const cfg = useIntegrationConfig(integration)
-  const s = cfg.data?.settings
-  if (cfg.error) return <ErrorState error={cfg.error} retry={cfg.refetch} />
-  if (!s) return <Skeleton className="h-16" />
-  if (s.type !== 'ble_hid' || !s.bonded) {
-    return <Alert variant="info" title="Nothing paired">Pair a device under Integrations first.</Alert>
-  }
-  return (
-    <button onClick={() => onPick(s.peer_name)} className="flex w-full items-center gap-3 rounded-lg border p-3 text-left outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 cursor-pointer">
-      <div className="min-w-0 flex-1">
-        <p className="font-medium">{s.peer_name ?? 'Bluetooth device'}</p>
-        <p className="text-xs text-muted-foreground">Paired</p>
-      </div>
-    </button>
   )
 }
 

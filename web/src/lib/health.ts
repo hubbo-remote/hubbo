@@ -1,5 +1,5 @@
 import { Bluetooth, Cpu, Home, type LucideIcon } from 'lucide-react'
-import type { DeviceKind, IntegrationState, IntegrationType } from '@/api/types'
+import type { BluetoothStatus, DeviceKind, IntegrationState, IntegrationType } from '@/api/types'
 
 export const HEALTH: Record<IntegrationState, [dotClass: string, label: string]> = {
   connected: ['bg-success', 'Connected'],
@@ -22,8 +22,22 @@ export const INTEGRATION_ICON: Record<IntegrationType, LucideIcon> = {
   system: Cpu,
 }
 
-export const providerRef = (p: { type: string; entity_id?: string; peer_name?: string }) =>
-  p.type === 'home_assistant' ? (p.entity_id ?? '') : (p.peer_name ?? 'Bluetooth device')
+/** What a device points at, if anything worth showing: an HA entity id. */
+export const providerRef = (p: { type: string; entity_id?: string }) => (p.type === 'home_assistant' ? (p.entity_id ?? '') : '')
+
+const BLUETOOTH: Record<BluetoothStatus['state'], [dot: IntegrationState, label: string]> = {
+  not_paired: ['not_configured', 'Not paired'],
+  pairing: ['connecting', 'Ready to pair'],
+  connected: ['connected', 'Connected'],
+  not_connected: ['disconnected', 'Not connected'],
+}
+
+/** A Bluetooth device's status line, and the dot state that goes with it. */
+export function bluetoothLabel(b: BluetoothStatus): string {
+  const label = BLUETOOTH[b.state]?.[1] ?? b.state
+  return b.state === 'pairing' ? `${label} · ${b.window_s ?? 0} s` : label
+}
+export const bluetoothDot = (b: BluetoothStatus): IntegrationState => BLUETOOTH[b.state]?.[0] ?? 'error'
 
 /** Integrations the admin sets up: everything but the built-in system one. */
 export const isUserIntegration = (i: { type: string }) => i.type !== 'system'
