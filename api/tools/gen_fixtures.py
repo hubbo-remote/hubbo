@@ -51,7 +51,8 @@ HID_KEYS = [
     "ENTER", "F1", "F2", "F3", "F4", "PAGE_UP", "PAGE_DOWN", "KEY_A", "KEY_B", "KEY_C", "KEY_D",
     "KEY_E", "KEY_F", "KEY_G", "KEY_H", "KEY_I", "KEY_J", "KEY_K", "KEY_L", "KEY_M", "KEY_N",
     "KEY_O", "KEY_P", "KEY_Q", "KEY_R", "KEY_S", "KEY_T", "KEY_U", "KEY_V", "KEY_W", "KEY_X",
-    "KEY_Y", "KEY_Z",
+    "KEY_Y", "KEY_Z", "FAST_FORWARD", "REWIND", "STOP", "AC_BACK", "AC_SEARCH", "MENU_ESCAPE",
+    "CHANNEL_UP", "CHANNEL_DOWN", "INFO", "SLEEP", "KEYPAD_ENTER", "BACKSPACE", "ESCAPE",
 ]
 
 
@@ -223,8 +224,8 @@ def ha_snapshot(e):
 
 
 def stored_device(d):
-    """A Device as a backup stores it: no availability; HA devices carry their snapshot."""
-    out = {k: x for k, x in d.items() if k != "availability"}
+    """A Device as a backup stores it: no runtime state; HA devices carry their snapshot."""
+    out = {k: x for k, x in d.items() if k not in ("availability", "bluetooth")}
     entity = HA_ENTITIES.get(d["id"])
     if entity is not None:
         out["ha_capabilities"] = ha_snapshot(entity)
@@ -243,7 +244,7 @@ def ha_commands(e):
 
 DEVICES = [
     {"id": "dev_apple_tv", "name": "Family Room Apple TV", "integration_id": "ble", "kind": "streamer",
-     "provider": {"type": "ble_hid", "peer_name": "Family Room"}, "availability": "available",
+     "provider": {"type": "ble_hid"}, "availability": "available", "bluetooth": {"state": "connected"},
      "schema_version": 1, "revision": 1},
 ] + [ha_device(k, v) for k, v in HA_ENTITIES.items()]
 
@@ -384,7 +385,7 @@ INTEGRATIONS = [
     {"id": "system", "type": "system", "name": "System", "enabled": True, "state": "connected",
      "device_count": 0, "commands": SYSTEM_COMMANDS},
     {"id": "ble", "type": "ble_hid", "name": "Bluetooth", "enabled": True, "state": "connected",
-     "detail": "Connected to Family Room", "device_count": 1},
+     "device_count": 1},
     {"id": "ha_main", "type": "home_assistant", "name": "Home Assistant", "enabled": True,
      "state": "connected", "detail": "Home Assistant 2026.11.1", "device_count": 5},
 ]
@@ -512,8 +513,7 @@ fx("integrations/ha_main.config.json", "getIntegrationConfig", "200", {
     "revision": 2})
 fx("integrations/ble.config.json", "getIntegrationConfig", "200", {
     "id": "ble", "type": "ble_hid", "name": "Bluetooth", "enabled": True,
-    "settings": {"type": "ble_hid", "device_name": "Family Room Hubbo", "bonded": True,
-                 "peer_name": "Family Room"},
+    "settings": {"type": "ble_hid", "device_name": "Family Room Hubbo"},
     "revision": 1})
 fx("integrations/ha_main.configure.request.json", "configureIntegration", "request", {
     "settings": {"type": "home_assistant", "url": "https://homeassistant.local:8123",
@@ -556,8 +556,19 @@ fx("integrations/ha_main.entity_details.failed.json", "getEntityDetails", "200",
 fx("errors/details_required.json", "registerDevice", "409", err(
     "details_required", "Load this entity's details first "
     "(POST /api/v1/admin/integrations/ha_main/entities/switch.tv_backlight/details)"))
-fx("integrations/ble.pair.json", "startIntegrationPairing", "202", {"state": "pairing", "window_s": 120})
-fx("integrations/ble.pair.paired.json", "getIntegrationPairing", "200", {"state": "paired", "peer_name": "Living Room"})
+fx("admin/device_pair.json", "startDevicePairing", "202", {"state": "pairing", "window_s": 120})
+fx("admin/device_pair.connected.json", "getDevicePairing", "200", {"state": "connected"})
+fx("admin/device_pair.not_paired.json", "getDevicePairing", "200", {"state": "not_paired"})
+fx("errors/pairing_busy.json", "startDevicePairing", "409", err("busy", "Another device is pairing"))
+fx("errors/not_bluetooth.json", "startDevicePairing", "404",
+   err("not_found", "Family Room Denon isn't a Bluetooth device"))
+fx("errors/bluetooth_unavailable.json", "startDevicePairing", "503",
+   err("integration_unavailable", "Bluetooth isn't working"))
+fx("errors/bluetooth_busy.json", "startDevicePairing", "503", err("busy", "Bluetooth is busy. Try again."))
+fx("errors/too_many_bluetooth_devices.json", "registerDevice", "422", err(
+    "validation_failed", "You can add up to 4 Bluetooth devices", [
+        ("/integration_id", "too_many_devices", "You can add up to 4 Bluetooth devices"),
+    ]))
 
 fx("admin/register_device.request.json", "registerDevice", "request", {
     "name": "TV Backlight", "integration_id": "ha_main", "kind": "switch",

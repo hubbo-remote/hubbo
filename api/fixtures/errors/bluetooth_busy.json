@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "busy",
+    "message": "Bluetooth is busy. Try again."
+  }
+}

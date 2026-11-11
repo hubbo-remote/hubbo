@@ -42,8 +42,7 @@
       "integration_id": "ble",
       "kind": "streamer",
       "provider": {
-        "type": "ble_hid",
-        "peer_name": "Family Room"
+        "type": "ble_hid"
       },
       "schema_version": 1,
       "revision": 1

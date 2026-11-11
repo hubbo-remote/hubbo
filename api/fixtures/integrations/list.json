@@ -49,7 +49,6 @@
       "name": "Bluetooth",
       "enabled": true,
       "state": "connected",
-      "detail": "Connected to Family Room",
       "device_count": 1
     },
     {

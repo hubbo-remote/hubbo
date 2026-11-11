@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "You can add up to 4 Bluetooth devices",
+    "details": [
+      {
+        "path": "/integration_id",
+        "code": "too_many_devices",
+        "message": "You can add up to 4 Bluetooth devices"
+      }
+    ]
+  }
+}

@@ -68,7 +68,20 @@
             "KEY_W",
             "KEY_X",
             "KEY_Y",
-            "KEY_Z"
+            "KEY_Z",
+            "FAST_FORWARD",
+            "REWIND",
+            "STOP",
+            "AC_BACK",
+            "AC_SEARCH",
+            "MENU_ESCAPE",
+            "CHANNEL_UP",
+            "CHANNEL_DOWN",
+            "INFO",
+            "SLEEP",
+            "KEYPAD_ENTER",
+            "BACKSPACE",
+            "ESCAPE"
           ]
         }
       ]
@@ -139,7 +152,20 @@
             "KEY_W",
             "KEY_X",
             "KEY_Y",
-            "KEY_Z"
+            "KEY_Z",
+            "FAST_FORWARD",
+            "REWIND",
+            "STOP",
+            "AC_BACK",
+            "AC_SEARCH",
+            "MENU_ESCAPE",
+            "CHANNEL_UP",
+            "CHANNEL_DOWN",
+            "INFO",
+            "SLEEP",
+            "KEYPAD_ENTER",
+            "BACKSPACE",
+            "ESCAPE"
           ]
         }
       ]
@@ -210,7 +236,20 @@
             "KEY_W",
             "KEY_X",
             "KEY_Y",
-            "KEY_Z"
+            "KEY_Z",
+            "FAST_FORWARD",
+            "REWIND",
+            "STOP",
+            "AC_BACK",
+            "AC_SEARCH",
+            "MENU_ESCAPE",
+            "CHANNEL_UP",
+            "CHANNEL_DOWN",
+            "INFO",
+            "SLEEP",
+            "KEYPAD_ENTER",
+            "BACKSPACE",
+            "ESCAPE"
           ]
         }
       ]
