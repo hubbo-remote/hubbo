@@ -2,6 +2,7 @@
 // separately: a transition that switched is never an error to retry, even
 // when its startup (or shutdown) sequence couldn't run.
 import type { TransitionResult } from '../api/types.ts'
+import { humanize } from './utils.ts'
 
 export interface TransitionMessage {
   variant: 'success' | 'warning'
@@ -12,7 +13,7 @@ export interface TransitionMessage {
 const REASONS: Record<string, string> = {
   queue_full: 'Hubbo was busy. Try again.',
 }
-const reasonText = (r?: string) => (r ? (REASONS[r] ?? `${r[0]!.toUpperCase()}${r.slice(1).replace(/_/g, ' ')}.`) : undefined)
+const reasonText = (r?: string) => (r ? (REASONS[r] ?? `${humanize(r)}.`) : undefined)
 
 export function describeTransition(r: TransitionResult, nameOf: (id: string) => string): TransitionMessage {
   if (r.active_activity_id) {
