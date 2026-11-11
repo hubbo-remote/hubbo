@@ -12,7 +12,7 @@
 //   ha latency <ms>               HA results arrive later (Pending); 0 = immediate
 //   ha fail <command_id> [error]  next call of that command fails (default adapter_failed)
 //   ha available | unavailable
-//   ble connected | disconnected
+//   ble connected | disconnected [device_id]   one host's link (default: every bonded host)
 //   reboot                        power-cycle: same storage, t=0, config and
 //                                 the saved active activity restored (no startup)
 // Remote (real radio payloads through RemoteInput)
@@ -28,7 +28,8 @@
 //   expect_none                   no unchecked commands left
 //   expect_event <line>           some later event equals <line> (skips others)
 //   expect_no_event <line>        no unchecked event equals <line>
-//   expect_hid <report>           next unchecked HID report, e.g. "consumer 0x0042"
+//   expect_hid [@device_id] <report>  next unchecked HID report, e.g. "consumer 0x0042";
+//                                 with @device_id, also the device whose host got it
 //   expect_active <id|none>
 //   expect_result <error_code>    result of the last activate/off ("ok", ...)
 //   drain                         mark everything so far as checked
@@ -55,11 +56,12 @@ public:
     // `state` (optional) overrides where the active activity persists
     // (default: a record in the same storage, surviving `reboot`).
     // `credentials` (optional) are loaded by every boot (bootHub()), as on
-    // the firmware.
+    // the firmware. `bonds` (optional) keeps the Bluetooth bonds, as the
+    // board's NVS does (default: in memory, surviving `reboot`).
     explicit ScenarioRunner(std::ostream *trace = nullptr, storage::Storage *storage = nullptr,
                             bool pinned = false, const ConfigSpec *seed = nullptr,
                             storage::StateStore *state = nullptr, auth::Credentials *credentials = nullptr,
-                            bool realHomeAssistant = false);
+                            bool realHomeAssistant = false, storage::Storage *bonds = nullptr);
 
     // Runs a whole script; returns true if every line succeeded.
     bool run(std::istream &script, const std::string &name);
@@ -77,11 +79,13 @@ private:
 
     std::ostream *trace_;
     storage::MemoryStorage ownStorage_;  // when none is given; survives reboot
+    storage::MemoryStorage ownBonds_;    // likewise for the Bluetooth bonds
     storage::Storage *storage_;
     storage::StateStore *state_;
     auth::Credentials *credentials_;
     bool pinned_;
     bool realHomeAssistant_;
+    storage::Storage *bonds_;  // the Bluetooth bonds (SimHub); ownBonds_ when none is given
     ConfigSpec seed_;
     std::unique_ptr<SimHub> hub_;
     size_t commandCursor_ = 0;

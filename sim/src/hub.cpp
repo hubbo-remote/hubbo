@@ -17,7 +17,8 @@ constexpr uint8_t kKeepalive[5] = {0x00, 0x4F, 0x00, 0x00, 0xB1};
 
 }  // namespace
 
-SimHub::SimHub(storage::Storage *storage, storage::StateStore *state, bool realHomeAssistant)
+SimHub::SimHub(storage::Storage *storage, storage::StateStore *state, bool realHomeAssistant,
+               storage::Storage *bonds)
     : realHomeAssistant_(realHomeAssistant),
       fakes_(realHomeAssistant ? &ha_.adapter : nullptr),
       storage_(storage != nullptr ? storage : &memory_),
@@ -27,8 +28,16 @@ SimHub::SimHub(storage::Storage *storage, storage::StateStore *state, bool realH
       state_(state != nullptr ? *state : recordState_),
       persister_(state_) {
     engine_.setObserver(this);
-    fakes_.hid.pairing = &blePairing_;
+    service_.setListener(&bleReconciler_);  // as the firmware wires it
     resetBle();
+    if (bonds != nullptr) {
+        // The bonds saved by the last run; with none, the fixture's.
+        std::string text;
+        if (bonds->read(kBondsFile, &text, 4096) == ErrorCode::Ok) (void)fakes_.bleHosts.loadBonds(text);
+        fakes_.bleHosts.onBondsChanged = [this, bonds] {
+            (void)bonds->write(kBondsFile, fakes_.bleHosts.saveBonds());
+        };
+    }
     factoryReset_ = freshFactoryResetPort();
 }
 
@@ -66,7 +75,6 @@ ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
     ha_.server.reset();
     ha_.client.reconnect();  // at once, not after the backoff; stale entities forgotten
     resetBle();
-    fakes_.hid.setConnected(true);
     firmware_ = api::SimulatedFirmwareUpdate();
     factoryReset_ = freshFactoryResetPort();
     return load(config);
@@ -74,7 +82,7 @@ ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
 
 void SimHub::wipe(auth::Credentials *credentials) {
     stopEverything();
-    blePairing_ = api::SimulatedBlePairing();  // unbonded
+    fakes_.bleHosts.reset();  // no bonds
     // The board formats the filesystem; here the config record's slots
     // (SlotRecordStore's "<name>.a"/".b") go.
     for (const char slot : {'a', 'b'}) {
@@ -94,8 +102,8 @@ void SimHub::advanceFirmware(uint32_t ms) {
 }
 
 void SimHub::resetBle() {
-    blePairing_ = api::SimulatedBlePairing();
-    blePairing_.bonded(kBondedHost);  // the fixture world: the Apple TV is paired
+    fakes_.bleHosts.reset();
+    fakes_.bleHosts.bond(kBondedDevice, kBondedHost);  // the fixture world: the Apple TV is paired
 }
 
 void SimHub::press(remote::Button button) {
@@ -148,7 +156,7 @@ void SimHub::advance(uint32_t ms, bool silent) {
         }
     }
     remote_.advance(ms);      // scan timeout
-    blePairing_.advance(ms);  // pairing window timeout
+    fakes_.bleHosts.advance(ms);  // pairing window timeout
     advanceFirmware(ms);
     factoryReset_.advance(ms);  // the restart, then its erase
     // The radio gave up on them; the simulated thumb lets go too.

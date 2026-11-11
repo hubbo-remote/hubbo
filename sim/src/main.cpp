@@ -203,7 +203,7 @@ int serve(const std::vector<std::string> &args) {
         secrets->write(hubbo::api::kHaTokenKey, hubbo::sim::FakeHaServer().token);
     }
     hubbo::sim::ScenarioRunner runner(&std::cout, &medium, /*pinned=*/true, &seed, /*state=*/nullptr, &credentials,
-                                      /*realHomeAssistant=*/true);
+                                      /*realHomeAssistant=*/true, /*bonds=*/disk.get());
     if (!verbose) runner.hub().onLog = nullptr;
     if (reset) runner.runLine("reset");
     hubbo::sim::SimApi api(runner, authEnabled, credentials, &medium, secrets.get());

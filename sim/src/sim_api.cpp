@@ -44,7 +44,7 @@ api::ApiContext context(auth::Credentials &credentials, auth::SessionStore &sess
                            &hub.haClient(),
                            secrets,
                            nullptr,
-                           &hub.blePairing(),
+                           &hub.bleHosts(),
                            &hub.firmware(),
                            &hub.factoryResetPort()};
 }
@@ -124,20 +124,51 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
                           ",\"calls\":" + std::to_string(hub.haServer().calls().size()) + "}");
     });
 
-    host(Method::Post, "/sim/ble", [this](auto &r, auto &, auto &out) {
-        const std::string connected = http::queryValue(r.query, "connected");
-        if (connected != "0" && connected != "1") {
-            http::jsonError(out, 400, "bad_request", "connected must be 0 or 1");
+    // A host bonds in ?device=<id>'s open pairing window (POST
+    // /admin/devices/{id}/pair) and is connected; ?host=<name> names it
+    // (default: one of its own). 409 when that device has no open window, or
+    // the host is bonded to another device; a full bond store closes the
+    // window (also 409).
+    host(Method::Post, "/sim/ble/bond", [this](auto &r, auto &, auto &out) {
+        const std::string device = http::queryValue(r.query, "device");
+        std::string name = http::queryValue(r.query, "host");
+        if (device.empty()) {
+            http::jsonError(out, 400, "bad_request", "device is required");
             return;
         }
-        runner_.runLine(connected == "1" ? "ble connected" : "ble disconnected");
-        out.json(200, std::string("{\"connected\":") + (connected == "1" ? "true" : "false") + "}");
+        if (name.empty()) name = "Host of " + device;
+        SimulatedBleHosts &hosts = runner_.hub().bleHosts();
+        if (!hosts.status(device).pairing || !hosts.bonded(name)) {
+            http::jsonError(out, 409, "conflict", "no pairing window for this device took the host");
+            return;
+        }
+        out.json(200, "{}");
     });
 
-    // A host bonds during the open pairing window (POST .../ble/pair).
-    host(Method::Post, "/sim/ble/bonded", [this](auto &r, auto &, auto &out) {
-        runner_.hub().blePairing().bonded(http::queryValue(r.query, "peer"));
-        out.json(200, "{}");
+    // ?device=<id>&up=0|1: that device's host disconnects or reconnects.
+    host(Method::Post, "/sim/ble/link", [this](auto &r, auto &, auto &out) {
+        const std::string device = http::queryValue(r.query, "device");
+        const std::string up = http::queryValue(r.query, "up");
+        if (device.empty() || (up != "0" && up != "1")) {
+            http::jsonError(out, 400, "bad_request", "need device and up=0|1");
+            return;
+        }
+        if (!runner_.runLine(std::string("ble ") + (up == "1" ? "connected " : "disconnected ") + device)) {
+            http::jsonError(out, 404, "not_found", runner_.error());
+            return;
+        }
+        out.json(200, std::string("{\"up\":") + (up == "1" ? "true" : "false") + "}");
+    });
+
+    // The radio: ?ready=0|1 (0: "Bluetooth isn't working", pairing refused).
+    host(Method::Post, "/sim/ble/radio", [this](auto &r, auto &, auto &out) {
+        const std::string ready = http::queryValue(r.query, "ready");
+        if (ready != "0" && ready != "1") {
+            http::jsonError(out, 400, "bad_request", "ready must be 0 or 1");
+            return;
+        }
+        runner_.hub().bleHosts().ready = ready == "1";
+        out.json(200, std::string("{\"ready\":") + (ready == "1" ? "true" : "false") + "}");
     });
 
     // Firmware update faults: ?fail=1|0 (writes end in Failed) and/or

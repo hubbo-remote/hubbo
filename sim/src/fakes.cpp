@@ -1,6 +1,8 @@
 #include "fakes.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <utility>
 #include <iterator>
 
 #include "fixtures.h"
@@ -51,19 +53,163 @@ std::string formatParams(const CommandSpec &command, const ParamValue *params, u
     return out;
 }
 
-bool RecordingHidTransport::sendKeyboard(const uint8_t report[8]) {
+integrations::BleHostStatus SimulatedBleHosts::status(std::string_view deviceId) const {
+    integrations::BleHostStatus s;
+    if (const Host *h = host(deviceId)) {
+        s.bonded = true;
+        s.connected = h->connected;
+    }
+    s.pairing = windowDevice_ == deviceId;
+    s.windowRemainingMs = s.pairing ? windowRemainingMs_ : 0;
+    return s;
+}
+
+integrations::BleHostResult SimulatedBleHosts::startPairing(std::string_view deviceId, uint32_t windowMs) {
+    if (!ready) return integrations::BleHostResult::NotReady;
+    if (windowDevice_ == deviceId) return integrations::BleHostResult::Accepted;  // already open
+    if (!windowDevice_.empty()) return integrations::BleHostResult::Busy;
+    windowDevice_ = deviceId;  // the old bond stays until a new one replaces it
+    windowRemainingMs_ = windowMs;
+    return integrations::BleHostResult::Accepted;
+}
+
+integrations::BleHostResult SimulatedBleHosts::cancelPairing(std::string_view deviceId) {
+    if (!ready) return integrations::BleHostResult::NotReady;
+    if (windowDevice_ == deviceId) windowDevice_.clear();
+    return integrations::BleHostResult::Accepted;
+}
+
+integrations::BleHostResult SimulatedBleHosts::forget(std::string_view deviceId) {
+    if (!ready) return integrations::BleHostResult::NotReady;
+    if (windowDevice_ == deviceId) windowDevice_.clear();
+    eraseHosts([&](const Host &h) { return h.deviceId == deviceId; });
+    return integrations::BleHostResult::Accepted;
+}
+
+void SimulatedBleHosts::retainOnly(const integrations::BleDeviceIds &devices) {
+    if (!devices.contains(windowDevice_)) windowDevice_.clear();
+    eraseHosts([&](const Host &h) { return !devices.contains(h.deviceId); });
+}
+
+template <typename Pred>
+void SimulatedBleHosts::eraseHosts(Pred gone) {
+    const size_t before = hosts_.size();
+    hosts_.erase(std::remove_if(hosts_.begin(), hosts_.end(), gone), hosts_.end());
+    if (hosts_.size() != before) bondsChanged();
+}
+
+void SimulatedBleHosts::setHost(const std::string &deviceId, const std::string &hostName) {
+    if (Host *own = host(deviceId)) {
+        *own = Host{deviceId, hostName, true};  // replaces only its own bond
+    } else {
+        hosts_.push_back(Host{deviceId, hostName, true});
+    }
+    bondsChanged();
+}
+
+bool SimulatedBleHosts::connected(std::string_view deviceId) const {
+    const Host *h = host(deviceId);
+    return ready && h != nullptr && h->connected;
+}
+
+bool SimulatedBleHosts::sendKeyboard(std::string_view deviceId, const uint8_t report[8]) {
+    if (!connected(deviceId)) return false;
     char buf[64];
     std::snprintf(buf, sizeof(buf), "keyboard %02x %02x %02x %02x %02x %02x %02x %02x", report[0], report[1],
                   report[2], report[3], report[4], report[5], report[6], report[7]);
-    reports_.emplace_back(buf);
+    record(deviceId, buf);
     return true;
 }
 
-bool RecordingHidTransport::sendConsumer(uint16_t usage) {
+bool SimulatedBleHosts::sendConsumer(std::string_view deviceId, uint16_t usage) {
+    if (!connected(deviceId)) return false;
     char buf[32];
     std::snprintf(buf, sizeof(buf), "consumer 0x%04x", usage);
-    reports_.emplace_back(buf);
+    record(deviceId, buf);
     return true;
+}
+
+void SimulatedBleHosts::advance(uint32_t elapsedMs) {
+    if (windowDevice_.empty()) return;
+    if (elapsedMs < windowRemainingMs_) {
+        windowRemainingMs_ -= elapsedMs;
+        return;
+    }
+    windowDevice_.clear();  // closed with no new bond; the old one (if any) stays
+}
+
+bool SimulatedBleHosts::bonded(const std::string &hostName) {
+    if (windowDevice_.empty()) return false;
+    for (const Host &h : hosts_) {
+        if (h.name == hostName && h.deviceId != windowDevice_) return false;  // tied to its own device
+    }
+    const std::string device = std::exchange(windowDevice_, std::string());
+    if (host(device) == nullptr && hosts_.size() >= limits::kMaxBleDevices) return false;  // the store is full
+    setHost(device, hostName);
+    return true;
+}
+
+void SimulatedBleHosts::bond(const std::string &deviceId, const std::string &hostName) { setHost(deviceId, hostName); }
+
+void SimulatedBleHosts::reset() {
+    hosts_.clear();
+    windowDevice_.clear();
+    windowRemainingMs_ = 0;
+    ready = true;
+    bondsChanged();
+}
+
+std::string SimulatedBleHosts::saveBonds() const {
+    std::string text;
+    for (const Host &h : hosts_) text.append(h.deviceId).append(1, '\t').append(h.name).append(1, '\n');
+    return text;
+}
+
+bool SimulatedBleHosts::loadBonds(const std::string &text) {
+    std::vector<Host> loaded;
+    size_t start = 0;
+    while (start < text.size()) {
+        const size_t end = text.find('\n', start);
+        if (end == std::string::npos) return false;
+        const std::string line = text.substr(start, end - start);
+        const size_t tab = line.find('\t');
+        if (tab == 0 || tab == std::string::npos || loaded.size() == limits::kMaxBleDevices) return false;
+        loaded.push_back(Host{line.substr(0, tab), line.substr(tab + 1), true});
+        start = end + 1;
+    }
+    hosts_ = std::move(loaded);
+    return true;
+}
+
+void SimulatedBleHosts::bondsChanged() {
+    if (onBondsChanged) onBondsChanged();
+}
+
+bool SimulatedBleHosts::setConnected(std::string_view deviceId, bool connected) {
+    Host *h = host(deviceId);
+    if (h == nullptr) return false;
+    h->connected = connected;
+    return true;
+}
+
+void SimulatedBleHosts::setAllConnected(bool connected) {
+    for (Host &h : hosts_) h.connected = connected;
+}
+
+SimulatedBleHosts::Host *SimulatedBleHosts::host(std::string_view deviceId) {
+    for (Host &h : hosts_) {
+        if (h.deviceId == deviceId) return &h;
+    }
+    return nullptr;
+}
+
+const SimulatedBleHosts::Host *SimulatedBleHosts::host(std::string_view deviceId) const {
+    return const_cast<SimulatedBleHosts *>(this)->host(deviceId);
+}
+
+void SimulatedBleHosts::record(std::string_view deviceId, std::string report) {
+    reports_.push_back(std::move(report));
+    reportDevices_.emplace_back(deviceId);
 }
 
 void FakeHomeAssistant::addEntity(const ha::EntityInfo &entity) {

@@ -5,7 +5,7 @@
 #include <ctime>
 #include <random>
 
-#include "hubbo/integrations/ble_state.h"
+#include "hubbo/integrations/ble_hosts.h"
 
 namespace hubbo::sim {
 
@@ -60,7 +60,7 @@ const char *SimRuntime::integrationState(std::string_view integrationId) const {
         return integrations::haIntegrationState(hub_.haClient(), *integration);
     }
     if (integration->type == kBleHidType) {
-        return integrations::bleIntegrationState(*integration, hub_.blePairing().status().state, hub_.hid().connected());
+        return integrations::bleRadioState(*integration, hub_.bleHosts().radioReady());
     }
     if (!integration->enabled) return "disabled";
     if (integration->type == kHomeAssistantType && !hub_.homeAssistant().available()) return "disconnected";
@@ -70,13 +70,12 @@ const char *SimRuntime::integrationState(std::string_view integrationId) const {
 std::string SimRuntime::integrationDetail(std::string_view integrationId) const {
     const IntegrationSpec *integration = hub_.configService().findIntegration(integrationId);
     if (integration == nullptr || integration->type != kBleHidType) return {};
-    const api::BlePairingStatus pairing = hub_.blePairing().status();
-    return integrations::bleIntegrationDetail(pairing.state, hub_.hid().connected(), pairing.peerName);
+    return integrations::bleRadioDetail(hub_.bleHosts().radioReady());
 }
 
 const char *SimRuntime::deviceAvailability(const DeviceSpec &device) const {
     if (device.provider.type == kBleHidType) {
-        return integrations::bleDeviceAvailability(hub_.blePairing().status().state, hub_.hid().connected());
+        return integrations::bleDeviceAvailability(hub_.bleHosts().status(device.id));
     }
     if (!hub_.realHomeAssistant() || device.provider.type != kHomeAssistantType) return "unknown";
     return integrations::haDeviceAvailability(hub_.haClient(), device);

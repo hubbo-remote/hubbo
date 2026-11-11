@@ -3,8 +3,9 @@
 // Simulated integration adapters. They never touch hardware or the network:
 // they record what they were asked to do. Host-only (hub-sim and tests).
 //
-//   RecordingHidTransport  HidTransport for the real core BleHidAdapter;
-//                          records HID reports.
+//   SimulatedBleHosts      several Bluetooth hosts, each bonded to a hub
+//                          device: the API's BleHostPort and the HidTransport
+//                          for the real core BleHidAdapter; records reports.
 //   FakeHomeAssistant      catalogs from the real ha::EntityCapabilities for
 //                          registered fake entities; records the HA service
 //                          call each command would make. Immediate or delayed
@@ -16,35 +17,81 @@
 
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
 
-#include "hubbo/api/ble_pairing_port.h"
 #include "hubbo/domain/adapter.h"
 #include "hubbo/ha/capabilities.h"
 #include "hubbo/integrations/ble_hid.h"
+#include "hubbo/integrations/ble_hosts.h"
 
 namespace hubbo::sim {
 
-class RecordingHidTransport : public integrations::HidTransport {
+// The hub's Bluetooth radio and its hosts (docs/design/multi-bluetooth.md).
+// A host is bonded to one hub device; up to kMaxBleDevices bonds. Single task.
+class SimulatedBleHosts : public integrations::BleHostPort, public integrations::HidTransport {
 public:
-    // Connected needs a bond, as on the board (BleHid): `pairing` (if set)
-    // is the one source of that; setConnected() is only the host's link.
-    bool connected() const override {
-        return connected_ && (pairing == nullptr || pairing->status().state == api::BlePairState::Paired);
-    }
-    bool sendKeyboard(const uint8_t report[8]) override;
-    bool sendConsumer(uint16_t usage) override;
+    // BleHostPort
+    bool radioReady() const override { return ready; }
+    integrations::BleHostStatus status(std::string_view deviceId) const override;
+    integrations::BleHostResult startPairing(std::string_view deviceId, uint32_t windowMs) override;
+    integrations::BleHostResult cancelPairing(std::string_view deviceId) override;
+    integrations::BleHostResult forget(std::string_view deviceId) override;
+    void retainOnly(const integrations::BleDeviceIds &devices) override;  // applied at once
 
-    void setConnected(bool connected) { connected_ = connected; }
+    // HidTransport: a report reaches only that device's connected host.
+    bool connected(std::string_view deviceId) const override;
+    bool sendKeyboard(std::string_view deviceId, const uint8_t report[8]) override;
+    bool sendConsumer(std::string_view deviceId, uint16_t usage) override;
+
+    // Simulation controls.
+    void advance(uint32_t elapsedMs);  // the pairing window's timeout
+    // A host named `hostName` bonds during the open window: it becomes the
+    // window's device's host (replacing its old one), connected. False (and
+    // nothing changes) with no window or a host already bonded to another
+    // device; a full bond store closes the window (keeping what was there).
+    bool bonded(const std::string &hostName);
+    // A bonded host's link (false if `deviceId` has no host).
+    bool setConnected(std::string_view deviceId, bool connected);
+    void setAllConnected(bool connected);  // every bonded host
+    // Bonds `deviceId` to `hostName` directly (a fixture world), connected.
+    void bond(const std::string &deviceId, const std::string &hostName);
+    // No bonds, no window, the radio working. Reports stay.
+    void reset();
+    // The bonds as text ("<device id>\t<host name>" lines), as the board
+    // keeps them in NVS; loadBonds() replaces the bonds with them (each host
+    // connected). False on a malformed line (nothing changes).
+    std::string saveBonds() const;
+    bool loadBonds(const std::string &text);
+    std::function<void()> onBondsChanged;  // after any bond is added or removed
+    bool ready = true;                     // false: the radio isn't working
+
+    // Every report sent, in order: "keyboard 00 00 1e 00 00 00 00 00",
+    // "consumer 0x0042", and the device whose host got each.
     std::vector<std::string> &reports() { return reports_; }
-
-    const api::BlePairingPort *pairing = nullptr;
+    const std::vector<std::string> &reportDevices() const { return reportDevices_; }
 
 private:
-    bool connected_ = true;
-    std::vector<std::string> reports_;  // "keyboard 00 00 1e 00 00 00 00 00", "consumer 0x0042"
+    struct Host {
+        std::string deviceId;
+        std::string name;
+        bool connected = true;
+    };
+    Host *host(std::string_view deviceId);
+    const Host *host(std::string_view deviceId) const;
+    void record(std::string_view deviceId, std::string report);
+    void bondsChanged();
+    void setHost(const std::string &deviceId, const std::string &hostName);  // replace or append, connected
+    template <typename Pred>
+    void eraseHosts(Pred gone);
+
+    std::vector<Host> hosts_;  // bonded, at most kMaxBleDevices
+    std::string windowDevice_;  // "" when no window is open
+    uint32_t windowRemainingMs_ = 0;
+    std::vector<std::string> reports_;
+    std::vector<std::string> reportDevices_;
 };
 
 class FakeHomeAssistant : public IntegrationAdapter {
@@ -113,8 +160,8 @@ struct FakeAdapters {
     FakeAdapters(const FakeAdapters &) = delete;
     FakeAdapters &operator=(const FakeAdapters &) = delete;
 
-    RecordingHidTransport hid;
-    integrations::BleHidAdapter ble{"ble", hid};
+    SimulatedBleHosts bleHosts;
+    integrations::BleHidAdapter ble{"ble", bleHosts};
     FakeHomeAssistant homeAssistant{"ha_main"};
     FakeIr ir;
     AdapterSet set;
