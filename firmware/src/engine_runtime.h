@@ -25,10 +25,9 @@
 #include "hubbo/api/api.h"
 #include "hubbo/config/service.h"
 #include "hubbo/engine/engine.h"
+#include "hubbo/integrations/ble_hosts.h"
 #include "hubbo/integrations/ha_client.h"
 #include "hubbo/remote/input.h"
-
-#include "ble_pairing_runtime.h"
 
 namespace hubbo::fw {
 
@@ -60,8 +59,9 @@ public:
     // Once at boot, before the API starts: integrationState() looks up the
     // integration's spec (on httpd, the ConfigService's task).
     void setConfig(const hubbo::config::ConfigService *config) { config_ = config; }
-    // Once at boot: the ble_hid integration's state comes from its link().
-    void setBlePairing(const BlePairingRuntime *blePairing) { blePairing_ = blePairing; }
+    // Once at boot: the `ble` integration's and Bluetooth devices' state
+    // (BleHostPort reads are httpd-safe).
+    void setBleHosts(const hubbo::integrations::BleHostPort *bleHosts) { bleHosts_ = bleHosts; }
 
     // Engine task.
     void publish(const RuntimeStatus &status);
@@ -78,13 +78,13 @@ public:
 
 private:
     RuntimeStatus read() const;
-    BlePairingRuntime::Link bleLink() const;
+    bool bleRadioReady() const { return bleHosts_ != nullptr && bleHosts_->radioReady(); }
 
     hubbo::Engine &engine_;
     const hubbo::AdapterSet &adapters_;
     const hubbo::integrations::HomeAssistantClient &homeAssistant_;  // state(): any task
     const hubbo::config::ConfigService *config_ = nullptr;
-    const BlePairingRuntime *blePairing_ = nullptr;
+    const hubbo::integrations::BleHostPort *bleHosts_ = nullptr;
     mutable portMUX_TYPE lock_ = portMUX_INITIALIZER_UNLOCKED;
     RuntimeStatus status_;
 };

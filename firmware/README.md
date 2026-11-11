@@ -20,7 +20,9 @@ Pinned: `espressif32@8.0.0` (arduino-esp32 3.3.12), `nRF24/RF24@1.6.2`,
 | `src/board.h` | Board profile: pins and SPI hosts for the Waveshare ESP32-S3-ETH. The only board. |
 | `src/remote_radio.*` | nRF24: Hub scan (learns channel + address), listener, endpoint in NVS. Payloads go to a `PayloadSink` unchanged. |
 | `src/ethernet_link.*` | W5500 Ethernet with DHCP, non-blocking, logs link changes. |
-| `src/ble_hid.*` | NimBLE HID keyboard + consumer control. It is the core's `HidTransport`: link, pairing window, forget, state, reports. No key state (`BleHidAdapter` owns it). |
+| `src/ble_hid.*` | NimBLE HID keyboard + consumer control for up to 4 hosts, one per Bluetooth device. It is the core's per-device `HidTransport`: the host table, connect whitelist, pairing window, forget, reports sent by identity. No key state (`BleHidAdapter` owns it). |
+| `src/ble_host_runtime.*` | `integrations::BleHostPort` (`ApiContext.bleHosts`): httpd's view of the hosts (a snapshot the loop publishes) and a request queue the loop drains. |
+| `include/sdkconfig.h`, `scripts/sdkconfig_shadow.py` | Raise NimBLE's limits (5 connections, 5 bonds, 32 CCCDs) for our sources and every library. |
 | `src/http_server.*` | `esp_http_server` → `hubbo::http::Router`: path decoding, body limit from the matched route (`Router::bodyLimit`, 413 before reading) into a per-request PSRAM buffer, headers, authenticator, response. |
 | `src/engine_runtime.*` | `api::Runtime`: the HTTP task's bridge to the engine task (`EngineRequest` submit + wait, status snapshot, BLE integration state). |
 | `src/flash_fs.*` | LittleFS on the `spiffs` partition at `/fs`. Formats only a positively blank partition (all 0xFF, scanned at boot) or at boot after `fs format`; never while running, never on an unexplained mount failure. |
@@ -84,7 +86,8 @@ internal or DMA memory ask for it explicitly.
 | NVS `hubbo-radio` | Learned Harmony Hub endpoint: `channel` (u8), `address` (u64). |
 | NVS `hubbo-fs` | `format_req` (bool): `fs format` asked for a format at the next boot. Unreadable counts as "not requested". (No "already formatted" flag: auto-format needs the partition to read as blank.) |
 | NVS `hubbo-secret` (chosen over the record store: NVS writes each entry atomically, and login still works if LittleFS breaks, so the hub stays reachable for a restore) | `auth::SecretStore`: `admin_user`, `admin_pw`, `tok_<id>`. Plain NVS: both NVS encryption schemes need eFuse burning (an HMAC key) or flash encryption, which this MVP doesn't do. Someone who dumps the flash can read the password hash and token hashes, but not the plaintext. |
-| NVS `nimble_bond` | NimBLE's own bond store (the paired Apple TV). |
+| NVS `nimble_bond` | NimBLE's own bond store (up to 5: 4 hosts plus a re-pair's new bond before the old one is deleted; a full store refuses, never evicts). |
+| NVS `hubbo-ble` | `hosts`: device id -> host identity address, 4 records in one blob. Written on httpd when a bond is adopted or forgotten. At boot, entries without a bond are dropped and bonds no device owns are deleted. |
 
 ## Network
 
@@ -162,8 +165,8 @@ no serial attached. Plain-text GETs outside the API and its auth, read-only by d
 | `scan [seconds]` / `scan stop` | Learn a Harmony Hub's address (default 120 s). Saved to NVS on success. |
 | `radio set <ch> <addr>` | Use a known Hub endpoint instead of scanning: channel 0–124 (decimal), 40-bit address (hex, `0x` optional). Validated, saved like a scanned one, listened on at once. |
 | `radio forget` | Erase the saved endpoint. |
-| `pair [seconds]` / `pair stop` | BLE pairing window (default 120 s). Forgets the current host first. |
-| `ble forget` | Delete bonds. |
+| `ble pair <device_id>` / `ble cancel <device_id>` | A pairing window for that Bluetooth device (120 s). Its old host stays until a new bond completes. |
+| `ble forget <device_id>` | Delete that device's bond. |
 | `raw on\|off` | Print raw payloads. |
 | `lat`, `lat reset` | Latency summary / clear it. |
 | `fs format` | Erase the config filesystem: records the request and reboots; the format runs at boot, before anything uses the filesystem. |
@@ -223,9 +226,10 @@ Dedicated dev board only. USB power only, never USB and PoE together.
 5. Press, hold and release buttons. With an empty config every event is unbound: you see `event`
    lines, and `status` shows them as `unbound`. A held button gives `hold` at 800 ms. No `up`
    should carry `timedOut`.
-6. Type `pair`, and on the Apple TV pick "Hubbo" (Settings > Remotes and Devices > Bluetooth).
-   Expect `ble: paired with …`; `status` shows `ble: connected`.
-7. Through the API, register the Apple TV as a `ble` device and create an activity that binds
+6. Through the API, register the Apple TV as a `ble` device. Type `ble pair <device_id>`, and on
+   the Apple TV pick "Hubbo" (Settings > Remotes and Devices > Bluetooth).
+   Expect `ble: <device_id> paired with …`; `status` lists it as connected.
+7. Through the API, create an activity that binds
    the d-pad to `key_down`/`key_up`, then activate it through the API. Hold Up. Expect `action … key_down -> accepted`,
    tvOS repeating, and `key_up` on release. `lat` gives `read->hid` p50/p95/p99. Record them.
 8. Hold a d-pad button and turn the Apple TV off or walk out of range. After it reconnects
@@ -290,7 +294,7 @@ Dedicated dev board only. USB power only, never USB and PoE together.
     `task watchdog`). It must never hang.
 25. The RF task never touches NVS or the filesystem while running. During a burst of API writes
     (create a token, change the password, PUT activities in a loop), hold a d-pad button and run
-    `status`, `mem`, `scan`, `radio forget`, `ble forget` and `pair`. `loop: max gap` must stay
+    `status`, `mem`, `scan`, `radio forget`, `ble forget` and `ble pair`. `loop: max gap` must stay
     small: NVS and LittleFS work, and the `mem` filesystem usage, run on httpd. (OTA's image
     write is the one exception; it happens inside `handle()` by design.)
 26. Restore a backup over 40 KB (16 activities with about 20 bindings each) through the API. It

@@ -62,7 +62,7 @@
 #include "nvs_secret_store.h"
 #include "ota.h"
 #include "remote_radio.h"
-#include "ble_pairing_runtime.h"
+#include "ble_host_runtime.h"
 #include "remote_runtime.h"
 #include "ws_transport.h"
 
@@ -187,7 +187,10 @@ public:
 InputFeeder feeder;
 RemoteRadio radio(feeder);
 RemoteRuntime remoteRuntime(radio);  // the admin API's view of the radio
-BlePairingRuntime blePairing(ble);   // the admin API's view of BLE pairing
+BleHostRuntime bleHosts(ble);   // the admin API's view of the Bluetooth hosts
+// Forgets the hosts of Bluetooth devices the saved config no longer has
+// (each saved config, the one loaded at boot included).
+hubbo::integrations::BleHostReconciler bleReconciler(bleHosts);
 EthernetLink ethernet;
 
 // --- Config/HTTP side ----------------------------------------------------------
@@ -423,6 +426,7 @@ void printCredentialState() {
 // read, so the button map is live from the start.
 void bootState() {
     configService = std::make_unique<hubbo::config::ConfigService>(records, adapters, configStore);
+    configService->setListener(&bleReconciler);
     const hubbo::BootReport report = hubbo::bootHub(hubbo::ConfigSpec{}, *configService, &credentials, engine,
                                                     activePersister, millis());
 
@@ -487,7 +491,7 @@ void startApi() {
     info.hostname = hostname;
     hubbo::api::ApiContext context{credentials, sessions, apiClock, *configService, runtime, info};
     context.remote = &remoteRuntime;
-    context.blePairing = &blePairing;
+    context.bleHosts = &bleHosts;
     context.firmware = &firmwareUpdate;
     context.factoryReset = &factoryReset;
     context.homeAssistant = &haClient;
@@ -587,7 +591,7 @@ void publishRuntime() {
     const uint32_t nowMs = millis();
     runtime.publish(s);
     remoteRuntime.publish(nowMs);
-    blePairing.publish(nowMs);
+    bleHosts.publish(nowMs);
 }
 
 // --- Serial console ------------------------------------------------------------
@@ -632,16 +636,7 @@ void printStatus() {
     con.printf("  eth: %s %s, http %s (%lu requests), ota %s\n", EthernetLink::stateName(ethernet.state()),
                   ethernet.ipText(), httpServer.running() ? "up" : "down",
                   static_cast<unsigned long>(httpServer.requestCount()), ota::enabled() ? "enabled" : "disabled");
-    char peer[18];
-    ble.peerAddress(peer, sizeof(peer));
-    con.printf("  ble: %s", BleHid::stateName(ble.state()));
-    if (peer[0] != '\0') {
-        con.printf(" peer %s", peer);
-    }
-    if (ble.state() == BleHid::State::Pairing) {
-        con.printf(" (%lu s left)", static_cast<unsigned long>(ble.pairingSecondsLeft(nowMs)));
-    }
-    con.printf(", notify failures %lu\n", static_cast<unsigned long>(ble.notifyFailures()));
+    ble.printStatus(nowMs);
     con.print("  at boot ");  // live state: GET /api/v1/status
     printConfigState(bootConfig);
     con.print("  at boot ");
@@ -659,9 +654,9 @@ void printHelp() {
         "  scan stop              stop scanning\n"
         "  radio set <ch> <addr>  use a known Hub endpoint instead of scanning (ch 0-124, hex addr)\n"
         "  radio forget           erase the saved Hub endpoint\n"
-        "  pair [seconds]         open the BLE pairing window\n"
-        "  pair stop              close it\n"
-        "  ble forget             delete BLE bonds\n"
+        "  ble pair <device_id>   open a pairing window for that Bluetooth device\n"
+        "  ble cancel <device_id> close it (its old host, if any, stays)\n"
+        "  ble forget <device_id> delete that device's bond\n"
         "  raw on|off             print raw radio payloads (distorts latency)\n"
         "  lat [reset]            latency summary, or clear it\n"
         "  mem                    memory and filesystem\n"
@@ -712,15 +707,14 @@ void runCommand(char *line) {
         }  // listen() logs the endpoint
     } else if (is(cmd, "radio") && is(arg1, "forget")) {
         radio.forgetEndpoint();
-    } else if (is(cmd, "pair") && is(arg1, "stop")) {
-        ble.stopPairing();
-        con.println("ble: pairing window closed");
-    } else if (is(cmd, "pair")) {
-        if (!ble.startPairing(nowMs, seconds(BleHid::kDefaultPairingWindowMs))) {
-            con.println("ble: not started");
+    } else if (is(cmd, "ble") && is(arg1, "pair") && arg2 != nullptr) {
+        if (!ble.startPairing(arg2, nowMs, hubbo::integrations::kBlePairingDefaultWindowMs)) {
+            con.println("ble: not started, or a pairing window is already open");
         }
-    } else if (is(cmd, "ble") && is(arg1, "forget")) {
-        ble.forget();
+    } else if (is(cmd, "ble") && is(arg1, "cancel") && arg2 != nullptr) {
+        ble.cancelPairing(arg2);
+    } else if (is(cmd, "ble") && is(arg1, "forget") && arg2 != nullptr) {
+        ble.forget(arg2);
     } else if (is(cmd, "raw")) {
         diag::setRawLog(is(arg1, "on"));
         con.printf("raw %s\n", diag::rawLog() ? "on" : "off");
@@ -1035,7 +1029,7 @@ void setup() {
     engine.setObserver(&engineLog);
     bootState();
     runtime.setConfig(configService.get());
-    runtime.setBlePairing(&blePairing);
+    runtime.setBleHosts(&bleHosts);
     ota::setRebootPending([] { return rebootReason.load(std::memory_order_acquire) != nullptr; });
     beginEthernetOnCore0();
     startApi();
@@ -1085,9 +1079,7 @@ void loop() {
     if (!stopping) {
         input.poll(nowMs);
         remoteRuntime.poll(nowMs);
-        if (blePairing.poll(nowMs)) {
-            publishRuntime();  // status() shows the effect at once
-        }
+        bleHosts.poll(nowMs);
     }
     engine.poll(nowMs);
     pollReboot();

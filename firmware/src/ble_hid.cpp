@@ -9,8 +9,16 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <NimBLEHIDDevice.h>
+#include <Preferences.h>
 #pragma GCC diagnostic pop
 
+#include <array>
+#include <atomic>
+#include <cstring>
+
+// Each host plus one (include/sdkconfig.h).
+static_assert(CONFIG_BT_NIMBLE_MAX_CONNECTIONS == hubbo::fw::BleHid::kMaxHosts + 1, "see include/sdkconfig.h");
+static_assert(CONFIG_BT_NIMBLE_MAX_BONDS == hubbo::fw::BleHid::kMaxHosts + 1, "see include/sdkconfig.h");
 
 namespace hubbo::fw {
 
@@ -25,6 +33,7 @@ constexpr int kTxPowerDbm = 9;
 // units). A slow interval makes a key-up arrive late and read as a hold.
 constexpr uint16_t kConnIntervalUnits = 12;
 constexpr uint16_t kConnTimeoutUnits = 200;
+constexpr uint32_t kAdvertisingCheckMs = 1000;
 
 // Keyboard (report 1: modifiers, reserved, 6 keys; LED output report) and
 // consumer control (report 2: one 16-bit usage). Unchanged from Harmonizer.
@@ -81,48 +90,67 @@ NimBLEHIDDevice *hid = nullptr;
 NimBLECharacteristic *keyboardInput = nullptr;
 NimBLECharacteristic *consumerInput = nullptr;
 
-// Written by NimBLE callbacks on the host task, read on the main loop.
-volatile uint16_t connHandle = BLE_HS_CONN_HANDLE_NONE;
-volatile bool secured = false;
-volatile bool bondsChanged = false;
+// Set by NimBLE callbacks on the host task, taken by loop(): any link
+// change, and which connections completed (re)authentication since (a bit
+// per handle, mod 32; a stray bit only means one extra check).
+std::atomic<bool> linksChanged{false};
+std::atomic<uint32_t> authenticated{0};
+
+uint32_t handleBit(uint16_t handle) { return 1u << (handle & 31u); }
+
+// The host table in NVS: device id -> identity address, next to NimBLE's
+// bonds. One blob, rewritten whole when it changes.
+constexpr const char *kPrefsNamespace = "hubbo-ble";
+constexpr const char *kPrefsHosts = "hosts";
+struct HostRecord {
+    char deviceId[hubbo::limits::kMaxIdLength + 1];
+    uint8_t addrType;
+    uint8_t addr[6];
+};
+using HostRecords = std::array<HostRecord, BleHid::kMaxHosts>;
 
 class ServerCallbacks : public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) override {
-        // One host at a time; a second connection is refused.
-        if (connHandle != BLE_HS_CONN_HANDLE_NONE) {
-            pServer->disconnect(connInfo);
-            return;
-        }
-        connHandle = connInfo.getConnHandle();
-        secured = false;
+    void onConnect(NimBLEServer *, NimBLEConnInfo &connInfo) override {
+        // Bonded hosts re-encrypt; new ones pair (bonding only in a window).
         NimBLEDevice::startSecurity(connInfo.getConnHandle());
+        linksChanged.store(true);
     }
 
-    void onDisconnect(NimBLEServer *, NimBLEConnInfo &connInfo, int) override {
-        if (connInfo.getConnHandle() != connHandle) {
-            return;
-        }
-        connHandle = BLE_HS_CONN_HANDLE_NONE;
-        secured = false;
-    }
+    void onDisconnect(NimBLEServer *, NimBLEConnInfo &, int) override { linksChanged.store(true); }
 
     void onAuthenticationComplete(NimBLEConnInfo &connInfo) override {
-        // Bonding is only allowed while the pairing window is open, so
-        // outside it a new host ends up encrypted but not bonded: drop it.
+        // Bonding is only allowed while a pairing window is open, so outside
+        // it a new host ends up encrypted but not bonded: drop it.
         if (!connInfo.isEncrypted() || !connInfo.isBonded()) {
             server->disconnect(connInfo);
             return;
         }
-        secured = true;
-        bondsChanged = true;
-        server->updateConnParams(connInfo.getConnHandle(), kConnIntervalUnits, kConnIntervalUnits,
-                                 0, kConnTimeoutUnits);
+        server->updateConnParams(connInfo.getConnHandle(), kConnIntervalUnits, kConnIntervalUnits, 0,
+                                 kConnTimeoutUnits);
+        authenticated.fetch_or(handleBit(connInfo.getConnHandle()));
+        linksChanged.store(true);
+    }
+};
+
+// NimBLE's default deletes the oldest bond when the store is full, which
+// would drop a paired host. Refuse instead: the new bond isn't stored, and
+// adoptBond() ends the window without a new host.
+class DeviceCallbacks : public NimBLEDeviceCallbacks {
+    int onStoreStatus(struct ble_store_status_event *event, void *) override {
+        return event->event_code == BLE_STORE_EVENT_OVERFLOW ? BLE_HS_ESTORE_CAP : 0;
     }
 };
 
 void setBondingAllowed(bool allowed) {
-    // Just Works (no screen or keypad); bonding only while pairing.
+    // Just Works (no screen or keypad); bonding only in a pairing window.
     NimBLEDevice::setSecurityAuth(allowed, false, true);
+}
+
+NimBLEAddress addressOf(uint8_t type, const uint8_t addr[6]) {
+    ble_addr_t base{};
+    base.type = type;
+    memcpy(base.val, addr, sizeof(base.val));
+    return NimBLEAddress(base);
 }
 
 }  // namespace
@@ -137,12 +165,15 @@ bool BleHid::begin(const char *name) {
         con.println("ble: NimBLE init failed");
         return false;
     }
+    static DeviceCallbacks deviceCallbacks;
+    NimBLEDevice::setDeviceCallbacks(&deviceCallbacks);
     NimBLEDevice::setPower(kTxPowerDbm);
     NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
     setBondingAllowed(false);
 
     server = NimBLEDevice::createServer();
     server->setCallbacks(new ServerCallbacks());
+    server->advertiseOnDisconnect(false);  // updateAdvertising() decides
 
     hid = new NimBLEHIDDevice(server);
     hid->setManufacturer("Hubbo");
@@ -163,214 +194,410 @@ bool BleHid::begin(const char *name) {
     advertising->enableScanResponse(true);
     advertising->setName(name);
 
-    bondCount_ = NimBLEDevice::getNumBonds();
     started_ = true;
+    loadHosts();
     updateAdvertising();
-    con.printf("ble: started as \"%s\", %d bonded host(s)\n", name, bondCount_);
+    size_t paired = 0;
+    for (const Host &host : hosts_) {
+        paired += host.paired();
+    }
+    con.printf("ble: started as \"%s\", %u paired host(s), %d bond(s)\n", name, static_cast<unsigned>(paired),
+               NimBLEDevice::getNumBonds());
     return true;
+}
+
+// Boot (setup(), before the offload exists): the table, then any bond that
+// no device owns (deleted) and any entry whose bond is gone (dropped).
+void BleHid::loadHosts() {
+    HostRecords records{};
+    Preferences prefs;
+    if (prefs.begin(kPrefsNamespace, true)) {
+        if (prefs.getBytesLength(kPrefsHosts) == sizeof(records)) {
+            prefs.getBytes(kPrefsHosts, records.data(), sizeof(records));
+        }
+        prefs.end();
+    }
+    bool changed = false;
+    for (size_t i = 0; i < kMaxHosts; i++) {
+        HostRecord &record = records[i];
+        record.deviceId[sizeof(record.deviceId) - 1] = '\0';
+        if (record.deviceId[0] == '\0') {
+            continue;
+        }
+        if (!NimBLEDevice::isBonded(addressOf(record.addrType, record.addr))) {
+            con.printf("ble: %s's bond is gone; not paired\n", record.deviceId);
+            changed = true;
+            continue;
+        }
+        hosts_[i].deviceId.assign(record.deviceId);
+        hosts_[i].addrType = record.addrType;
+        memcpy(hosts_[i].addr, record.addr, sizeof(record.addr));
+    }
+    for (int i = NimBLEDevice::getNumBonds() - 1; i >= 0; i--) {
+        const NimBLEAddress bonded = NimBLEDevice::getBondedAddress(i);
+        const ble_addr_t *base = bonded.getBase();
+        if (findByIdentity(base->type, base->val) == nullptr) {
+            con.printf("ble: deleting a bond no device owns (%s)\n", bonded.toString().c_str());
+            NimBLEDevice::deleteBond(bonded);
+        }
+    }
+    if (changed) {
+        saveHosts();
+    }
 }
 
 void BleHid::loop(uint32_t nowMs) {
     if (!started_) {
         return;
     }
-
-    if (pairing_ && nowMs - pairingStartedMs_ >= pairingWindowMs_) {
-        con.println("ble: pairing window closed");
-        stopPairing();
-        pairingFailed_ = true;
+    if (windowOpen() && nowMs - windowStartedMs_ >= windowMs_) {
+        con.printf("ble: pairing window for %s closed with no new host\n", windowDevice_.c_str());
+        closeWindow();
     }
+    const bool linkEvent = linksChanged.exchange(false);
+    if (linkEvent) {
+        refreshLinks();
+    }
+    while (!pendingJobs_.empty() && offload_(pendingJobs_.front())) {
+        pendingJobs_.pop_front();
+    }
+    // On link events (NimBLE stops advertising on connect), and once a
+    // second in case a start failed.
+    if (linkEvent || nowMs - advertisingCheckedMs_ >= kAdvertisingCheckMs) {
+        advertisingCheckedMs_ = nowMs;
+        updateAdvertising();
+    }
+}
 
-    if (bondsChanged) {
-        bondsChanged = false;
-        const uint16_t handle = connHandle;
-        if (pairing_ && secured && handle != BLE_HS_CONN_HANDLE_NONE) {
-            // Paired: keep only this host (off this task), then close the window.
-            const NimBLEAddress keep = server->getPeerInfoByHandle(handle).getIdAddress();
-            runBondJob([keep] {
-                for (int i = NimBLEDevice::getNumBonds() - 1; i >= 0; i--) {
-                    const NimBLEAddress address = NimBLEDevice::getBondedAddress(i);
-                    if (!(address == keep)) {
-                        NimBLEDevice::deleteBond(address);
-                    }
-                }
-            });
-            con.printf("ble: paired with %s\n", keep.toString().c_str());
-            stopPairing();
+// On a link event: adopt or drop new bonds, then each host's link from the
+// stack.
+void BleHid::refreshLinks() {
+    const uint32_t justAuthenticated = authenticated.exchange(0);
+    for (const uint16_t handle : server->getPeerDevices()) {
+        const NimBLEConnInfo info = server->getPeerInfoByHandle(handle);
+        if (!info.isEncrypted() || !info.isBonded()) {
+            continue;  // still pairing, or dropped by onAuthenticationComplete
         }
-        bondCount_ = NimBLEDevice::getNumBonds();
+        const NimBLEAddress identity = info.getIdAddress();
+        const ble_addr_t *base = identity.getBase();
+        if (const Host *host = findByIdentity(base->type, base->val)) {
+            // A paired host (re)connected. If it's the window's device's own
+            // host authenticating, that re-pair is done: nothing to delete.
+            // A host bound to another device just stays with it.
+            if (host->deviceId == windowDevice_.view() && (justAuthenticated & handleBit(handle))) {
+                con.printf("ble: %s paired with its host again\n", windowDevice_.c_str());
+                closeWindow();
+            }
+            continue;
+        }
+        if (windowOpen()) {
+            adoptBond(handle, base->type, base->val);
+        } else {
+            con.printf("ble: dropping a host no device owns (%s)\n", identity.toString().c_str());
+            server->disconnect(handle);
+            deleteBond(base->type, base->val);
+        }
     }
-
-    if (pendingBondJob_ && offload_(pendingBondJob_)) {
-        pendingBondJob_ = nullptr;
+    for (Host &host : hosts_) {
+        host.linked = host.paired() && connHandleOf(host);
     }
+}
 
-    // Bonding opens only once the old bonds are gone, so a deletion that
-    // runs late can't remove the new host.
-    if (pairing_ && !bondingOpen_ && !bondsClearing_.load(std::memory_order_acquire)) {
-        bondingOpen_ = true;
-        setBondingAllowed(true);
+// The first new bond in the window: the window's device's host. Only now is
+// that device's old bond (if another host) deleted.
+void BleHid::adoptBond(uint16_t handle, uint8_t type, const uint8_t addr[6]) {
+    Host *slot = find(windowDevice_.view());
+    if (slot == nullptr) {
+        for (Host &host : hosts_) {
+            if (!host.paired()) {
+                slot = &host;
+                break;
+            }
+        }
     }
+    // A refused store write (full) leaves the link bonded in name only.
+    if (slot == nullptr || !NimBLEDevice::isBonded(addressOf(type, addr))) {
+        con.printf("ble: pairing %s failed: %s\n", windowDevice_.c_str(),
+                   slot == nullptr ? "no free host slot" : "the bond store is full");
+        server->disconnect(handle);
+        deleteBond(type, addr);
+        closeWindow();
+        return;
+    }
+    if (slot->paired()) {
+        disconnect(*slot);
+        deleteBond(slot->addrType, slot->addr);
+    }
+    slot->deviceId = windowDevice_;
+    slot->addrType = type;
+    memcpy(slot->addr, addr, sizeof(slot->addr));
+    slot->linked = true;
+    con.printf("ble: %s paired with %s\n", slot->deviceId.c_str(), addressOf(type, addr).toString().c_str());
+    saveHosts();
+    closeWindow();
+}
 
-    // Polled rather than event-driven: NimBLE stops advertising on connect.
+void BleHid::closeWindow() {
+    windowDevice_.clear();
+    setBondingAllowed(false);
     updateAdvertising();
 }
 
-void BleHid::runBondJob(std::function<void()> job) {
-    bondsClearing_.store(true, std::memory_order_release);
-    auto done = [this, job = std::move(job)] {
-        job();
-        bondsChanged = true;  // loop() refreshes the count
-        bondsClearing_.store(false, std::memory_order_release);
-    };
+// --- NVS (bonds and the host table): always off this task -------------------
+
+void BleHid::deleteBond(uint8_t type, const uint8_t addr[6]) {
+    const NimBLEAddress address = addressOf(type, addr);
+    runNvsJob([address] { NimBLEDevice::deleteBond(address); });
+}
+
+void BleHid::saveHosts() {
+    whitelistDirty_ = true;
+    HostRecords records{};
+    for (size_t i = 0; i < kMaxHosts; i++) {
+        const Host &host = hosts_[i];
+        memcpy(records[i].deviceId, host.deviceId.c_str(), host.deviceId.size() + 1);
+        records[i].addrType = host.addrType;
+        memcpy(records[i].addr, host.addr, sizeof(records[i].addr));
+    }
+    runNvsJob([records] {
+        Preferences prefs;
+        if (!prefs.begin(kPrefsNamespace, false) || prefs.putBytes(kPrefsHosts, records.data(), sizeof(records)) == 0) {
+            con.println("ble: couldn't save the paired hosts");
+        }
+        prefs.end();
+    });
+}
+
+// In order: a table save queued after a bond deletion runs after it.
+void BleHid::runNvsJob(std::function<void()> job) {
     if (!offload_) {
-        done();  // boot: no other task yet
-    } else if (!offload_(done)) {
-        pendingBondJob_ = std::move(done);  // queue full: loop() retries
+        job();  // boot: no other task yet
+    } else if (!pendingJobs_.empty() || !offload_(job)) {
+        pendingJobs_.push_back(std::move(job));  // loop() retries
     }
 }
 
 // --- Reports ------------------------------------------------------------------
 
-bool BleHid::connected() const {
-    return started_ && secured && connHandle != BLE_HS_CONN_HANDLE_NONE;
+BleHid::Host *BleHid::find(std::string_view deviceId) {
+    for (Host &host : hosts_) {
+        if (host.paired() && host.deviceId == deviceId) {
+            return &host;
+        }
+    }
+    return nullptr;
 }
 
-bool BleHid::sendKeyboard(const uint8_t report[8]) {
-    if (!connected()) {
+const BleHid::Host *BleHid::find(std::string_view deviceId) const {
+    return const_cast<BleHid *>(this)->find(deviceId);
+}
+
+BleHid::Host *BleHid::findByIdentity(uint8_t type, const uint8_t addr[6]) {
+    for (Host &host : hosts_) {
+        if (host.paired() && host.addrType == type && memcmp(host.addr, addr, sizeof(host.addr)) == 0) {
+            return &host;
+        }
+    }
+    return nullptr;
+}
+
+// The stack's live, encrypted connection to this host's identity (it
+// matches a host using a private address once resolved).
+bool BleHid::connHandleOf(const Host &host, uint16_t *handle) const {
+    ble_gap_conn_desc desc{};
+    if (ble_gap_conn_find_by_addr(addressOf(host.addrType, host.addr).getBase(), &desc) != 0 ||
+        !desc.sec_state.encrypted) {
         return false;
     }
-    if (!keyboardInput->notify(report, 8)) {
+    if (handle != nullptr) {
+        *handle = desc.conn_handle;
+    }
+    return true;
+}
+
+void BleHid::disconnect(const Host &host) {
+    uint16_t handle = 0;
+    if (connHandleOf(host, &handle)) {
+        server->disconnect(handle);
+    }
+}
+
+bool BleHid::connected(std::string_view deviceId) const {
+    const Host *host = find(deviceId);
+    return started_ && host != nullptr && host->linked;
+}
+
+bool BleHid::notify(std::string_view deviceId, NimBLECharacteristic *input, const uint8_t *report, size_t length) {
+    const Host *host = find(deviceId);
+    uint16_t handle = 0;
+    if (!started_ || host == nullptr || !connHandleOf(*host, &handle)) {
+        return false;
+    }
+    if (!input->notify(report, length, handle)) {
         notifyFailures_++;
         return false;
     }
     return true;
 }
 
-bool BleHid::sendConsumer(uint16_t usage) {
-    if (!connected()) {
-        return false;
-    }
+bool BleHid::sendKeyboard(std::string_view deviceId, const uint8_t report[8]) {
+    return notify(deviceId, keyboardInput, report, 8);
+}
+
+bool BleHid::sendConsumer(std::string_view deviceId, uint16_t usage) {
     const uint8_t report[2] = {static_cast<uint8_t>(usage & 0xFF), static_cast<uint8_t>(usage >> 8)};
-    if (!consumerInput->notify(report, sizeof(report))) {
-        notifyFailures_++;
-        return false;
-    }
-    return true;
-}
-
-void BleHid::releaseAll() {
-    static const uint8_t kEmpty[8] = {};
-    sendKeyboard(kEmpty);
-    sendConsumer(0);
+    return notify(deviceId, consumerInput, report, sizeof(report));
 }
 
 // --- Pairing ----------------------------------------------------------------
 
 void BleHid::updateAdvertising() {
     NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
-    const bool shouldAdvertise =
-        connHandle == BLE_HS_CONN_HANDLE_NONE && (pairing_ || bondCount_ > 0);
-    if (shouldAdvertise && !advertising->isAdvertising()) {
-        advertising->start();
-    } else if (!shouldAdvertise && advertising->isAdvertising()) {
+    bool hostMissing = false;
+    for (const Host &host : hosts_) {
+        hostMissing = hostMissing || (host.paired() && !host.linked);
+    }
+    const bool filtered = !windowOpen();
+    const bool shouldAdvertise = started_ && server->getConnectedCount() < CONFIG_BT_NIMBLE_MAX_CONNECTIONS &&
+                                 (!filtered || hostMissing);
+    // The whitelist and filter can't change while advertising uses them.
+    if (advertising->isAdvertising() && (!shouldAdvertise || whitelistDirty_ || filtered != advertisingFiltered_)) {
         advertising->stop();
     }
+    if (!shouldAdvertise || advertising->isAdvertising()) {
+        return;
+    }
+    if (whitelistDirty_) {
+        while (NimBLEDevice::getWhiteListCount() > 0) {
+            NimBLEDevice::whiteListRemove(NimBLEDevice::getWhiteListAddress(0));
+        }
+        for (const Host &host : hosts_) {
+            if (host.paired()) {
+                NimBLEDevice::whiteListAdd(addressOf(host.addrType, host.addr));
+            }
+        }
+        whitelistDirty_ = false;
+    }
+    advertising->setScanFilter(false, filtered);  // connect: paired hosts only, unless pairing
+    advertisingFiltered_ = filtered;
+    advertising->start();
 }
 
-bool BleHid::startPairing(uint32_t nowMs, uint32_t windowMs) {
-    if (!started_) {
+bool BleHid::startPairing(std::string_view deviceId, uint32_t nowMs, uint32_t windowMs) {
+    if (!started_ || windowOpen() || deviceId.empty() || !windowDevice_.assign(deviceId)) {
         return false;
     }
-    if (bondCount_ > 0 || connHandle != BLE_HS_CONN_HANDLE_NONE) {
-        forget();
-    }
-    pairing_ = true;
-    pairingFailed_ = false;
-    bondingOpen_ = false;  // loop() opens it once any bond deletion is done
-    pairingStartedMs_ = nowMs;
-    pairingWindowMs_ = windowMs;
+    windowStartedMs_ = nowMs;
+    windowMs_ = windowMs;
+    setBondingAllowed(true);
     updateAdvertising();
-    con.printf("ble: pairing window open for %lu s\n",
-                  static_cast<unsigned long>(windowMs / 1000));
+    con.printf("ble: pairing window open for %s, %lu s\n", windowDevice_.c_str(),
+               static_cast<unsigned long>(windowMs / 1000));
     return true;
 }
 
-void BleHid::stopPairing() {
-    if (!pairing_) {
-        return;
+void BleHid::cancelPairing(std::string_view deviceId) {
+    if (windowOpen() && windowDevice_ == deviceId) {
+        con.printf("ble: pairing window for %s cancelled\n", windowDevice_.c_str());
+        closeWindow();
     }
-    pairing_ = false;
-    bondingOpen_ = false;
-    setBondingAllowed(false);
-    updateAdvertising();
 }
 
-uint32_t BleHid::pairingSecondsLeft(uint32_t nowMs) const {
-    if (!pairing_) {
-        return 0;
-    }
-    const uint32_t elapsed = nowMs - pairingStartedMs_;
-    return elapsed >= pairingWindowMs_ ? 0 : (pairingWindowMs_ - elapsed + 999) / 1000;
-}
-
-void BleHid::forget() {
+void BleHid::forget(std::string_view deviceId) {
     if (!started_) {
         return;
     }
-    con.println("ble: forgetting bonded hosts");
-    stopPairing();
-    pairingFailed_ = false;
-    releaseAll();
-    const uint16_t handle = connHandle;
-    if (handle != BLE_HS_CONN_HANDLE_NONE) {
-        secured = false;  // no longer trusted: not connected() while the disconnect lands
-        server->disconnect(handle);
+    cancelPairing(deviceId);
+    Host *host = find(deviceId);
+    if (host == nullptr) {
+        return;
     }
-    runBondJob([] { NimBLEDevice::deleteAllBonds(); });
-    bondCount_ = 0;
+    forgetHost(*host);
+    saveHosts();
     updateAdvertising();
+}
+
+void BleHid::forgetHost(Host &host) {
+    con.printf("ble: forgetting %s's host\n", host.deviceId.c_str());
+    disconnect(host);
+    deleteBond(host.addrType, host.addr);
+    host = Host{};
+}
+
+void BleHid::retainOnly(const hubbo::integrations::BleDeviceIds &devices) {
+    if (!started_) {
+        return;
+    }
+    if (windowOpen() && !devices.contains(windowDevice_.view())) {
+        cancelPairing(windowDevice_.view());
+    }
+    bool changed = false;
+    for (Host &host : hosts_) {
+        if (host.paired() && !devices.contains(host.deviceId.view())) {
+            forgetHost(host);
+            changed = true;
+        }
+    }
+    if (changed) {
+        saveHosts();
+        updateAdvertising();
+    }
 }
 
 // --- Status -------------------------------------------------------------------
 
-BleHid::State BleHid::state() const {
-    if (!started_) {
-        return State::Off;
+hubbo::integrations::BleHostStatus BleHid::status(std::string_view deviceId, uint32_t nowMs) const {
+    hubbo::integrations::BleHostStatus status;
+    const Host *host = find(deviceId);
+    status.bonded = host != nullptr;
+    status.connected = started_ && host != nullptr && host->linked;
+    status.pairing = windowOpen() && windowDevice_ == deviceId;
+    if (status.pairing) {
+        const uint32_t elapsed = nowMs - windowStartedMs_;
+        status.windowRemainingMs = elapsed >= windowMs_ ? 0 : windowMs_ - elapsed;
     }
-    if (connected()) {
-        return State::Connected;
-    }
-    if (pairing_) {
-        return State::Pairing;
-    }
-    return bondCount_ > 0 ? State::Waiting : State::NotPaired;
+    return status;
 }
 
-const char *BleHid::stateName(State state) {
-    switch (state) {
-        case State::Off: return "off";
-        case State::NotPaired: return "not_paired";
-        case State::Pairing: return "pairing";
-        case State::Waiting: return "waiting";
-        case State::Connected: return "connected";
+void BleHid::snapshot(Snapshot &out, uint32_t nowMs) const {
+    out = Snapshot{};
+    out.radioReady = started_;
+    const auto add = [&](const hubbo::IdString &deviceId) {
+        if (deviceId.empty()) {
+            return;
+        }
+        for (size_t i = 0; i < out.count; i++) {
+            if (out.entries[i].deviceId == deviceId.view()) {
+                return;
+            }
+        }
+        Snapshot::Entry &entry = out.entries[out.count++];
+        entry.deviceId = deviceId;
+        entry.status = status(deviceId.view(), nowMs);
+    };
+    for (const Host &host : hosts_) {
+        add(host.deviceId);
     }
-    return "off";
+    add(windowDevice_);
 }
 
-void BleHid::peerAddress(char *out, size_t size) const {
-    if (size == 0) {
-        return;
-    }
-    out[0] = '\0';
+void BleHid::printStatus(uint32_t nowMs) const {
     if (!started_) {
+        con.println("  ble: off");
         return;
     }
-    const uint16_t handle = connHandle;
-    if (handle != BLE_HS_CONN_HANDLE_NONE) {
-        snprintf(out, size, "%s", server->getPeerInfoByHandle(handle).getIdAddress().toString().c_str());
-    } else if (bondCount_ > 0) {
-        snprintf(out, size, "%s", NimBLEDevice::getBondedAddress(0).toString().c_str());
+    con.printf("  ble: %d bond(s), %u connection(s), notify failures %lu\n", NimBLEDevice::getNumBonds(),
+               static_cast<unsigned>(server->getConnectedCount()), static_cast<unsigned long>(notifyFailures_));
+    for (const Host &host : hosts_) {
+        if (host.paired()) {
+            con.printf("    %s: %s, %s\n", host.deviceId.c_str(), addressOf(host.addrType, host.addr).toString().c_str(),
+                       host.linked ? "connected" : "not connected");
+        }
+    }
+    if (windowOpen()) {
+        con.printf("    pairing window for %s, %lu s left\n", windowDevice_.c_str(),
+                   static_cast<unsigned long>(
+                       hubbo::integrations::bleDeviceState(status(windowDevice_.view(), nowMs)).windowS));
     }
 }
 

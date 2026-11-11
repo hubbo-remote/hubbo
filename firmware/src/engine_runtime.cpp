@@ -4,7 +4,6 @@
 #include <esp_timer.h>
 
 #include "hubbo/domain/config.h"
-#include "hubbo/integrations/ble_state.h"
 #include "hubbo/integrations/ha_adapter.h"
 #include "console.h"
 
@@ -83,10 +82,6 @@ hubbo::api::RuntimeSnapshot EngineRuntime::snapshot() const {
     return out;
 }
 
-BlePairingRuntime::Link EngineRuntime::bleLink() const {
-    return blePairing_ != nullptr ? blePairing_->link() : BlePairingRuntime::Link{};
-}
-
 const char *EngineRuntime::integrationState(std::string_view integrationId) const {
     const hubbo::IntegrationSpec *integration = config_ != nullptr ? config_->findIntegration(integrationId) : nullptr;
     if (integration == nullptr) {
@@ -96,8 +91,7 @@ const char *EngineRuntime::integrationState(std::string_view integrationId) cons
         return hubbo::integrations::haIntegrationState(homeAssistant_, *integration);
     }
     if (isBle(integrationId)) {
-        const BlePairingRuntime::Link link = bleLink();
-        return hubbo::integrations::bleIntegrationState(*integration, link.pairing, link.hostConnected);
+        return hubbo::integrations::bleRadioState(*integration, bleRadioReady());
     }
     return "not_configured";
 }
@@ -106,19 +100,17 @@ std::string EngineRuntime::integrationDetail(std::string_view integrationId) con
     if (!isBle(integrationId)) {
         return {};
     }
-    const BlePairingRuntime::Link link = bleLink();
-    return hubbo::integrations::bleIntegrationDetail(link.pairing, link.hostConnected, link.peer);
+    return hubbo::integrations::bleRadioDetail(bleRadioReady());
 }
 
 const char *EngineRuntime::deviceAvailability(const hubbo::DeviceSpec &device) const {
     if (device.provider.type == hubbo::kHomeAssistantType) {
         return hubbo::integrations::haDeviceAvailability(homeAssistant_, device);
     }
-    if (!isBle(device.integrationId)) {
+    if (!isBle(device.integrationId) || bleHosts_ == nullptr) {
         return "unknown";
     }
-    const BlePairingRuntime::Link link = bleLink();
-    return hubbo::integrations::bleDeviceAvailability(link.pairing, link.hostConnected);
+    return hubbo::integrations::bleDeviceAvailability(bleHosts_->status(device.id));
 }
 
 }  // namespace hubbo::fw

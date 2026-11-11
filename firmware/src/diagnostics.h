@@ -55,9 +55,13 @@ LatencyStats::Summary hidSummary();
 class TimedHidTransport : public hubbo::integrations::HidTransport {
 public:
     explicit TimedHidTransport(hubbo::integrations::HidTransport &inner) : inner_(inner) {}
-    bool connected() const override { return inner_.connected(); }
-    bool sendKeyboard(const uint8_t report[8]) override { return timed(inner_.sendKeyboard(report)); }
-    bool sendConsumer(uint16_t usage) override { return timed(inner_.sendConsumer(usage)); }
+    bool connected(std::string_view deviceId) const override { return inner_.connected(deviceId); }
+    bool sendKeyboard(std::string_view deviceId, const uint8_t report[8]) override {
+        return timed(inner_.sendKeyboard(deviceId, report));
+    }
+    bool sendConsumer(std::string_view deviceId, uint16_t usage) override {
+        return timed(inner_.sendConsumer(deviceId, usage));
+    }
 
 private:
     static bool timed(bool sent);
