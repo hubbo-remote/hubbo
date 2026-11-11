@@ -26,9 +26,8 @@
 namespace hubbo::config {
 
 constexpr int kSchemaVersion = 1;      // of every stored object (Activity, Device: api/openapi.yaml)
-// Of the config document (the payload of the "config" record). History:
-//   1  first version
-//   2  BLE HID keys DIGIT_0..DIGIT_9 renamed KEY_0..KEY_9
+// Of the config document (the payload of the "config" record). An older
+// version is refused (no migrations before the first release).
 constexpr int kConfigFileVersion = 2;
 constexpr uint8_t kRequestNestingLimit = 8;       // api/openapi.yaml
 constexpr uint8_t kFileNestingLimit = 12;
@@ -89,9 +88,9 @@ bool decodeDeviceUpdate(JsonVariantConst json, DeviceUpdate *out, ValidationRepo
                         const std::string &path = "");
 
 // ---- integrations (non-secret) -------------------------------------------
-// IntegrationConfig as stored. Read-only and secret fields
-// (has_access_token, access_token, bonded, peer_name) are rejected on input
-// and never written here; the API layer adds read-only ones to responses.
+// IntegrationConfig as stored. Read-only, runtime and secret fields are
+// unknown here: rejected on input and never written. The API layer adds the
+// read-only ones to responses.
 bool decodeIntegration(JsonVariantConst json, IntegrationSpec *out, ValidationReport *report,
                        const std::string &path = "");
 void encodeIntegration(const IntegrationSpec &integration, JsonObject out);
@@ -105,7 +104,8 @@ std::string serializeConfig(const ConfigSpec &config);
 // kConfigFileVersion. Return Ok, or an error to reject the file.
 using Migration = ErrorCode (*)(JsonDocument &doc, int fromVersion);
 
-// The built-in migrations (every released config version up to now).
+// The built-in migrations. Nothing is released yet, so there are none: an
+// older version is MigrationFailed (the hub boots Blocked).
 ErrorCode migrateConfig(JsonDocument &doc, int fromVersion);
 
 struct ParseResult {

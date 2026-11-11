@@ -2,6 +2,8 @@
 // bounded parsing and schema versions.
 #include <gtest/gtest.h>
 
+#include <cstring>
+
 #include "fakes.h"
 #include "fixtures.h"
 #include "hubbo/config/json.h"
@@ -215,34 +217,36 @@ TEST(ConfigJson, IntegrationSecretsAreNotAccepted) {
     EXPECT_EQ(text.find("token"), std::string::npos);
 }
 
-TEST(ConfigJson, ARetiredCaCertLoadsAndIsDroppedOnSave) {
-    // The board's saved config (and backups made before) carry ca_cert_pem:
-    // they must still load, or the hub boots Blocked after the update.
-    ConfigSpec c = sim::fixtureConfig();
-    std::string text = serializeConfig(c);
-    const std::string from = R"("verify_tls":true)";
-    const size_t at = text.find(from);
-    ASSERT_NE(at, std::string::npos) << text;
-    text.replace(at, from.size(), R"("verify_tls":false,"ca_cert_pem":"-----BEGIN CERTIFICATE-----")");
-    ConfigSpec loaded;
-    const ParseResult r = parseConfig(text, &loaded);
-    ASSERT_EQ(r.code, ErrorCode::Ok) << r.report.issues().size();
-    const IntegrationSpec *ha = nullptr;
-    for (const IntegrationSpec &i : loaded.integrations) {
-        if (i.id == "ha_main") ha = &i;
+// No retired or runtime fields are tolerated (nothing is released yet): a
+// record or backup carrying one is unknown_field like any other.
+TEST(ConfigJson, RetiredFieldsAreUnknown) {
+    const ConfigSpec c = sim::fixtureConfig();
+    struct Case {
+        const char *from;
+        const char *to;
+        const char *field;
+    };
+    const Case cases[] = {
+        {R"("verify_tls":true)", R"("verify_tls":true,"ca_cert_pem":null)", "ca_cert_pem"},
+        {R"("provider":{"type":"ble_hid")", R"("provider":{"type":"ble_hid","peer_name":"Family Room")", "peer_name"},
+        // Runtime state the API reports is never input either.
+        {R"("provider":{"type":"ble_hid")", R"("availability":"available","provider":{"type":"ble_hid")", "availability"},
+        {R"("provider":{"type":"ble_hid")", R"("bluetooth":{"state":"connected"},"provider":{"type":"ble_hid")", "bluetooth"},
+    };
+    for (const Case &k : cases) {
+        for (const bool backup : {false, true}) {
+            SCOPED_TRACE(std::string(k.field) + (backup ? " in a backup" : " in a record"));
+            std::string text = backup ? serializeBackup(c, BackupInfo()) : serializeConfig(c);
+            const size_t at = text.find(k.from);
+            ASSERT_NE(at, std::string::npos) << text;
+            text.replace(at, std::strlen(k.from), k.to);
+            ConfigSpec loaded;
+            const ParseResult r = backup ? parseBackup(text, &loaded) : parseConfig(text, &loaded);
+            EXPECT_EQ(r.code, ErrorCode::ValidationFailed);
+            ASSERT_FALSE(r.report.ok());
+            EXPECT_EQ(r.report.issues()[0].code, ErrorCode::UnknownField);
+        }
     }
-    ASSERT_NE(ha, nullptr);
-    EXPECT_FALSE(ha->verifyTls);  // kept
-    EXPECT_EQ(serializeConfig(loaded).find("ca_cert_pem"), std::string::npos);
-
-    // A backup too (null, as older backups wrote it).
-    std::string backup = serializeBackup(c, BackupInfo());
-    const size_t b = backup.find(from);
-    ASSERT_NE(b, std::string::npos) << backup;
-    backup.replace(b, from.size(), R"("verify_tls":true,"ca_cert_pem":null)");
-    ConfigSpec restored;
-    EXPECT_EQ(parseBackup(backup, &restored).code, ErrorCode::Ok);
-    EXPECT_EQ(serializeBackup(restored, BackupInfo()).find("ca_cert_pem"), std::string::npos);
 }
 
 namespace {
