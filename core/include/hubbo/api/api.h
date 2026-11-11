@@ -6,7 +6,6 @@
 #include <vector>
 
 #include "hubbo/api/authenticator.h"
-#include "hubbo/api/ble_pairing_port.h"
 #include "hubbo/api/factory_reset_port.h"
 #include "hubbo/api/firmware_update_port.h"
 #include "hubbo/api/remote_port.h"
@@ -15,6 +14,7 @@
 #include "hubbo/domain/adapter.h"
 #include "hubbo/engine/engine.h"
 #include "hubbo/http/route.h"
+#include "hubbo/integrations/ble_hosts.h"
 #include "hubbo/remote/input.h"
 
 // The /api/v1 route handlers (api/openapi.yaml), shared by the firmware and
@@ -137,10 +137,10 @@ struct ApiContext {
     // discover and register routes.
     std::shared_ptr<struct DiscoveryCache> discovery;
 
-    // BLE HID pairing for the ble_hid integration (POST/GET/DELETE
-    // /admin/integrations/{id}/pair); null answers 503. Last, so positional
-    // initializers that stop at `discovery` still compile.
-    BlePairingPort *blePairing = nullptr;
+    // The Bluetooth hosts, one per ble_hid device (the /admin/devices/{id}/pair
+    // and /pairing routes, each device's `bluetooth` status); null answers
+    // 503. Positional initializers that stop at `discovery` still compile.
+    integrations::BleHostPort *bleHosts = nullptr;
     // Firmware updates (GET /admin/firmware, POST /admin/firmware/update);
     // null answers 503.
     FirmwareUpdatePort *firmware = nullptr;

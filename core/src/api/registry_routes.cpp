@@ -86,6 +86,9 @@ CommandCatalog catalogFor(const ApiContext &ctx, const DeviceSpec &device) {
 void putDevice(JsonObject out, const ApiContext &ctx, const DeviceSpec &device) {
     config::encodeDevice(device, out, false);  // the snapshot stays on the hub
     out["availability"] = ctx.runtime.deviceAvailability(device);
+    if (device.provider.type == kBleHidType && ctx.bleHosts != nullptr) {
+        putBluetoothStatus(out["bluetooth"].to<JsonObject>(), ctx.bleHosts->status(device.id));
+    }
 }
 
 const char *execStatus(ExecStatus status) {
@@ -239,6 +242,12 @@ void addRegistryRoutes(RouteSink &sink, ApiContext &ctx) {
             device.haCapabilities = std::move(snapshot);
         }
         const config::Outcome outcome = ctx.config.createDevice(std::move(device));
+        // The Bluetooth limit: TooManyDevices at the new device's /integration_id
+        // (createDevice reroots /devices/N/...; the 64-device cap is at /devices).
+        if (outcome.issues.has(ErrorCode::TooManyDevices, "/integration_id")) {
+            return sendDetail(out, "/integration_id", "too_many_devices",
+                              "You can add up to " + std::to_string(limits::kMaxBleDevices) + " Bluetooth devices");
+        }
         if (!outcome.ok()) return sendOutcome(out, outcome, "device");
         JsonDocument body;
         putDevice(body.to<JsonObject>(), ctx, *ctx.config.findDevice(outcome.id));
@@ -274,6 +283,7 @@ void addRegistryRoutes(RouteSink &sink, ApiContext &ctx) {
                  if (requireDevice(ctx, p[0], out) == nullptr) return;
                  uint32_t revision = 0;
                  if (!queryRevision(request, out, &revision)) return;
+                 // Its bond goes with it: the hosts reconcile with every saved config.
                  const config::Outcome outcome = ctx.config.deleteDevice(p[0], revision);
                  if (!outcome.ok()) return sendOutcome(out, outcome, "device");
                  sendEmpty(out, 204);

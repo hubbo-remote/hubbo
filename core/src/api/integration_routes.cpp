@@ -129,9 +129,6 @@ void sendConfig(const ApiContext &ctx, const IntegrationSpec &integration, http:
         bool present = false;
         if (!hasToken(ctx, out, &present)) return;
         settings["has_access_token"] = present;
-    } else if (integration.type == kBleHidType) {
-        const std::string state = ctx.runtime.integrationState(integration.id);
-        settings["bonded"] = state != "not_configured" && state != "disabled";
     }
     sendJson(out, status, doc);
 }
