@@ -2,7 +2,37 @@
 
 Current state, not a log. Update when a piece of work lands.
 
-## Polish round 1 (branch `polish`, not committed; docs/design/polish-ux.md)
+## Several Bluetooth devices (branch `multi-bluetooth`, in progress; docs/design/multi-bluetooth.md)
+
+- `ble` is the radio: its card shows only health ("Connected", or "Bluetooth isn't working").
+  Each host is a device: Add device → Bluetooth → name (no discovery). At most 4
+  (`BLE_MAX_DEVICES`); a fifth is 422 `too_many_devices`, shown as the hub says it.
+- Device page: `BluetoothPairing` card. Status, plus Pair, Cancel while the window is open, Pair
+  again (with a confirm), and Forget. It polls `GET /admin/devices/{id}/pair` every 1 s while
+  open. A window that ends `not_paired` (not cancelled) says "Nothing paired. Try again." A
+  re-pair that's cancelled or runs out keeps the old host.
+- Status everywhere: `Device.bluetooth` (`BluetoothStatus`), shown by `bluetoothLabel` and
+  `bluetoothDot` (lib/health): Not paired, Ready to pair · N s, Connected, Not connected. A key for
+  a host that isn't connected is 200 `failed` `adapter_unavailable`.
+- Mock: per-device `bleHosts` and one `blePair` window; `live(d)` adds `bluetooth` and
+  `availability` to GETs, and they're never stored or in backups (restore refuses them as
+  `unknown_field`, like PUT/POST). Controls like hub-sim: `ble/bond?device=`,
+  `ble/link?device=&up=`, `ble/radio?ready=`. e2e helpers are `bondHost`, `setHostLink` and
+  `setBleRadio`.
+- Mock follows the hub's bond rules: `pruneBonds()` after delete, reset-configuration and restore
+  drops bonds (and a window) for devices no longer in config; a restored device that still has a
+  bond keeps it. Pairing the device whose window is open is 202 with its status; 409 `busy` is
+  only for another device's window. The hub's 503 `busy` (full queue) isn't simulated.
+- Key names: `keyLabel` and `paramValueLabel` (lib/keys) for the key picker and the action text.
+- `errorMessage(e, {details})` skips a detail that repeats the top message.
+- `/simplify` done twice. The mock answers fixed hub errors from `api/fixtures/errors/` via
+  `fixtureError`; `unknownFields()` builds unknown_field details; `humanize` (lib/utils) is the one
+  snake_case → "Sentence case" helper. Skipped: rendering the card from `device.bluetooth` to save
+  the one pair GET (it would flicker after a window ends while the device refetches); a union
+  `Pick` type; a `deviceStatus()` helper for the list (two small checks); and option labels from
+  the hub (an API ask that would replace `paramValueLabel`'s name check).
+
+## Polish round 1 (committed on `polish`; docs/design/polish-ux.md)
 
 - **Routes, no redirects** (the product never shipped; old routes are deleted): `/` Activities
   (home), `/activities/global|new|:id`, `/devices[/:id]`, `/integrations`, `/status/:tab?`
@@ -20,8 +50,8 @@ Current state, not a log. Update when a piece of work lands.
 - Shared: `Facts` (common.tsx), `EVENT_VERB` (lib/remote), `plural` (lib/utils),
   `isUserIntegration` and `KIND_LABEL` (lib/health). `ErrorState`/`NotAvailable` lost `what`.
 - **Integrations**: the card header is the one place the state shows (`state-<id>` test id;
-  /integrations polled every 3 s, since /status has no `detail`). Bluetooth shows the hub's
-  detail alone ("Connected to Family Room"); others `state · detail`. `HaConnection` shows
+  /integrations polled every 3 s, since /status has no `detail`). Off shows only "Disabled";
+  Bluetooth shows its detail alone; others `state · detail`. `HaConnection` shows
   only its alerts there; Setup passes `showState` for the state line.
 - Device page: service ids show only in an opened command; "Change entity…" (was Re-link). The
   remote endpoint shows no radio status, only an alert when the radio isn't working.
@@ -67,9 +97,6 @@ Current state, not a log. Update when a piece of work lands.
     it polls /remote/status every 500 ms through the cache and shows "Got it: <Button> pressed" per
     new `last_event` (`isNewEvent` in `lib/remote.ts`: younger, or another button/kind; the first
     read is the baseline), "Waiting for a button press…" before, and a hint after 30 s.
-  - **BLE pairing** (§3a, Integrations only): `BlePanel` polls the pair status every 1 s while
-    pairing, confirms before replacing a bond or forgetting, shows `failed` until the next action.
-    Bond and peer name come from the pair status.
   - **HA entity details** (§3b): picking an entity loads its details (`loadEntityDetails` in
     `lib/ha.ts`, Retry on failure), which register, re-link and refresh need (409
     `details_required` otherwise). `EntityPreview` shows them. Details with `registered_device_id`
@@ -143,8 +170,8 @@ Current state, not a log. Update when a piece of work lands.
 - `POST /__mock/reset` body = `ResetFlags`: `firstRun`, `requireAuth`, `configState`,
   `configDamaged`, `startupRejected`, `authState` (unavailable), `discoverFails`, `scanNeverFinds`.
 - Mirroring hub-sim's `/sim/…`: `factory-reset?ready=`, `firmware?fail=&ready=`, `storage?health=`, `ha?state=|remove=|auth=&connect=`,
-  `ble?connected=`, `ble/bonded?peer=`, `radio/found?channel&address`, `advance?ms` (also runs
-  down the BLE window and entity details), `remote/<button>/<press|release|tap>` (only records
+  `ble/bond?device=`, `ble/link?device=&up=`, `ble/radio?ready=`, `radio/found?channel&address`,
+  `advance?ms` (also runs down the Bluetooth window and entity details), `remote/<button>/<press|release|tap>` (only records
   `last_event`; no bindings run).
 - Mock only: `ha?rename=<id>&to=<new>` (the old id gone; `renamedFrom` makes the new one's
   details name the old device, and registering it is 422 `duplicate_id`, like the hub).
@@ -154,7 +181,6 @@ Current state, not a log. Update when a piece of work lands.
 - `api/contract.sh mock mock-auth` runs the API contract against the standalone mock. The Node
   path parses bodies itself (413 before parsing, 415, 400 `malformed_json`, depth 8; 12 for
   restore). Admin/token routes before setup are 401, like the hub.
-- BLE state like hub-sim: pairing → connecting, no bond → not_configured, else connected/disconnected.
 
 ## e2e (Playwright in Docker, `web/e2e`)
 
@@ -195,7 +221,7 @@ Current state, not a log. Update when a piece of work lands.
 - **hub-sim quirks**:
   - DELETE /activities/<id> needs `?revision=N`.
   - Registering needs the entity's details first (`registerHa`); poll discovery to `done` first.
-  - BLE has one source, the pairing port: bonded to "Apple TV" at start and after /sim/reset.
+  - Bluetooth: dev_apple_tv starts bonded and connected (after /sim/reset too).
   - Sim time: HA reconnects and remote event ages only move with `/sim/advance`. Specs advance
     1 s before a press so a new event is younger than the last.
   - `/sim/reset` restores entities, BLE and the radio, and releases held buttons. Specs tap.
