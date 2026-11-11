@@ -14,7 +14,7 @@ contract is `api/openapi.yaml`.
    not only what Hubbo has registered.
 2. The admin password and session. They give full control of Hubbo, including the HA settings.
 3. API tokens. They can drive every registered device and rewrite activities.
-4. BLE bond keys (the Apple TV pairing).
+4. BLE bond keys (up to 4 paired hosts, one per Bluetooth device).
 5. Configuration (devices, activities). Not secret, but tampering means the remote does the
    wrong thing.
 
@@ -49,6 +49,9 @@ contract is `api/openapi.yaml`.
 - Online password guessing. There's no rate limit; each guess costs a PBKDF2 hash (about 0.5 s
   on the board), and the admin picks the password.
 - A compromised Home Assistant. Hubbo trusts HA's responses about entities and states.
+- Bluetooth hosts nearby. Outside a pairing window, only paired hosts may connect (the
+  advertising whitelist). While an admin's window is open, any host in range can bond to that
+  device (as with any keyboard); the admin sees which device it landed on, and Forget undoes it.
 
 ## Roles
 
@@ -61,7 +64,7 @@ One admin account and any number of API tokens (max 16). No other roles.
 | Execute a registered command | yes | yes |
 | Create/edit/delete/validate/activate activities, Off, global bindings | yes | yes |
 | Integration summaries | yes | yes |
-| Integration settings, discovery, BLE pairing | yes | **no** |
+| Integration settings, discovery, Bluetooth device pairing and forget | yes | **no** |
 | Register/edit/delete devices | yes | **no** |
 | Remote pairing | yes | **no** |
 | Tokens, admin password | yes | **no** |
@@ -183,8 +186,7 @@ Outbound to Home Assistant: an `https://` URL connects over `wss://`, verified a
 public CA bundle in the firmware (`verify_tls: true`, the default). `verify_tls: false` keeps
 the connection encrypted but doesn't verify the server, so anyone on the network path could pose
 as HA and get the token: only for a self-signed HA on a trusted LAN. There's no custom CA
-setting (`ca_cert_pem` was removed in Phase 3; old configs and backups that carry it load, and
-it's dropped). `http://` HA URLs work but send the HA token in plaintext. The UI should warn.
+setting. `http://` HA URLs work but send the HA token in plaintext. The UI should warn.
 Changing the HA URL clears the stored token unless a new one is sent, so a token can't be
 redirected to another host by editing the URL.
 
@@ -209,7 +211,7 @@ message and nowhere else.
 | Admin password hash | NVS | no | never |
 | API token hashes | NVS | no | never (plaintext once, at creation) |
 | HA access token | NVS | no | never (`has_access_token: true/false`) |
-| BLE bond keys | NimBLE's NVS store | no | never |
+| BLE bond keys (and each host's identity address) | NimBLE's NVS store | no | never |
 | TLS private key | NVS | no | never |
 | Sessions | RAM | no | never (the cookie only, at login) |
 

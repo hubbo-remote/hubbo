@@ -103,6 +103,11 @@ A `hold` command such as `key_down` would leave a key held with nothing to relea
 answers `422` with detail code `hold_not_allowed`: send `key_tap` instead. Holds belong in
 bindings, as a `down`/`up` pair (`up:down` → `key_down`, `up:up` → `key_up`).
 
+A Bluetooth device's key goes to that device's own host (an Apple TV, a Shield), never another.
+Each Bluetooth device in `/devices` has `bluetooth.state`: `connected`, `not_connected`,
+`not_paired` or `pairing`. Its commands work only while it's `connected` (`availability:
+available`); otherwise they fail and nothing is sent. Pairing is admin-only.
+
 ## Activities
 
 An activity is a startup sequence, a shutdown sequence, and bindings from remote triggers to
@@ -307,5 +312,5 @@ Then use `Authorization: Bearer hbt_...` as above.
 
 ## Limits
 
-16 activities, 64 devices, 32 actions per sequence or binding, 4 params per action, names up to
+16 activities, 64 devices (at most 4 Bluetooth), 32 actions per sequence or binding, 4 params per action, names up to
 64 characters, enum strings up to 64, `wait` up to 60 s.
