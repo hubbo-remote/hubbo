@@ -53,13 +53,26 @@ export function buttonForPath(path: string): ButtonId | null {
 }
 
 export const systemAction = (command_id: string, params: ActionParams = {}): Action => ({ integration_id: SYSTEM, device_id: null, command_id, params })
-export const waitAction = (duration_ms = 1000): Action => systemAction('wait', { duration_ms })
+export const waitAction = (duration_ms = 500): Action => systemAction('wait', { duration_ms })
 export const isSystem = (a: Action) => a.integration_id === SYSTEM && a.device_id === null
 export const isWait = (a: Action) => isSystem(a) && a.command_id === 'wait'
 
 export type Placement = 'sequence' | 'binding-last' | 'binding-mid'
 /** Where a system command may go: activate/off only as the last action of a binding (spec rule). */
 export const systemCommandAllowed = (commandId: string, where: Placement) => where === 'binding-last' || (commandId !== 'activate' && commandId !== 'off')
+
+/** Hubbo's own commands a picker offers as the "Hubbo" device: Switch activity and Off in a binding; none in steps (waits have Add wait). */
+export const hubboCommands = (cat: Catalog, context: 'sequence' | 'binding') =>
+  cat.systemCommands.filter((c) => c.command_id !== 'wait' && systemCommandAllowed(c.command_id, context === 'sequence' ? 'sequence' : 'binding-last'))
+
+/** The device these actions use most (ties go to the first seen), for a new step's or binding's default. */
+export function mostUsedDevice(actions: Iterable<Action>): string | null {
+  const n = new Map<string, number>()
+  for (const a of actions) if (a.device_id) n.set(a.device_id, (n.get(a.device_id) ?? 0) + 1)
+  let best: string | null = null
+  for (const [d, k] of n) if (best === null || k > n.get(best)!) best = d
+  return best
+}
 
 const idSets = new WeakMap<Catalog['activities'], ReadonlySet<string>>()
 const activityIds = (cat: Catalog) => {
@@ -221,7 +234,12 @@ export interface Catalog {
   /** Deviceless commands of the `system` integration (wait, activate, off). */
   systemCommands: Command[]
   activities: { id: string; name: string }[]
+  /** Bluetooth profile commands with their own timed hold (`hold_ms`), by device: a button sends them as one timed press. */
+  timed?: ReadonlyMap<string, ReadonlySet<string>>
 }
+
+/** Whether an action is one of those timed profile commands (see `writeMain`). */
+export const isTimed = (cat: Catalog) => (a: Action) => a.command_id === 'press' && !!a.device_id && typeof a.params.command === 'string' && !!cat.timed?.get(a.device_id)?.has(a.params.command)
 
 export function commandFor(a: Action, cat: Catalog): Command | undefined {
   if (isSystem(a)) return cat.systemCommands.find((c) => c.command_id === a.command_id)

@@ -5,13 +5,13 @@ import type { Action, Command, ExecuteResult } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Field, Select } from '@/components/ui/input'
 import { useCapabilities } from '@/hooks/data'
-import { commandFor, defaultParams, isSystem, SYSTEM, systemCommandAllowed, type Catalog } from '@/lib/activity'
+import { commandFor, defaultParams, hubboCommands, isSystem, type Catalog } from '@/lib/activity'
 import { commandTitle } from '@/lib/commands'
 import { commandGroups } from '@/lib/keys'
 import { cn } from '@/lib/utils'
 import { ParamForm } from './ParamForm'
-
-const SYSTEM_VALUE = '__system__'
+import { DeviceSelect } from './DeviceSelect'
+import { SYSTEM_VALUE, targetOf } from './start'
 
 /**
  * Device → command → typed params. Only registered devices and their
@@ -24,7 +24,7 @@ export function ActionPicker({ value, onChange, catalog, context, allowHold = fa
   const known = catalog.capabilities.get(deviceId)
   const caps = useCapabilities(deviceId && deviceId !== SYSTEM_VALUE && !known ? deviceId : null)
   // The binding UI edits one action per trigger, so it is always the last one.
-  const systemCommands = catalog.systemCommands.filter((c) => systemCommandAllowed(c.command_id, context === 'sequence' ? 'sequence' : 'binding-last'))
+  const systemCommands = hubboCommands(catalog, context)
   // Holds only where a release can follow (a binding's down); waits (wait_connected) only in sequences.
   const offer = (c: Command) => (allowHold || c.effect !== 'hold') && (context === 'sequence' || c.effect !== 'wait')
   const commands = (system ? systemCommands : ((known ?? caps.data)?.commands ?? [])).filter(offer)
@@ -35,14 +35,8 @@ export function ActionPicker({ value, onChange, catalog, context, allowHold = fa
   const hasCustom = commands.some((c) => c.group === 'custom')
 
   const pickDevice = (d: string) => {
-    if (!d) return onChange(null)
-    if (d === SYSTEM_VALUE) {
-      const first = systemCommands[0]
-      return onChange({ integration_id: SYSTEM, device_id: null, command_id: first?.command_id ?? '', params: first ? defaultParams(first.params, first.command_id) : {} })
-    }
-    const dev = catalog.devices.get(d)!
-    const first = catalog.capabilities.get(d)?.commands.find(offer)
-    onChange({ integration_id: dev.integration_id, device_id: d, command_id: first?.command_id ?? '', params: first ? defaultParams(first.params, first.command_id) : {} })
+    const first = d === SYSTEM_VALUE ? systemCommands[0] : catalog.capabilities.get(d)?.commands.find(offer)
+    onChange({ ...targetOf(catalog, d), command_id: first?.command_id ?? '', params: first ? defaultParams(first.params, first.command_id) : {} })
   }
 
   const pickCommand = (c: string) => {
@@ -55,15 +49,7 @@ export function ActionPicker({ value, onChange, catalog, context, allowHold = fa
     <div className="grid gap-3">
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Device" htmlFor={`${id}-dev`}>
-          <Select id={`${id}-dev`} value={deviceId} onChange={(e) => pickDevice(e.target.value)}>
-            <option value="">None</option>
-            {[...catalog.devices.values()].map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-            {systemCommands.length > 0 && <option value={SYSTEM_VALUE}>{context === 'sequence' ? 'Wait' : 'Hubbo'}</option>}
-          </Select>
+          <DeviceSelect id={`${id}-dev`} value={deviceId} onChange={pickDevice} catalog={catalog} hubbo={systemCommands.length > 0} />
         </Field>
         {value && (!system || systemCommands.length > 1) && (
           <Field label="Command" htmlFor={`${id}-cmd`}>
