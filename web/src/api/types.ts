@@ -89,4 +89,3 @@ export interface LocalValidation {
   errors: ValidationIssue[]
   warnings: ValidationIssue[]
 }
-export type ValidationResult = S['ValidationResult']

@@ -1,4 +1,4 @@
-import { CheckCircle2, Loader2, Pencil, Save, ShieldCheck } from 'lucide-react'
+import { CheckCircle2, Loader2, Save } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '@/api/client'
 import { invalidate, setQueryData } from '@/api/hooks'
@@ -46,7 +46,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
   const [selected, setSelected] = useState<string | null>('select')
   const [tab, setTab] = useState('buttons')
   const [serverIssues, setServerIssues] = useState<ValidationIssue[] | null>(null)
-  const [busy, setBusy] = useState<'save' | 'validate' | null>(null)
+  const [busy, setBusy] = useState(false)
   const [conflict, setConflict] = useState<Activity | null>(null)
   const lock = useConfigLock()
 
@@ -75,7 +75,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
   const save = async (overwriteRevision?: number) => {
     setAttempted(true)
     if (!local.valid) return
-    setBusy('save')
+    setBusy(true)
     try {
       const result = await api.replaceActivity(draft.id, draft, overwriteRevision ?? draft.revision)
       const next = toDraft(result)
@@ -102,21 +102,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
         toastError('Couldn’t save', e)
       }
     } finally {
-      setBusy(null)
-    }
-  }
-
-  const dryRun = async () => {
-    setAttempted(true)
-    setBusy('validate')
-    try {
-      const r = await api.validateActivity(draft)
-      setServerIssues(r.errors)
-      toast(r.valid ? 'No problems found' : `${plural(r.errors.length, 'problem')} found`, { variant: r.valid ? 'success' : 'error' })
-    } catch (e) {
-      toastError('Couldn’t check', e)
-    } finally {
-      setBusy(null)
+      setBusy(false)
     }
   }
 
@@ -146,13 +132,15 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
   }
 
   const nameError = errors.find((e) => e.path === '/name')
+  // The name edits in place: Enter or leaving keeps it (for Save), Esc puts back what it was.
+  const nameBefore = useRef(draft.name)
 
   return (
     <ShowErrors.Provider value={showErrors}>
       <PageHeader
         back={{ href: '/', label: 'Activities' }}
         title={
-          <span className="flex items-center gap-2">
+          <span className="flex items-center">
             <label htmlFor="act-name" className="sr-only">
               Activity name
             </label>
@@ -161,11 +149,19 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
               value={draft.name}
               placeholder="Activity name"
               maxLength={LIMITS.nameMax}
+              onFocus={() => (nameBefore.current = draft.name)}
               onChange={(e) => update({ name: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+                else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  update({ name: nameBefore.current })
+                  e.currentTarget.blur()
+                }
+              }}
               aria-invalid={!!nameError}
-              className="h-10 w-[min(22rem,70vw)] border-transparent bg-transparent px-2 text-2xl font-semibold shadow-none placeholder:text-base placeholder:font-normal hover:border-input md:text-2xl"
+              className="h-10 w-[min(22rem,70vw)] cursor-text border-transparent bg-transparent px-2 text-2xl font-semibold shadow-none underline decoration-transparent decoration-dashed underline-offset-8 placeholder:text-base placeholder:font-normal hover:bg-accent/50 hover:decoration-muted-foreground/50 focus-visible:bg-card focus-visible:decoration-transparent md:text-2xl"
             />
-            <Pencil className="size-4 shrink-0 text-muted-foreground" aria-hidden />
           </span>
         }
         description={
@@ -181,17 +177,11 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
           </span>
         }
         actions={
-          <>
-            <Button variant="outline" onClick={dryRun} disabled={!!busy}>
-              {busy === 'validate' ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
-              Check
-            </Button>
-            <Button onClick={() => save()} disabled={!!busy || !dirty || lock.locked} title={lock.title}>
-              {busy === 'save' ? <Loader2 className="animate-spin" /> : <Save />}
-              Save
-              <Kbd className="hidden border-primary-foreground/30 bg-transparent text-primary-foreground/70 lg:inline">⌘S</Kbd>
-            </Button>
-          </>
+          <Button onClick={() => save()} disabled={busy || !dirty || lock.locked} title={lock.title}>
+            {busy ? <Loader2 className="animate-spin" /> : <Save />}
+            Save
+            <Kbd className="hidden border-primary-foreground/30 bg-transparent text-primary-foreground/70 lg:inline">⌘S</Kbd>
+          </Button>
         }
       />
 
@@ -261,7 +251,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
       <ConflictDialog
         mine={draft}
         theirs={conflict}
-        busy={busy === 'save'}
+        busy={busy}
         onClose={() => setConflict(null)}
         onLoadTheirs={() => {
           if (!conflict) return
