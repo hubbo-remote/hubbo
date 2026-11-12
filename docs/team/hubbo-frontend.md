@@ -2,7 +2,55 @@
 
 Current state, not a log. Update when a piece of work lands.
 
-## Several Bluetooth devices (branch `multi-bluetooth`, in progress; docs/design/multi-bluetooth.md)
+## Device profiles and the activity wizard (branch `device-profiles`, in progress; docs/design/device-profiles.md)
+
+- **Add device** (`AddDeviceDialog`): one list. Built-in profiles (GET /profiles, searchable by
+  manufacturer and model; shown when their platform's integration is on) plus "From Home
+  Assistant". A profile → name (defaults to the model) and type (from GET /kinds) → POST
+  {profile_id, name, kind} → the device page (Bluetooth pairing card). No hard-coded kinds:
+  `useKinds`/`useKindLabel` (hooks/data).
+- **Wizard**: `pages/ActivityWizard.tsx` at `#/activities/new` (devices → watch → volume → inputs →
+  power → review; steps with nothing to ask are skipped; Back, the progress bar and the review's
+  "Change" links go to any step). Save creates an ordinary activity and opens the editor. Every new
+  activity goes through the wizard: there is no empty editor, and `ActivityEditor` only edits an
+  existing id. E2e that builds by hand uses `openNewActivity` (editor.ts: POST an empty activity,
+  open it) and `saveActivity`. Step 1 is Name, then an "Included Devices" heading (`#step-title`)
+  over the checkboxes; other steps have a short heading and a one-line blurb. Review shows no button
+  map: answer rows (Watching with, Volume, Inputs; Change only for asked steps), then the Start and End
+  steps (toggle-only devices noted under Start). Buttons are still filled into the activity. Bluetooth devices'
+  detail (GET /devices/{id}; the list is light) loads once when the wizard opens via
+  `useDeviceDetails` (hooks/data, seeds `devices/<id>` like `caps-all` seeds `caps/<id>`), behind
+  the Skeleton; HA devices need only the list and capabilities. Ticking a device only filters,
+  never fetches (a per-selection key made Continue flash). `ActivityDraft` now always has id and
+  revision (the editor only edits stored activities); create/validate take `ActivityInput`.
+- **Builder**: `lib/wizard/build.ts`, pure and unit-tested. Devices become `WizardDevice`s (HA from
+  capabilities via `haNames.ts`; Bluetooth from `DeviceDetail`). Rules from `profiles/buttons.json`
+  (repo root, imported at build time via `rules.ts`). HA first, then Bluetooth; Bluetooth: `wait_connected`
+  (15000) before its first step, power on as `press` steps; on/input delays; `key_delay_ms` wait between steps to
+  the same device; HA turn_on + input gets a 3000 ms wait; HA mute = press mutes, hold unmutes;
+  toggle-only power gets no step; holds use press_down/press_up.
+- **Key picker**: `commandGroups`/`groupOf` (lib/keys) group Bluetooth commands as Remote commands,
+  All keys, Custom code (hidden behind "Show custom codes"). Waits (`effect: wait`) are offered only
+  in sequences. The `press` param's label "Remote command" comes from the capabilities, so e2e
+  matches `getByLabel('Command', { exact: true })`.
+- **Mock**: devices stored in the detail form, `light()` for the list, `platform` on responses but
+  not in backups. /profiles, /profiles/{id}, /kinds from api/fixtures/profiles. `addFromProfile`
+  copies the profile (unknown_profile, unknown_kind, the 4-device limit). Bluetooth capabilities =
+  the seeded Bluetooth device's commands with the profile's names as `press` choices (`bleCaps`), so
+  the key table isn't hard-coded. wait_connected: execute → sequence_only fixture; in a binding →
+  `sequence_only` (shared validator). Restore adds platform and rebuilds Bluetooth capabilities.
+- **e2e**: `wizard.spec` (HA TV + receiver; plus a Bluetooth streamer), `ble.spec` adds each
+  built-in profile through the dialog. Mock and hub-sim --auth pass. storage.spec flaked once in a
+  full mock run and passed alone.
+- `/simplify` done. The wizard reads picked devices through the shared `devices/<id>` cache;
+  the builder reuses `waitAction`/`isWait` (lib/activity). Skipped: the mock's hard-coded
+  Bluetooth platform in `addFromProfile` (the only profile platform).
+- A Bluetooth device's `connectFirst` (wait_connected) goes before its first startup step,
+  whatever it is (power on or an input), once; devices with it run after the others.
+- Review "Change" links go to the first asked step for that section, or don't show.
+- Open: the full gate; phase review.
+
+## Several Bluetooth devices (committed on `multi-bluetooth`; docs/design/multi-bluetooth.md)
 
 - `ble` is the radio: its card shows only health ("Connected", or "Bluetooth isn't working").
   Each host is a device: Add device → Bluetooth → name (no discovery). At most 4

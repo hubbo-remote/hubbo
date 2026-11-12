@@ -160,6 +160,12 @@ public:
     Outcome replaceGlobalBindings(std::vector<BindingSpec> bindings, uint32_t baseRevision);
 
     // ---- devices (admin) ----
+    // The device is checked before anything is built (ValidationFailed, issues
+    // at its own paths): a kind from kinds.json (UnknownKind at /kind; on an
+    // update only when the kind changes), a ble_hid device carries a profile
+    // (Required at /profile) and no other does (UnknownField at /profile).
+    // An update never changes the provider type (IntegrationMismatch at
+    // /provider/type): a device stays on its platform.
     Outcome createDevice(DeviceSpec device);
     Outcome updateDevice(std::string_view id, const DeviceUpdate &update);
     // Refused with DeviceInUse (+ referrers) while anything references it.

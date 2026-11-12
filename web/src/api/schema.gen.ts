@@ -170,7 +170,11 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** One registered device */
+        /**
+         * One registered device, with its profile's commands
+         * @description A Bluetooth device also carries its profile's `commands`, `buttons`,
+         *     `power`, `timing`, `inputs` and `channels`, as `GET /devices` doesn't.
+         */
         get: operations["getDevice"];
         put?: never;
         post?: never;
@@ -222,12 +226,75 @@ export interface paths {
          *     command such as `key_down` would leave a key held with nothing to
          *     release it, so it gets `422` with detail code `hold_not_allowed`;
          *     use the momentary form (`key_tap`). Bindings may use holds.
+         *     A `wait` command (`wait_connected`) only makes sense in a startup or
+         *     shutdown sequence, so it gets `422` with detail code `sequence_only`.
          *
          *     A stale device (`availability: stale`: its HA entity is missing from
          *     the latest discovery) answers `200` with `status: failed` and
          *     `message: entity_not_found`; nothing is sent to HA.
          */
         post: operations["executeCommand"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The built-in device profiles
+         * @description The light list for picking a device to add: `POST /admin/devices`
+         *     with a `profile_id`. Search it by `manufacturer` and `model`.
+         */
+        get: operations["listProfiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profiles/{profile_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profile_id: components["parameters"]["ProfileIdPath"];
+            };
+            cookie?: never;
+        };
+        /**
+         * One built-in profile
+         * @description The profile document as the hub keeps it: the device profile spec's
+         *     format without `meta`.
+         */
+        get: operations["getProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/kinds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Device kinds, in display order */
+        get: operations["listKinds"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -554,10 +621,15 @@ export interface paths {
          *     re-links it (`PUT /admin/devices/{id}` with a `provider`, which
          *     refreshes the capabilities the same way).
          *
-         *     Bluetooth (`provider: {type: ble_hid}`, `integration_id: ble`): no
-         *     discovery; the device starts `not_paired` (pair it with `POST
-         *     /admin/devices/{id}/pair`). At most 4 Bluetooth devices: a fifth is
-         *     `422` with `too_many_devices` at `/integration_id`.
+         *     From a built-in profile (`{profile_id, name?, kind?}`, see `GET
+         *     /profiles`): the hub copies its own copy of the profile into the
+         *     device (without `meta`). The integration follows the profile's
+         *     platform (`ble_hid`: `ble`). `name` defaults to the profile's
+         *     `model`, `kind` to the profile's. `422` `unknown_profile` at
+         *     `/profile_id` for an id the hub doesn't have. A Bluetooth device
+         *     starts `not_paired` (pair it with `POST /admin/devices/{id}/pair`).
+         *     At most 4 Bluetooth devices: a fifth is `422` with
+         *     `too_many_devices` at `/integration_id`.
          */
         post: operations["registerDevice"];
         delete?: never;
@@ -577,8 +649,11 @@ export interface paths {
         };
         get?: never;
         /**
-         * Rename a device or re-link its provider reference
-         * @description Re-linking a Home Assistant device (`provider` with the entity's new
+         * Rename a device, change its kind, or re-link its provider reference
+         * @description A Bluetooth device's profile fields are fixed once added
+         *     (`unknown_field`); to change them, add the device again.
+         *
+         *     Re-linking a Home Assistant device (`provider` with the entity's new
          *     `entity_id`, or the same one to refresh) takes its capabilities from
          *     that entity's loaded details, as registration does (`409
          *     details_required` without them), and clears `availability: stale`. Until then a stale device's commands
@@ -621,9 +696,12 @@ export interface paths {
          *     a host already paired with another device stays with that device.
          *     Poll `GET .../pair` until it isn't `pairing`: a window that closes
          *     with no new bond (it timed out, or the hub already holds 4 bonds)
-         *     leaves the device as it was. Bluetooth devices only (`404 not_found`
-         *     for any other device); `409 busy` while any device's window is open;
-         *     `503 integration_unavailable` when Bluetooth isn't working.
+         *     leaves the device as it was. Starting again while this device's own
+         *     window is open answers `202` with its status. Bluetooth devices only
+         *     (`404 not_found` for any other device); `409 busy` while another
+         *     device's window is open; `503 integration_unavailable` when Bluetooth
+         *     isn't working, `503 busy` when it can't take the request right now
+         *     (try again).
          */
         post: operations["startDevicePairing"];
         /**
@@ -1024,7 +1102,7 @@ export interface components {
              *     `weak_password`).
              * @enum {string}
              */
-            code: "required" | "unknown_field" | "wrong_type" | "too_long" | "pattern" | "forbidden_param" | "referenced" | "id_mismatch" | "weak_password" | "hold_not_allowed" | "unpaired_hold" | "integration_disabled" | "invalid_id" | "invalid_name" | "invalid_command_id" | "duplicate_id" | "unknown_integration" | "unknown_device" | "device_required" | "device_not_allowed" | "integration_mismatch" | "unknown_command" | "unknown_param" | "duplicate_param" | "missing_param" | "invalid_param_type" | "param_out_of_range" | "invalid_enum_value" | "too_many_params" | "invalid_trigger" | "duplicate_trigger" | "unknown_activity" | "misplaced_transition" | "too_many_actions" | "too_many_activities" | "too_many_devices" | "capacity_exceeded" | "unsupported_schema";
+            code: "required" | "unknown_field" | "wrong_type" | "too_long" | "pattern" | "forbidden_param" | "referenced" | "id_mismatch" | "weak_password" | "hold_not_allowed" | "unpaired_hold" | "integration_disabled" | "invalid_id" | "invalid_name" | "invalid_command_id" | "duplicate_id" | "unknown_integration" | "unknown_device" | "device_required" | "device_not_allowed" | "integration_mismatch" | "unknown_command" | "unknown_param" | "duplicate_param" | "missing_param" | "invalid_param_type" | "param_out_of_range" | "invalid_enum_value" | "too_many_params" | "invalid_trigger" | "duplicate_trigger" | "unknown_activity" | "misplaced_transition" | "too_many_actions" | "too_many_activities" | "too_many_devices" | "capacity_exceeded" | "unsupported_schema" | "unknown_profile" | "unknown_kind" | "sequence_only";
             message: string;
         };
         Error: {
@@ -1233,12 +1311,28 @@ export interface components {
             command_id: components["schemas"]["CommandId"];
             /**
              * @description `momentary`: a one-shot command. `hold`: leaves something held
-             *     that must be released (e.g. `key_down`). Execute accepts only
-             *     `momentary` (a `hold` gets 422 `hold_not_allowed`); bindings may
-             *     use `hold` paired with its release (down/up).
+             *     that must be released (e.g. `key_down`). `wait`: pauses a
+             *     startup or shutdown sequence (`wait_connected {timeout_ms}`,
+             *     default 15000: until the Bluetooth host is connected or the
+             *     time runs out; either way the sequence goes on). Execute accepts
+             *     only `momentary` (a `hold` gets 422 `hold_not_allowed`, a `wait`
+             *     422 `sequence_only`); bindings may use `hold` paired with its
+             *     release (down/up), and never `wait`.
              * @enum {string}
              */
-            effect: "momentary" | "hold";
+            effect: "momentary" | "hold" | "wait";
+            /**
+             * @description Bluetooth key choices only (not `wait_connected`, nor Home
+             *     Assistant commands): where the command belongs in a picker,
+             *     shown in this order. `remote`: the device's own commands, from
+             *     its profile, by name (`press`, `press_down`, `press_up`, with
+             *     param `command`). `keys`: every named key
+             *     on every Bluetooth device (`key_tap`, `key_down`, `key_up`).
+             *     `custom`: a raw consumer usage, 1-1023 (`usage_tap`,
+             *     `usage_down`, `usage_up`).
+             * @enum {string}
+             */
+            group?: "remote" | "keys" | "custom";
             label: string;
             description?: string;
             params: components["schemas"]["ParamSpec"][];
@@ -1373,10 +1467,12 @@ export interface components {
             reason?: string;
         };
         /**
-         * @description UI hint only.
+         * @description A label, an icon and a browse category; nothing else depends on it.
+         *     The list (with display labels) is `GET /kinds`, from the device
+         *     profile spec's kinds.json. Anything else is `unknown_kind`.
          * @enum {string}
          */
-        DeviceKind: "tv" | "receiver" | "speaker" | "streamer" | "console" | "light" | "switch" | "other";
+        DeviceKind: "tv" | "tv_vcr" | "tv_dvd" | "tv_dvd_vcr" | "tv_dvr" | "projector" | "streamer" | "set_top_box" | "cable_box" | "cable_dvr" | "satellite_box" | "console" | "computer" | "disc_player" | "dvd_recorder" | "dvd_vcr" | "dvd_recorder_vcr" | "vcr" | "laserdisc" | "home_theater" | "home_theater_vcr" | "receiver" | "amplifier" | "speaker" | "mini_system" | "tuner" | "cd_player" | "cd_changer" | "tape_deck" | "dat_deck" | "minidisc" | "portable_audio" | "hdmi_switch" | "climate" | "light" | "switch" | "smart_home_hub" | "accessory" | "other";
         HomeAssistantProvider: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -1396,21 +1492,50 @@ export interface components {
             type: "ble_hid";
         };
         Provider: components["schemas"]["HomeAssistantProvider"] | components["schemas"]["BleHidProvider"];
-        /** @description Shared by Device and StoredDevice (open; each closes it). */
+        /**
+         * @description Shared by the device schemas (open; each closes it). A Bluetooth
+         *     device was added from a profile and carries `manufacturer`, `model`
+         *     and `profile`; a Home Assistant device has none of them.
+         */
         DeviceFields: {
             id: components["schemas"]["DeviceId"];
             name: components["schemas"]["Name"];
             integration_id: components["schemas"]["IntegrationId"];
             kind: components["schemas"]["DeviceKind"];
             provider: components["schemas"]["Provider"];
+            manufacturer?: components["schemas"]["ProfileDisplayName"];
+            model?: components["schemas"]["ProfileDisplayName"];
+            profile?: components["schemas"]["ProfileRef"];
             /** @constant */
             schema_version: 1;
         };
-        /** @description A device as configured (backups); no runtime state. */
+        /**
+         * @description A profile's content (open; each user closes it). Same names and
+         *     shapes as the device profile spec.
+         */
+        ProfileFields: {
+            commands?: components["schemas"]["ProfileCommands"];
+            buttons?: components["schemas"]["ProfileButtons"];
+            power?: components["schemas"]["ProfilePower"];
+            timing?: components["schemas"]["ProfileTiming"];
+            inputs?: components["schemas"]["ProfileInputs"];
+            channels?: components["schemas"]["ProfileChannels"];
+        };
+        /**
+         * @description A device's copy of its profile content (open). Bluetooth devices
+         *     carry the profile's `commands` (and whichever of the other fields it
+         *     has); Home Assistant devices carry none.
+         */
+        DeviceProfileContent: components["schemas"]["ProfileFields"];
+        /**
+         * @description A device as configured (backups); no runtime state and no
+         *     `platform` (it's `provider.type`). Restore checks a Bluetooth
+         *     device's profile content as adding one does.
+         */
         StoredDevice: {
             revision?: components["schemas"]["BackupRevision"];
             ha_capabilities?: components["schemas"]["HaCapabilitySnapshot"];
-        } & components["schemas"]["DeviceFields"];
+        } & (components["schemas"]["DeviceFields"] & components["schemas"]["DeviceProfileContent"]);
         /**
          * @description Home Assistant devices only: what HA reported about the entity when it
          *     was registered or last re-linked. The hub derives the device's
@@ -1436,7 +1561,19 @@ export interface components {
             label?: string;
             fields: components["schemas"]["ParamSpec"][];
         };
-        Device: {
+        /**
+         * @description The light form, as `GET /devices` lists it. `GET /devices/{id}` adds
+         *     the profile content (`DeviceDetail`).
+         */
+        Device: components["schemas"]["DeviceRuntimeFields"];
+        DeviceDetail: components["schemas"]["DeviceRuntimeFields"] & components["schemas"]["DeviceProfileContent"];
+        /** @description Shared by Device and DeviceDetail (open; each closes it). */
+        DeviceRuntimeFields: {
+            /**
+             * @description The device's platform, always `provider.type`.
+             * @enum {string}
+             */
+            platform: "home_assistant" | "ble_hid";
             revision: components["schemas"]["Revision"];
             /**
              * @description `available` / `unavailable`: the integration is connected or not.
@@ -1457,11 +1594,24 @@ export interface components {
         DeviceList: {
             devices: components["schemas"]["Device"][];
         };
-        DeviceRegister: {
+        /**
+         * @description Either a Home Assistant entity (`provider`) or a built-in profile
+         *     (`profile_id`). A profile device's integration, manufacturer, model
+         *     and commands come from the profile, never the client.
+         */
+        DeviceRegister: components["schemas"]["DeviceRegisterHomeAssistant"] | components["schemas"]["DeviceRegisterProfile"];
+        DeviceRegisterHomeAssistant: {
             name: components["schemas"]["Name"];
             integration_id: components["schemas"]["IntegrationId"];
             kind?: components["schemas"]["DeviceKind"];
-            provider: components["schemas"]["Provider"];
+            provider: components["schemas"]["HomeAssistantProvider"];
+        };
+        DeviceRegisterProfile: {
+            profile_id: components["schemas"]["ProfileId"];
+            /** @description Defaults to the profile's `model`. */
+            name?: components["schemas"]["Name"];
+            /** @description Defaults to the profile's `kind`. */
+            kind?: components["schemas"]["DeviceKind"];
         };
         DeviceUpdate: {
             name?: components["schemas"]["Name"];
@@ -1473,6 +1623,111 @@ export interface components {
              */
             provider?: components["schemas"]["Provider"];
             revision: components["schemas"]["Revision"];
+        };
+        /** @example hubbo:apple-tv */
+        ProfileId: string;
+        ProfileDisplayName: string;
+        /**
+         * @example DirectionUp
+         * @example PlayPause
+         */
+        ProfileCommandName: string;
+        ProfileHoldMs: number;
+        /** @enum {string} */
+        ProfilePlatform: "ble_hid";
+        ProfileRevision: number;
+        /** @description Of the profile's canonical JSON, meta included. */
+        ProfileSha256: string;
+        /**
+         * @description Which profile the device was added from. `revision` and `sha256`
+         *     tell whether a newer one exists.
+         */
+        ProfileRef: {
+            id: components["schemas"]["ProfileId"];
+            revision: components["schemas"]["ProfileRevision"];
+            sha256: components["schemas"]["ProfileSha256"];
+        };
+        /**
+         * @description `keyboard` usages are 0x04-0x65, `consumer` 0x0001-0x03FF (what
+         *     Hubbo's HID report map carries). `hold_ms` makes the press a hold
+         *     that long.
+         */
+        BleHidCommand: {
+            /** @enum {string} */
+            page: "keyboard" | "consumer";
+            usage: string;
+            hold_ms?: components["schemas"]["ProfileHoldMs"];
+            label?: string;
+        };
+        ProfileCommands: {
+            [key: string]: components["schemas"]["BleHidCommand"];
+        };
+        /** @description Remote button to command name; `null` leaves the button unfilled. */
+        ProfileButtons: {
+            [key: string]: components["schemas"]["ProfileCommandName"] | null;
+        };
+        ProfileSteps: ({
+            command: components["schemas"]["ProfileCommandName"];
+            hold_ms?: components["schemas"]["ProfileHoldMs"];
+        } | {
+            delay_ms: number;
+        })[];
+        /**
+         * @description `discrete`: `on` and `off`. `toggle`: `toggle`. `none`: no steps.
+         *     `on_delay_ms`: how long the device takes to be ready after power on.
+         */
+        ProfilePower: {
+            /** @enum {string} */
+            type: "discrete" | "toggle" | "none";
+            on?: components["schemas"]["ProfileSteps"];
+            off?: components["schemas"]["ProfileSteps"];
+            toggle?: components["schemas"]["ProfileSteps"];
+            on_delay_ms?: number;
+        };
+        ProfileTiming: {
+            key_delay_ms?: number;
+            input_delay_ms?: number;
+        };
+        ProfileInputs: {
+            name: string;
+            steps: components["schemas"]["ProfileSteps"];
+        }[];
+        ProfileChannels: {
+            digits?: number;
+            start?: components["schemas"]["ProfileCommandName"];
+            finish?: components["schemas"]["ProfileCommandName"];
+        };
+        /** @description A profile's identity (open; each user closes it). */
+        ProfileHeader: {
+            id: components["schemas"]["ProfileId"];
+            revision: components["schemas"]["ProfileRevision"];
+            manufacturer: components["schemas"]["ProfileDisplayName"];
+            model: components["schemas"]["ProfileDisplayName"];
+            kind: components["schemas"]["DeviceKind"];
+            platform: components["schemas"]["ProfilePlatform"];
+        };
+        ProfileSummary: {
+            sha256: components["schemas"]["ProfileSha256"];
+        } & components["schemas"]["ProfileHeader"];
+        ProfileList: {
+            profiles: components["schemas"]["ProfileSummary"][];
+        };
+        /**
+         * @description A built-in profile as the hub keeps it: the device profile spec's
+         *     document without `meta`.
+         */
+        Profile: {
+            /** @constant */
+            schema_version: 1;
+            /** @enum {string} */
+            source: "hubbo" | "harmony" | "user";
+        } & (components["schemas"]["ProfileHeader"] & WithRequired<components["schemas"]["ProfileFields"], "commands">);
+        Kind: {
+            id: components["schemas"]["DeviceKind"];
+            label: string;
+        };
+        KindList: {
+            kinds: components["schemas"]["Kind"][];
         };
         IntegrationSummary: {
             id: components["schemas"]["IntegrationId"];
@@ -1683,11 +1938,6 @@ export interface components {
             settings?: {
                 url?: components["schemas"]["HomeAssistantSettings"]["url"];
                 verify_tls?: boolean;
-                /**
-                 * @deprecated
-                 * @description Ignored (older backups).
-                 */
-                ca_cert_pem?: string | null;
                 device_name?: components["schemas"]["BleHidSettings"]["device_name"];
             };
         };
@@ -1866,6 +2116,7 @@ export interface components {
     parameters: {
         DeviceIdPath: components["schemas"]["DeviceId"];
         ActivityIdPath: components["schemas"]["ActivityId"];
+        ProfileIdPath: components["schemas"]["ProfileId"];
         IntegrationIdPath: components["schemas"]["IntegrationId"];
         /** @description Revision the caller last read. */
         RevisionQuery: components["schemas"]["Revision"];
@@ -2107,7 +2358,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Device"];
+                    "application/json": components["schemas"]["DeviceDetail"];
                 };
             };
             401: components["responses"]["Unauthenticated"];
@@ -2172,6 +2423,78 @@ export interface operations {
             413: components["responses"]["PayloadTooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listProfiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Profiles */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileList"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    getProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profile_id: components["parameters"]["ProfileIdPath"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Profile */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Profile"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listKinds: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Kinds */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KindList"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             503: components["responses"]["Unavailable"];
         };
     };
@@ -2701,7 +3024,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Device"];
+                    "application/json": components["schemas"]["DeviceDetail"];
                 };
             };
             400: components["responses"]["MalformedJson"];
@@ -2736,7 +3059,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Device"];
+                    "application/json": components["schemas"]["DeviceDetail"];
                 };
             };
             400: components["responses"]["MalformedJson"];
@@ -3348,3 +3671,6 @@ export interface operations {
         };
     };
 }
+type WithRequired<T, K extends keyof T> = T & {
+    [P in K]-?: T[P];
+};

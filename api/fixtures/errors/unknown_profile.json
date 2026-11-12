@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "There's no profile hubbo:roku",
+    "details": [
+      {
+        "path": "/profile_id",
+        "code": "unknown_profile",
+        "message": "There's no profile hubbo:roku"
+      }
+    ]
+  }
+}

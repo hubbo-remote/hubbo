@@ -1,5 +1,5 @@
 import { Bluetooth, Cpu, Home, type LucideIcon } from 'lucide-react'
-import type { BluetoothStatus, DeviceKind, IntegrationState, IntegrationType } from '@/api/types'
+import type { BluetoothStatus, IntegrationState, IntegrationType } from '@/api/types'
 
 export const HEALTH: Record<IntegrationState, [dotClass: string, label: string]> = {
   connected: ['bg-success', 'Connected'],
@@ -13,8 +13,11 @@ export const HEALTH: Record<IntegrationState, [dotClass: string, label: string]>
   not_configured: ['bg-muted-foreground/40', 'Not set up'],
 }
 
-/** Unknown states (a newer hub) read as their raw name rather than crashing. */
-export const healthLabel = (s: IntegrationState) => HEALTH[s]?.[1] ?? s
+/**
+ * Unknown states (a newer hub) read as their raw name rather than crashing. Bluetooth's `connected`
+ * means the radio works, not that a host is connected (devices show that), so it reads "Ready".
+ */
+export const healthLabel = (s: IntegrationState, type?: IntegrationType) => (type === 'ble_hid' && s === 'connected' ? 'Ready' : (HEALTH[s]?.[1] ?? s))
 
 export const INTEGRATION_ICON: Record<IntegrationType, LucideIcon> = {
   home_assistant: Home,
@@ -42,4 +45,3 @@ export const bluetoothDot = (b: BluetoothStatus): IntegrationState => BLUETOOTH[
 /** Integrations the admin sets up: everything but the built-in system one. */
 export const isUserIntegration = (i: { type: string }) => i.type !== 'system'
 
-export const KIND_LABEL: Record<DeviceKind, string> = { tv: 'TV', receiver: 'Receiver', speaker: 'Speaker', streamer: 'Streamer', console: 'Game console', light: 'Light', switch: 'Switch', other: 'Other' }

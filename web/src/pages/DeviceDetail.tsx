@@ -16,8 +16,8 @@ import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, ShowErrors } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { toast, toastError } from '@/components/ui/toast'
-import { useCapabilities, useConfigLock, useDevice, useIntegrations } from '@/hooks/data'
-import { KIND_LABEL, providerRef } from '@/lib/health'
+import { useCapabilities, useConfigLock, useDevice, useIntegrations, useKindLabel } from '@/hooks/data'
+import { providerRef } from '@/lib/health'
 import { BluetoothPairing } from '@/components/admin/BluetoothPairing'
 import { defaultParams } from '@/lib/activity'
 import { haDeviceError, loadEntityDetails } from '@/lib/ha'
@@ -182,6 +182,7 @@ function DeviceAdmin({ device }: { device: Device }) {
   const [delError, setDelError] = useState<string | null>(null)
   const lock = useConfigLock()
   const [, navigate] = useLocation()
+  const kindLabel = useKindLabel()
 
   const rename = async () => {
     setBusy(true)
@@ -215,7 +216,7 @@ function DeviceAdmin({ device }: { device: Device }) {
       <CardContent className="grid gap-4">
         <dl className="flex justify-between gap-3 text-sm">
           <dt className="text-muted-foreground">Type</dt>
-          <dd className="truncate">{KIND_LABEL[device.kind] ?? device.kind}</dd>
+          <dd className="truncate">{kindLabel(device.kind)}</dd>
         </dl>
         {device.provider.type === 'home_assistant' && (
           <div className="flex flex-wrap gap-2">

@@ -16,6 +16,22 @@
       }
     },
     {
+      "integration_id": "ble",
+      "device_id": "dev_apple_tv",
+      "command_id": "wait_connected",
+      "params": {
+        "timeout_ms": 15000
+      }
+    },
+    {
+      "integration_id": "ble",
+      "device_id": "dev_apple_tv",
+      "command_id": "press",
+      "params": {
+        "command": "Home"
+      }
+    },
+    {
       "integration_id": "system",
       "device_id": null,
       "command_id": "wait",
@@ -43,6 +59,23 @@
     }
   ],
   "shutdown": [
+    {
+      "integration_id": "ble",
+      "device_id": "dev_apple_tv",
+      "command_id": "press",
+      "params": {
+        "command": "Home",
+        "hold_ms": 2000
+      }
+    },
+    {
+      "integration_id": "ble",
+      "device_id": "dev_apple_tv",
+      "command_id": "press",
+      "params": {
+        "command": "Select"
+      }
+    },
     {
       "integration_id": "ha_main",
       "device_id": "dev_lg_tv",

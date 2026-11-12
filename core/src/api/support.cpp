@@ -66,6 +66,8 @@ const char *issueMessage(ErrorCode code) {
             return "This command holds state until released (e.g. key_down); execute only takes momentary "
                    "commands such as key_tap. Holds are for bindings.";
         case ErrorCode::IntegrationDisabled: return "The device's integration is disabled";
+        case ErrorCode::SequenceOnly: return "This command only works in a startup or shutdown";
+        case ErrorCode::UnknownKind: return "Not a device kind (see GET /kinds)";
         default: return errorCodeName(code);
     }
 }

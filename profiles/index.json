@@ -1,0 +1,6 @@
+[
+  {"file": "android-tv.json", "id": "hubbo:android-tv", "revision": 1, "sha256": "989c05bb0d74d2d7942dc6bcbcbd1fd0ed7cb36bb9b041d9616ba9e0c5a6ba0a"},
+  {"file": "apple-tv.json", "id": "hubbo:apple-tv", "revision": 3, "sha256": "b02e0555176b2dee82a7d81ac3eb0837aaffc82387cf53a7b1d0c261fc755564"},
+  {"file": "fire-tv.json", "id": "hubbo:fire-tv", "revision": 1, "sha256": "09a98b5801099498353f5adbc89764e39b056be2119719beae6f405620e79921"},
+  {"file": "generic-keyboard.json", "id": "hubbo:generic-keyboard", "revision": 1, "sha256": "87571901f1499975b488b0cf00f68e7c3718ad78e5c399835cc3839734db4ce8"}
+]

@@ -53,6 +53,11 @@ struct ExecRequest {
     const char *providerRef;     // the device's internal target
     Ticket ticket;               // for Pending results
     uint32_t nowMs;
+    // A direct execute (the API's): a command that would stay Pending for
+    // its own duration (a timed press) answers once it has started and
+    // finishes by itself. In a sequence it answers when done, so the next
+    // step never overlaps it.
+    bool answerAtStart;
 };
 
 class CompletionSink {
@@ -83,10 +88,19 @@ public:
     // Execute one compiled command. Must not block.
     virtual ExecResult execute(const ExecRequest &request) = 0;
 
-    // Held-key safety: release anything this adapter holds down (HID keys).
-    // Called on every activity transition and on lost releases. Default: the
-    // adapter holds nothing.
+    // Held-key safety: release every key a binding holds down (key_down
+    // and the like). Called on every activity transition and on lost
+    // releases. Work a sequence is waiting on (a timed press) isn't touched:
+    // cancel() ends that. Default: the adapter holds nothing.
     virtual void releaseAll(uint32_t nowMs) { (void)nowMs; }
+
+    // The executor gave up on a Pending execution (its sequence was
+    // cancelled, or it passed its deadline): end it now without completing
+    // it, releasing anything it holds. Unknown tickets are ignored.
+    virtual void cancel(Ticket ticket, uint32_t nowMs) {
+        (void)ticket;
+        (void)nowMs;
+    }
 
     // Called every engine tick. Deliver Pending results here (on the engine
     // task) via sink.complete(), never from inside execute().

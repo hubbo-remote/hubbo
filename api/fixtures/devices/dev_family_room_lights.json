@@ -8,6 +8,7 @@
     "entity_id": "light.family_room",
     "unique_id": "7d3e2a1b-4c5d-4e6f-8a9b-0c1d2e3f4a5b"
   },
+  "platform": "home_assistant",
   "availability": "available",
   "schema_version": 1,
   "revision": 1

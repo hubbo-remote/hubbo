@@ -16,6 +16,7 @@
 #include "fixtures.h"
 #include "hub.h"
 #include "hubbo/api/api.h"
+#include "hubbo/config/profile.h"
 #include "hubbo/config/service.h"
 #include "hubbo/integrations/ha_client.h"
 
@@ -305,18 +306,63 @@ TEST_F(ApiTest, DevicesCapabilitiesExecute) {
     EXPECT_EQ(call(http::Method::Post, exec, R"({"params":{"level":0.2,"entity_id":"all"}})").status, 422);
     EXPECT_EQ(call(http::Method::Post, exec, R"({"params":{"level":{"target":"all"}}})").status, 422);
     EXPECT_EQ(call(http::Method::Post, exec, R"({})").status, 422);
-    // Holds are for bindings only: execute refuses key_down, allows key_tap.
-    r = call(http::Method::Post, "/api/v1/devices/dev_apple_tv/commands/key_down/execute",
-             R"({"params":{"key":"SELECT"}})");
+    // Holds are for bindings and waits for sequences: execute refuses both.
+    const std::string apple = "/api/v1/devices/dev_apple_tv/commands/";
+    r = call(http::Method::Post, apple + "press_down/execute", R"({"params":{"command":"Select"}})");
     EXPECT_EQ(r.status, 422);
     EXPECT_EQ(r.json["error"]["details"][0]["code"], "hold_not_allowed");
-    r = call(http::Method::Post, "/api/v1/devices/dev_apple_tv/commands/key_tap/execute",
-             R"({"params":{"key":"SELECT"}})");
+    r = call(http::Method::Post, apple + "wait_connected/execute", R"({"params":{}})");
+    EXPECT_EQ(r.status, 422) << dump(r);
+    EXPECT_EQ(r.json["error"]["details"][0]["code"], "sequence_only");
+    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/command_id");
+    r = call(http::Method::Post, apple + "press/execute", R"({"params":{"command":"Select"}})");
+    EXPECT_EQ(r.status, 200) << dump(r);
+    r = call(http::Method::Post, apple + "press/execute", R"({"params":{"command":"Home","hold_ms":2000}})");
+    EXPECT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(call(http::Method::Post, apple + "press/execute", R"({"params":{"command":"Netflix"}})").status, 422);
+    r = call(http::Method::Post, apple + "usage_tap/execute", R"({"params":{"usage":205}})");
     EXPECT_EQ(r.status, 200) << dump(r);
     r = call(http::Method::Get, "/api/v1/devices/dev_apple_tv/capabilities");
     for (JsonVariant c : r.json["commands"].as<JsonArray>()) {
-        EXPECT_EQ(c["effect"], c["command_id"] == "key_down" ? "hold" : "momentary") << c["command_id"].as<std::string>();
+        const std::string id = c["command_id"];
+        const bool down = id == "key_down" || id == "press_down" || id == "usage_down";
+        EXPECT_EQ(c["effect"], id == "wait_connected" ? "wait" : down ? "hold" : "momentary") << id;
+        const char *group = id.rfind("press", 0) == 0 ? "remote"
+                            : id.rfind("key_", 0) == 0 ? "keys"
+                            : id.rfind("usage_", 0) == 0 ? "custom"
+                                                         : nullptr;
+        if (group == nullptr) {
+            EXPECT_TRUE(c["group"].isNull()) << id;
+        } else {
+            EXPECT_EQ(c["group"], group) << id;
+        }
+        if (id.rfind("press", 0) == 0) {
+            EXPECT_EQ(c["params"][0]["label"], "Remote command") << id;
+        }
     }
+    r = call(http::Method::Get, "/api/v1/devices/dev_denon/capabilities");
+    for (JsonVariant c : r.json["commands"].as<JsonArray>()) {
+        EXPECT_TRUE(c["group"].isNull());
+        for (JsonVariant p : c["params"].as<JsonArray>()) EXPECT_TRUE(p["label"].isNull());
+    }
+
+    // The list is light; the detail carries the profile; HA devices have none of it.
+    r = call(http::Method::Get, "/api/v1/devices");
+    for (JsonVariant d : r.json["devices"].as<JsonArray>()) {
+        EXPECT_EQ(d["platform"], d["provider"]["type"]);
+        EXPECT_TRUE(d["commands"].isNull());
+        if (d["id"] == "dev_apple_tv") {
+            EXPECT_EQ(d["profile"]["id"], "hubbo:apple-tv");
+            EXPECT_EQ(d["model"], "Apple TV");
+        }
+    }
+    r = call(http::Method::Get, "/api/v1/devices/dev_apple_tv");
+    EXPECT_EQ(r.json["commands"]["Select"]["usage"], "0x0041");
+    EXPECT_EQ(r.json["power"]["type"], "none");
+    r = call(http::Method::Get, "/api/v1/devices/dev_denon");
+    EXPECT_TRUE(r.json["commands"].isNull());
+    EXPECT_TRUE(r.json["profile"].isNull());
+    EXPECT_EQ(r.json["platform"], "home_assistant");
     EXPECT_EQ(call(http::Method::Post, "/api/v1/devices/dev_nope/commands/media_player.turn_on/execute",
                    R"({"params":{}})").status,
               404);
@@ -822,6 +868,65 @@ TEST_F(ApiTest, RemoteEndpointAndHubScan) {
     EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/remote/pair").status, 503);
 }
 
+TEST_F(ApiTest, ProfilesAndKinds) {
+    Reply r = call(http::Method::Get, "/api/v1/profiles");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    ASSERT_EQ(r.json["profiles"].size(), config::builtinProfiles().profiles().size());
+    EXPECT_EQ(r.json["profiles"][1]["id"], "hubbo:apple-tv");  // index.json order
+    EXPECT_EQ(r.json["profiles"][1]["platform"], "ble_hid");
+    EXPECT_EQ(r.json["profiles"][1]["sha256"].as<std::string>().size(), 64u);
+
+    r = call(http::Method::Get, "/api/v1/profiles/hubbo:apple-tv");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["model"], "Apple TV");
+    EXPECT_EQ(r.json["commands"]["ControlCenter"]["hold_ms"], 1000);
+    EXPECT_TRUE(r.json["meta"].isNull());
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/profiles/hubbo%3Aapple-tv").status, 200);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/profiles/hubbo:roku").status, 404);
+
+    r = call(http::Method::Get, "/api/v1/kinds");
+    ASSERT_EQ(r.status, 200);
+    EXPECT_EQ(r.json["kinds"][0]["id"], "tv");
+    EXPECT_EQ(r.json["kinds"][0]["label"], "TV");
+    EXPECT_TRUE(r.json["kinds"][0]["harmony"].isNull());
+
+    // Adding from a profile: name and kind default from it; the client sends nothing else.
+    r = call(http::Method::Post, "/api/v1/admin/devices", R"({"profile_id":"hubbo:fire-tv"})");
+    ASSERT_EQ(r.status, 201) << dump(r);
+    EXPECT_EQ(r.json["name"], "Fire TV");
+    EXPECT_EQ(r.json["kind"], "streamer");
+    EXPECT_EQ(r.json["integration_id"], "ble");
+    EXPECT_EQ(r.json["platform"], "ble_hid");
+    EXPECT_EQ(r.json["manufacturer"], "Amazon");
+    EXPECT_EQ(r.json["commands"]["Back"]["page"], "consumer");
+    r = call(http::Method::Post, "/api/v1/admin/devices", R"({"profile_id":"hubbo:fire-tv","name":"Den","kind":"set_top_box"})");
+    ASSERT_EQ(r.status, 201) << dump(r);
+    EXPECT_EQ(r.json["kind"], "set_top_box");
+
+    struct Bad {
+        const char *body, *path, *code;
+    } bad[] = {
+        {R"({"profile_id":"hubbo:roku"})", "/profile_id", "unknown_profile"},
+        {R"({"profile_id":"hubbo:fire-tv","kind":"toaster"})", "/kind", "unknown_kind"},
+        {R"({"profile_id":"hubbo:fire-tv","commands":{}})", "/commands", "unknown_field"},
+        {R"({"profile_id":"hubbo:fire-tv","integration_id":"ble"})", "/integration_id", "unknown_field"},
+        {R"({"profile":{"id":"user:x"},"name":"X","integration_id":"ha_main",
+             "provider":{"type":"home_assistant","entity_id":"switch.x"}})",
+         "/profile", "unknown_field"},
+        {R"({"name":"X","integration_id":"ha_main","model":"X",
+             "provider":{"type":"home_assistant","entity_id":"switch.x"}})",
+         "/model", "unknown_field"},
+        {R"({"name":"X","integration_id":"ble","kind":"streamer","provider":{"type":"ble_hid"}})", "/profile_id",
+         "required"},
+    };
+    for (const Bad &b : bad) {
+        r = call(http::Method::Post, "/api/v1/admin/devices", b.body);
+        EXPECT_EQ(r.status, 422) << b.body;
+        EXPECT_EQ(r.json["error"]["details"][0]["path"], b.path) << dump(r);
+        EXPECT_EQ(r.json["error"]["details"][0]["code"], b.code) << dump(r);
+    }
+}
+
 TEST_F(ApiTest, BluetoothPairing) {
     const std::string apple = "/api/v1/admin/devices/dev_apple_tv/pair";
     auto state = [&](const std::string &id) {
@@ -832,8 +937,7 @@ TEST_F(ApiTest, BluetoothPairing) {
     EXPECT_EQ(r.json["state"], "connected");  // the fixture world's bonded Apple TV
     EXPECT_FALSE(call(http::Method::Get, "/api/v1/devices/dev_denon").json["bluetooth"].is<JsonObject>());
 
-    r = call(http::Method::Post, "/api/v1/admin/devices", R"({"name":"Shield","integration_id":"ble","kind":"streamer",
-                                                              "provider":{"type":"ble_hid"}})");
+    r = call(http::Method::Post, "/api/v1/admin/devices", R"({"profile_id":"hubbo:android-tv","name":"Shield"})");
     ASSERT_EQ(r.status, 201) << dump(r);
     EXPECT_EQ(r.json["bluetooth"]["state"], "not_paired");
     const std::string shield = r.json["id"];
@@ -870,13 +974,11 @@ TEST_F(ApiTest, BluetoothPairing) {
     std::vector<std::string> added{shield};
     for (const char *name : {"Fire TV", "Office TV"}) {
         r = call(http::Method::Post, "/api/v1/admin/devices",
-                 std::string(R"({"integration_id":"ble","kind":"streamer","provider":{"type":"ble_hid"},"name":")") +
-                     name + "\"}");
+                 std::string(R"({"profile_id":"hubbo:fire-tv","name":")") + name + "\"}");
         ASSERT_EQ(r.status, 201) << dump(r);
         added.push_back(r.json["id"]);
     }
-    r = call(http::Method::Post, "/api/v1/admin/devices",
-             R"({"name":"Fifth","integration_id":"ble","kind":"streamer","provider":{"type":"ble_hid"}})");
+    r = call(http::Method::Post, "/api/v1/admin/devices", R"({"profile_id":"hubbo:fire-tv","name":"Fifth"})");
     EXPECT_EQ(r.status, 422);
     EXPECT_EQ(r.json["error"]["details"][0]["path"], "/integration_id");
     EXPECT_EQ(r.json["error"]["details"][0]["code"], "too_many_devices");

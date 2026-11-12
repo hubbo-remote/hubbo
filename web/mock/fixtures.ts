@@ -9,13 +9,16 @@ import type {
   ActivityList,
   Backup,
   Capabilities,
-  Device,
+  DeviceDetail,
   DiscoverCandidate,
   ExecuteResult,
   FirmwareStatus,
   GlobalBindings,
   Integration,
   IntegrationConfig,
+  Kind,
+  Profile,
+  ProfileSummary,
   RemoteButtons,
   RemoteConfig,
   Status,
@@ -34,7 +37,8 @@ export const fixtureBytes = (rel: string): Uint8Array => new Uint8Array(readFile
 export interface Seed {
   status: Status
   buttons: RemoteButtons
-  devices: Device[]
+  /** Stored in the detail form (GET /devices/{id}); the list strips the profile content. */
+  devices: DeviceDetail[]
   capabilities: Map<string, Capabilities>
   integrations: Integration[]
   configs: Map<string, IntegrationConfig>
@@ -48,12 +52,19 @@ export interface Seed {
   backup: Backup
   /** The remote radio at boot (GET /admin/remote). */
   remote: RemoteConfig
+  /** The built-in profiles (GET /profiles, /profiles/{id}) and the device kinds. */
+  profiles: Profile[]
+  profileList: ProfileSummary[]
+  kinds: Kind[]
   /** Non-accepted execute results; the mock returns them for their device + command. */
   executeResults: ExecuteResult[]
 }
 
 export function loadSeed(): Seed {
-  const devices = fixture<{ devices: Device[] }>('devices/list.json').devices
+  const devices = fixture<{ devices: { id: string }[] }>('devices/list.json').devices.map((d) => fixture<DeviceDetail>(`devices/${d.id}.json`))
+  // Profile files are named by the id's slug: hubbo:apple-tv → profiles/apple-tv.json.
+  const profileList = fixture<{ profiles: ProfileSummary[] }>('profiles/list.json').profiles
+  const profiles = profileList.map((p) => fixture<Profile>(`profiles/${p.id.split(':')[1]}.json`))
   const acts = fixture<ActivityList>('activities/list.json')
   return {
     status: fixture('status.json'),
@@ -74,6 +85,11 @@ export function loadSeed(): Seed {
     firmware: fixture('admin/firmware.json'),
     backup: fixture('admin/backup.json'),
     remote: fixture('admin/remote.json'),
-    executeResults: [fixture<ExecuteResult>('devices/execute.timeout.json'), fixture<ExecuteResult>('devices/execute.failed.json')],
+    profiles,
+    profileList,
+    kinds: fixture<{ kinds: Kind[] }>('profiles/kinds.json').kinds,
+    // execute.failed.json (a Bluetooth host that isn't connected) isn't canned: the mock answers it from
+    // the host's state, so the fixture device's commands work while it's connected.
+    executeResults: [fixture<ExecuteResult>('devices/execute.timeout.json')],
   }
 }

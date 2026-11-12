@@ -154,6 +154,7 @@ public:
 
     // EngineObserver
     void onActionDispatched(const DispatchRecord &record) override;
+    void onActionCompleted(const CompletionRecord &record) override;
     void onSequenceFinished(const SequenceReport &report) override;
     void onActivityChanged(const char *activityId, uint32_t nowMs) override;
     void onTransitionRejected(ErrorCode error, const char *activityId, uint32_t nowMs) override;

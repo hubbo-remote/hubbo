@@ -25,13 +25,21 @@ export type PhaseResult = S['PhaseResult']
 export type ConfigState = S['ConfigState']
 export type AuthState = S['AuthState']
 /** UI-only: what the editor holds. `id`/`revision` are absent for a new activity. */
-export type ActivityDraft = ActivityInput & { id?: string; revision?: number }
+/** A stored activity being edited: its input fields plus which revision they came from. */
+export type ActivityDraft = ActivityInput & { id: string; revision: number }
 
 export type Device = S['Device']
 export type DeviceKind = S['DeviceKind']
+export type DeviceDetail = S['DeviceDetail']
+export type Profile = S['Profile']
+export type ProfileSummary = S['ProfileSummary']
+export type ProfileSteps = S['ProfileSteps']
+export type ProfileButtons = S['ProfileButtons']
+export type Kind = S['Kind']
 export type Provider = S['Provider']
 export type HomeAssistantProvider = S['HomeAssistantProvider']
 export type DeviceRegister = S['DeviceRegister']
+export type DeviceRegisterProfile = S['DeviceRegisterProfile']
 export type DeviceUpdate = S['DeviceUpdate']
 export type Command = S['Command']
 export type ParamSpec = S['ParamSpec']

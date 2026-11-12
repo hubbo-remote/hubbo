@@ -1,8 +1,8 @@
-// Phase 4 acceptance (hub-sim only): build "Watch Apple TV" from scratch in the editor, then use it
+// Phase 4 acceptance (hub-sim only): build "Watch Apple TV" by hand in the editor, then use it
 // from the remote. hub-sim records every command it sends (GET /sim/log) and takes button presses
 // (POST /sim/remote/<button>/<press|release|tap>); the mock does neither.
 import type { Page } from '@playwright/test'
-import { activityIdFromUrl, addStep, bind } from './editor.ts'
+import { addStep, bind, openNewActivity, saveActivity } from './editor.ts'
 import { advance, api, connectHa, control, expect, open, SIM_URL, test } from './hub.ts'
 
 test.skip(!SIM_URL, 'needs hub-sim: its command log and simulated remote')
@@ -22,11 +22,10 @@ async function sentSince(page: Page, since: number): Promise<string[]> {
 const simNow = async (page: Page): Promise<number> => (await advance(page, 0)).sim_time_ms
 const press = (page: Page, button: string, action: 'press' | 'release' | 'tap') => control(page, `remote/${button}/${action}`)
 
-test('build Watch Apple TV from scratch, then use it from the remote', async ({ page }) => {
+test('build Watch Apple TV by hand, then use it from the remote', async ({ page }) => {
   test.setTimeout(90_000)
   await connectHa(page)
-  await open(page, '/activities/new')
-  await page.getByLabel('Activity name').fill('E2E Watch Apple TV')
+  const id = await openNewActivity(page, 'E2E Watch Apple TV')
 
   // Apple TV navigation: key down on press, the matching key up on release (added for us).
   for (const [button, key] of [['up', 'ARROW_UP'], ['down', 'ARROW_DOWN'], ['left', 'ARROW_LEFT'], ['right', 'ARROW_RIGHT'], ['select', 'SELECT'], ['back', 'MENU']] as const) {
@@ -62,8 +61,7 @@ test('build Watch Apple TV from scratch, then use it from the remote', async ({ 
 
   await page.getByRole('button', { name: 'Check' }).click()
   await expect(page.getByText('No problems found')).toBeVisible()
-  await page.getByRole('button', { name: /^Create/ }).click()
-  const id = await activityIdFromUrl(page)
+  await saveActivity(page)
 
   // Start it from the home page; the startup runs in order, waiting out its wait.
   let t = await simNow(page)

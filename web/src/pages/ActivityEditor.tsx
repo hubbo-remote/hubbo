@@ -1,6 +1,5 @@
 import { CheckCircle2, Loader2, Pencil, Save, ShieldCheck } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation } from 'wouter'
 import { api, ApiError } from '@/api/client'
 import { invalidate, setQueryData } from '@/api/hooks'
 import type { Activity, ActivityDraft, ValidationIssue } from '@/api/types'
@@ -20,19 +19,17 @@ import { useActivity, useCatalog, useConfigLock, useGlobalBindings } from '@/hoo
 import { buttonForPath, LIMITS, parseTrigger, validateActivity, type Catalog } from '@/lib/activity'
 import { cn, plural, same } from '@/lib/utils'
 
-const EMPTY: ActivityDraft = { name: '', startup: [], shutdown: [], bindings: {} }
-
 const toDraft = (a: Activity): ActivityDraft => ({ id: a.id, revision: a.revision, name: a.name, startup: a.startup, shutdown: a.shutdown, bindings: a.bindings })
 const boundButtons = (b: ActivityDraft['bindings']) => new Set(Object.keys(b).map((k) => parseTrigger(k)?.button)).size
 
-export default function ActivityEditor({ id }: { id: string | null }) {
+export default function ActivityEditor({ id }: { id: string }) {
   const remote = useActivity(id)
   const { catalog, loading: catLoading, error: catError } = useCatalog()
   const globals = useGlobalBindings() // fetched alongside, not after, the catalog
 
-  if (id && remote.error) return <ErrorState error={remote.error} retry={remote.refetch} />
+  if (remote.error) return <ErrorState error={remote.error} retry={remote.refetch} />
   if (catError) return <ErrorState error={catError} />
-  if ((id && !remote.data) || catLoading) {
+  if (!remote.data || catLoading) {
     return (
       <div className="grid gap-4">
         <Skeleton className="h-10 w-72" />
@@ -40,11 +37,10 @@ export default function ActivityEditor({ id }: { id: string | null }) {
       </div>
     )
   }
-  return <Editor key={id ?? 'new'} initial={remote.data ? toDraft(remote.data) : EMPTY} catalog={catalog} globalBindings={globals.data?.bindings} />
+  return <Editor key={id} initial={toDraft(remote.data)} catalog={catalog} globalBindings={globals.data?.bindings} />
 }
 
 function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; catalog: Catalog; globalBindings?: ActivityDraft['bindings'] }) {
-  const [, navigate] = useLocation()
   const [saved, setSaved] = useState(initial)
   const [draft, setDraft] = useState(initial)
   const [selected, setSelected] = useState<string | null>('select')
@@ -54,7 +50,6 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
   const [conflict, setConflict] = useState<Activity | null>(null)
   const lock = useConfigLock()
 
-  const isNew = !draft.id
   const dirty = useMemo(() => !same(draft, saved), [draft, saved])
   const local = useMemo(() => validateActivity(draft, catalog), [draft, catalog])
   // Errors show from the first Save (or Validate) on, then update live; never before.
@@ -82,7 +77,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
     if (!local.valid) return
     setBusy('save')
     try {
-      const result = isNew ? await api.createActivity(draft) : await api.replaceActivity(draft.id!, draft, overwriteRevision ?? draft.revision!)
+      const result = await api.replaceActivity(draft.id, draft, overwriteRevision ?? draft.revision)
       const next = toDraft(result)
       setSaved(next)
       setDraft(next)
@@ -91,10 +86,9 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
       setConflict(null)
       setQueryData(`activity/${result.id}`, result)
       invalidate('activities', 'status')
-      toast(isNew ? 'Activity created' : 'Saved', { variant: 'success' })
-      if (isNew) navigate(`/activities/${result.id}`, { replace: true })
+      toast('Saved', { variant: 'success' })
     } catch (e) {
-      if (e instanceof ApiError && e.code === 'revision_conflict' && draft.id) {
+      if (e instanceof ApiError && e.code === 'revision_conflict') {
         // The 409 only carries current_revision; fetch the hub's copy to show what changed.
         try {
           setConflict(await api.activity(draft.id))
@@ -129,7 +123,7 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
   // Cmd/Ctrl+S saves. The listener is attached once and reads the latest state through a ref.
   const onSaveKey = useRef<() => void>(() => {})
   onSaveKey.current = () => {
-    if ((dirty || isNew) && !busy && !lock.locked) void save()
+    if (dirty && !busy && !lock.locked) void save()
   }
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -176,15 +170,12 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
         }
         description={
           <span className="flex flex-wrap items-center gap-2 px-2">
-            {isNew && <Badge variant="secondary">New</Badge>}
             {dirty ? (
               <Badge variant="warning">Unsaved changes</Badge>
             ) : (
-              !isNew && (
-                <span className="inline-flex items-center gap-1 text-success">
-                  <CheckCircle2 className="size-3.5" /> Saved
-                </span>
-              )
+              <span className="inline-flex items-center gap-1 text-success">
+                <CheckCircle2 className="size-3.5" /> Saved
+              </span>
             )}
             {nameError && <span className="text-destructive">{nameError.message}</span>}
           </span>
@@ -195,9 +186,9 @@ function Editor({ initial, catalog, globalBindings }: { initial: ActivityDraft; 
               {busy === 'validate' ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
               Check
             </Button>
-            <Button onClick={() => save()} disabled={!!busy || (!dirty && !isNew) || lock.locked} title={lock.title}>
+            <Button onClick={() => save()} disabled={!!busy || !dirty || lock.locked} title={lock.title}>
               {busy === 'save' ? <Loader2 className="animate-spin" /> : <Save />}
-              {isNew ? 'Create' : 'Save'}
+              Save
               <Kbd className="hidden border-primary-foreground/30 bg-transparent text-primary-foreground/70 lg:inline">⌘S</Kbd>
             </Button>
           </>

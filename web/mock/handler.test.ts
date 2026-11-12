@@ -2,7 +2,7 @@
 // and reject every malicious one, so UI built against the mock is built
 // against the spec.
 import { describe, expect, it } from 'vitest'
-import type { Activity, ApiErrorBody, DiscoverStatus, EntityDetailsStatus, FirmwareStatus, Session, Status, TransitionResult } from '../src/api/types.ts'
+import type { Activity, ApiErrorBody, Capabilities, DiscoverStatus, ExecuteResult, EntityDetailsStatus, FirmwareStatus, Session, Status, TransitionResult } from '../src/api/types.ts'
 import { fixture } from './fixtures.ts'
 import { buildFirmwareImage } from './firmware.ts'
 import { createMock, type MockRequest, type MockResponse } from './handler.ts'
@@ -37,12 +37,18 @@ const ROUTES: Record<string, [string, string]> = {
   setRemoteEndpoint: ['PUT', '/admin/remote/endpoint'],
 }
 
+// Requests whose operation needs another target than ROUTES gives.
+const FILE_ROUTES: Record<string, [string, string]> = {
+  'devices/execute.press.request.json': ['POST', '/devices/dev_apple_tv/commands/press/execute'],
+}
+
 describe('mock vs api/fixtures', () => {
   for (const f of index.filter((x) => x.kind === 'request' && ROUTES[x.operation])) {
     it(`accepts ${f.file}`, async () => {
-      const [method, path] = ROUTES[f.operation]!
+      const [method, path] = FILE_ROUTES[f.file] ?? ROUTES[f.operation]!
       const m = createMock({ random: () => 0.99, discoverDelayMs: 0 })
-      if (f.operation === 'registerDevice') await loadDetails(m, fixture<{ provider: { entity_id: string } }>(f.file).provider.entity_id) // HA devices snapshot the entity's details
+      const body = fixture<{ provider?: { entity_id: string } }>(f.file)
+      if (f.operation === 'registerDevice' && body.provider) await loadDetails(m, body.provider.entity_id) // HA devices snapshot the entity's details
       const r = await m.handle(req(method, path, fixture(f.file)))
       // The blocked-raw record fixture is from newer firmware (schema_version 2): well-formed, but this
       // firmware refuses it exactly as errors/restore_unsupported_schema.json documents.
@@ -509,7 +515,7 @@ describe('contract details', () => {
 
 describe('Bluetooth devices', () => {
   const bt = async (m: ReturnType<typeof createMock>, id: string) => ((await m.handle(req('GET', `/devices/${id}`))).body as { bluetooth?: { state: string } }).bluetooth?.state
-  const add = (m: ReturnType<typeof createMock>, name: string) => m.handle(req('POST', '/admin/devices', { name, integration_id: 'ble', kind: 'streamer', provider: { type: 'ble_hid' } }))
+  const add = (m: ReturnType<typeof createMock>, name: string) => m.handle(req('POST', '/admin/devices', { profile_id: 'hubbo:fire-tv', name }))
 
   it('a new device is not paired; pairing bonds the window’s device; forget and delete drop only its host', async () => {
     const m = createMock()
@@ -588,5 +594,62 @@ describe('Bluetooth devices', () => {
     expect((await m.handle(req('POST', '/admin/restore?dry_run=false', without))).status).toBe(200)
     expect((await m.handle(req('POST', '/admin/restore?dry_run=false', backup))).status).toBe(200)
     expect(await bt(m, 'dev_apple_tv')).toBe('not_paired')
+  })
+})
+
+describe('device profiles', () => {
+  const get = async (m: ReturnType<typeof createMock>, path: string) => (await m.handle(req('GET', path))).body
+  const caps = async (m: ReturnType<typeof createMock>, id: string) => ((await get(m, `/devices/${id}/capabilities`)) as Capabilities).commands
+
+  it('lists the built-in profiles and kinds, and serves a profile, as the fixtures', async () => {
+    const m = createMock()
+    expect(await get(m, '/profiles')).toEqual(fixture('profiles/list.json'))
+    expect(await get(m, '/kinds')).toEqual(fixture('profiles/kinds.json'))
+    expect(await get(m, '/profiles/hubbo%3Aapple-tv')).toEqual(fixture('profiles/apple-tv.json'))
+    expect((await m.handle(req('GET', '/profiles/hubbo:roku'))).status).toBe(404)
+  })
+
+  it('a backup stores devices without platform, like the fixture', async () => {
+    const devices = ((await get(createMock(), '/admin/backup')) as { devices: object[] }).devices
+    for (const d of devices) expect(d).not.toHaveProperty('platform')
+    expect(fixture<{ devices: object[] }>('admin/backup.json').devices[0]).not.toHaveProperty('platform')
+  })
+
+  it('adds a device from a profile, like the fixture; the list is light, the device carries its profile', async () => {
+    const m = createMock()
+    const r = await m.handle(req('POST', '/admin/devices', fixture('admin/register_profile.request.json')))
+    const { revision: _r, ...want } = fixture<Record<string, unknown>>('admin/register_profile.json')
+    expect(r.status).toBe(201)
+    expect(r.body).toMatchObject(want)
+    const listed = ((await get(m, '/devices')) as { devices: Record<string, unknown>[] }).devices.find((d) => d.id === want.id)!
+    expect(listed).not.toHaveProperty('commands')
+    expect(listed).toMatchObject({ platform: 'ble_hid', profile: want.profile })
+    // Its remote commands are the profile's; keys and custom codes are every Bluetooth device's.
+    const press = (await caps(m, want.id as string)).find((c) => c.command_id === 'press')!
+    expect(press.params.find((p) => p.name === 'command')?.options).toEqual(Object.keys(want.commands as object))
+    expect(new Set((await caps(m, want.id as string)).map((c) => c.group))).toEqual(new Set(['remote', 'keys', 'custom', undefined]))
+  })
+
+  it('a connected Bluetooth device takes a timed press, answering at key down; one that isn’t fails like the fixture', async () => {
+    const m = createMock()
+    const press = () => m.handle(req('POST', '/devices/dev_apple_tv/commands/press/execute', { params: { command: 'Home', hold_ms: 2000 } }))
+    const ok = (await press()).body as ExecuteResult
+    expect(ok.status).toBe('accepted')
+    expect(ok.elapsed_ms).toBeLessThan(2000)
+    await m.handle(req('POST', '/__mock/ble/link?device=dev_apple_tv&up=0'))
+    const { elapsed_ms: _e, ...failed } = fixture<ExecuteResult>('devices/execute.failed.json')
+    expect((await press()).body).toMatchObject(failed)
+  })
+
+  it('refusals: an unknown profile or kind; wait_connected outside a sequence', async () => {
+    const m = createMock()
+    const r = await m.handle(req('POST', '/admin/devices', { profile_id: 'hubbo:roku' }))
+    expect([r.status, r.body]).toEqual([422, fixture('errors/unknown_profile.json')])
+    expect(errorOf(await m.handle(req('POST', '/admin/devices', { profile_id: 'hubbo:fire-tv', kind: 'toaster' }))).details![0]).toMatchObject({ path: '/kind', code: 'unknown_kind' })
+    const x = await m.handle(req('POST', '/devices/dev_apple_tv/commands/wait_connected/execute', { params: {} }))
+    expect([x.status, x.body]).toEqual([422, fixture('errors/sequence_only.json')])
+    const wait = { integration_id: 'ble', device_id: 'dev_apple_tv', command_id: 'wait_connected', params: {} }
+    const bad = await m.handle(req('POST', '/activities', { name: 'W', startup: [wait], shutdown: [], bindings: { 'up:tap': [wait] } }))
+    expect(errorOf(bad).details!.map((d) => [d.path, d.code])).toEqual([['/bindings/up:tap/0/command_id', 'sequence_only']])
   })
 })

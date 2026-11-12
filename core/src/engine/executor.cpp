@@ -131,6 +131,7 @@ void Executor::pump(uint32_t nowMs) {
     for (auto &f : inFlight_) {
         if (f.used && timeReached(nowMs, f.deadlineMs)) {
             f.used = false;
+            cancelPending(f.pending, f.ticket, nowMs);
             stats_.timeouts++;
             finish(f.info, SequenceOutcome::Failed, ErrorCode::AdapterTimeout, f.index, nowMs);
         }
@@ -211,9 +212,15 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
             continue;
         }
         const Ticket ticket = nextTicket();
-        const ExecRequest request{action.command,       action.commandIndex,  action.params,
-                                  action.paramsPresent, node.target.c_str(), node.providerRef.c_str(),
-                                  ticket,               nowMs};
+        const ExecRequest request{action.command,
+                                  action.commandIndex,
+                                  action.params,
+                                  action.paramsPresent,
+                                  node.target.c_str(),
+                                  node.providerRef.c_str(),
+                                  ticket,
+                                  nowMs,
+                                  /*answerAtStart=*/seq.info.origin == SequenceOrigin::Api};
         const ExecResult result = adapter->execute(request);
         if (observer_ != nullptr) {
             observer_->onActionDispatched({seq.info, index, action, adapter->integrationId(), node.target.c_str(),
@@ -227,13 +234,18 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
             continue;
         }
 
+        // A command that stays Pending longer (a timed press, a wait for a
+        // connection) says so; the adapter finishes it first.
+        const uint32_t timeoutMs = action.command->timeoutMs != 0 ? action.command->timeoutMs : actionTimeoutMs_;
+        const PendingAction pending{adapter, action.command, node.target};
         if (last) {
             if (InFlight *f = freeInFlight()) {
                 f->used = true;
                 f->ticket = ticket;
                 f->info = seq.info;
                 f->index = index;
-                f->deadlineMs = nowMs + actionTimeoutMs_;
+                f->deadlineMs = nowMs + timeoutMs;
+                f->pending = pending;
                 popFront(lane);  // reported when the result arrives
                 continue;
             }
@@ -241,7 +253,8 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
         // More to do (or nowhere to track it): park the lane until the result.
         seq.state = State::Pending;
         seq.ticket = ticket;
-        seq.untilMs = nowMs + actionTimeoutMs_;
+        seq.untilMs = nowMs + timeoutMs;
+        lane.pending = pending;
         return;
     }
 }
@@ -254,10 +267,10 @@ void Executor::complete(Ticket ticket, ExecResult result, uint32_t nowMs) {
         if (lane.count == 0) continue;
         Sequence &seq = lane.front();
         if (seq.state != State::Pending || seq.ticket != ticket) continue;
-        if (ok) {
-            seq.state = State::Ready;
-            seq.ticket = 0;
-        } else {
+        reportCompletion(seq.info, static_cast<uint8_t>(seq.nextIndex - 1), lane.pending, result, nowMs);
+        seq.state = State::Ready;  // done: nothing left to cancel
+        seq.ticket = 0;
+        if (!ok) {
             if (result.status == ExecStatus::Timeout) stats_.timeouts++;
             finishFront(lane, SequenceOutcome::Failed, failureCode(result), static_cast<uint8_t>(seq.nextIndex - 1),
                         nowMs);
@@ -267,6 +280,7 @@ void Executor::complete(Ticket ticket, ExecResult result, uint32_t nowMs) {
     for (auto &f : inFlight_) {
         if (!f.used || f.ticket != ticket) continue;
         f.used = false;
+        reportCompletion(f.info, f.index, f.pending, result, nowMs);
         if (ok) {
             finish(f.info, SequenceOutcome::Completed, ErrorCode::Ok, f.info.actionCount, nowMs);
         } else {
@@ -276,6 +290,17 @@ void Executor::complete(Ticket ticket, ExecResult result, uint32_t nowMs) {
         return;
     }
     // Unknown or stale ticket: ignored by design.
+}
+
+void Executor::reportCompletion(const SequenceInfo &info, uint8_t index, const PendingAction &pending,
+                                const ExecResult &result, uint32_t nowMs) {
+    if (observer_ == nullptr) return;
+    observer_->onActionCompleted(
+        {info, index, pending.adapter->integrationId(), pending.command, pending.target.c_str(), result, nowMs});
+}
+
+void Executor::cancelPending(const PendingAction &pending, Ticket ticket, uint32_t nowMs) {
+    pending.adapter->cancel(ticket, nowMs);
 }
 
 void Executor::cancelAll(uint32_t newGeneration, uint32_t nowMs) {
@@ -289,6 +314,7 @@ void Executor::cancelAll(uint32_t newGeneration, uint32_t nowMs) {
     for (auto &f : inFlight_) {
         if (!f.used) continue;
         f.used = false;
+        cancelPending(f.pending, f.ticket, nowMs);
         finish(f.info, SequenceOutcome::Cancelled, ErrorCode::Cancelled, f.index, nowMs);
     }
 }
@@ -327,7 +353,10 @@ size_t Executor::inFlight() const {
 
 void Executor::finishFront(LaneQueue &lane, SequenceOutcome outcome, ErrorCode error, uint8_t index,
                            uint32_t nowMs) {
-    const SequenceInfo info = lane.front().info;  // popFront() resets the slot
+    const Sequence &seq = lane.front();
+    // Cancelled, or past its deadline, while its adapter still works on it.
+    if (seq.state == State::Pending) cancelPending(lane.pending, seq.ticket, nowMs);
+    const SequenceInfo info = seq.info;  // popFront() resets the slot
     popFront(lane);
     finish(info, outcome, error, index, nowMs);
 }

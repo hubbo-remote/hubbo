@@ -59,7 +59,7 @@ protected:
         const CommandSpec &spec = catalog.items[index];
         for (uint8_t i = 0; i < spec.paramCount; i++) params_[i] = spec.params[i].defaultValue;
         return ExecRequest{&spec, static_cast<uint16_t>(index), params_, 0, "dev_lights", "light.family_room",
-                           ticket, 0};
+                           ticket, 0, false};
     }
 
     FakeHaServer server;

@@ -6,7 +6,7 @@ test('Status shows the remote, Bluetooth, Home Assistant and Ethernet as they ar
   const tile = (name: string) => page.getByRole('region', { name, exact: true })
   await expect(tile('Remote')).toContainText('Paired')
   await expect(tile('Ethernet')).toContainText(/\d+\.\d+\.\d+\.\d+/)
-  await expect(tile('Bluetooth')).toContainText('Connected') // the radio: hosts come and go on their device pages
+  await expect(tile('Bluetooth')).toContainText('Ready') // the radio: hosts come and go on their device pages
   await expect(tile('Home Assistant')).toContainText('Connected')
   await expect(page.getByText('Response time')).toBeVisible()
   await expect(page.getByText('Recent errors')).toBeVisible()

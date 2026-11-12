@@ -180,11 +180,16 @@ def check_core_names(spec):
                                                  read(os.path.join(CORE_SRC, "ha", "capabilities.cpp"))).group(1))
     if sorted(schemas["ParamName"]["not"]["enum"]) != sorted(forbidden):
         fail("ParamName.not.enum differs from kForbiddenNames in core/src/ha/capabilities.cpp")
+    kinds = [k["id"] for k in json.loads(read(os.path.join(ROOT, "profiles", "kinds.json")))["kinds"]]
+    if schemas["DeviceKind"]["enum"] != kinds:
+        fail("DeviceKind enum differs from profiles/kinds.json")
 
 
 def check_secret_props(spec, node, path="#"):
     if isinstance(node, dict):
         for key, sub in (node.get("properties") or {}).items():
+            if not isinstance(sub, dict):  # a boolean schema (`false`: the property is forbidden)
+                continue
             target = resolve(spec, sub["$ref"]) if "$ref" in sub else sub
             if key in SECRET_KEYS and not target.get("writeOnly"):
                 fail(f"{path}/properties/{key}: secret property must be writeOnly")

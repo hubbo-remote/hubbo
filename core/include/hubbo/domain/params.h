@@ -97,10 +97,13 @@ struct ParamSpec {
 // What executing a command leaves behind.
 //   Momentary: nothing (a tap, a volume step, turning something on).
 //   Hold: a state that must be released (key_down holds a key until key_up).
+//   Wait: nothing, but it parks its sequence until something happens
+//     (ble wait_connected). Startup and shutdown only: a binding or direct
+//     execution gets SequenceOnly.
 // Direct execution accepts only Momentary; a binding may use a Hold only in a
 // "<button>:down" binding whose matching ":up" binding releases it.
-enum class CommandEffect : uint8_t { Momentary, Hold };
-const char *commandEffectName(CommandEffect effect);  // "momentary", "hold"
+enum class CommandEffect : uint8_t { Momentary, Hold, Wait };
+const char *commandEffectName(CommandEffect effect);  // "momentary", "hold", "wait"
 
 // One command an integration offers for a device.
 struct CommandSpec {
@@ -111,6 +114,15 @@ struct CommandSpec {
     // Hold only: the command id that releases it, taking the same params
     // (key_down -> "key_up").
     const char *releasedBy = nullptr;
+    // For the UI's picker: "remote", "keys" or "custom" (ble_hid); nullptr: none.
+    const char *group = nullptr;
+    // Adapter-owned data for this command (e.g. a device's key table); the
+    // adapter keeps it alive with the catalog. Never read by the core.
+    const void *data = nullptr;
+    // The longest this command may stay Pending (a timed press, a wait for a
+    // connection); 0: limits::kDefaultActionTimeoutMs. The adapter finishes
+    // it sooner; this is the executor's backstop.
+    uint32_t timeoutMs = 0;
 };
 
 // The commands offered for one device. Storage belongs to the adapter and

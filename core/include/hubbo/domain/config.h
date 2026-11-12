@@ -66,6 +66,74 @@ int indexOfId(const std::vector<T> &items, std::string_view id, size_t end = sta
     return -1;
 }
 
+// ---- device profiles (~/src/hubbo-devices/docs/spec.md) -------------------
+// A Bluetooth device carries the profile it was added from (everything but
+// `meta`), so any of its commands can be bound without the profile. Field
+// names mirror the spec; optional fields stay optional so they round-trip.
+
+enum class HidPage : uint8_t { Keyboard, Consumer };  // HID pages 0x07, 0x0C
+
+// One command: a page and usage (limits::kHid*), optionally held.
+struct ProfileCommand {
+    std::string name;   // 1-32 letters and digits, unique ignoring case
+    std::string label;  // "" when absent
+    HidPage page = HidPage::Consumer;
+    uint16_t usage = 0;
+    std::optional<uint32_t> holdMs;  // hold_ms: a tap is a press this long
+};
+
+// A power or input step: a command (optionally held), or a delay.
+struct ProfileStep {
+    std::string command;             // "" for a delay step
+    std::optional<uint32_t> holdMs;  // command steps only
+    uint32_t delayMs = 0;            // delay steps only (1-60000)
+};
+
+// buttons: a remote button name -> a command, or null (leave it empty).
+struct ProfileButton {
+    std::string button;
+    std::optional<std::string> command;
+};
+
+struct ProfilePower {
+    std::string type;  // "discrete", "toggle" or "none"
+    std::vector<ProfileStep> on, off, toggle;
+    std::optional<uint32_t> onDelayMs;
+};
+
+struct ProfileTiming {
+    std::optional<uint32_t> keyDelayMs;
+    std::optional<uint32_t> inputDelayMs;
+};
+
+struct ProfileInput {
+    std::string name;
+    std::vector<ProfileStep> steps;
+};
+
+struct ProfileChannels {
+    std::optional<uint8_t> digits;  // 1-4
+    std::string start, finish;      // "" when absent
+};
+
+struct DeviceProfile {
+    // Identity, as `profile: {id, revision, sha256}`.
+    std::string id;       // "<source>:<slug>"
+    uint32_t revision = 0;
+    std::string sha256;   // 64 lowercase hex, of the profile as published
+    // The profile itself, as top-level device fields.
+    std::string manufacturer;
+    std::string model;
+    std::vector<ProfileCommand> commands;
+    std::vector<ProfileButton> buttons;
+    std::optional<ProfilePower> power;
+    std::optional<ProfileTiming> timing;
+    std::vector<ProfileInput> inputs;
+    std::optional<ProfileChannels> channels;
+
+    const ProfileCommand *findCommand(std::string_view name) const;  // exact name
+};
+
 // Where a device lives in its integration. `type` matches the integration
 // type: "home_assistant" (entityId, optional uniqueId) or "ble_hid"
 // (nothing else: the device is its own host, bonded by the radio).
@@ -79,12 +147,15 @@ struct DeviceSpec {
     std::string id;
     std::string name;
     std::string integrationId;  // integration_id
-    std::string kind = "other"; // UI hint: tv, receiver, speaker, streamer, console, light, switch, other
+    std::string kind = "other"; // UI hint, one of kinds.json (config/profile.h)
     ProviderSpec provider;
     // home_assistant devices: what HA reported at registration or refresh;
     // the device's commands come from it (works while HA is offline).
     // Stored as `ha_capabilities`. Absent: the device has no commands.
     std::optional<ha::CapabilitySnapshot> haCapabilities;
+    // ble_hid devices: the profile it was added from (required). Other
+    // integrations: none.
+    std::optional<DeviceProfile> profile;
     uint32_t revision = 0;
 };
 

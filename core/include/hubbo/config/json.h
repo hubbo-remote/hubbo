@@ -69,12 +69,24 @@ enum class DeviceShape : uint8_t {
     Backup,    // StoredDevice: like Stored, but revision optional (>= 0), no availability
 };
 
+// A ble_hid device carries its profile: `profile` {id, revision, sha256}
+// plus `manufacturer`, `model`, `commands` (required) and `buttons`,
+// `power`, `timing`, `inputs`, `channels` (optional), in the spec's shape
+// (config/profile.h). Any other device has none of them (unknown_field).
+// Register takes them too (the API's add-from-profile builds the device
+// with deviceFromProfile(), not from a body).
 bool decodeDevice(JsonVariantConst json, DeviceShape shape, DeviceSpec *out, ValidationReport *report,
                   const std::string &path = "");
-// Device without `availability` (runtime state the API adds).
-// `withCapabilities`: the stored `ha_capabilities` (config record, backup);
-// false for API responses, where it isn't part of Device.
-void encodeDevice(const DeviceSpec &device, JsonObject out, bool withCapabilities = true);
+
+// What encodeDevice writes. Never `availability` or `platform` (the API adds
+// them).
+enum class DeviceDetail : uint8_t {
+    Stored,   // config record, backup: everything, `ha_capabilities` too
+    Full,     // GET /devices/{id}: everything but `ha_capabilities`
+    Summary,  // GET /devices: + profile identity, manufacturer, model; no
+              // commands, buttons, power, timing, inputs, channels
+};
+void encodeDevice(const DeviceSpec &device, JsonObject out, DeviceDetail detail = DeviceDetail::Stored);
 
 // DeviceUpdate: partial; revision required.
 struct DeviceUpdate {

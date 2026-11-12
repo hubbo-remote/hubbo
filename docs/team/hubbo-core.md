@@ -1,10 +1,53 @@
 # hubbo-core: working notes
 
-Current as of the multi-Bluetooth phase, on branch `multi-bluetooth`, not yet committed (Phase 5
-and polish round 1 are committed). Design: `docs/design/multi-bluetooth.md`. This file covers state,
-decisions and traps only.
+Current as of the device-profiles phase, on branch `device-profiles`, not yet committed
+(multi-Bluetooth and everything before are committed). Design: `docs/design/device-profiles.md`;
+the profile spec is `~/src/hubbo-devices/docs/spec.md`. This file covers state, decisions and
+traps only.
 
 ## State
+
+- Device profiles (device-profiles, uncommitted):
+  - `config/profile.h`: `parseProfile` (spec schema_version 1, strict: unknown fields are errors,
+    `meta` dropped, `ir` is UnsupportedSchema at /platform), `ProfileLibrary` (index.json order,
+    kinds.json, buttons.json kept raw; any issue leaves it empty + ValidationFailed),
+    `builtinProfiles()` / `builtinProfilesStatus()`, `deviceFromProfile(profile, name, kind)`.
+  - Built-ins are embedded from the repo's `profiles/` (synced by the lead's `bin/hubbo profiles
+    sync`) by `core/tools/embed_profiles.py <dir> <out.cpp>`; CMake runs it into the build dir.
+    The firmware's PlatformIO build must call the same script. sha256 comes from index.json; the
+    hub never hashes. The library points into the embedded texts (`BuiltinProfile::json`,
+    `buttons()`), never copies them; a test's ProfileFile texts must outlive its library.
+  - A ble_hid device stores `profile:{id,revision,sha256}` plus manufacturer, model, commands
+    (required) and buttons, power, timing, inputs, channels (domain `DeviceProfile`). HA devices:
+    each is unknown_field. Internals shared with json.cpp: `config/json_fields.h`,
+    `config/profile_fields.h`. `encodeDevice(..., DeviceDetail::Stored|Full|Summary)`: Summary
+    drops commands etc., only Stored writes ha_capabilities.
+  - Device rules are checked up front in createDevice/updateDevice (`checkDevice` in
+    service.cpp), before anything is built, so a refusal is a 422 and a read-back failure stays
+    Internal: kind in kinds.json (UnknownKind at /kind; on update only when the kind is set), a
+    ble_hid device has a profile (Required at /profile) and no other does (UnknownField), and an
+    update never changes provider.type (IntegrationMismatch at /provider/type). json.cpp checks
+    only the kind's shape (malformed is UnknownKind too). Never on load or restore, so a kind dropped by an update blocks nothing.
+  - Bluetooth catalog is per device (BleHidCommand order): press{command, hold_ms?},
+    press_down/up (group remote), key_tap/down/up (keys), usage_tap/down/up {usage} (custom),
+    wait_connected{timeout_ms 1000-60000, default 15000} (effect Wait). `CommandSpec` gained
+    `group`, `data` (adapter's DeviceCatalog) and `timeoutMs` (executor deadline; 0 = the 5 s
+    default). A Wait command is SequenceOnly in bindings and direct execute (the compiler's
+    `misplacedEffect` holds the Hold/Wait placement rule).
+  - Timed press (hold_ms, the step's else the command's) and wait_connected are Pending timers in
+    the adapter (8 slots), finished by poll(). `IntegrationAdapter::cancel(ticket)`: the executor
+    calls it for Pending work it gives up on (sequence cancelled, deadline passed), so a wait frees
+    its slot and a timed press releases at once. releaseAll() releases only binding-held keys,
+    never a timer's. `ExecRequest::answerAtStart` (set for SequenceOrigin::Api): a direct timed
+    press answers Accepted at key-down and releases by itself, silently. A wait that times out completes Accepted with
+    AdapterUnavailable, so the sequence goes on. `ExecutionObserver::onActionCompleted
+    (CompletionRecord)` reports every Pending result; hub-sim logs those with an error
+    (`ble dev_x wait_connected done -> accepted adapter_unavailable`).
+  - Catalogs: one per distinct command list (shared across devices and compiles), never freed;
+    grows per profile ever added, not per edit. The `command` param is labelled "Remote command".
+  - Key table final: 98 keyboard (0x04-0x65 complete) + 24 consumer keys. Never reorder.
+  - hub-sim seeds from api/fixtures/admin/backup.json, whose dev_apple_tv carries the full
+    hubbo:apple-tv copy; `sim::bleDevice(..., profileId)` attaches a built-in profile.
 
 - Several Bluetooth hosts (multi-bluetooth):
   - `integrations/ble_hosts.*` (replaces `ble_state.*`): `BleHostPort` (radioReady, status, start
@@ -34,7 +77,6 @@ decisions and traps only.
     `/devices/<i>/integration_id` for each ble_hid device past 4 (the 64-device cap is at `/devices`).
   - `ProviderSpec::peerName` is gone; a ble_hid provider is only its type, and `providerRef()` is
     the device id.
-  - 13 new keys appended to the key table (FAST_FORWARD ... ESCAPE); never reorder.
   - SimHub owns an `api::SimulatedFirmwareUpdate` (`firmware()`), advanced with hub time and
     replaced on factoryReset. It's passed as `ApiContext::firmware`. `POST /sim/firmware?fail=0|1&ready=0|1`
     sets failWrites/ready (400 without a valid one). When a simulated reboot finishes an update
@@ -179,7 +221,7 @@ decisions and traps only.
   signal; that's not built.
 - **`ha_capabilities` exists only in the stored shapes.** decodeDevice accepts it only in the
   Stored/Backup shapes; Register and decodeDeviceUpdate answer unknown_field.
-  `encodeDevice(..., withCapabilities=false)` is for API responses.
+  `encodeDevice` writes it only with `DeviceDetail::Stored`.
 - **Who closed it decides the backoff.** applySettings() and auth_invalid set the state before closing
   (Unreachable with an immediate retry, NotConfigured, or AuthFailed). onClosed() backs off only from
   Connecting, Authenticating or Connected, meaning the link dropped by itself. New settings also clear
@@ -224,4 +266,6 @@ decisions and traps only.
   works. Use /sim/ha for faults.
 - Firmware: implement `BleHostPort` and the per-device `HidTransport`, and use the
   `ble_hosts.h` status functions (hubbo-firmware's job).
+- Firmware: call embed_profiles.py from PlatformIO; override `onActionCompleted` in its
+  EngineLog to log results with an error (the wait_connected timeout). Relayed via the lead.
 - At the phase commit: /commits with only this area's files, staged by path.

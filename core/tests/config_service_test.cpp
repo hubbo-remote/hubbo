@@ -21,15 +21,16 @@ class ServiceTest : public ::testing::Test {
 protected:
     ServiceTest() { boot(); }
 
-    // A fresh service and store over the same storage: a simulated reboot.
-    void boot() {
+    // A fresh service and store over the same storage: a simulated reboot
+    // (with `seed` as the defaults when nothing is saved).
+    void boot(const ConfigSpec &seed = fixtureConfig()) {
         engineReader = std::make_unique<Engine::Store::Reader>();
         store = std::make_unique<Engine::Store>();
         store->attach(*engineReader);
         records = std::make_unique<storage::SlotRecordStore>(mem, kMaxConfigFileBytes);
         service = std::make_unique<ConfigService>(*records, fakes.set, *store);
         service->setListener(listener);
-        report = service->load(fixtureConfig());
+        report = service->load(seed);
     }
 
     const CompiledConfig *published() {
@@ -187,6 +188,59 @@ TEST_F(ServiceTest, GlobalBindingIssuesAreRootedAtTheBody) {
     EXPECT_EQ(o.code, ErrorCode::ValidationFailed);
     EXPECT_TRUE(o.issues.has(ErrorCode::UnknownActivity, "/bindings/red:tap/0/params/activity_id"));
     EXPECT_EQ(service->replaceGlobalBindings(globals, 9).currentRevision, 1u);
+}
+
+// A device's own rules are checked before anything is built, as a 422 at the
+// device's own path; the read-back never sees them (no Internal).
+TEST_F(ServiceTest, DeviceRulesAreCheckedUpFront) {
+    const auto issue = [](const Outcome &o) {
+        return o.issues.ok() ? std::string(errorCodeName(o.code)) : o.issues.issues()[0].path;
+    };
+    // Kinds come from kinds.json; a malformed one is just as unknown.
+    for (const char *kind : {"fridge", "TV", "home-theater"}) {
+        const Outcome o = service->createDevice(haDevice("", "X", kind, "media_player.family_room_lg_tv"));
+        EXPECT_EQ(o.code, ErrorCode::ValidationFailed) << kind;
+        EXPECT_TRUE(o.issues.has(ErrorCode::UnknownKind, "/kind")) << kind << " " << issue(o);
+    }
+    // A Bluetooth device carries its profile; nothing else does.
+    DeviceSpec bare = bleDevice("", "Box", "streamer");
+    bare.profile.reset();
+    EXPECT_TRUE(service->createDevice(bare).issues.has(ErrorCode::Required, "/profile"));
+    DeviceSpec tv = haDevice("", "TV", "tv", "media_player.family_room_lg_tv");
+    tv.profile = bleDevice("", "Box", "streamer").profile;
+    EXPECT_TRUE(service->createDevice(tv).issues.has(ErrorCode::UnknownField, "/profile"));
+
+    // A device stays on its platform.
+    const DeviceSpec *denon = service->findDevice("dev_denon");
+    ASSERT_NE(denon, nullptr);
+    DeviceUpdate toBle;
+    toBle.provider = ProviderSpec{kBleHidType, "", ""};
+    toBle.revision = denon->revision;
+    const Outcome moved = service->updateDevice("dev_denon", toBle);
+    EXPECT_EQ(moved.code, ErrorCode::ValidationFailed);
+    EXPECT_TRUE(moved.issues.has(ErrorCode::IntegrationMismatch, "/provider/type")) << issue(moved);
+    DeviceUpdate badKind;
+    badKind.kind = "TV";
+    badKind.revision = denon->revision;
+    EXPECT_TRUE(service->updateDevice("dev_denon", badKind).issues.has(ErrorCode::UnknownKind, "/kind"));
+}
+
+// A saved device whose kind an update dropped blocks nothing: other edits,
+// restores and its own rename go through; only setting a kind is checked.
+TEST_F(ServiceTest, ADroppedKindBlocksNothing) {
+    ConfigSpec seed = fixtureConfig();
+    for (DeviceSpec &d : seed.devices) {
+        if (d.id == "dev_denon") d.kind = "retired_kind";
+    }
+    mem.files().clear();
+    boot(seed);
+    ASSERT_EQ(report.state, ConfigState::Fresh);
+    EXPECT_TRUE(service->createDevice(haDevice("", "Lamp", "light", "light.family_room")).ok());
+    DeviceUpdate rename;
+    rename.name = "Receiver";
+    rename.revision = service->findDevice("dev_denon")->revision;
+    EXPECT_TRUE(service->updateDevice("dev_denon", rename).ok());
+    EXPECT_TRUE(service->restore(seed).ok());
 }
 
 TEST_F(ServiceTest, DeviceLifecycle) {
@@ -570,12 +624,7 @@ TEST_F(ServiceTest, UnsavedDefaultsRunThroughThePipeline) {
     auto &ints = defaults.integrations;
     ints.erase(std::remove_if(ints.begin(), ints.end(), [](const IntegrationSpec &i) { return i.id == "ble"; }),
                ints.end());
-    engineReader = std::make_unique<Engine::Store::Reader>();
-    store = std::make_unique<Engine::Store>();
-    store->attach(*engineReader);
-    records = std::make_unique<storage::SlotRecordStore>(mem, kMaxConfigFileBytes);
-    service = std::make_unique<ConfigService>(*records, fakes.set, *store);
-    report = service->load(defaults);
+    boot(defaults);
     EXPECT_EQ(report.state, ConfigState::Fresh);
     EXPECT_EQ(report.reason, ErrorCode::StorageFailed);
     EXPECT_FALSE(report.saved);

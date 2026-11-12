@@ -4,7 +4,7 @@
 import type {
   Action,
   ActionParams,
-  ActivityDraft,
+  ActivityInput,
   Bindings,
   ButtonId,
   Capabilities,
@@ -167,6 +167,11 @@ function checkAction(a: Action, path: string, cat: Catalog, out: ValidationIssue
     out.push({ path: `${path}/command_id`, code: 'hold_not_allowed', message: `${cmd.label} holds until released; use the momentary form in sequences` })
     return
   }
+  // A wait (wait_connected) holds up what follows: only a startup or shutdown can use one.
+  if (cmd.effect === 'wait' && where !== 'sequence') {
+    out.push({ path: `${path}/command_id`, code: 'sequence_only', message: `${cmd.label} only works in a startup or shutdown` })
+    return
+  }
   for (const p of cmd.params) {
     const err = checkParam(p, a.params[p.name], cat.activities.length ? activityIds(cat) : undefined)
     if (err) out.push({ path: `${path}/params/${p.name}`, code: p.type === 'int' || p.type === 'number' ? 'param_out_of_range' : 'missing_param', message: `${owner}: ${err}` })
@@ -213,7 +218,7 @@ export function validateBindings(bindings: Bindings, cat: Catalog, errors: Valid
 }
 
 /** Mirrors the hub's checks so the editor can flag problems as you type. The hub is authoritative. */
-export function validateActivity(a: ActivityDraft, cat: Catalog): LocalValidation {
+export function validateActivity(a: ActivityInput, cat: Catalog): LocalValidation {
   const errors: ValidationIssue[] = []
   const warnings: ValidationIssue[] = []
   if (!a.name.trim()) errors.push({ path: '/name', code: 'required', message: 'Name is required' })

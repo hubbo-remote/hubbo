@@ -51,6 +51,7 @@ function Overview({ status: s }: { status: HubStatus | undefined }) {
   const integ = (type: string) => s?.integrations.find((i) => i.type === type)
   const detail = (type: string) => integrations.data?.find((i) => i.type === type)?.detail
   const ble = integ('ble_hid')
+  const bleLabel = ble && healthLabel(ble.state, ble.type)
   const ha = integ('home_assistant')
   const ev = s?.remote.last_event
   return (
@@ -73,7 +74,7 @@ function Overview({ status: s }: { status: HubStatus | undefined }) {
             )
           }
         />
-        <StatusTile icon={Bluetooth} title="Bluetooth" state={ble?.state ?? null} value={ble ? healthLabel(ble.state) : s ? 'Not available' : null} detail={detail('ble_hid') ?? ''} />
+        <StatusTile icon={Bluetooth} title="Bluetooth" state={ble?.state ?? null} label={bleLabel} value={bleLabel ?? (s ? 'Not available' : null)} detail={detail('ble_hid') ?? ''} />
         <StatusTile icon={Home} title="Home Assistant" state={ha?.state ?? null} value={ha ? healthLabel(ha.state) : s ? 'Not available' : null} detail={detail('home_assistant') ?? ''} />
         <StatusTile
           icon={Cable}
@@ -89,7 +90,7 @@ function Overview({ status: s }: { status: HubStatus | undefined }) {
   )
 }
 
-function StatusTile({ icon: Icon, title, state, value, detail }: { icon: LucideIcon; title: string; state: IntegrationState | null; value: ReactNode; detail: ReactNode }) {
+function StatusTile({ icon: Icon, title, state, label, value, detail }: { icon: LucideIcon; title: string; state: IntegrationState | null; label?: string; value: ReactNode; detail: ReactNode }) {
   return (
     <Card aria-label={title}>
       <CardContent className="grid gap-2 py-4">
@@ -100,7 +101,7 @@ function StatusTile({ icon: Icon, title, state, value, detail }: { icon: LucideI
           {state && (
             <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
               <HealthDot state={state} />
-              <span className="sr-only">{healthLabel(state)}</span>
+              <span className="sr-only">{label ?? healthLabel(state)}</span>
             </span>
           )}
         </div>

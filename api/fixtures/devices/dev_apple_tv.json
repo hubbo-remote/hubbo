@@ -6,10 +6,98 @@
   "provider": {
     "type": "ble_hid"
   },
+  "platform": "ble_hid",
+  "manufacturer": "Apple",
+  "model": "Apple TV",
+  "profile": {
+    "id": "hubbo:apple-tv",
+    "revision": 3,
+    "sha256": "b02e0555176b2dee82a7d81ac3eb0837aaffc82387cf53a7b1d0c261fc755564"
+  },
   "availability": "available",
   "bluetooth": {
     "state": "connected"
   },
   "schema_version": 1,
-  "revision": 1
+  "revision": 1,
+  "commands": {
+    "DirectionUp": {
+      "page": "consumer",
+      "usage": "0x0042"
+    },
+    "DirectionDown": {
+      "page": "consumer",
+      "usage": "0x0043"
+    },
+    "DirectionLeft": {
+      "page": "consumer",
+      "usage": "0x0044"
+    },
+    "DirectionRight": {
+      "page": "consumer",
+      "usage": "0x0045"
+    },
+    "Select": {
+      "page": "consumer",
+      "usage": "0x0041"
+    },
+    "Back": {
+      "page": "consumer",
+      "usage": "0x0223"
+    },
+    "Home": {
+      "page": "consumer",
+      "usage": "0x0040"
+    },
+    "ControlCenter": {
+      "page": "consumer",
+      "usage": "0x0040",
+      "hold_ms": 1000
+    },
+    "PlayPause": {
+      "page": "consumer",
+      "usage": "0x00CD"
+    },
+    "FastForward": {
+      "page": "consumer",
+      "usage": "0x00B3"
+    },
+    "Rewind": {
+      "page": "consumer",
+      "usage": "0x00B4"
+    },
+    "Stop": {
+      "page": "consumer",
+      "usage": "0x00B7"
+    },
+    "NextTrack": {
+      "page": "consumer",
+      "usage": "0x00B5"
+    },
+    "PreviousTrack": {
+      "page": "consumer",
+      "usage": "0x00B6"
+    },
+    "VolumeUp": {
+      "page": "consumer",
+      "usage": "0x00E9"
+    },
+    "VolumeDown": {
+      "page": "consumer",
+      "usage": "0x00EA"
+    },
+    "Mute": {
+      "page": "consumer",
+      "usage": "0x00E2"
+    }
+  },
+  "buttons": {
+    "menu": "Home"
+  },
+  "power": {
+    "type": "none"
+  },
+  "timing": {
+    "key_delay_ms": 100
+  }
 }

@@ -33,6 +33,10 @@ void Engine::Relay::onActionDispatched(const DispatchRecord &record) {
     engine->trackHolds(record);
 }
 
+void Engine::Relay::onActionCompleted(const CompletionRecord &record) {
+    if (engine->observer_ != nullptr) engine->observer_->onActionCompleted(record);
+}
+
 void Engine::Relay::onSequenceFinished(const SequenceReport &report) {
     engine->resolveReleases(report);
     if (report.info.origin == SequenceOrigin::Api) engine->finishCommand(report);
@@ -441,7 +445,8 @@ void Engine::releaseHold(const OpenHold &hold) {
     if (adapter == nullptr) return;
     stats_.forcedReleases++;
     const ExecRequest request{hold.release, hold.releaseIndex, hold.params, hold.paramsPresent,
-                              hold.deviceId.c_str(), hold.providerRef.c_str(), /*ticket=*/0, nowMs_};
+                              hold.deviceId.c_str(), hold.providerRef.c_str(), /*ticket=*/0, nowMs_,
+                              /*answerAtStart=*/false};
     const ExecResult result = adapter->execute(request);
     // Not confirmed: failed, timed out, or Pending (this direct execution has
     // no ticket, so its result can't be tracked). Fall back to releaseAll.
