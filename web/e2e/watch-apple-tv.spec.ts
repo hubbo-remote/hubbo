@@ -27,14 +27,14 @@ test('build Watch Apple TV by hand, then use it from the remote', async ({ page 
   await connectHa(page)
   const id = await openNewActivity(page, 'E2E Watch Apple TV')
 
-  // Apple TV navigation, held: key down on press, the matching key up on release (added for us).
+  // Apple TV navigation, passed through: key down on press, the matching key up on release (added for us).
   for (const [button, key] of [['up', 'ARROW_UP'], ['down', 'ARROW_DOWN'], ['left', 'ARROW_LEFT'], ['right', 'ARROW_RIGHT'], ['select', 'SELECT'], ['back', 'MENU']] as const) {
-    await bind(page, button, 'hold', APPLE_TV, 'Keyboard key…', key)
-    await expect(page.locator(`[data-key="${button}"]`)).toHaveAttribute('aria-label', /bound: hold$/)
+    await bind(page, button, 'press', APPLE_TV, 'Keyboard key…', key)
+    await expect(page.locator(`[data-key="${button}"]`)).toHaveAttribute('aria-label', /bound: press$/)
   }
   // Volume on the Denon (through Home Assistant), the lights on Light 1 / Light 2.
-  await bind(page, 'volume_up', 'hold', DENON, 'Volume up')
-  await bind(page, 'volume_down', 'hold', DENON, 'Volume down')
+  await bind(page, 'volume_up', 'press', DENON, 'Volume up')
+  await bind(page, 'volume_down', 'press', DENON, 'Volume down')
   await bind(page, 'light_1', 'press', LIGHTS, 'Turn on')
   await bind(page, 'light_2', 'press', LIGHTS, 'Turn off')
 
@@ -56,11 +56,9 @@ test('build Watch Apple TV by hand, then use it from the remote', async ({ page 
   await addStep(page, DENON, 'Power off')
   await addStep(page, LG, 'Power off')
   const shutdown = page.getByRole('list', { name: 'Shutdown steps' }).getByRole('listitem')
-  await shutdown.nth(1).dragTo(shutdown.nth(0))
+  await shutdown.nth(1).locator('[data-grip]').dragTo(shutdown.nth(0))
   await expect(shutdown.nth(0)).toContainText(DENON)
 
-  await page.getByRole('button', { name: 'Check' }).click()
-  await expect(page.getByText('No problems found')).toBeVisible()
   await saveActivity(page)
 
   // Start it from the home page; the startup runs in order, waiting out its wait.
@@ -70,7 +68,7 @@ test('build Watch Apple TV by hand, then use it from the remote', async ({ page 
   await tile.click()
   await expect.poll(api(page).activeActivity).toBe(id)
   await advance(page, 3_000)
-  await expect.poll(() => sentSince(page, t)).toEqual([`${DENON_ID} media_player.turn_on`, `${LG_ID} media_player.turn_on`, 'wait duration_ms=1000', `${LIGHTS_ID} light.turn_on`])
+  await expect.poll(() => sentSince(page, t)).toEqual([`${DENON_ID} media_player.turn_on`, `${LG_ID} media_player.turn_on`, 'wait duration_ms=500', `${LIGHTS_ID} light.turn_on`])
 
   // The remote: an arrow is a key down/up pair; volume and lights go to Home Assistant.
   t = await simNow(page)

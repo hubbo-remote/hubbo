@@ -59,7 +59,7 @@ test('the wizard builds a starter activity from an HA TV and receiver', async ({
   expect(a.shutdown.map((s: { device_id: string }) => s.device_id)).toEqual(['dev_lg_tv'])
   expect(a.bindings['volume_up:down'][0]).toMatchObject({ device_id: 'dev_denon', command_id: 'media_player.volume_up' })
   expect(a.bindings['mute:hold'][0]).toMatchObject({ device_id: 'dev_denon', params: { muted: false } })
-  expect(a.bindings['play:tap'][0]).toMatchObject({ device_id: 'dev_lg_tv', command_id: 'media_player.media_play' })
+  expect(a.bindings['play:down'][0]).toMatchObject({ device_id: 'dev_lg_tv', command_id: 'media_player.media_play' }) // HA: one send on press
   // The buttons show in the editor.
   await expect(page.locator('[data-key="volume_up"]')).toHaveAttribute('aria-label', /bound/)
   await expect(page.locator('[data-key="play"]')).toHaveAttribute('aria-label', /bound/)
@@ -129,8 +129,9 @@ test('with an Apple TV: it gets the remote, and no power steps', async ({ page }
   const a = await api(page).get(`/activities/${await activityIdFromUrl(page)}`)
   expect(a.bindings['up:down'][0]).toMatchObject({ device_id: 'dev_apple_tv', command_id: 'press_down', params: { command: 'DirectionUp' } })
   expect(a.bindings['up:up'][0]).toMatchObject({ command_id: 'press_up', params: { command: 'DirectionUp' } })
-  expect(a.bindings['select:tap'][0]).toMatchObject({ command_id: 'press', params: { command: 'Select' } })
-  // Menu is held (Control Center): the profile's override, Home, as a down/up pair.
+  expect(a.bindings['select:down'][0]).toMatchObject({ command_id: 'press_down', params: { command: 'Select' } }) // every button passes through
+  expect(a.bindings['select:up'][0]).toMatchObject({ command_id: 'press_up', params: { command: 'Select' } })
+  // Menu: the profile's override, Home, as a down/up pair (held for Control Center).
   expect(a.bindings['menu:down'][0]).toMatchObject({ command_id: 'press_down', params: { command: 'Home' } })
   expect(a.bindings['menu:up'][0]).toMatchObject({ command_id: 'press_up', params: { command: 'Home' } })
   expect(a.bindings['menu:tap']).toBeUndefined()

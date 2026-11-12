@@ -4,28 +4,29 @@ import { advance, api, control, expect, open, SIM_URL, test } from './hub.ts'
 test('build an activity: bindings on the remote, startup and shutdown', async ({ page }) => {
   const id = await openNewActivity(page, 'E2E Movie Night')
 
-  // Held: a key's down, and its up on release (both written for us).
-  await bind(page, 'up', 'hold', 'Family Room Apple TV', 'Keyboard key…', 'ARROW_UP')
-  // Press and long press on Info.
+  // Press passes the button through: a key's down, and its up on release (both written for us).
+  await bind(page, 'up', 'press', 'Family Room Apple TV', 'Keyboard key…', 'ARROW_UP')
+  // Press and long press on Info: Press becomes a tap (sent on release).
   await bind(page, 'info', 'press', 'Family Room Apple TV', 'Keyboard key…', 'PLAY_PAUSE')
   await bind(page, 'info', 'long press', 'Family Room Apple TV', 'Keyboard key…', 'AC_HOME')
-  // A Home Assistant binding, held: one send on down.
-  await bind(page, 'volume_up', 'hold', 'Family Room Denon', 'Volume up')
-  await expect(page.locator('[data-key="up"]')).toHaveAttribute('aria-label', /bound: hold$/)
+  // A Home Assistant binding: one send on down.
+  await bind(page, 'volume_up', 'press', 'Family Room Denon', 'Volume up')
+  await expect(page.locator('[data-key="up"]')).toHaveAttribute('aria-label', /bound: press$/)
   await expect(page.locator('[data-key="info"]')).toHaveAttribute('aria-label', /bound: press, long press$/)
 
   await page.getByRole('tab', { name: /Startup/ }).click()
   await addStep(page, 'Family Room LG TV', 'Power on')
   await page.getByRole('button', { name: 'Add wait' }).click()
   await addStep(page, 'Family Room Denon', 'Power on')
-  await page.getByRole('button', { name: 'Move step 3 up' }).click()
-  await expect(page.getByRole('list', { name: 'Startup steps' }).getByRole('listitem')).toHaveCount(3)
+  const startup = page.getByRole('list', { name: 'Startup steps' }).getByRole('listitem')
+  await expect(startup).toHaveCount(3)
+  await expect(startup.nth(1)).toContainText('Wait 500 ms') // Add wait's default
+  await startup.nth(2).focus()
+  await page.keyboard.press('Alt+ArrowUp')
 
   await page.getByRole('tab', { name: /Shutdown/ }).click()
   await addStep(page, 'Family Room LG TV', 'Power off')
 
-  await page.getByRole('button', { name: 'Check' }).click()
-  await expect(page.getByText('No problems found')).toBeVisible()
   await saveActivity(page)
 
   // What the hub stored.
@@ -36,6 +37,7 @@ test('build an activity: bindings on the remote, startup and shutdown', async ({
   expect(a.bindings['up:up'][0]).toMatchObject({ device_id: 'dev_apple_tv', command_id: 'key_up', params: { key: 'ARROW_UP' } })
   expect(a.bindings['info:hold'][0]).toMatchObject({ command_id: 'key_tap', params: { key: 'AC_HOME' } })
   expect(a.startup.map((s: { command_id: string }) => s.command_id)).toEqual(['media_player.turn_on', 'media_player.turn_on', 'wait'])
+  expect(a.startup[2].params).toEqual({ duration_ms: 500 })
   expect(a.shutdown).toHaveLength(1)
 })
 
@@ -106,11 +108,74 @@ test('steps reorder by keyboard (Alt+↑/↓) and by drag', async ({ page }) => 
   await page.keyboard.press('Alt+ArrowDown')
   await expect(steps.nth(1)).toContainText('Family Room Denon')
 
-  await steps.nth(2).dragTo(steps.nth(0)) // the wait, to the top
+  await steps.nth(2).locator('[data-grip]').dragTo(steps.nth(0)) // the wait, by its grip, to the top
   await expect(steps.nth(0)).toContainText('Wait')
   await saveActivity(page)
   const a = await api(page).get(`/activities/${id}`)
   expect(stepIds(a.startup)).toEqual([' wait', 'dev_lg_tv media_player.turn_on', 'dev_denon media_player.turn_on'])
+})
+
+test('a button inherits the global bindings only while the activity binds none of it', async ({ page }) => {
+  const id = await openNewActivity(page, 'E2E Inherit')
+  await page.locator('[data-key="tv"]').click()
+  const panel = page.getByRole('main')
+  await expect(panel.getByText(/^Global: /)).toBeVisible()
+
+  // Change opens on the global's action; applying it unchanged binds nothing.
+  await page.getByRole('button', { name: 'Change TV press' }).click()
+  await expect(page.getByLabel('Device').locator('option:checked')).toHaveText('Hubbo')
+  await expect(page.getByLabel('Command', { exact: true }).locator('option:checked')).toHaveText('Switch activity')
+  await page.getByRole('button', { name: 'Apply' }).click()
+  await expect(page.locator('[data-key="tv"]')).toHaveAttribute('aria-label', /unbound$/)
+
+  // Binding any of the button masks every global for it.
+  await bind(page, 'tv', 'long press', 'Family Room Apple TV', 'Keyboard key…', 'AC_HOME')
+  await expect(panel.getByText(/^Global: /)).toHaveCount(0)
+  // An unbound row opens empty: nothing guessed, and Apply waits for a command.
+  await page.getByRole('button', { name: 'Bind TV press' }).click()
+  await expect(page.getByLabel('Device').locator('option:checked')).toHaveText('Choose…')
+  await expect(page.getByLabel('Command', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Apply' })).toBeDisabled()
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await saveActivity(page)
+  expect(Object.keys((await api(page).get(`/activities/${id}`)).bindings)).toEqual(['tv:hold'])
+})
+
+test('a step dialog: no "None" or Hubbo device; Duplicate; a wait edits only its time, in ms', async ({ page }) => {
+  const id = await openNewActivity(page, 'E2E Steps')
+  await page.getByRole('tab', { name: /Startup/ }).click()
+  await addStep(page, 'Family Room LG TV', 'Power on')
+
+  // A new step starts on the sequence's most-used device; no "None", and no Hubbo (waits have Add wait).
+  await page.getByRole('button', { name: 'Add step' }).click()
+  const dialog = page.getByRole('dialog')
+  const device = dialog.getByLabel('Device')
+  await expect(device.locator('option:checked')).toHaveText('Family Room LG TV')
+  await expect(device.locator('option', { hasText: /^(None|Hubbo|Wait)$/ })).toHaveCount(0)
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+
+  await page.getByRole('button', { name: 'Duplicate step 1' }).click()
+  await page.getByRole('button', { name: 'Add wait' }).click()
+  const steps = page.getByRole('list', { name: 'Startup steps' }).getByRole('listitem')
+  await expect(steps).toHaveCount(3)
+  await expect(steps.nth(1)).toContainText('Family Room LG TV')
+
+  // Editing the wait: one field in ms, no device or command; an out-of-range value can't be saved.
+  await page.getByRole('button', { name: 'Edit step 3' }).click()
+  await expect(dialog.getByLabel('Device')).toHaveCount(0)
+  await expect(dialog.getByLabel('Command', { exact: true })).toHaveCount(0)
+  const wait = dialog.getByLabel('Wait (ms)')
+  await expect(wait).toHaveValue('500')
+  await wait.fill('70000')
+  await expect(dialog.getByRole('button', { name: 'Done' })).toBeDisabled()
+  await wait.fill('1500')
+  await dialog.getByRole('button', { name: 'Done' }).click()
+  await expect(steps.nth(2)).toContainText('Wait 1.5 s')
+
+  await saveActivity(page)
+  const a = await api(page).get(`/activities/${id}`)
+  expect(stepIds(a.startup)).toEqual(['dev_lg_tv media_player.turn_on', 'dev_lg_tv media_player.turn_on', ' wait'])
+  expect(a.startup[2].params).toEqual({ duration_ms: 1500 })
 })
 
 test('duplicate asks for the new name; the tile menu works from the keyboard', async ({ page }) => {
@@ -175,6 +240,8 @@ test('with a single activity, a global button switches to it: the picker sets it
   await open(page, '/activities/global')
   await page.locator('[data-key="tv"]').click()
   await page.getByRole('button', { name: /^Bind TV press$/i }).click()
+  await expect(page.getByLabel('Device').locator('option', { hasText: /^None$/ })).toHaveCount(0)
+  await expect(page.getByLabel('Device').locator('option').last()).toHaveText('Hubbo') // listed last, in a binding
   await page.getByLabel('Device').selectOption({ label: 'Hubbo' })
   await page.getByLabel('Command', { exact: true }).selectOption({ label: 'Switch activity' })
   // Unset shows as unset (never as the first activity, which picking again wouldn't set), and no
