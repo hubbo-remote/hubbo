@@ -7,6 +7,15 @@ traps only.
 
 ## State
 
+- Binding fallback is per BUTTON (button-press). If the active activity binds any
+  trigger of a button to at least one action, none of that button's global bindings apply (an
+  unbound kind is simply unbound). Globals apply only to buttons the activity leaves alone, so a
+  pass-through `:down`/`:up` never runs with a global `:tap`/`:hold`. It's precomputed as
+  `TriggerTable::bound` (a ButtonSet) in the compiler, so `CompiledConfig::lookup` costs one mask
+  test. An empty action list doesn't count as bound. The hold ledger still matters when the active
+  activity changes during a global hold. Tests: CompilerTest.AnActivityBindingMasksTheWholeButtonsGlobals,
+  EngineTest.AnActivityPassThroughMasksTheGlobalTap and
+  EngineTest.AGlobalHoldIsReleasedWhenAnActivityTakesOverTheButton.
 - hub-sim showcase (remote-editor): `hub-sim serve --showcase` (sim/src/showcase.*) is built
   from a REAL HA capture, never invented, and the capture is LOCAL ONLY: sim/fixtures/local/
   (gitignored by sim/.gitignore) holds real-ha-sample.json (states, platforms, /api/services) and

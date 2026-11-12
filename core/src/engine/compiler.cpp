@@ -215,8 +215,8 @@ public:
     // bindings, and the same scope's "<button>:up" binding must contain the
     // matching release (same device, release command and params). This is
     // early feedback for the user only: the engine's hold ledger is what
-    // guarantees the release at runtime (design section 5), e.g. when an
-    // activity overrides only the :up of a global hold.
+    // guarantees the release at runtime (design section 5), e.g. when the
+    // active activity changes while a global hold is down.
     void bindings(const std::vector<BindingSpec> &bindings, const std::string &prefix, TriggerTable *table) {
         bool seen[kTriggerCount] = {};
         const std::string *paths[kTriggerCount] = {};
@@ -239,6 +239,7 @@ public:
             ActionSpan span;
             sequence(binding.actions, /*isBinding=*/true, path, &span);
             table->spans[static_cast<size_t>(trigger.button)][static_cast<size_t>(trigger.kind)] = span;
+            if (span.count != 0) table->bound |= remote::buttonBit(trigger.button);
         }
         for (size_t t = 0; t < kTriggerCount; t++) {
             if (paths[t] == nullptr) continue;

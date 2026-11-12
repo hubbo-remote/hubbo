@@ -1,17 +1,22 @@
-import { ArrowDown, ArrowUp, Clock, GripVertical, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Clock, Copy, GripVertical, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
-import type { Action, ValidationIssue } from '@/api/types'
+import type { Action, ParamSpec, ValidationIssue } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { isWait, LIMITS, waitAction, type Catalog } from '@/lib/activity'
+import { Field, Input } from '@/components/ui/input'
+import { commandFor, isWait, LIMITS, mostUsedDevice, waitAction, type Catalog } from '@/lib/activity'
+import { WAIT_CONNECTED_MS, WAIT_MS } from '@/api/constants'
 import { cn } from '@/lib/utils'
 import { CommandPicker } from './CommandPicker'
+import { startAction } from './start'
 import { commandLabel, deviceName, paramSummary } from './describe'
 
-/** Ordered list of actions (startup/shutdown) with add, edit, wait, and reorder (buttons, drag, or Alt+↑/↓). */
+/** Ordered list of actions (startup/shutdown) with add, edit, duplicate, wait, and reorder (drag, or Alt+↑/↓). */
 export function SequenceEditor({ label, actions, onChange, catalog, issues, pathPrefix }: { label: string; actions: Action[]; onChange: (a: Action[]) => void; catalog: Catalog; issues: ValidationIssue[]; pathPrefix: string }) {
   const [editing, setEditing] = useState<{ index: number; action: Action | null } | null>(null)
-  const [drag, setDrag] = useState<{ from: number; over: number } | null>(null)
+  const [timeOk, setTimeOk] = useState(true) // the time field's say, while one is open
+  // `slot`: the gap a drop inserts into (0 = before the first step, n = after the last).
+  const [drag, setDrag] = useState<{ from: number; slot: number } | null>(null)
   const list = useRef<HTMLOListElement>(null)
   const refocus = useRef<number | null>(null)
   const hint = useId()
@@ -23,7 +28,15 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
     onChange(next)
     return true
   }
-  const move = (i: number, d: number) => moveTo(i, i + d)
+  // The gap under a pointer: before the first step whose top half it's in, else after the last.
+  const slotAt = (y: number) => {
+    const steps = [...(list.current?.children ?? [])]
+    const i = steps.findIndex((el) => {
+      const r = el.getBoundingClientRect()
+      return y - r.top <= r.height / 2
+    })
+    return i < 0 ? steps.length : i
+  }
   const onStepKey = (e: KeyboardEvent<HTMLLIElement>, i: number) => {
     if (e.target !== e.currentTarget || !e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return
     e.preventDefault()
@@ -39,6 +52,7 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
   const issueFor = (i: number) => issues.filter((x) => x.path === `${pathPrefix}/${i}` || x.path.startsWith(`${pathPrefix}/${i}/`))
   const full = actions.length >= LIMITS.maxSequence
 
+  const timeEdit = !!editing?.action && editing.index < actions.length && !!timed(editing.action)
   return (
     <div className="grid gap-3">
       {actions.length === 0 ? (
@@ -53,39 +67,46 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
                 key={i}
                 tabIndex={0}
                 aria-describedby={hint}
-                draggable
                 onKeyDown={(e) => onStepKey(e, i)}
-                onDragStart={(e) => {
-                  e.dataTransfer.effectAllowed = 'move'
-                  e.dataTransfer.setData('text/plain', String(i))
-                  setDrag({ from: i, over: i })
-                }}
-                onDragOver={(e) => {
-                  if (!drag) return
-                  e.preventDefault()
-                  if (drag.over !== i) setDrag({ ...drag, over: i })
-                }}
-                onDrop={(e) => {
-                  e.preventDefault()
-                  if (drag) moveTo(drag.from, i)
-                  setDrag(null)
-                }}
-                onDragEnd={() => setDrag(null)}
                 className={cn(
-                  'group flex items-center gap-2 rounded-lg border bg-card py-2 pr-2 pl-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  wait && 'border-dashed bg-muted/40',
+                  'group relative flex items-center gap-2 rounded-lg border bg-card py-2 pr-2 pl-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   errs.length && 'border-destructive/60 bg-destructive/5',
                   drag?.from === i && 'opacity-50',
-                  drag && drag.over === i && drag.from !== i && 'ring-2 ring-primary',
                 )}
               >
-                <GripVertical className="size-4 shrink-0 cursor-grab text-muted-foreground/50" aria-hidden />
+                {/* Where a drop goes: a line in the gap before this step (or after the last), unless it'd stay put. */}
+                {drag && drag.slot !== drag.from && drag.slot !== drag.from + 1 && (drag.slot === i || (drag.slot === actions.length && i === actions.length - 1)) && (
+                  <span aria-hidden className={cn('pointer-events-none absolute inset-x-0 h-0.5 rounded-full bg-primary', drag.slot === i ? '-top-[5px]' : '-bottom-[5px]')} />
+                )}
+                {/* Pointer events, so a mouse and a finger drag the same way (HTML drag and drop has no touch). */}
+                <span
+                  data-grip
+                  aria-hidden
+                  className="-my-2 shrink-0 cursor-grab touch-none py-2 text-muted-foreground group-hover:text-foreground active:cursor-grabbing"
+                  onPointerDown={(e) => {
+                    if (e.button !== 0) return
+                    e.preventDefault()
+                    e.currentTarget.setPointerCapture(e.pointerId)
+                    setDrag({ from: i, slot: i })
+                  }}
+                  onPointerMove={(e) => {
+                    const slot = drag && slotAt(e.clientY)
+                    if (drag && slot !== drag.slot) setDrag({ ...drag, slot: slot! })
+                  }}
+                  onPointerUp={() => {
+                    if (drag) moveTo(drag.from, drag.slot > drag.from ? drag.slot - 1 : drag.slot)
+                    setDrag(null)
+                  }}
+                  onPointerCancel={() => setDrag(null)}
+                >
+                  <GripVertical className="size-4" />
+                </span>
                 <span className="w-5 shrink-0 text-right font-mono text-xs text-muted-foreground tabular-nums">{i + 1}</span>
-                {wait ? <Clock className="size-4 shrink-0 text-muted-foreground" aria-hidden /> : null}
+                {wait ? <Clock className="size-4 shrink-0" aria-hidden /> : null}
                 <div className="min-w-0 flex-1">
                   <p className="truncate">
                     {wait ? (
-                      <span className="text-muted-foreground">Wait {paramSummary(a)}</span>
+                      <span className="font-medium">Wait {paramSummary(a)}</span>
                     ) : (
                       <>
                         <span className="font-medium">{deviceName(a, catalog)}</span>
@@ -102,14 +123,11 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
                   ))}
                 </div>
                 <div className="flex shrink-0 items-center">
-                  <Button variant="ghost" size="icon" className="size-8" aria-label={`Move step ${i + 1} up`} disabled={i === 0} onClick={() => move(i, -1)}>
-                    <ArrowUp />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="size-8" aria-label={`Move step ${i + 1} down`} disabled={i === actions.length - 1} onClick={() => move(i, 1)}>
-                    <ArrowDown />
-                  </Button>
                   <Button variant="ghost" size="icon" className="size-8" aria-label={`Edit step ${i + 1}`} onClick={() => setEditing({ index: i, action: a })}>
                     <Pencil />
+                  </Button>
+                  <Button variant="ghost" size="icon" className="size-8" aria-label={`Duplicate step ${i + 1}`} disabled={full} title={full ? `At most ${LIMITS.maxSequence} steps` : undefined} onClick={() => onChange([...actions.slice(0, i + 1), a, ...actions.slice(i + 1)])}>
+                    <Copy />
                   </Button>
                   <Button variant="ghost" size="icon" className="size-8 hover:text-destructive" aria-label={`Remove step ${i + 1}`} onClick={() => onChange(actions.filter((_, j) => j !== i))}>
                     <Trash2 />
@@ -124,10 +142,10 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
         Alt+Up and Alt+Down move a step.
       </p>
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" size="sm" disabled={full} onClick={() => setEditing({ index: actions.length, action: null })}>
+        <Button variant="outline" size="sm" disabled={full} onClick={() => setEditing({ index: actions.length, action: startAction(catalog, 'sequence', mostUsedDevice(actions)) })}>
           <Plus /> Add step
         </Button>
-        <Button variant="ghost" size="sm" disabled={full} onClick={() => onChange([...actions, waitAction()])}>
+        <Button variant="outline" size="sm" disabled={full} onClick={() => onChange([...actions, waitAction()])}>
           <Clock /> Add wait
         </Button>
       </div>
@@ -141,7 +159,7 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
               Cancel
             </Button>
             <Button
-              disabled={!editing?.action || !editing.action.command_id}
+              disabled={!editing?.action || !editing.action.command_id || (timeEdit && !timeOk)}
               onClick={() => {
                 if (!editing?.action) return
                 const next = [...actions]
@@ -155,8 +173,59 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
           </>
         }
       >
-        {editing && <CommandPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="sequence" />}
+        {editing && (timeEdit && editing.action ? (
+          <TimeField action={editing.action} catalog={catalog} onChange={(action) => setEditing({ ...editing, action })} onValid={setTimeOk} />
+        ) : (
+          <CommandPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="sequence" />
+        ))}
       </Dialog>
     </div>
+  )
+}
+
+/** A step that's only a time: a wait (its duration), or a Bluetooth wait until connected (its timeout). */
+const timed = (a: Action) => (isWait(a) ? 'duration_ms' : a.command_id === 'wait_connected' ? 'timeout_ms' : null)
+
+/** Editing a timed step changes only its time: a wait in ms, a connect timeout in seconds (the device stays as it is). */
+/** `onChange` gets each good time; `onValid` whether the field can be saved, from the start (a stored value may be out of range). */
+function TimeField({ action, catalog, onChange, onValid }: { action: Action; catalog: Catalog; onChange: (a: Action) => void; onValid: (ok: boolean) => void }) {
+  const param = timed(action)!
+  const wait = param === 'duration_ms'
+  const scale = wait ? 1 : 1000 // stored ms per shown unit
+  const unit = wait ? 'ms' : 's'
+  // The catalog's bounds; the known ones until it has loaded this device's commands.
+  const spec: Pick<ParamSpec, 'minimum' | 'maximum' | 'default'> = commandFor(action, catalog)?.params.find((p) => p.name === param) ?? (wait ? WAIT_MS : WAIT_CONNECTED_MS)
+  const ms = action.params[param] ?? spec.default
+  const [text, setText] = useState(typeof ms === 'number' ? String(ms / scale) : '')
+  const range = spec.minimum !== undefined && spec.maximum !== undefined ? ([spec.minimum / scale, spec.maximum / scale] as const) : null
+  const span = range && `${range[0]}–${range[1]} ${unit}`
+  const errorOf = (t: string) => {
+    const n = Number(t)
+    if (t.trim() === '' || !Number.isFinite(n)) return wait ? 'Enter a number of milliseconds' : 'Enter a number of seconds'
+    return range && (n < range[0] || n > range[1]) ? span : null
+  }
+  const error = errorOf(text)
+  useEffect(() => onValid(!error), [error, onValid])
+  const id = useId()
+  return (
+    <Field label={wait ? 'Wait (ms)' : `Wait for ${deviceName(action, catalog)} to connect, at most (s)`} htmlFor={id} error={error} hint={span ?? undefined}>
+      <Input
+        id={id}
+        type="number"
+        inputMode={wait ? 'numeric' : 'decimal'}
+        min={range?.[0]}
+        max={range?.[1]}
+        step={wait ? 100 : 0.1}
+        value={text}
+        autoFocus
+        aria-invalid={!!error}
+        className="w-28"
+        onChange={(e) => {
+          const t = e.target.value
+          setText(t)
+          if (!errorOf(t)) onChange({ ...action, params: { ...action.params, [param]: Math.round(Number(t) * scale) } })
+        }}
+      />
+    </Field>
   )
 }

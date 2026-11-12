@@ -2,15 +2,15 @@ import { describe, expect, it } from 'vitest'
 import type { Capabilities, Device, DeviceDetail } from '../../api/types.ts'
 import { bleDevice, buildStarter, haDevice, type ButtonRule, type WizardAnswers, type WizardDevice } from './build.ts'
 
-const rule = (button: ButtonRule['button'], role: ButtonRule['role'], hold: boolean, ...candidates: string[]): ButtonRule => ({ button, role, hold, candidates })
+const rule = (button: ButtonRule['button'], role: ButtonRule['role'], ...candidates: string[]): ButtonRule => ({ button, role, candidates })
 const RULES: ButtonRule[] = [
-  rule('up', 'watch', true, 'DirectionUp'),
-  rule('select', 'watch', false, 'Select', 'OK', 'Enter'),
-  rule('menu', 'watch', true, 'Menu', 'Home'), // held for Control Center, as in profiles/buttons.json
-  rule('info', 'watch', false, 'Info'),
-  rule('play', 'watch', false, 'Play', 'PlayPause'),
-  rule('volume_up', 'volume', true, 'VolumeUp'),
-  rule('mute', 'volume', false, 'Mute', 'MuteToggle'),
+  rule('up', 'watch', 'DirectionUp'),
+  rule('select', 'watch', 'Select', 'OK', 'Enter'),
+  rule('menu', 'watch', 'Menu', 'Home'),
+  rule('info', 'watch', 'Info'),
+  rule('play', 'watch', 'Play', 'PlayPause'),
+  rule('volume_up', 'volume', 'VolumeUp'),
+  rule('mute', 'volume', 'Mute', 'MuteToggle'),
 ]
 
 const ha = (id: string, commands: Capabilities['commands']): [Device, Capabilities] => [
@@ -59,28 +59,36 @@ describe('buildStarter', () => {
     expect(activity.bindings).toEqual({
       'up:down': [press('press_down', 'DirectionUp')],
       'up:up': [press('press_up', 'DirectionUp')],
-      'select:tap': [press('press', 'Select')],
-      'menu:down': [press('press_down', 'Home')], // the profile's override, held
+      'select:down': [press('press_down', 'Select')], // every button passes straight through
+      'select:up': [press('press_up', 'Select')],
+      'menu:down': [press('press_down', 'Home')], // the profile's override
       'menu:up': [press('press_up', 'Home')],
-      'play:tap': [press('press', 'PlayPause')], // the second candidate
-      'volume_up:down': [tv('media_player.volume_up')], // HA can't repeat: one send on press
-      'mute:tap': [tv('media_player.volume_mute', { muted: true })],
+      'play:down': [press('press_down', 'PlayPause')], // the second candidate
+      'play:up': [press('press_up', 'PlayPause')],
+      'volume_up:down': [tv('media_player.volume_up')], // HA has no down/up: one send on press
+      'mute:tap': [tv('media_player.volume_mute', { muted: true })], // a long press: Press is the tap
       'mute:hold': [tv('media_player.volume_mute', { muted: false })],
     })
     expect(filled.map((f) => f.button)).not.toContain('info') // no candidate: left empty
   })
 
-  it('a hold button with no press form gets one send on down', () => {
+  it('a button with no press form gets one send on down', () => {
     const tap = tv('media_player.menu')
     const d: WizardDevice = { ...haDevice(tvD, tvC), commands: new Map([['menu', { tap }]]) }
     const { activity } = buildStarter([d], answers({ devices: ['tv'], watch: 'tv', volume: null }), RULES)
     expect(activity.bindings).toEqual({ 'menu:down': [tap] })
   })
 
+  it('a profile command with its own timed hold is bound as one tap (only a press times it)', () => {
+    const d = bleDevice({ ...streamer, commands: { Home: { ...u, hold_ms: 1000 } } })
+    const { activity } = buildStarter([d], answers({ devices: ['streamer'], volume: null }), RULES)
+    expect(activity.bindings).toEqual({ 'menu:tap': [press('press', 'Home')] })
+  })
+
   it('a profile override of null leaves the button empty, and matching ignores case', () => {
     const d = bleDevice({ ...streamer, commands: { select: u, Home: u }, buttons: { menu: null } })
     const { activity } = buildStarter([d], answers({ devices: ['streamer'], volume: null }), RULES)
-    expect(Object.keys(activity.bindings)).toEqual(['select:tap'])
+    expect(Object.keys(activity.bindings)).toEqual(['select:down', 'select:up'])
   })
 
   it('startup: HA first, power on, a wake wait before the input; Bluetooth waits to connect, with key delays', () => {

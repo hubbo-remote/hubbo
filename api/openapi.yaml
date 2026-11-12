@@ -615,10 +615,12 @@ paths:
       tags: [activities]
       operationId: getGlobalBindings
       x-hubbo-role: token
-      summary: Bindings that apply whatever activity is active
+      summary: Bindings for buttons the active activity doesn't bind
       description: |
-        Used when the active activity (or no activity) does not bind the
-        trigger. This is where activity buttons live, e.g.
+        Applied per button, not per trigger: if the active activity binds any
+        trigger of a button (down, up, tap or hold), none of that button's
+        global bindings apply. With no activity, all of them apply. This is
+        where activity buttons live, e.g.
         `"tv:tap": [system/activate {activity_id}]` and `"off:tap": [system/off]`.
       responses:
         '503': {$ref: '#/components/responses/Unavailable'}

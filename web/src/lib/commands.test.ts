@@ -98,25 +98,40 @@ describe('choices', () => {
   })
 })
 
-describe('a button as Press / Hold / Long press', () => {
-  it('writes and reads back each form', () => {
-    const tap = writeMain({}, 'select', { mode: 'press', action: press('Select') })
-    expect(Object.keys(tap)).toEqual(['select:tap'])
-    const held = writeMain({}, 'up', { mode: 'hold', action: press('DirectionUp', { hold_ms: 800 }) })
-    expect(held).toEqual({
+describe('a button as Press / Long press', () => {
+  it('passes Press straight through, and makes it a tap while a long press is bound', () => {
+    const mirror = writeMain({}, 'up', press('DirectionUp', { hold_ms: 800 }))
+    expect(mirror).toEqual({
       'up:down': [{ ...press('DirectionUp'), command_id: 'press_down' }],
       'up:up': [{ ...press('DirectionUp'), command_id: 'press_up' }],
     })
-    expect(readButton(held, 'up')).toEqual({ main: { mode: 'hold', action: press('DirectionUp') }, longPress: null, raw: [] })
-    const haHeld = writeMain({}, 'volume_up', { mode: 'hold', action: { ...dev, command_id: 'media_player.volume_up', params: {} } })
-    expect(Object.keys(haHeld)).toEqual(['volume_up:down'])
-    expect(readButton(haHeld, 'volume_up').main?.mode).toBe('hold')
+    expect(readButton(mirror, 'up')).toEqual({ main: press('DirectionUp'), longPress: null, raw: [] })
+    const ha = writeMain({}, 'volume_up', { ...dev, command_id: 'media_player.volume_up', params: {} })
+    expect(Object.keys(ha)).toEqual(['volume_up:down']) // no down/up: one send, on press
+    expect(readButton(ha, 'volume_up').main?.command_id).toBe('media_player.volume_up')
 
-    const both = writeLongPress(tap, 'select', press('Home'))
-    const view = readButton(both, 'select')
-    expect(view).toMatchObject({ main: { mode: 'press' }, longPress: press('Home'), raw: [] })
-    expect(viewKinds(view)).toEqual(['tap', 'hold'])
+    const both = writeLongPress(writeMain({}, 'select', press('Select')), 'select', press('Home'))
+    expect(both).toEqual({ 'select:tap': [press('Select')], 'select:hold': [press('Home')] })
+    expect(viewKinds(readButton(both, 'select'))).toEqual(['tap', 'hold'])
+    expect(Object.keys(writeLongPress(both, 'select', null))).toEqual(['select:down', 'select:up']) // back to the mirror
     expect(writeMain(both, 'select', null)).toEqual({ 'select:hold': [press('Home')] }) // long press kept
+  })
+
+  it('makes Press a tap when the long press was bound first, and Hubbo’s own commands always a tap', () => {
+    const held = writeMain(writeLongPress({}, 'info', press('Home')), 'info', press('Info'))
+    expect(held).toEqual({ 'info:hold': [press('Home')], 'info:tap': [press('Info')] })
+    const off = { integration_id: 'system', device_id: null, command_id: 'off', params: {} }
+    expect(writeMain({}, 'tv', off)).toEqual({ 'tv:tap': [off] })
+    expect(readButton({ 'tv:tap': [off] }, 'tv').main).toEqual(off)
+  })
+
+  it('keeps a timed profile command a tap, with or without a long press', () => {
+    const timed = (a: Action) => a.params.command === 'ControlCenter'
+    const cc = press('ControlCenter')
+    expect(writeMain({}, 'menu', cc, timed)).toEqual({ 'menu:tap': [cc] })
+    expect(readButton({ 'menu:tap': [cc] }, 'menu')).toEqual({ main: cc, longPress: null, raw: [] })
+    const both = writeLongPress(writeMain({}, 'menu', cc, timed), 'menu', press('Home'), timed)
+    expect(writeLongPress(both, 'menu', null, timed)).toEqual({ 'menu:tap': [cc] })
   })
 
   it('leaves triggers it can’t fold as raw', () => {

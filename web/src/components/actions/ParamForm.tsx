@@ -13,13 +13,18 @@ import { cn } from '@/lib/utils'
  * ones, or a command's sole optional one with no default) show in place; any other optional ones sit
  * in a drawer below, behind a chevron that's always there for such a command (a dot when one is set).
  * `inline`: the device page row, label-less controls between `before` and `after`, no sliders.
+ * `lead`: a picker's own fields (Device, Command), in one row with the primary params, which fit their content.
  */
-export function ParamForm({ commandId, name, params, values, onChange, activities = [], compact, inline, before, after }: { commandId: string; name: string; params: ParamSpec[]; values: ActionParams; onChange: (v: ActionParams) => void; activities?: { id: string; name: string }[]; compact?: boolean; inline?: boolean; before?: ReactNode; after?: ReactNode }) {
+export function ParamForm({ commandId, name, params, values, onChange, activities = [], compact, inline, before, after, lead }: { commandId: string; name: string; params: ParamSpec[]; values: ActionParams; onChange: (v: ActionParams) => void; activities?: { id: string; name: string }[]; compact?: boolean; inline?: boolean; before?: ReactNode; after?: ReactNode; lead?: ReactNode }) {
   const base = useId()
   const drawer = drawerParams(params)
   const primary = params.filter((p) => !drawer.includes(p))
   const changed = drawer.some((p) => values[p.name] !== undefined && values[p.name] !== p.default)
-  const [open, setOpen] = useState(changed) // a stored action with settings opens on them
+  // Open for this command only (a picker keeps its form while the command changes); a stored action with settings opens on them.
+  const sig = `${commandId} ${name}`
+  const [openFor, setOpenFor] = useState(changed ? sig : '')
+  const open = openFor === sig
+  const setOpen = (o: boolean) => setOpenFor(o ? sig : '')
   const set = (k: string, v: ParamValue | undefined) => {
     const next = { ...values }
     if (v === undefined || v === '') delete next[k]
@@ -27,7 +32,11 @@ export function ParamForm({ commandId, name, params, values, onChange, activitie
     onChange(next)
   }
   const ids = new Set(activities.map((a) => a.id))
-  const field = (p: ParamSpec, inRow: boolean) => {
+  // `row`: a device page row (screen-reader labels, fixed widths); `fit`: a picker's row (labels above,
+  // sized to content, no slider); `stack`: one under another.
+  const field = (p: ParamSpec, mode: 'row' | 'fit' | 'stack') => {
+    const inRow = mode === 'row'
+    const fit = mode === 'fit'
     const id = `${base}-${p.name}`
     // An unset optional param shows its default (what runs), without storing it.
     const v = values[p.name] ?? (p.required ? undefined : p.default)
@@ -46,7 +55,7 @@ export function ParamForm({ commandId, name, params, values, onChange, activitie
         const loading = p.type === 'activity_ref' && activities.length === 0
         return (
           <Field key={p.name} label={label} htmlFor={id} error={error} info={p.description} inline={inlineAs}>
-            <Select id={id} value={stored} onChange={(e) => set(p.name, e.target.value)} aria-invalid={!!error} className={inRow ? 'w-48' : undefined}>
+            <Select id={id} value={stored} onChange={(e) => set(p.name, e.target.value)} aria-invalid={!!error} className={inRow ? 'w-48' : fit ? 'w-auto max-w-full' : undefined}>
               {((!p.required && p.default === undefined) || stored === '') && <option value="">{p.required ? 'Choose…' : 'Not set'}</option>}
               {unknown && <option value={stored}>{loading ? stored : `${stored} (not available)`}</option>}
               {p.name === 'key'
@@ -87,7 +96,7 @@ export function ParamForm({ commandId, name, params, values, onChange, activitie
           const current = typeof v === 'number' ? v : undefined
           return (
             <Field key={p.name} label={label} htmlFor={id} error={error} info={p.description} inline={inlineAs}>
-              <Select id={id} value={current === undefined ? '' : String(current)} onChange={(e) => set(p.name, e.target.value === '' ? undefined : Number(e.target.value))} aria-invalid={!!error} className={inRow ? (choices.kind === 'speed' ? 'w-36' : 'w-28') : undefined}>
+              <Select id={id} value={current === undefined ? '' : String(current)} onChange={(e) => set(p.name, e.target.value === '' ? undefined : Number(e.target.value))} aria-invalid={!!error} className={inRow ? (choices.kind === 'speed' ? 'w-36' : 'w-28') : fit ? 'w-auto' : undefined}>
                 {current === undefined && <option value="">{p.required ? 'Choose…' : 'Not set'}</option>}
                 {choices.options(current).map((o) => (
                   <option key={o} value={String(o)}>
@@ -105,7 +114,7 @@ export function ParamForm({ commandId, name, params, values, onChange, activitie
         return (
           <Field key={p.name} label={label} htmlFor={id} error={error} info={p.description} hint={ranged ? `${p.minimum}–${p.maximum}${unit}` : undefined} inline={inRow && 'beside'}>
             <div className="flex items-center gap-3">
-              {ranged && !inRow && (
+              {ranged && !inRow && !fit && (
                 <input
                   type="range"
                   aria-label={`${paramLabel(p)} slider`}
@@ -126,7 +135,7 @@ export function ParamForm({ commandId, name, params, values, onChange, activitie
                 step={step}
                 value={display}
                 onChange={(e) => set(p.name, e.target.value === '' ? undefined : Number(e.target.value))}
-                className={ranged || inRow ? 'w-24' : undefined}
+                className={ranged || inRow || fit ? 'w-24' : undefined}
                 aria-invalid={!!error}
               />
             </div>
@@ -161,7 +170,7 @@ export function ParamForm({ commandId, name, params, values, onChange, activitie
     <div id={`${base}-drawer`} className={cn('grid gap-3 bg-muted/40 py-3', inline ? '-mx-4 -mb-2 rounded-b-lg border-t px-4' : 'rounded-md border px-3')}>
       {drawer.map((p) => (
         <div key={p.name} className="grid gap-1">
-          {field(p, false)}
+          {field(p, 'stack')}
           {values[p.name] !== undefined && (
             <button type="button" onClick={() => set(p.name, undefined)} className="justify-self-start text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
               Reset{p.default === undefined ? '' : ' to default'}
@@ -179,7 +188,7 @@ export function ParamForm({ commandId, name, params, values, onChange, activitie
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           {before}
           <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-            {primary.length > 0 && <div className="flex flex-wrap items-start justify-end gap-2">{primary.map((p) => field(p, true))}</div>}
+            {primary.length > 0 && <div className="flex flex-wrap items-start justify-end gap-2">{primary.map((p) => field(p, 'row'))}</div>}
             {after}
             {drawer.length > 0 ? toggle(false) : <span className="size-9 shrink-0" aria-hidden />}
           </div>
@@ -187,10 +196,17 @@ export function ParamForm({ commandId, name, params, values, onChange, activitie
         {drawerBody && <div className="mt-2">{drawerBody}</div>}
       </div>
     )
-  if (params.length === 0) return null
+  if (params.length === 0 && !lead) return null
   return (
     <div className="grid gap-2">
-      {primary.length > 0 && <div className={compact ? 'grid gap-3 sm:grid-cols-2' : 'grid gap-4'}>{primary.map((p) => field(p, false))}</div>}
+      {lead ? (
+        <div className="flex flex-wrap items-start gap-3">
+          {lead}
+          {primary.map((p) => field(p, 'fit'))}
+        </div>
+      ) : (
+        primary.length > 0 && <div className={compact ? 'grid gap-3 sm:grid-cols-2' : 'grid gap-4'}>{primary.map((p) => field(p, 'stack'))}</div>
+      )}
       {drawer.length > 0 && (
         <div className="grid">
           {toggle(true)}

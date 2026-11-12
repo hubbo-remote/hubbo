@@ -9,7 +9,8 @@ export function commandLabel(a: Action, cat: Catalog): string {
   return friendlyName(a) ?? (t ? toggleLabel(cmd!, ...t) : cmd && commandTitle(cmd)) ?? a.command_id
 }
 
-const duration = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(ms % 1000 ? 1 : 0)} s` : `${ms} ms`)
+/** 500 ms, 1 s, 1.5 s, 2.25 s: milliseconds under a second, else seconds without trailing zeros. */
+const duration = (ms: number) => (ms >= 1000 ? `${Number((ms / 1000).toFixed(3))} s` : `${ms} ms`)
 
 export function paramSummary(a: Action, cat?: Catalog): string {
   if (isSystem(a) && a.command_id === 'wait') return duration(Number(a.params.duration_ms ?? 0))

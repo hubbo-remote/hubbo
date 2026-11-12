@@ -36,6 +36,8 @@
   --remote-glyph: oklch(0.93 0.005 260);
   --remote-bound: oklch(0.72 0.12 190);
   --remote-accent: oklch(0.76 0.15 62);
+  /* The selected key's border: pink-500, apart from the teal bound mark and every pip (green, amber, blue, violet). */
+  --remote-selected: #ec4899;
   --ev-down: oklch(0.68 0.15 200);
   --ev-up: oklch(0.7 0.13 290);
   --ev-tap: oklch(0.74 0.15 150);

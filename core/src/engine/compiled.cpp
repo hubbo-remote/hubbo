@@ -18,10 +18,10 @@ ActionSpan CompiledConfig::lookup(int activity, remote::Button button, remote::E
         return {};
     }
     if (activity >= 0 && static_cast<size_t>(activity) < activities.size()) {
-        const ActionSpan &s = activities[static_cast<size_t>(activity)].table.at(button, kind);
-        if (s.count != 0) {
+        const TriggerTable &table = activities[static_cast<size_t>(activity)].table;
+        if ((table.bound & remote::buttonBit(button)) != 0) {
             if (fromGlobal != nullptr) *fromGlobal = false;
-            return s;
+            return table.at(button, kind);
         }
     }
     if (fromGlobal != nullptr) *fromGlobal = true;

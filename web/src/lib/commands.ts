@@ -1,8 +1,9 @@
 // A device's commands as people think of them, mapped to and from the API's action catalog.
 // Bluetooth exposes families of catalog commands (press / press_down / press_up with a `command`
 // param, and the same for keys and raw usages); here they become the device's own commands by name
-// (Home, Menu, Play/Pause...), plus "Keyboard key" and "Custom code". A button's binding is one
-// action plus Press (a tap) or Hold (held while the button is held). Pure: no React, relative imports.
+// (Home, Menu, Play/Pause...), plus "Keyboard key" and "Custom code". A button's binding is a Press
+// (passed straight through, or a tap when it also has a Long press) and a Long press. Pure: no
+// React, relative imports.
 import type { Action, Bindings, ButtonId, Command, EventKind, ParamSpec } from '../api/types.ts'
 import { defaultParams, EVENT_ORDER, paramLabel, triggerKey } from './activity.ts'
 import { keyLabel } from './keys.ts'
@@ -173,17 +174,11 @@ export function friendlyName(a: Action): string | null {
 /** The param a friendly name already says (so summaries leave it out). */
 export const namedParam = (a: Action) => familyOf(a.command_id)?.param
 
-// ---- A button's bindings as Press / Hold / Long press ----
+// ---- A button's bindings as Press / Long press ----
 
-export type Mode = 'press' | 'hold'
-export interface Main {
-  mode: Mode
-  /** In tap form (press, key_tap, an HA command...). */
-  action: Action
-}
 export interface ButtonView {
-  /** The button's action, if its down/up/tap triggers fit Press or Hold. */
-  main: Main | null
+  /** The button's Press action, in tap form (press, key_tap, an HA command...), if its down/up/tap triggers fit. */
+  main: Action | null
   /** The long-press (`hold` event) action, if it's a single one. */
   longPress: Action | null
   /** Triggers that don't fit and show as they are. */
@@ -192,50 +187,68 @@ export interface ButtonView {
 
 const sameTarget = (a: Action, b: Action) => a.integration_id === b.integration_id && a.device_id === b.device_id && same(a.params, b.params)
 
-/** Read a button: tap → Press; a matching down/up pair (or one send on down) → Hold; anything else stays raw. */
+/**
+ * Read a button. Press is a tap, a matching down/up pair (the mirror: the button passes through), or
+ * one HA send on down; anything else stays raw.
+ */
 export function readButton(bindings: Bindings, button: ButtonId): ButtonView {
   const at = (e: EventKind) => bindings[triggerKey(button, e)] ?? []
   const down = at('down'), up = at('up'), tap = at('tap'), hold = at('hold')
   const view: ButtonView = { main: null, longPress: hold.length === 1 ? hold[0]! : null, raw: hold.length > 1 ? ['hold'] : [] }
   const d = down[0]
   const f = d && familyOf(d.command_id)
-  if (!down.length && !up.length && tap.length === 1) view.main = { mode: 'press', action: tap[0]! }
+  if (!down.length && !up.length && tap.length === 1) view.main = tap[0]!
   else if (!tap.length && down.length === 1 && up.length === 1 && f && d.command_id === f.down && up[0]!.command_id === f.up && sameTarget(d, up[0]!)) {
-    view.main = { mode: 'hold', action: { ...d, command_id: f.tap } }
-  } else if (d && !tap.length && !up.length && down.length === 1 && !f) view.main = { mode: 'hold', action: d }
+    view.main = { ...d, command_id: f.tap }
+  } else if (d && !tap.length && !up.length && down.length === 1 && !f) view.main = d
   else if (down.length || up.length || tap.length) view.raw = [...(['down', 'up', 'tap'] as const).filter((e) => at(e).length), ...view.raw]
   return view
 }
 
-/** Bindings with this button's Press/Hold replaced (null clears it). Long press and other buttons are kept. */
-export function writeMain(bindings: Bindings, button: ButtonId, main: Main | null): Bindings {
+/**
+ * Write Press as Harmony does: with no long press, the button passes straight through (down sends
+ * press_down, up press_up, so a hold reaches the device as one; an HA command, which has no down/up,
+ * is sent once on down). With a long press, Press is the tap (sent on release, when the press was short).
+ */
+function pressTriggers(button: ButtonId, a: Action, tap: boolean): Bindings {
+  const f = familyOf(a.command_id)
+  if (tap || !a.device_id) return { [triggerKey(button, 'tap')]: [a] } // Hubbo's own (switch activity) acts on a press
+  if (!f) return { [triggerKey(button, 'down')]: [a] }
+  // Held while the button is held: only what's sent carries over (a timed hold_ms doesn't apply).
+  const params = { [f.param]: a.params[f.param]! }
+  return { [triggerKey(button, 'down')]: [{ ...a, command_id: f.down, params }], [triggerKey(button, 'up')]: [{ ...a, command_id: f.up, params }] }
+}
+const withoutPress = (bindings: Bindings, button: ButtonId) => {
   const next = { ...bindings }
   for (const e of ['down', 'up', 'tap'] as const) delete next[triggerKey(button, e)]
-  if (!main) return next
-  const a = main.action
-  const f = familyOf(a.command_id)
-  if (main.mode === 'press') next[triggerKey(button, 'tap')] = [a]
-  else if (f) {
-    // Held while the button is held: only what's sent carries over (a timed hold_ms doesn't apply).
-    const params = { [f.param]: a.params[f.param]! }
-    next[triggerKey(button, 'down')] = [{ ...a, command_id: f.down, params }]
-    next[triggerKey(button, 'up')] = [{ ...a, command_id: f.up, params }]
-  } else next[triggerKey(button, 'down')] = [a] // can't be held: one send, on press
   return next
 }
 
-/** Bindings with this button's long press (the `hold` event) replaced (null clears it). */
-export function writeLongPress(bindings: Bindings, button: ButtonId, action: Action | null): Bindings {
+/** A command a button can't pass through as down/up: a profile command with its own timed hold (only a `press` times it). */
+export type TimedTest = (a: Action) => boolean
+
+/**
+ * Bindings with this button's Press replaced (null clears it). Long press and other buttons are kept.
+ * Press is a tap while a long press is bound, or when `timed` says the command is a timed press.
+ */
+export function writeMain(bindings: Bindings, button: ButtonId, action: Action | null, timed?: TimedTest): Bindings {
+  const next = withoutPress(bindings, button)
+  return action ? { ...next, ...pressTriggers(button, action, !!next[triggerKey(button, 'hold')]?.length || !!timed?.(action)) } : next
+}
+
+/** Bindings with this button's long press (the `hold` event) replaced (null clears it); a folded Press is rewritten to match. */
+export function writeLongPress(bindings: Bindings, button: ButtonId, action: Action | null, timed?: TimedTest): Bindings {
+  const main = readButton(bindings, button).main
   const next = { ...bindings }
   if (action) next[triggerKey(button, 'hold')] = [action]
   else delete next[triggerKey(button, 'hold')]
-  return next
+  return main ? writeMain(next, button, main, timed) : next
 }
 
-/** What the remote picture marks a button with: Press (tap), Hold (down), Long press (hold), raw as is. */
+/** What the remote picture marks a button with: Press (as `tap`), Long press (`hold`), raw triggers as they are. */
 export function viewKinds(v: ButtonView): EventKind[] {
   const out = new Set<EventKind>(v.raw)
-  if (v.main) out.add(v.main.mode === 'press' ? 'tap' : 'down')
+  if (v.main) out.add('tap')
   if (v.longPress) out.add('hold')
   return EVENT_ORDER.filter((e) => out.has(e))
 }

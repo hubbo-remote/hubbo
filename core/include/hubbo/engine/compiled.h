@@ -58,6 +58,9 @@ struct ActionSpan {
 
 struct TriggerTable {
     ActionSpan spans[remote::kButtonCount][remote::kEventKindCount];
+    // Buttons with any trigger bound to at least one action (an empty list
+    // is unbound): an activity's mask those buttons' global bindings entirely.
+    remote::ButtonSet bound = 0;
 
     const ActionSpan &at(remote::Button b, remote::EventKind k) const {
         return spans[static_cast<size_t>(b)][static_cast<size_t>(k)];
@@ -94,9 +97,12 @@ struct CompiledConfig {
 
     const CompiledAction *span(const ActionSpan &s) const { return actions.data() + s.offset; }
 
-    // The binding for a trigger: the active activity's if it binds it, else
-    // the global binding. `activity` may be -1 (no activity active).
-    // `fromGlobal` (optional) reports which table matched.
+    // The binding for a trigger. Fallback is per button: if the active
+    // activity binds any trigger of the button, only its bindings apply (an
+    // unbound kind gives an empty span); else the global binding. So a
+    // pass-through :down/:up never runs alongside a global :tap or :hold.
+    // `activity` may be -1 (no activity active). `fromGlobal` (optional)
+    // reports which table answered.
     ActionSpan lookup(int activity, remote::Button button, remote::EventKind kind,
                       bool *fromGlobal = nullptr) const;
 };

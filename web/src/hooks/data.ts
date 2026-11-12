@@ -31,14 +31,18 @@ export function useCatalog() {
     for (const c of list) setQueryData(`caps/${c.device_id}`, c)
     return list
   })
+  // Bluetooth devices' profile commands, for the ones with their own timed hold.
+  const bleIds = (devices.data ?? []).filter((d) => d.provider.type === 'ble_hid').map((d) => d.id).sort()
+  const details = useDeviceDetails(bleIds)
   const catalog = useMemo<Catalog>(
     () => ({
       devices: new Map((devices.data ?? []).map((d) => [d.id, d])),
       capabilities: new Map((caps.data ?? []).map((c: Capabilities) => [c.device_id, c])),
       systemCommands: integrations.data?.find((i) => i.type === 'system')?.commands ?? [],
       activities: (activities.data?.activities ?? []).map((a) => ({ id: a.id, name: a.name })),
+      timed: new Map([...(details.data?.values() ?? [])].map((d) => [d.id, new Set(Object.entries(d.commands ?? {}).filter(([, c]) => c.hold_ms).map(([n]) => n))])),
     }),
-    [devices.data, caps.data, integrations.data, activities.data],
+    [devices.data, caps.data, integrations.data, activities.data, details.data],
   )
   const loading = devices.loading || caps.loading || integrations.loading || activities.loading
   return { catalog, loading, error: devices.error ?? caps.error ?? integrations.error, devices: devices.data ?? [] }

@@ -11,3 +11,6 @@ export const BLE_PAIR_WINDOW_MIN_S = 30
 export const BLE_PAIR_WINDOW_MAX_S = 300
 /** At most this many Bluetooth devices (a fifth is 422 too_many_devices). */
 export const BLE_MAX_DEVICES = 4
+/** A wait step's and a Bluetooth wait-until-connected's time bounds in ms (system `wait`, BLE `wait_connected`), for before the catalog loads. */
+export const WAIT_MS = { minimum: 0, maximum: 60_000 }
+export const WAIT_CONNECTED_MS = { minimum: 1000, maximum: 60_000, default: 15_000 }

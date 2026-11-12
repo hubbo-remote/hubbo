@@ -35,7 +35,6 @@ import type {
   TokenSummary,
   TransitionResult,
   ValidationIssue,
-  ValidationResult,
 } from './types'
 
 import { API_BASE } from './constants'
@@ -212,7 +211,6 @@ export const api = {
   createActivity: (a: ActivityInput) => post<Activity>('/activities', activityBody(a)),
   replaceActivity: (id: string, a: ActivityInput, revision: number) => put<Activity>(`/activities/${enc(id)}`, { ...activityBody(a), revision }),
   deleteActivity: (id: string, revision: number) => del(`/activities/${enc(id)}?revision=${revision}`),
-  validateActivity: (a: ActivityInput) => post<ValidationResult>('/activities/validate', activityBody(a)),
   activate: (id: string) => post<TransitionResult>(`/activities/${enc(id)}/activate`),
   off: () => post<TransitionResult>('/activities/off'),
   globalBindings: () => get<GlobalBindings>('/global-bindings'),

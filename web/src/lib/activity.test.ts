@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Activity } from '../api/types'
 import { fixture, loadSeed } from '../../mock/fixtures.ts'
 import type { ParamSpec } from '../api/types'
-import { buttonForPath, defaultParams, drawerParams, fanSpeeds, fieldLabel, speedLabel, speedOf, speedOptions, paramLabel, parseTrigger, percentLabel, percentOptions, percentScale, validateActivity, validateBindings, waitAction, systemAction, type Catalog } from './activity'
+import { buttonForPath, defaultParams, hubboCommands, mostUsedDevice, drawerParams, fanSpeeds, fieldLabel, speedLabel, speedOf, speedOptions, paramLabel, parseTrigger, percentLabel, percentOptions, percentScale, validateActivity, validateBindings, waitAction, systemAction, type Catalog } from './activity'
 
 const s = loadSeed()
 const cat: Catalog = {
@@ -135,5 +135,20 @@ describe('params as people see them', () => {
     expect(fieldLabel({ name: 'color_temp_kelvin', type: 'int', required: false }, 'light.turn_on')).toBe('Color temperature (K)')
     expect(fieldLabel({ name: 'transition', label: 'Transition', type: 'number', required: false, unit: 'seconds' }, 'light.turn_on')).toBe('Transition (seconds)')
     expect(fieldLabel(brightness, 'light.turn_on')).toBe('Brightness')
+  })
+})
+
+describe('what a new step or binding starts with', () => {
+  it('offers Hubbo’s Switch activity and Off in a binding, and nothing of Hubbo’s in steps', () => {
+    expect(hubboCommands(cat, 'binding').map((c) => c.command_id).sort()).toEqual(['activate', 'off'])
+    expect(hubboCommands(cat, 'sequence')).toEqual([])
+  })
+
+  it('picks the device used most, ties to the first seen, skipping Hubbo’s own', () => {
+    const on = (device_id: string | null) => ({ integration_id: 'x', device_id, command_id: 'c', params: {} })
+    expect(mostUsedDevice([])).toBeNull()
+    expect(mostUsedDevice([on(null), on(null)])).toBeNull()
+    expect(mostUsedDevice([on('a'), on('b'), on('b'), on(null), on(null), on(null)])).toBe('b')
+    expect(mostUsedDevice([on('a'), on('b')])).toBe('a')
   })
 })

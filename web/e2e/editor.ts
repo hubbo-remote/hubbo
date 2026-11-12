@@ -24,14 +24,12 @@ export async function saveActivity(page: Page) {
  * is: a key's down and up, or one send on down for Home Assistant) or `long press`. Commands are
  * picked by name ("Volume up", "Keyboard key…" plus `key`).
  */
-export async function bind(page: Page, button: string, how: 'press' | 'hold' | 'long press', device: string, command: string, key?: string) {
+export async function bind(page: Page, button: string, how: 'press' | 'long press', device: string, command: string, key?: string) {
   await page.locator(`[data-key="${button}"]`).click()
-  const row = how === 'long press' ? 'long press' : 'press'
-  await page.getByRole('button', { name: new RegExp(`^(Bind|Edit) ${buttonLabel(button)} ${row}$`) }).click()
+  await page.getByRole('button', { name: new RegExp(`^(Bind|Edit) ${buttonLabel(button)} ${how}$`) }).click()
   await page.getByLabel('Device').selectOption({ label: device })
   await page.getByLabel('Command', { exact: true }).selectOption({ label: command })
   if (key) await page.getByLabel('Key', { exact: true }).selectOption(key)
-  if (how === 'hold') await page.getByRole('radio', { name: 'Hold' }).check()
   await page.getByRole('button', { name: 'Apply' }).click()
 }
 
