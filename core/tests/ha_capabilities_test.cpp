@@ -58,6 +58,39 @@ EntityInfo hue() {
     return e;
 }
 
+// Typical fans (supported_features and attributes as HA reports them).
+EntityInfo speedFan() {  // SET_SPEED | TURN_OFF | TURN_ON, 3 speeds, preset_modes null
+    EntityInfo e;
+    e.entityId = "fan.ceiling_fan";
+    e.supportedFeatures = 49;
+    e.percentageStep = 33.333333333333336;
+    return e;
+}
+
+EntityInfo presetFan() {  // + PRESET_MODE
+    EntityInfo e;
+    e.entityId = "fan.air_purifier";
+    e.supportedFeatures = 57;
+    e.presetModes = {"sleep"};
+    e.percentageStep = 33.333333333333336;
+    return e;
+}
+
+EntityInfo directionFan() {  // + DIRECTION, 7 speeds
+    EntityInfo e;
+    e.entityId = "fan.box_fan";
+    e.supportedFeatures = 61;
+    e.presetModes = {"auto"};
+    e.percentageStep = 14.285714285714286;
+    return e;
+}
+
+std::vector<std::string> fans(std::initializer_list<const char *> names) {
+    std::vector<std::string> out;
+    for (const char *n : names) out.push_back(std::string("fan.") + n);
+    return out;
+}
+
 std::vector<std::string> ids(const EntityCapabilities &caps) {
     std::vector<std::string> out;
     const CommandCatalog c = caps.catalog();
@@ -115,6 +148,90 @@ TEST(HaFeatureBits, MatchHomeAssistantSource) {
     EXPECT_EQ(light_feature::kEffect, 4u);
     EXPECT_EQ(light_feature::kFlash, 8u);
     EXPECT_EQ(light_feature::kTransition, 32u);
+    // homeassistant/components/fan/const.py FanEntityFeature
+    EXPECT_EQ(fan_feature::kSetSpeed, 1u);
+    EXPECT_EQ(fan_feature::kOscillate, 2u);
+    EXPECT_EQ(fan_feature::kDirection, 4u);
+    EXPECT_EQ(fan_feature::kPresetMode, 8u);
+    EXPECT_EQ(fan_feature::kTurnOff, 16u);
+    EXPECT_EQ(fan_feature::kTurnOn, 32u);
+}
+
+TEST(HaCapabilities, TypicalFans) {
+    const auto speed = EntityCapabilities::fromEntity(speedFan());
+    EXPECT_EQ(ids(speed), fans({"turn_on", "turn_off", "set_percentage", "increase_speed", "decrease_speed"}));
+    const CommandSpec &on = command(speed, "fan.turn_on");
+    ASSERT_EQ(on.paramCount, 1) << "no preset_modes, no preset_mode";
+    EXPECT_STREQ(on.params[0].name, "percentage");
+    EXPECT_FALSE(on.params[0].required);
+    const CommandSpec &set = command(speed, "fan.set_percentage");
+    ASSERT_EQ(set.paramCount, 1);
+    EXPECT_EQ(set.params[0].type, ParamType::Int);
+    EXPECT_TRUE(set.params[0].required);
+    EXPECT_EQ(set.params[0].minInt, 0);
+    EXPECT_EQ(set.params[0].maxInt, 100);
+    EXPECT_STREQ(set.params[0].unit, "%");
+    EXPECT_EQ(set.params[0].label, nullptr) << "curated params stay unlabelled";
+    EXPECT_EQ(set.params[0].step, 33.0f) << "100/3 rounded down: 99 is still the top speed";
+    const CommandSpec &up = command(speed, "fan.increase_speed");
+    ASSERT_EQ(up.paramCount, 1);
+    EXPECT_STREQ(up.params[0].name, "percentage_step");
+    EXPECT_FALSE(up.params[0].required);
+    EXPECT_STREQ(up.params[0].unit, "%");
+
+    const auto purifier = EntityCapabilities::fromEntity(presetFan());
+    EXPECT_EQ(ids(purifier), fans({"turn_on", "turn_off", "set_percentage", "increase_speed", "decrease_speed",
+                                   "set_preset_mode"}));
+    const CommandSpec &purifierOn = command(purifier, "fan.turn_on");
+    ASSERT_EQ(purifierOn.paramCount, 2);
+    EXPECT_STREQ(purifierOn.params[1].name, "preset_mode");
+    EXPECT_FALSE(purifierOn.params[1].required);
+    const CommandSpec &preset = command(purifier, "fan.set_preset_mode");
+    ASSERT_EQ(preset.paramCount, 1);
+    EXPECT_TRUE(preset.params[0].required);
+    ASSERT_EQ(preset.params[0].optionCount, 1);
+    EXPECT_STREQ(preset.params[0].options[0], "sleep");
+
+    const auto turning = EntityCapabilities::fromEntity(directionFan());
+    EXPECT_EQ(ids(turning), fans({"turn_on", "turn_off", "set_percentage", "increase_speed", "decrease_speed",
+                                 "set_direction", "set_preset_mode"}));
+    EXPECT_EQ(command(turning, "fan.set_percentage").params[0].step, 14.0f);
+    const CommandSpec &direction = command(turning, "fan.set_direction");
+    ASSERT_EQ(direction.params[0].optionCount, 2);
+    EXPECT_STREQ(direction.params[0].options[0], "forward");
+    EXPECT_STREQ(direction.params[0].options[1], "reverse");
+
+    ServiceCall c;
+    ASSERT_EQ(call(turning, "fan.turn_on", {in("preset_mode", ParamLiteral::ofString("auto"))}, &c), ErrorCode::Ok);
+    EXPECT_EQ(c.domain, "fan");
+    EXPECT_EQ(c.service, "turn_on");
+    EXPECT_EQ(c.entityId, "fan.box_fan");
+    ASSERT_EQ(c.data.size(), 1u) << "the omitted percentage isn't sent";
+    EXPECT_EQ(c.data[0].key, "preset_mode");
+    EXPECT_EQ(c.data[0].value.string, "auto");
+    ASSERT_EQ(call(turning, "fan.set_percentage", {in("percentage", ParamLiteral::ofInt(101))}, &c),
+              ErrorCode::ParamOutOfRange);
+}
+
+TEST(HaCapabilities, FanGating) {
+    EntityInfo e;
+    e.entityId = "fan.x";
+    e.supportedFeatures = fan_feature::kOscillate;
+    const auto osc = EntityCapabilities::fromEntity(e);
+    EXPECT_EQ(ids(osc), fans({"oscillate"})) << "no TURN_ON/TURN_OFF bits, no power";
+    EXPECT_STREQ(command(osc, "fan.oscillate").params[0].name, "oscillating");
+    EXPECT_TRUE(command(osc, "fan.oscillate").params[0].required);
+    e.supportedFeatures = fan_feature::kPresetMode;
+    EXPECT_TRUE(EntityCapabilities::fromEntity(e).empty()) << "no preset_modes, no preset picker";
+    e.presetModes = {"auto"};
+    EXPECT_EQ(ids(EntityCapabilities::fromEntity(e)), fans({"set_preset_mode"}));
+    e.supportedFeatures = fan_feature::kSetSpeed;
+    e.percentageStep = 0.5;  // 200 speeds: too fine for an int step
+    const auto fine = EntityCapabilities::fromEntity(e);
+    EXPECT_EQ(command(fine, "fan.set_percentage").params[0].step, 0.0f);
+    EXPECT_GE(fine.catalog().find("fan.set_preset_mode"), 0) << "HA registers it for SET_SPEED too";
+    e.supportedFeatures = 0xFFFFFFFF;
+    for (const auto &id : ids(EntityCapabilities::fromEntity(e))) EXPECT_NE(id, "fan.toggle");
 }
 
 TEST(HaCapabilities, RealEntitiesMatchFixtures) {
@@ -193,7 +310,7 @@ TEST(HaCapabilities, LightModes) {
 }
 
 TEST(HaCapabilities, UnsupportedDomainsAndBadIdsGetNothing) {
-    for (const char *id : {"scene.movie", "script.all_off", "cover.blinds", "fan.ceiling",
+    for (const char *id : {"scene.movie", "script.all_off", "cover.blinds", "climate.hall",
                            "remote.lg_tv", "group.all_lights", "homeassistant.restart",
                            "light.all", "light.none", "all", "light.a,light.b", "Light.Kitchen",
                            "light.", ".kitchen", "light.kit chen", "light.kitchen\n", ""}) {
@@ -354,13 +471,16 @@ TEST(HaServiceCall, RejectsValuesNotFromThisCatalog) {
 TEST(HaServiceCall, OnlyAllowlistedKeysEverReachHomeAssistant) {
     const char *allowed[] = {"volume_level", "is_volume_muted", "source", "sound_mode", "shuffle",
                              "repeat", "brightness", "color_temp_kelvin", "transition",
-                             "brightness_step"};
+                             "brightness_step", "percentage", "preset_mode", "percentage_step",
+                             "oscillating", "direction"};
     EntityInfo all;
     all.entityId = "media_player.everything";
     all.supportedFeatures = 0xFFFFFFFF;
     all.sourceList = {"A"};
     all.soundModeList = {"B"};
-    for (const EntityInfo &e : {all, hue(), sonos()}) {
+    EntityInfo fan = directionFan();
+    fan.supportedFeatures = 0xFFFFFFFF;
+    for (const EntityInfo &e : {all, hue(), sonos(), fan}) {
         const auto caps = EntityCapabilities::fromEntity(e);
         const CommandCatalog c = caps.catalog();
         for (uint16_t i = 0; i < c.count; i++) {

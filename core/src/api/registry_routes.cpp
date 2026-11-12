@@ -43,19 +43,23 @@ const char *commandLabel(std::string_view id) {
     return nullptr;
 }
 
+// ParamSpec in the spec's shape, with its display metadata (label, unit,
+// step, description, default) when the integration gives it.
 void putParam(JsonObject p, const ParamSpec &spec) {
     p["name"] = spec.name;
+    if (spec.label != nullptr) p["label"] = spec.label;
     p["type"] = paramTypeName(spec.type);
     p["required"] = spec.required;
     switch (spec.type) {
         case ParamType::Int:
             p["minimum"] = spec.minInt;
             p["maximum"] = spec.maxInt;
-            p["step"] = 1;
+            p["step"] = spec.step >= 1.0f ? spec.step : 1.0f;  // an int steps by 1 unless its spec says more
             break;
         case ParamType::Number:
             p["minimum"] = spec.minNumber;
             p["maximum"] = spec.maxNumber;
+            if (spec.step > 0.0f) p["step"] = spec.step;
             break;
         case ParamType::Enum: {
             JsonArray options = p["options"].to<JsonArray>();
@@ -63,6 +67,18 @@ void putParam(JsonObject p, const ParamSpec &spec) {
             break;
         }
         case ParamType::Bool:
+        case ParamType::ActivityRef: break;
+    }
+    if (spec.unit != nullptr) p["unit"] = spec.unit;
+    if (spec.description != nullptr) p["description"] = spec.description;
+    if (!spec.hasDefault) return;
+    switch (spec.type) {
+        case ParamType::Int: p["default"] = spec.defaultValue.integer; break;
+        case ParamType::Number: p["default"] = spec.defaultValue.number; break;
+        case ParamType::Bool: p["default"] = spec.defaultValue.asBool(); break;
+        case ParamType::Enum:
+            if (spec.defaultValue.asOption() < spec.optionCount) p["default"] = spec.options[spec.defaultValue.asOption()];
+            break;
         case ParamType::ActivityRef: break;
     }
 }
@@ -86,13 +102,7 @@ void putCommands(JsonArray out, CommandCatalog catalog, const DeviceSpec *device
         cmd["effect"] = commandEffectName(c.effect);
         if (c.group != nullptr) cmd["group"] = c.group;
         JsonArray params = cmd["params"].to<JsonArray>();
-        for (uint8_t p = 0; p < c.paramCount; p++) {
-            JsonObject param = params.add<JsonObject>();
-            putParam(param, c.params[p]);
-            // Bluetooth commands (they have a group) show core's param labels;
-            // Home Assistant params stay as they are (no labels).
-            if (c.group != nullptr && c.params[p].label != nullptr) param["label"] = c.params[p].label;
-        }
+        for (uint8_t p = 0; p < c.paramCount; p++) putParam(params.add<JsonObject>(), c.params[p]);
     }
 }
 

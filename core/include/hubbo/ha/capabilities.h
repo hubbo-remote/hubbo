@@ -64,18 +64,42 @@ constexpr uint32_t kFlash = 8;
 constexpr uint32_t kTransition = 32;
 }  // namespace light_feature
 
+// FanEntityFeature, homeassistant/components/fan/const.py.
+namespace fan_feature {
+constexpr uint32_t kSetSpeed = 1;
+constexpr uint32_t kOscillate = 2;
+constexpr uint32_t kDirection = 4;
+constexpr uint32_t kPresetMode = 8;
+constexpr uint32_t kTurnOff = 16;
+constexpr uint32_t kTurnOn = 32;
+}  // namespace fan_feature
+
 // HA's default colour temperature range when the entity reports none
 // (DEFAULT_MIN_KELVIN / DEFAULT_MAX_KELVIN in light/const.py).
 constexpr int32_t kDefaultMinKelvin = 2000;
 constexpr int32_t kDefaultMaxKelvin = 6535;
 
-enum class EntityDomain : uint8_t { MediaPlayer, Light, Switch, Unsupported };
+enum class EntityDomain : uint8_t { MediaPlayer, Light, Switch, Fan, Unsupported };
+
+// The entity domains with a curated allowlist, in EntityDomain order. The
+// spec's discovery `domain` enum matches it (api/tools/validate.py checks).
+constexpr const char *kEntityDomains[] = {"media_player", "light", "switch", "fan"};
+static_assert(sizeof(kEntityDomains) / sizeof(kEntityDomains[0]) == static_cast<size_t>(EntityDomain::Unsupported),
+              "one name per EntityDomain");
+// "media_player, light, switch or fan", for messages.
+std::string entityDomainList();
+EntityDomain domainNamed(std::string_view domain);  // "fan" -> Fan; Unsupported if none
 
 // `<domain>.<object_id>`, both [a-z0-9_]+, at most
 // limits::kMaxProviderRefLength chars (it is stored as the device's provider
 // ref), and not a broadcast value ("all", "none"). Commas/whitespace (lists) are rejected.
 bool isValidEntityId(std::string_view entityId);
 EntityDomain entityDomain(std::string_view entityId);  // Unsupported if invalid
+
+// A fan's speed-slider step: HA's percentage_step (100 / speeds) rounded down
+// to 1..100, so every multiple still lands on the speed it means (HA rounds a
+// percentage up to the next speed). 0: none (not reported, or under 1).
+int32_t fanSpeedStep(double percentageStep);
 
 struct EntityInfo {
     std::string entityId;
@@ -85,6 +109,8 @@ struct EntityInfo {
     std::vector<std::string> supportedColorModes;  // light supported_color_modes
     int32_t minColorTempKelvin = 0;                // light; 0 = not reported
     int32_t maxColorTempKelvin = 0;
+    std::vector<std::string> presetModes;          // fan preset_modes
+    double percentageStep = 0.0;                   // fan percentage_step (100 / speeds); 0 = not reported
 };
 
 struct ServiceValue {

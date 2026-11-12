@@ -7,7 +7,8 @@ namespace hubbo::ha {
 
 bool SnapshotParam::operator==(const SnapshotParam &o) const {
     return name == o.name && label == o.label && type == o.type && required == o.required && minimum == o.minimum &&
-           maximum == o.maximum && step == o.step && unit == o.unit && options == o.options;
+           maximum == o.maximum && step == o.step && unit == o.unit && description == o.description && options == o.options &&
+           hasDefault == o.hasDefault && defaultNumber == o.defaultNumber && defaultOption == o.defaultOption;
 }
 
 bool SnapshotService::operator==(const SnapshotService &o) const {
@@ -18,7 +19,7 @@ bool CapabilitySnapshot::operator==(const CapabilitySnapshot &o) const {
     return platform == o.platform && supportedFeatures == o.supportedFeatures && sourceList == o.sourceList &&
            soundModeList == o.soundModeList && supportedColorModes == o.supportedColorModes &&
            minColorTempKelvin == o.minColorTempKelvin && maxColorTempKelvin == o.maxColorTempKelvin &&
-           services == o.services;
+           presetModes == o.presetModes && percentageStep == o.percentageStep && services == o.services;
 }
 
 namespace {
@@ -33,7 +34,7 @@ int32_t kelvin(int32_t value) { return value > 0 && value <= kMaxKelvin ? value 
 // reports, the snapshot registration stores always reloads: option lists
 // through filterEnumOptions (1-64 chars, no duplicates, at most 128), the
 // platform through isHaName ("" otherwise: no integration services), kelvin
-// within 0..100000.
+// within 0..100000, a fan's percentage_step through fanSpeedStep().
 CapabilitySnapshot makeSnapshot(const EntityInfo &entity, const std::string &platform,
                                 const ServiceDirectory &services, ServiceDirectory::Offer *offered) {
     CapabilitySnapshot s;
@@ -46,6 +47,9 @@ CapabilitySnapshot makeSnapshot(const EntityInfo &entity, const std::string &pla
     filterEnumOptions(s.sourceList, &dropped);
     filterEnumOptions(s.soundModeList, &dropped);
     filterEnumOptions(s.supportedColorModes, &dropped);
+    s.presetModes = entity.presetModes;
+    filterEnumOptions(s.presetModes, &dropped);
+    s.percentageStep = fanSpeedStep(entity.percentageStep);
     s.minColorTempKelvin = kelvin(entity.minColorTempKelvin);
     s.maxColorTempKelvin = kelvin(entity.maxColorTempKelvin);
     ServiceDirectory::Offer offer = services.offerFor(entity.entityId, s.platform, entity.supportedFeatures);

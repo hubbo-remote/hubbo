@@ -1118,11 +1118,32 @@ TEST_F(ApiTest, DiscoveryIsAsyncAndFiltered) {
     r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover?limit=100&cursor=" + cursor);
     EXPECT_EQ(r.json["candidates"].size(), total - 2);
     EXPECT_TRUE(r.json["next_cursor"].isNull());
-    for (const char *bad : {"?limit=0", "?limit=101", "?cursor=abc", "?domain=sensor"}) {
+    // available=true: only registrable candidates, filtered before paging
+    // (a page of 1 is never empty while some are left).
+    size_t registrable = 0;
+    for (JsonVariant c : r.json["candidates"].as<JsonArray>()) {
+        registrable += c["supported"] == true && c["registered_device_id"].isNull() ? 1 : 0;
+    }
+    size_t walked = 0;
+    for (std::string next = "0"; !next.empty(); walked++) {
+        r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover?available=true&limit=1&cursor=" + next);
+        ASSERT_EQ(r.status, 200) << dump(r);
+        if (r.json["candidates"].size() == 0) break;
+        ASSERT_EQ(r.json["candidates"].size(), 1u) << dump(r);
+        EXPECT_EQ(r.json["candidates"][0]["supported"], true);
+        EXPECT_TRUE(r.json["candidates"][0]["registered_device_id"].isNull());
+        next = r.json["next_cursor"].isNull() ? "" : r.json["next_cursor"].as<std::string>();
+    }
+    EXPECT_GT(registrable, 0u);
+    EXPECT_EQ(walked, registrable);
+    EXPECT_LT(registrable, total) << "the fixtures have registered entities to hide";
+    for (const char *bad : {"?limit=0", "?limit=101", "?cursor=abc", "?domain=sensor", "?available=yes"}) {
         EXPECT_EQ(call(http::Method::Get, std::string("/api/v1/admin/integrations/ha_main/discover") + bad).status,
                   422)
             << bad;
     }
+    r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover?domain=sensor");
+    EXPECT_EQ(r.json["error"]["details"][0]["message"], "domain must be media_player, light, switch or fan");
 
     // Cancel drops the candidates.
     EXPECT_EQ(call(http::Method::Delete, "/api/v1/admin/integrations/ha_main/discover").status, 204);
@@ -1139,6 +1160,36 @@ TEST_F(ApiTest, DiscoveryIsAsyncAndFiltered) {
     r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover");
     EXPECT_EQ(r.json["state"], "failed") << dump(r);
     EXPECT_FALSE(r.json["error"].as<std::string>().empty());
+}
+
+// A fan's speed step reaches the catalog's `step` (it was always 1).
+TEST_F(ApiTest, FanSpeedStepReachesTheCatalog) {
+    sim::FakeHaEntity fan;
+    fan.info.entityId = "fan.ceiling_fan";
+    fan.info.supportedFeatures = 49;  // SET_SPEED | TURN_OFF | TURN_ON, 3 speeds
+    fan.info.percentageStep = 33.333333333333336;
+    fan.uniqueId = "uid_fan";
+    haServer.addEntity(fan);
+    hub.homeAssistant().addEntity(fan.info);  // the engine's scripted HA serves its catalog
+    connectHa();
+    ASSERT_EQ(details("fan.ceiling_fan").json["state"], "done");
+    Reply r = call(http::Method::Post, "/api/v1/admin/devices",
+                   R"({"name":"Ceiling Fan","integration_id":"ha_main","kind":"climate",
+                       "provider":{"type":"home_assistant","entity_id":"fan.ceiling_fan"}})");
+    ASSERT_EQ(r.status, 201) << dump(r);
+    r = call(http::Method::Get, "/api/v1/devices/" + r.json["id"].as<std::string>() + "/capabilities");
+    ASSERT_EQ(r.status, 200);
+    int checked = 0;
+    for (JsonVariant c : r.json["commands"].as<JsonArray>()) {
+        for (JsonVariant p : c["params"].as<JsonArray>()) {
+            const std::string name = p["name"];
+            if (name != "percentage") continue;
+            EXPECT_EQ(p["step"], 33) << c["command_id"].as<std::string>();
+            EXPECT_EQ(p["unit"], "%");
+            checked++;
+        }
+    }
+    EXPECT_EQ(checked, 2) << "turn_on and set_percentage: " << dump(r);
 }
 
 TEST_F(ApiTest, DiscoverySearchDecodesTheQuery) {

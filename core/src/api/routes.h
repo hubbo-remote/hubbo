@@ -60,7 +60,7 @@ struct EntityDetails : HaEntity {  // entityId: the requested entity (all but Id
     FetchState state = FetchState::Idle;
     std::string error;                 // Failed
     ha::CapabilitySnapshot snapshot;   // Done: what registration stores
-    std::vector<std::string> skipped;  // Done: services matching but not offered
+    std::vector<ha::ServiceDirectory::Skipped> skipped;  // Done: services matching but not offered
 
     void reset(FetchState next, std::string entity = {}) {
         *this = EntityDetails{};

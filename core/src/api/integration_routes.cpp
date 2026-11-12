@@ -322,6 +322,7 @@ bool containsFolded(std::string_view haystack, std::string_view needle) {
 struct Page {
     std::string q;
     std::string domain;
+    bool available = false;  // only supported entities no device is registered for
     size_t limit = 50;
     size_t offset = 0;
 };
@@ -333,11 +334,17 @@ bool readPage(const http::Request &request, http::Response &out, Page *page) {
         return false;
     }
     page->domain = http::queryValue(request.query, "domain");
-    // The allowlisted domains: ha::entityDomain() is their one list.
-    if (!page->domain.empty() && ha::entityDomain(page->domain + ".x") == ha::EntityDomain::Unsupported) {
-        sendDetail(out, "/domain", "invalid_enum_value", "domain must be media_player, light or switch");
+    // The allowlisted domains: ha::kEntityDomains is their one list.
+    if (!page->domain.empty() && ha::domainNamed(page->domain) == ha::EntityDomain::Unsupported) {
+        sendDetail(out, "/domain", "invalid_enum_value", "domain must be " + ha::entityDomainList());
         return false;
     }
+    const std::string available = http::queryValue(request.query, "available");
+    if (!available.empty() && available != "true" && available != "false") {
+        sendDetail(out, "/available", "wrong_type", "available must be true or false");
+        return false;
+    }
+    page->available = available == "true";
     auto number = [](std::string_view text, size_t max, size_t *value) {
         uint64_t n = 0;
         if (!parseDecimal(text, max, &n)) return false;
@@ -394,8 +401,9 @@ void fillDetails(EntityDetails *out, integrations::HaEntityDetails in) {
     const std::vector<std::string> platforms{in.platform};
     ha::ServiceDirectory::Offer offer;
     {
-        const ha::ServiceDirectory services = ha::ServiceDirectory::parse(in.services, platforms);
+        const ha::ServiceDirectory services = ha::ServiceDirectory::parse(in.services, platforms, in.translations);
         std::string().swap(in.services);  // about 230 KB
+        std::string().swap(in.translations);
         out->snapshot = ha::makeSnapshot(in.info, in.platform, services, &offer);
     }
     const ha::EntityCapabilities caps = ha::EntityCapabilities::fromSnapshot(in.entityId, out->snapshot);
@@ -450,7 +458,11 @@ void sendDetails(const ApiContext &ctx, std::string_view entityId, http::Respons
         JsonObject body = doc.as<JsonObject>();
         putEntity(body, ctx, d);
         JsonArray skipped = body["skipped_services"].to<JsonArray>();
-        for (const std::string &name : d.skipped) skipped.add(name);
+        for (const auto &s : d.skipped) {
+            JsonObject o = skipped.add<JsonObject>();
+            o["service"] = s.service;
+            o["reason"] = ha::ServiceDirectory::skipReasonName(s.reason);
+        }
     }
     sendJson(out, status, doc);
 }
@@ -470,6 +482,10 @@ void sendDiscovery(const ApiContext &ctx, const Page &page, http::Response &out,
         for (const DiscoveryCache::Candidate &c : cache.candidates) {
             if (!page.domain.empty() && c.domain != page.domain) continue;
             if (!containsFolded(c.entityId, page.q) && !containsFolded(c.name, page.q)) continue;
+            if (page.available &&
+                (c.commandIds.empty() || registeredDevice(ctx, c.entityId, c.uniqueId, c.platform) != nullptr)) {
+                continue;
+            }
             if (matched++ < page.offset) continue;
             if (list.size() == page.limit) {
                 more = true;
@@ -611,7 +627,7 @@ void addIntegrationRoutes(RouteSink &sink, ApiContext &ctx) {
                  const std::string entityId(p[1]);
                  if (!ha::isValidEntityId(entityId) || ha::entityDomain(entityId) == ha::EntityDomain::Unsupported) {
                      return sendDetail(out, "/entity_id", "pattern",
-                                       "entity_id must be one media_player, light or switch entity");
+                                       "entity_id must be one " + ha::entityDomainList() + " entity");
                  }
                  // One at a time: a new pick replaces the earlier fetch (the
                  // cancel frees the slot, and the id is checked above).
