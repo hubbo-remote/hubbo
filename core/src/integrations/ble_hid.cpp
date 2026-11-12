@@ -159,7 +159,8 @@ constexpr ParamSpec kUsageParams[] = {
 constexpr ParamSpec kWaitParams[] = {
     ParamSpec::integer("timeout_ms", kBleWaitConnectedMinMs, kBleWaitConnectedMaxMs, /*required=*/false,
                        kBleWaitConnectedDefaultMs)
-        .described(nullptr, "ms"),
+        .described(nullptr, "ms")
+        .shownDefault(),
 };
 
 constexpr const char *kRemote = "remote";
