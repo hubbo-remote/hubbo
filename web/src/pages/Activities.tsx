@@ -1,5 +1,5 @@
-import { Activity as ActivityIcon, Copy, Globe, Loader2, MoreHorizontal, Pencil, Plus, Power, Trash2, type LucideIcon } from 'lucide-react'
-import { useRef, useState, type ComponentProps, type FormEvent, type KeyboardEvent } from 'react'
+import { Activity as ActivityIcon, Copy, Loader2, MoreHorizontal, Pencil, Plus, Power, Trash2 } from 'lucide-react'
+import { useRef, useState, type FormEvent } from 'react'
 import { Link, useLocation } from 'wouter'
 import { api } from '@/api/client'
 import { invalidate } from '@/api/hooks'
@@ -8,6 +8,7 @@ import { EmptyState, ErrorState, PageHeader } from '@/components/common'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input } from '@/components/ui/input'
+import { Menu, MenuItem, MenuSeparator } from '@/components/ui/menu'
 import { Skeleton } from '@/components/ui/misc'
 import { toast, toastError } from '@/components/ui/toast'
 import { switchActivity } from '@/hooks/switchActivity'
@@ -102,12 +103,9 @@ export function Activities() {
           icon={ActivityIcon}
           title="No activities yet"
           action={
-            <div className="flex flex-wrap justify-center gap-2">
-              <Link href="/activities/new" className={buttonVariants()}>
-                New activity
-              </Link>
-              <GlobalLink />
-            </div>
+            <Link href="/activities/new" className={buttonVariants()}>
+              New activity
+            </Link>
           }
         >
           An activity turns on your devices and sets up the remote for them.
@@ -131,32 +129,35 @@ export function Activities() {
                   )}
                 >
                   <span className="min-w-0 flex-1 truncate font-semibold">{a.name}</span>
-                  {pending === a.id ? (
+                  {/* aria-pressed says it's on; the highlight shows it. */}
+                  {pending === a.id && (
                     <span className="flex shrink-0 items-center gap-1.5 text-xs opacity-80">
                       <Loader2 className="size-3 animate-spin" /> Starting…
                     </span>
-                  ) : (
-                    on && <span className="shrink-0 rounded-full bg-primary-foreground/20 px-2 py-0.5 text-xs font-medium">On</span>
                   )}
                 </button>
-                <div className="absolute top-1/2 right-2 -translate-y-1/2">
-                  <Button variant="ghost" size="icon" className={cn('size-8', on ? 'text-primary-foreground hover:bg-primary-foreground/15 hover:text-primary-foreground' : 'text-muted-foreground')} aria-label={`More for ${a.name}`} aria-expanded={menu === a.id} onClick={() => setMenu(menu === a.id ? null : a.id)}>
-                    <MoreHorizontal />
-                  </Button>
-                  {menu === a.id && (
-                    <div role="menu" aria-label={a.name} className="absolute top-full right-0 z-20 mt-1 grid w-40 rounded-md border bg-popover p-1 shadow-lg" onKeyDown={(e) => menuKeys(e, () => setMenu(null))}>
-                      <MenuItem autoFocus icon={Pencil} onClick={() => (setMenu(null), navigate(`/activities/${a.id}`))}>
-                        Edit
-                      </MenuItem>
-                      <MenuItem icon={Copy} disabled={lock.locked} onClick={() => (setMenu(null), askDuplicate(a))}>
-                        Duplicate
-                      </MenuItem>
-                      <MenuItem icon={Trash2} destructive disabled={lock.locked} onClick={() => (setMenu(null), setConfirm(a))}>
-                        Delete
-                      </MenuItem>
-                    </div>
+                <Menu
+                  className="absolute top-1/2 right-2 -translate-y-1/2"
+                  label={a.name}
+                  open={menu === a.id}
+                  onOpenChange={(o) => setMenu(o ? a.id : null)}
+                  trigger={(p) => (
+                    <Button {...p} variant="ghost" size="icon" className={cn('size-8', on ? 'text-primary-foreground hover:bg-primary-foreground/15 hover:text-primary-foreground' : 'text-muted-foreground')} aria-label={`More for ${a.name}`}>
+                      <MoreHorizontal />
+                    </Button>
                   )}
-                </div>
+                >
+                  <MenuItem icon={Pencil} onClick={() => navigate(`/activities/${a.id}`)}>
+                    Edit
+                  </MenuItem>
+                  <MenuItem icon={Copy} disabled={lock.locked} onClick={() => askDuplicate(a)}>
+                    Duplicate
+                  </MenuItem>
+                  <MenuSeparator />
+                  <MenuItem icon={Trash2} destructive disabled={lock.locked} onClick={() => setConfirm(a)}>
+                    Delete
+                  </MenuItem>
+                </Menu>
               </li>
             )
           })}
@@ -173,7 +174,6 @@ export function Activities() {
               <Plus /> New activity
             </Link>
           )}
-          <GlobalLink />
         </div>
       )}
       <Dialog
@@ -217,29 +217,6 @@ export function Activities() {
   )
 }
 
-function GlobalLink() {
-  return (
-    <Link href="/activities/global" className={buttonVariants({ variant: 'ghost' })}>
-      <Globe /> Global buttons
-    </Link>
-  )
-}
-
-function MenuItem({ icon: Icon, destructive, children, ...props }: { icon: LucideIcon; destructive?: boolean } & ComponentProps<'button'>) {
-  return (
-    <button
-      role="menuitem"
-      className={cn(
-        'flex items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm outline-none hover:bg-accent focus:bg-accent disabled:opacity-50 disabled:pointer-events-none',
-        destructive && 'text-destructive hover:bg-destructive/10 focus:bg-destructive/10',
-      )}
-      {...props}
-    >
-      <Icon className="size-4" /> {children}
-    </button>
-  )
-}
-
 /** `v`, or the last non-null `v` while it's null (e.g. a closing dialog's subject). */
 function useLast<T>(v: T | null): T | null {
   const [last, setLast] = useState(v)
@@ -247,20 +224,3 @@ function useLast<T>(v: T | null): T | null {
   return v ?? last
 }
 
-/** Menu keys: arrows, Home and End move between items; Escape and Tab close it (focus goes back to its button). */
-function menuKeys(e: KeyboardEvent<HTMLElement>, close: () => void) {
-  const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)')]
-  const i = items.indexOf(document.activeElement as HTMLElement)
-  const go = (j: number) => (e.preventDefault(), items[(j + items.length) % items.length]?.focus())
-  if (e.key === 'ArrowDown') go(i + 1)
-  else if (e.key === 'ArrowUp') go(i - 1)
-  else if (e.key === 'Home') go(0)
-  else if (e.key === 'End') go(items.length - 1)
-  else if (e.key === 'Tab') close()
-  else if (e.key === 'Escape') {
-    e.preventDefault()
-    const trigger = e.currentTarget.previousElementSibling as HTMLElement | null
-    close()
-    trigger?.focus()
-  }
-}
