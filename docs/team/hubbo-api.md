@@ -26,6 +26,9 @@ Current as of the remote-editor phase (HA service labels; uncommitted). Not a lo
 
 ## Key decisions (and why)
 
+- **Global-binding fallback is per button** (core, button-press): an activity that binds any
+  trigger of a button hides all of that button's globals. agent-api.md and the
+  `/global-bindings` description say so.
 - **HA service metadata** (remote-editor, docs/ha-capabilities.md): labels from HA's
   translations (`ServiceDirectory::parse(services, platforms, translations)`; core fetches
   frontend/get_translations into `HaEntityDetails::translations`), else a readable id. Defaults
