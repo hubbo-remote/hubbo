@@ -224,7 +224,7 @@ export const api = {
   configureIntegration: (id: string, b: IntegrationConfigUpdate) => put<IntegrationConfig>(`/admin/integrations/${enc(id)}`, b),
   /** Discovery runs on the hub's integration task: start it, then poll `discovery` (same as a remote scan). */
   discoverStart: (id: string) => post<DiscoverStatus>(`/admin/integrations/${enc(id)}/discover`),
-  discovery: (id: string, f: { q?: string; domain?: string; limit?: number; cursor?: string } = {}) => {
+  discovery: (id: string, f: { q?: string; domain?: string; available?: boolean; limit?: number; cursor?: string } = {}) => {
     // encodeURIComponent, not URLSearchParams: a space must go as %20 (URLSearchParams writes `+`).
     const qs = Object.entries(f)
       .flatMap(([k, v]) => (v === undefined || v === '' ? [] : [`${k}=${encodeURIComponent(String(v))}`]))

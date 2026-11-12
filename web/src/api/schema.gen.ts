@@ -228,6 +228,9 @@ export interface paths {
          *     use the momentary form (`key_tap`). Bindings may use holds.
          *     A `wait` command (`wait_connected`) only makes sense in a startup or
          *     shutdown sequence, so it gets `422` with detail code `sequence_only`.
+         *     A timed `press` (the profile command's `hold_ms`, or the `hold_ms`
+         *     param) answers once the key is down; the hub releases it after that
+         *     long.
          *
          *     A stale device (`availability: stale`: its HA entity is missing from
          *     the latest discovery) answers `200` with `status: failed` and
@@ -542,7 +545,7 @@ export interface paths {
          *     registering it needs. One at a time: a new request replaces the
          *     earlier one. Poll the GET until `done` or `failed`. `home_assistant`
          *     integrations only (404 for others); `422` if `entity_id` isn't one
-         *     `media_player`, `light` or `switch` entity; `503
+         *     `media_player`, `light`, `switch` or `fan` entity; `503
          *     integration_unavailable` if HA isn't connected.
          */
         post: operations["requestEntityDetails"];
@@ -1288,11 +1291,17 @@ export interface components {
         };
         /**
          * @description Schema of one command parameter. Scalars only; nested objects and arrays
-         *     are never accepted as parameter values.
+         *     are never accepted as parameter values. `label`, `unit` and `default`
+         *     (and `description`) are display metadata, present when the integration gives them
+         *     (Home Assistant services: HA's English names, units and defaults;
+         *     Bluetooth: the hub's). A `default` is what's used when an optional
+         *     param is left out.
          */
         ParamSpec: {
             name: components["schemas"]["ParamName"];
             label?: string;
+            /** @description A tooltip (Home Assistant's field description, shortened). */
+            description?: string;
             /**
              * @description Same names as core `paramTypeName()`. `activity_ref` takes an activity ID.
              * @enum {string}
@@ -1551,6 +1560,9 @@ export interface components {
             supported_color_modes?: components["schemas"]["HaOptionList"];
             min_color_temp_kelvin?: number;
             max_color_temp_kelvin?: number;
+            preset_modes?: components["schemas"]["HaOptionList"];
+            /** @description A fan's percentage per speed (HA's 100 / speeds), rounded down. */
+            percentage_step?: number;
             /** @description Integration-specific services offered for the entity, already typed. */
             services: components["schemas"]["HaServiceSnapshot"][];
         };
@@ -1857,8 +1869,18 @@ export interface components {
             command_ids?: components["schemas"]["CommandId"][];
             /** @description Enum options left out (too long, or too many); the commands still work with the rest. */
             dropped_options?: number;
-            /** @description Integration services that match the entity but aren't offered (a field Hubbo can't type, more than 4 fields, or no entity target). */
-            skipped_services?: string[];
+            /**
+             * @description Integration services that match the entity but aren't offered,
+             *     and why: `unsupported_field` (a field Hubbo can't type, or a
+             *     filter or name it can't read), `too_many_fields` (more than 4),
+             *     `response_only` (it only returns data), `too_many_services`
+             *     (past 32).
+             */
+            skipped_services?: {
+                service: string;
+                /** @enum {string} */
+                reason: "unsupported_field" | "too_many_fields" | "response_only" | "too_many_services";
+            }[];
             registered_device_id?: components["schemas"]["NullableDeviceId"];
         } & (unknown & unknown & unknown);
         /**
@@ -2926,7 +2948,13 @@ export interface operations {
             query?: {
                 /** @description Case-insensitive substring of entity_id or name. */
                 q?: string;
-                domain?: "media_player" | "light" | "switch";
+                domain?: "media_player" | "light" | "switch" | "fan";
+                /**
+                 * @description `true`: only candidates that can be registered (`supported`, with
+                 *     no `registered_device_id`). Applied before paging, like `q` and
+                 *     `domain`, so every page is full until the last.
+                 */
+                available?: boolean;
                 limit?: number;
                 cursor?: string;
             };

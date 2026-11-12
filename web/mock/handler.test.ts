@@ -293,7 +293,7 @@ describe('mock behaviour', () => {
     const details = await loadDetails(m, 'media_player.family_room_sonos')
     expect(details).toMatchObject({ state: 'done', platform: 'sonos', provider: { unique_id: expect.any(String) } })
     expect(details.command_ids).toContain('sonos.set_sleep_timer')
-    expect(details.skipped_services).toContain('sonos.snapshot')
+    expect(details.skipped_services).toContainEqual({ service: 'sonos.get_queue', reason: 'response_only' })
     expect(await loadDetails(m, 'switch.patio_fountain')).not.toHaveProperty('platform') // YAML-only
     const lights = (await m.handle(req('GET', '/admin/integrations/ha_main/discover?domain=light'))).body as DiscoverStatus
     expect(lights.candidates!.map((c) => c.domain)).toEqual(['light'])
