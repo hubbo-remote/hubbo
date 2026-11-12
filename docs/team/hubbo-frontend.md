@@ -69,18 +69,40 @@ were deferred while iterating and are now caught up.
   with no default (each choice sends just its bool). Optional bools with a default don't split.
   Enum option labels go through `paramValueLabel` → `titleCase` (utils; words with a capital or digit
   kept: "HDMI 1", "eARC"); values unchanged. The catalog has no option labels to prefer today.
-- **Binding rows** (`BindingsEditor`): Press/Hold row (picker + Press|Hold radio; Hold writes
-  `down` press_down + `up` press_up, or one send on `down` for HA), Long press row (`hold` event),
-  and raw Down/Up/Tap rows under "Advanced" (forced when `readButton` can't fold: mismatched
-  pairs, several actions, tap+down...; a toggle otherwise). Raw edits keep a trigger's other
-  actions. `CommandPicker` falls back to the catalog `ActionPicker` for actions it can't show.
-  Legend/marks: Press (tap), Hold (down), Long press (hold); aria "bound: press, long press".
-- **Tests (caught up)**: e2e `bind(page, button, 'press' | 'hold' | 'long press', device, command, key?)`
-  picks commands by name ("Keyboard key…" + key); device page rows are `role="group"` named by
-  the command (find Test inside one); HA pickers list only supported, unregistered entities.
-  Unit tests: `lib/commands.test.ts`, percent/drawer/label rules in `activity.test.ts`, key
-  sections and casing in `keys.test.ts`, the drawer and tooltip in `ParamForm.test.tsx`.
-  watch-apple-tv (hub-sim only) is updated but not yet run on the sim. devices.spec checks a Type change (toast, stored kind, reload).
+- **Binding rows** (`BindingsEditor`, branch `button-press`, Harmony-style, gated): a Press row (no
+  tap/hold choice) and a Long press row, raw Down/Up/Tap under "Advanced" (forced when
+  `readButton` can't fold). Press with no long press is the mirror: `down` press_down / key_down /
+  usage_down and `up` its release (an HA command: one send on `down`; Hubbo's own: `tap`). With a
+  long press bound, or for a timed profile command (BLE `hold_ms`, e.g. Control Center: only a
+  `press` times it; `Catalog.timed` from device details, `isTimed`), Press is `tap`; "Sends on
+  release" shows only with the set's own Long press. `writeMain`/`writeLongPress(…, timed)` are the
+  one encoder; the wizard uses them too (`NamedCommand.timed`; buttons.json has no `hold`).
+- **Globals mask per button** (core's rule): a button the set binds at all inherits nothing; an
+  untouched one shows "Global: …" rows with Change (opens on the global's action; Apply unchanged
+  binds nothing). A truly unbound row's Bind opens empty (no device or command; Apply off until a
+  command is picked). Only Add step guesses (most-used device of that sequence).
+- **Remote**: the selected key has one thick pink-500 border (`--remote-selected`) in place of the
+  teal bound one (pips and tint stay); focus stays the dashed ring; `aria-pressed` marks it.
+- **Pickers**: Device | Command | the primary param in one row of content-sized selects (ParamForm
+  `lead`, field mode `fit`; always through ParamForm so focus survives null → set), Device alone on
+  a phone; the drawer below (opens per command, `openFor`). `DeviceSelect` is shared: no "None"
+  (a disabled "Choose…" only when nothing is picked), "Unknown device" for a removed id, "Hubbo"
+  last when it has commands there (`hubboCommands`: Switch activity and Off in bindings; nothing
+  in steps). New steps start on the sequence's most-used device (`start.ts`).
+- **Steps**: drag by the grip with pointer events (mouse and touch; `[data-grip]`, `touch-none`),
+  an insertion line in the gap (top/bottom half of a step); Alt+↑/↓ on a focused step; no move
+  buttons. Duplicate copies below (off at the limit). Add wait adds 500 ms. Editing a wait opens
+  only "Wait (ms)" (step 100); a BLE wait_connected only its timeout in seconds (`TimeField`:
+  validity from mount, bounds from the catalog or `WAIT_MS`/`WAIT_CONNECTED_MS`). Durations read
+  "500 ms" under 1 s, else "1.5 s" / "2 s" (describe.ts `duration`).
+- **Activity editor**: the name edits in place (Enter/blur saves, Esc restores); no Check button
+  (Save validates; the client has no validateActivity; the mock still serves the endpoint).
+- **Tests**: e2e `bind(page, button, 'press' | 'long press', device, command, key?)` picks commands
+  by name ("Keyboard key…" + key); drags use the grip. activity.spec covers the step dialog
+  (no None/Hubbo, Duplicate, wait in ms) and per-button inheritance. Units: `commands.test`
+  (mirror ↔ tap, timed, Hubbo tap), `describe.test` (durations), `activity.test`
+  (hubboCommands, mostUsedDevice), `start.test`, `SequenceEditor.test`, `DeviceSelect.test`,
+  wizard `build.test`. Component tests use hand-made catalogs (fixtures don't load under jsdom).
 
 ## Device profiles and the activity wizard (committed on `device-profiles`; docs/design/device-profiles.md)
 
