@@ -1,31 +1,43 @@
 import { AlertTriangle, Eraser, Pencil, Plus } from 'lucide-react'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Action, Bindings, ButtonId, EventKind, ValidationIssue } from '@/api/types'
 import { ActionPicker, TestButton } from '@/components/actions/ActionPicker'
 import { CommandPicker } from '@/components/actions/CommandPicker'
-import { commandLabel, deviceName, paramSummary } from '@/components/actions/describe'
-import { EV_COLOR, EventLegend, RemoteSvg } from '@/components/remote/RemoteSvg'
+import { actionParts, actionText } from '@/components/actions/describe'
+import { EV_COLOR, EV_LABEL, EventLegend, RemoteSvg, SourceLegend, type BindingSource } from '@/components/remote/RemoteSvg'
 import { Alert } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { buttonForPath, commandFor, isSystem, isTimed, parseTrigger, releaseFor, triggerKey, type Catalog } from '@/lib/activity'
+import { bindsButton, buttonForPath, commandFor, isTimed, releaseFor, triggerKey, type Catalog } from '@/lib/activity'
 import { readButton, viewKinds, writeLongPress, writeMain } from '@/lib/commands'
 import { BUTTONS, buttonLabel } from '@/lib/buttons'
 import { cn, same } from '@/lib/utils'
+import { Sheet, SheetSpacer } from '@/components/ui/sheet'
+import { useWide } from '@/hooks/media'
 
 /**
  * Clickable remote plus the selected button's down/up/tap/hold bindings.
  * The UI edits one action per trigger; the wire format is always an array.
  */
+/**
+ * Whose buttons these are. The global set is the base layer; an activity's set always shows the globals behind
+ * the buttons it leaves unbound, so both hosts (the activity editor and the Remote page) render it the same.
+ */
+export type BindingSet = { source: 'global'; globals?: undefined } | { source: 'activity'; globals: Bindings }
+
+/** The button shown before any pick. */
+const FIRST_BUTTON: Record<BindingSource, ButtonId> = { activity: 'select', global: 'tv' }
+
 export function BindingsEditor({
   bindings,
   onChange,
   catalog,
   errors,
   warnings,
-  selected,
+  selected: picked,
   onSelect,
-  fallback,
+  set,
 }: {
   bindings: Bindings
   onChange: (b: Bindings) => void
@@ -33,11 +45,13 @@ export function BindingsEditor({
   errors: ValidationIssue[]
   /** Advisory only: shown, but never mark a button as broken. */
   warnings: ValidationIssue[]
+  /** The picked button; null until the first pick (the set's first button shows). */
   selected: string | null
   onSelect: (id: string) => void
-  /** Bindings that apply when this set leaves a trigger unbound (global bindings, shown greyed). */
-  fallback?: Bindings
+  set: BindingSet
 }) {
+  const { source, globals: fallback } = set
+  const selected = picked ?? FIRST_BUTTON[source]
   const bound = useMemo(() => {
     const out: Record<string, EventKind[]> = {}
     for (const b of BUTTONS) {
@@ -46,58 +60,104 @@ export function BindingsEditor({
     }
     return out
   }, [bindings])
+  // Buttons this set leaves to a global binding (it binds nothing on them), with what the global does.
+  const inherited = useMemo(() => {
+    if (!fallback) return undefined
+    const out: Record<string, { kinds: EventKind[]; text: string }> = {}
+    for (const b of BUTTONS) {
+      if (bindsButton(bindings, b.id) || !bindsButton(fallback, b.id)) continue
+      const v = readButton(fallback, b.id)
+      const parts = [
+        v.main && `${EV_LABEL.tap} → ${actionText(v.main, catalog)}`,
+        v.longPress && `${EV_LABEL.hold} → ${actionText(v.longPress, catalog)}`,
+        ...v.raw.map((e) => `${EV_LABEL[e]} → ${fallback[triggerKey(b.id, e)]!.map((a) => actionText(a, catalog)).join(', ')}`),
+      ]
+      out[b.id] = { kinds: viewKinds(v), text: parts.filter(Boolean).join(' · ') }
+    }
+    return out
+  }, [fallback, bindings, catalog])
   // Keyed on the joined ids so a re-validation with the same result keeps the Set (and RemoteSvg's memo) stable.
   const errorKey = [...new Set(errors.map((e) => buttonForPath(e.path)).filter(Boolean))].sort().join(' ')
   const errorButtons = useMemo(() => new Set(errorKey ? errorKey.split(' ') : []), [errorKey])
 
+  // Phones: the remote fills the page and a tapped button's editor opens in a bottom sheet over it.
+  const wide = useWide()
+  const [sheet, setSheet] = useState(false)
+  // A pick from the page (e.g. jumping to an error) opens the sheet too, not just a tap on a key.
+  const [lastPicked, setLastPicked] = useState(picked)
+  if (picked !== lastPicked) {
+    setLastPicked(picked)
+    if (picked) setSheet(true)
+  }
+  const pick = useCallback(
+    (id: string) => {
+      onSelect(id)
+      setSheet(true)
+    },
+    [onSelect],
+  )
+  const panel = (
+    <BindingPanel
+      button={selected as ButtonId}
+      bindings={bindings}
+      fallback={fallback}
+      catalog={catalog}
+      errors={errors.filter((e) => buttonForPath(e.path) === selected)}
+      warnings={warnings.filter((e) => buttonForPath(e.path) === selected)}
+      onChange={onChange}
+    />
+  )
+
   return (
-    <div className="grid gap-4 md:grid-cols-[minmax(13rem,17rem)_minmax(0,1fr)] lg:gap-6">
+    // `--bind`: this set's accent (selected bound-list chip, the row being edited): blue, or amber for globals.
+    <div className={cn('grid gap-4 md:grid-cols-[minmax(13rem,17rem)_minmax(0,1fr)] lg:gap-6', source === 'global' ? '[--bind:var(--global)]' : '[--bind:var(--primary)]')}>
       <div className="md:sticky md:top-4 md:self-start">
         <Card className="px-6 pt-5 pb-4">
           <RemoteSvg
             bound={bound}
             selected={selected}
-            onSelect={onSelect}
+            onSelect={pick}
             errors={errorButtons}
+            inherited={inherited}
+            source={source}
             className="mx-auto max-w-[19rem] md:max-h-[calc(100dvh-9rem)] md:max-w-[15rem]" // phones: full width, so keys are big enough to tap
             label="Remote"
           />
           <EventLegend className="mt-3 justify-center" />
+          {fallback && <SourceLegend className="mt-1.5 justify-center" />}
         </Card>
       </div>
       <div className="grid content-start gap-4">
-        {selected ? (
-          <BindingPanel
-            button={selected as ButtonId}
-            bindings={bindings}
-            fallback={fallback}
-            catalog={catalog}
-            errors={errors.filter((e) => buttonForPath(e.path) === selected)}
-            warnings={warnings.filter((e) => buttonForPath(e.path) === selected)}
-            onChange={onChange}
-          />
-        ) : (
-          <Card>
-            <CardContent className="py-10 text-center text-sm text-muted-foreground">Select a button on the remote.</CardContent>
-          </Card>
-        )}
-        <BoundList bound={bound} selected={selected} onSelect={onSelect} errorButtons={errorButtons} />
+        {wide && panel}
+        <BoundList bound={bound} selected={selected} onSelect={pick} errorButtons={errorButtons} />
       </div>
+      {!wide && sheet && (
+        <>
+          <SheetSpacer />
+          <Sheet label={`${buttonLabel(selected as ButtonId)} button`} anchor={selected} find={keyEl} onClose={() => setSheet(false)}>
+            {panel}
+          </Sheet>
+        </>
+      )}
     </div>
   )
 }
+
+/** A remote key's element, for the sheet to keep in view and return focus to. */
+const keyEl = (id: string) => document.querySelector<SVGGElement>(`[data-key="${id}"]`)
 
 /** A row's look: its colour dot, title, and what it does now (or the global one it falls back to). */
 function Row({ color, title, note, action, inherited, catalog, editing, children, actions }: { color: string; title: string; note?: string; action: Action | Action[] | null; inherited?: Action | null; catalog: Catalog; editing: boolean; children?: ReactNode; actions: ReactNode }) {
   const list = Array.isArray(action) ? action : action ? [action] : []
   return (
-    <div className={cn('rounded-lg border p-3 transition-colors', editing && 'border-primary/60 bg-accent/30', !list.length && !editing && 'border-dashed')}>
+    <div className={cn('rounded-lg border p-3 transition-colors', editing && 'border-[var(--bind)]/60 bg-accent/30', !list.length && !inherited && !editing && 'border-dashed')}>
       <div className="flex items-center gap-3">
         <span className="size-3 shrink-0 rounded-full ring-2 ring-background" style={{ background: color }} aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold">
+          <p className="flex items-center gap-2 text-sm font-semibold">
             {title}
-            {note && <span className="ml-2 text-xs font-normal text-muted-foreground">{note}</span>}
+            {!list.length && inherited && <GlobalTag />}
+            {note && <span className="text-xs font-normal text-muted-foreground">{note}</span>}
           </p>
           {!editing && (
             <p className={cn('truncate text-sm', !list.length && 'text-muted-foreground')}>
@@ -109,9 +169,7 @@ function Row({ color, title, note, action, inherited, catalog, editing, children
                   </span>
                 ))
               ) : inherited ? (
-                <span className="italic">
-                  Global: <ActionText action={inherited} catalog={catalog} />
-                </span>
+                <ActionText action={inherited} catalog={catalog} />
               ) : (
                 'Nothing'
               )}
@@ -122,6 +180,15 @@ function Row({ color, title, note, action, inherited, catalog, editing, children
       </div>
       {editing && <div className="mt-3 grid gap-3 border-t pt-3">{children}</div>}
     </div>
+  )
+}
+
+/** Marks a row whose binding comes from the global buttons: amber, like the remote's key. */
+function GlobalTag() {
+  return (
+    <Badge variant="outline" className="border-[var(--global)] px-1.5 py-0 text-[11px] leading-4 text-[var(--global)]">
+      Global
+    </Badge>
   )
 }
 
@@ -175,7 +242,7 @@ function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, o
 
   const view = readButton(bindings, button)
   // A button the set binds at all masks every global for it (the hub's rule), so only an untouched button inherits.
-  const owns = Object.keys(bindings).some((k) => parseTrigger(k)?.button === button)
+  const owns = bindsButton(bindings, button)
   const inherited = fallback && !owns ? readButton(fallback, button) : null
   const timed = isTimed(catalog)
   const forced = view.raw.some((e) => e !== 'hold') // doesn't fit Press: only the raw rows can show it
@@ -298,13 +365,14 @@ function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, o
 
 const RAW_TITLE: Record<EventKind, string> = { down: 'Down', up: 'Up', tap: 'Tap', hold: 'Long press' }
 
+/** `actionText`, styled: the device stands out, the settings are muted. */
 function ActionText({ action, catalog }: { action: Action; catalog: Catalog }) {
-  const summary = paramSummary(action, catalog)
+  const p = actionParts(action, catalog)
   return (
     <>
-      {!isSystem(action) && <span className="font-medium">{deviceName(action, catalog)} → </span>}
-      {commandLabel(action, catalog)}
-      {summary && <span className="text-muted-foreground"> {summary}</span>}
+      {p.device && <span className="font-medium">{p.device} → </span>}
+      {p.command}
+      {p.summary && <span className="text-muted-foreground"> {p.summary}</span>}
     </>
   )
 }
@@ -323,7 +391,7 @@ function BoundList({ bound, selected, onSelect, errorButtons }: { bound: Record<
               aria-pressed={selected === id}
               className={cn(
                 'inline-flex items-center gap-1.5 rounded-md border bg-card px-2 py-1 text-xs outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring cursor-pointer',
-                selected === id && 'border-primary bg-primary/10',
+                selected === id && 'border-[var(--bind)] bg-[var(--bind)]/10',
                 errorButtons.has(id) && 'border-destructive text-destructive',
               )}
             >

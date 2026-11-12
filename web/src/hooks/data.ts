@@ -12,7 +12,7 @@ export const useDevices = (enabled = true) => useQuery(enabled ? 'devices' : nul
 export const useDevice = (id: string) => useQuery(`devices/${id}`, () => api.device(id))
 export const useCapabilities = (id: string | null) => useQuery(id ? `caps/${id}` : null, () => api.capabilities(id!))
 export const useActivities = () => useQuery('activities', () => api.activities())
-export const useActivity = (id: string) => useQuery(`activity/${id}`, () => api.activity(id))
+export const useActivity = (id: string | null) => useQuery(id ? `activity/${id}` : null, () => api.activity(id!))
 export const useGlobalBindings = () => useQuery('global-bindings', () => api.globalBindings())
 export const useIntegrations = (pollMs?: number) => useQuery('integrations', () => api.integrations(), { pollMs })
 export const useProfiles = (enabled = true) => useQuery(enabled ? 'profiles' : null, () => api.profiles())
@@ -20,6 +20,13 @@ export const useKinds = (enabled = true) => useQuery(enabled ? 'kinds' : null, (
 export const useIntegrationConfig = (id: string) => useQuery(`integration-config/${id}`, () => api.integrationConfig(id))
 
 /** Everything the binding/sequence editors validate against: devices, their commands, system commands, activities. */
+/** A Retry for a page built on several queries: refetches each one that failed. */
+export const retryFailed =
+  (...queries: { error?: unknown; refetch: () => Promise<void> }[]) =>
+  async () => {
+    await Promise.all(queries.filter((q) => q.error).map((q) => q.refetch()))
+  }
+
 export function useCatalog() {
   const devices = useDevices()
   const integrations = useIntegrations()
@@ -45,7 +52,7 @@ export function useCatalog() {
     [devices.data, caps.data, integrations.data, activities.data, details.data],
   )
   const loading = devices.loading || caps.loading || integrations.loading || activities.loading
-  return { catalog, loading, error: devices.error ?? caps.error ?? integrations.error, devices: devices.data ?? [] }
+  return { catalog, loading, error: devices.error ?? caps.error ?? integrations.error, refetch: retryFailed(devices, caps, integrations, activities, details), devices: devices.data ?? [] }
 }
 
 /** These devices in the detail form, fetched together; seeds the per-device keys the device pages use. */
