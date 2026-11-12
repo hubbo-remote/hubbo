@@ -5,13 +5,16 @@
 import type {
   Action,
   Activity,
-  ActivityDraft,
+  ActivityInput,
   AuthState,
   Backup,
   Command,
   ConfigState,
+  Capabilities,
   Device,
+  DeviceDetail,
   DeviceRegister,
+  DeviceRegisterProfile,
   DeviceUpdate,
   DiscoverStatus,
   ErrorCode,
@@ -138,6 +141,8 @@ const unknownFields = (keys: string[], at = '') => keys.map((k) => ({ path: `${a
 
 const err = (status: number, code: ErrorCode, message: string, extra: Record<string, unknown> = {}): MockResponse => ({ status, body: { error: { code, message, ...extra } } })
 const invalid = (details: ValidationIssue[], message = details[0]?.message ?? 'Invalid request') => err(422, 'validation_failed', message, { details: details.slice(0, 32) })
+const nameRequired = () => invalid([{ path: '/name', code: 'required', message: 'Name is required' }])
+const deviceLimit = () => err(409, 'limit_reached', 'At most 64 devices')
 const ok = (body?: unknown, status = 200): MockResponse => ({ status: body === undefined ? 204 : status, body })
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] }
@@ -154,6 +159,8 @@ export function createMock(opts: MockOptions = {}) {
   const rand = opts.random ?? Math.random
   const bootedAt = Date.now()
   let db: Seed
+  /** The seeded Bluetooth device's commands, the shape every Bluetooth device's capabilities take. */
+  let bleTemplate: Command[] = []
   let adminCreated: boolean
   let username: string
   let password: string
@@ -217,6 +224,7 @@ export function createMock(opts: MockOptions = {}) {
     mode = { ...flags, firstRun: flags.firstRun ?? opts.firstRun, requireAuth: flags.requireAuth ?? opts.requireAuth }
     db = loadSeed()
     for (const d of db.devices) delete d.bluetooth // runtime status, computed by live()
+    bleTemplate = [...db.capabilities.values()].find((c) => c.integration_id === 'ble')?.commands ?? []
     adminCreated = !mode.firstRun
     // A set-up mock hub's admin is the login fixture's (the user picked the name; there's no default).
     ;({ username, password } = fixture<{ username: string; password: string }>('auth/login.request.json'))
@@ -446,11 +454,75 @@ export function createMock(opts: MockOptions = {}) {
   }
 
   /** A device as the API shows it: Bluetooth devices carry their live status and availability. */
-  function live(d: Device): Device {
+  function live(d: DeviceDetail): DeviceDetail {
     if (d.provider.type !== 'ble_hid') return d
     const bluetooth = bleStatus(d.id)
     return { ...d, availability: bluetooth.state === 'connected' ? 'available' : 'unavailable', bluetooth }
   }
+
+  /** The light form GET /devices lists: no profile content. */
+  function light({ commands: _c, buttons: _b, power: _p, timing: _t, inputs: _i, channels: _ch, ...d }: DeviceDetail): Device {
+    return d
+  }
+
+  /**
+   * A Bluetooth device's capabilities, like the hub's: the seeded Bluetooth device's commands (all
+   * keys, custom codes, wait_connected) with the remote group's `command` choices from its profile.
+   */
+  function bleCaps(d: DeviceDetail): Capabilities {
+    const names = Object.keys(d.commands ?? {})
+    const commands = bleTemplate.map((c) =>
+      c.group === 'remote' ? { ...c, params: c.params.map((p) => (p.name === 'command' ? { ...p, options: names } : p)) } : c,
+    )
+    return { device_id: d.id, integration_id: d.integration_id, commands }
+  }
+
+  /** A new device's 201, in the detail form. */
+  const created = (d: DeviceDetail): MockResponse => ({ status: 201, body: live(d), headers: { location: `/api/v1/devices/${d.id}` } })
+
+  function newDeviceId(name: string) {
+    let id = `dev_${slug(name)}`
+    while (db.devices.some((d) => d.id === id)) id = `dev_${slug(name).slice(0, 20)}_${rand36(3)}`
+    return id
+  }
+
+  /** POST /admin/devices {profile_id, name?, kind?}: the hub copies its profile (without `meta`) into the device. */
+  function addFromProfile(b: DeviceRegisterProfile): MockResponse {
+    const extra = Object.keys(b).filter((k) => !['profile_id', 'name', 'kind'].includes(k))
+    if (extra.length) return invalid(unknownFields(extra))
+    const p = db.profiles.find((x) => x.id === b.profile_id)
+    if (!p) return invalid([{ path: '/profile_id', code: 'unknown_profile', message: `There's no profile ${b.profile_id}` }])
+    if (b.name !== undefined && !b.name.trim()) return nameRequired()
+    if (!kindKnown(b.kind)) return unknownKind()
+    if (db.devices.length >= 64) return deviceLimit()
+    if (db.devices.filter((d) => d.provider.type === 'ble_hid').length >= BLE_MAX_DEVICES) return fixtureError(422, 'errors/too_many_bluetooth_devices.json')
+    const { schema_version: _v, id: profileId, revision: profileRevision, source: _s, manufacturer, model, kind, platform: _p, ...content } = p
+    const name = (b.name ?? model).trim()
+    const d: DeviceDetail = {
+      id: newDeviceId(name),
+      name,
+      integration_id: 'ble',
+      kind: b.kind ?? kind,
+      provider: { type: 'ble_hid' },
+      platform: 'ble_hid',
+      manufacturer,
+      model,
+      profile: { id: profileId, revision: profileRevision, sha256: profileSha(profileId) },
+      availability: 'available',
+      schema_version: 1,
+      revision: commit(),
+      ...content,
+    }
+    db.devices.push(d)
+    db.capabilities.set(d.id, bleCaps(d))
+    return created(d)
+  }
+
+  /** A built-in profile's digest, as GET /profiles lists it. */
+  const profileSha = (id: string) => db.profileList.find((x) => x.id === id)?.sha256 ?? ''
+
+  const kindKnown = (k: string | undefined) => k === undefined || db.kinds.some((x) => x.id === k)
+  const unknownKind = () => invalid([{ path: '/kind', code: 'unknown_kind', message: 'Not a device kind (see GET /kinds)' }])
 
   /** 404 unless `id` is a Bluetooth device, in the hub's words; null when it is one. */
   function notBle(id: string): MockResponse | null {
@@ -561,7 +633,7 @@ export function createMock(opts: MockOptions = {}) {
   function checkActivity(body: unknown, allowed: readonly string[]): MockResponse | null {
     const shape = activityShape(body, allowed)
     if (shape.length) return invalid(shape)
-    const v = validateActivity(body as ActivityDraft, catalog())
+    const v = validateActivity(body as ActivityInput, catalog())
     return v.valid ? null : invalid(v.errors)
   }
 
@@ -612,8 +684,16 @@ export function createMock(opts: MockOptions = {}) {
     ['GET', /^\/remote\/status$/, 'token', () => ok(status().remote)],
     ['GET', /^\/remote\/buttons$/, 'token', () => ok(db.buttons)],
 
+    // profiles
+    ['GET', /^\/profiles$/, 'admin', () => ok({ profiles: db.profileList })],
+    ['GET', /^\/profiles\/([^/]+)$/, 'admin', (_r, m) => {
+      const p = db.profiles.find((x) => x.id === m[1])
+      return p ? ok(p) : err(404, 'not_found', `There's no profile ${m[1]}`)
+    }],
+    ['GET', /^\/kinds$/, 'admin', () => ok({ kinds: db.kinds })],
+
     // devices
-    ['GET', /^\/devices$/, 'token', () => ok({ devices: db.devices.map(live) })],
+    ['GET', /^\/devices$/, 'token', () => ok({ devices: db.devices.map((d) => light(live(d))) })],
     ['GET', /^\/devices\/([^/]+)$/, 'token', (_r, m) => {
       const d = db.devices.find((x) => x.id === m[1])
       return d ? ok(live(d)) : err(404, 'not_found', 'No such device')
@@ -627,6 +707,7 @@ export function createMock(opts: MockOptions = {}) {
       if (!d) return err(404, 'not_found', 'No such device')
       const params = (req.body as { params?: Record<string, never> })?.params ?? {}
       const a = { integration_id: d.integration_id, device_id: d.id, command_id: m[2]!, params }
+      if (db.capabilities.get(d.id)?.commands.find((c) => c.command_id === a.command_id)?.effect === 'wait') return fixtureError(422, 'errors/sequence_only.json')
       const shape = activityShape({ name: 'x', startup: [a], shutdown: [], bindings: {} }, ['name', 'startup', 'shutdown', 'bindings'])
       const v = shape.length ? shape : validateActivity({ name: 'x', startup: [a], shutdown: [], bindings: {} }, catalog()).errors
       if (v.length) return invalid(v.map((e) => ({ ...e, path: e.path.replace(/^\/startup\/0/, '') })))
@@ -652,7 +733,7 @@ export function createMock(opts: MockOptions = {}) {
       const bad = checkActivity(req.body, ['name', 'startup', 'shutdown', 'bindings'])
       if (bad) return bad
       if (db.activities.length >= 16) return err(409, 'limit_reached', 'At most 16 activities')
-      const b = req.body as ActivityDraft
+      const b = req.body as ActivityInput
       let id = `act_${slug(b.name)}`
       while (db.activities.some((a) => a.id === id)) id = `act_${slug(b.name).slice(0, 20)}_${rand36(3)}`
       const act: Activity = { id, name: b.name, startup: b.startup, shutdown: b.shutdown, bindings: b.bindings, schema_version: 1, revision: commit() }
@@ -662,7 +743,7 @@ export function createMock(opts: MockOptions = {}) {
     ['POST', /^\/activities\/validate$/, 'token', (req) => {
       const shape = activityShape(req.body, ['id', 'name', 'startup', 'shutdown', 'bindings', 'schema_version', 'revision'])
       if (shape.length) return ok({ valid: false, errors: shape })
-      const v = validateActivity(req.body as ActivityDraft, catalog())
+      const v = validateActivity(req.body as ActivityInput, catalog())
       return ok({ valid: v.valid, errors: v.errors })
     }],
     ['POST', /^\/activities\/off$/, 'token', () => {
@@ -680,7 +761,7 @@ export function createMock(opts: MockOptions = {}) {
       const i = db.activities.findIndex((x) => x.id === m[1])
       if (i < 0) return err(404, 'not_found', 'No such activity')
       const cur = db.activities[i]!
-      const b = req.body as ActivityDraft & { revision?: number }
+      const b = req.body as ActivityInput & { id?: string; revision?: number }
       if (b?.revision === undefined) return invalid([{ path: '/revision', code: 'required', message: 'revision is required' }])
       if (b.id !== undefined && b.id !== cur.id) return invalid([{ path: '/id', code: 'id_mismatch', message: 'id does not match the URL' }])
       if (b.revision !== cur.revision) return err(409, 'revision_conflict', `Activity changed since revision ${b.revision}`, { current_revision: cur.revision })
@@ -817,34 +898,26 @@ export function createMock(opts: MockOptions = {}) {
     }],
 
     ['POST', /^\/admin\/devices$/, 'admin', (req) => {
-      const b = req.body as DeviceRegister
+      if (req.body && typeof req.body === 'object' && 'profile_id' in req.body) return addFromProfile(req.body as DeviceRegisterProfile)
+      const b = req.body as Extract<DeviceRegister, { provider: unknown }>
       // Like the hub: only DeviceRegister's fields (a client-sent `ha_capabilities` is refused).
       const extra = Object.keys(b ?? {}).filter((k) => !['name', 'integration_id', 'kind', 'provider'].includes(k))
       if (extra.length) return invalid(unknownFields(extra))
-      if (!b?.name?.trim()) return invalid([{ path: '/name', code: 'required', message: 'Name is required' }])
-      if (db.devices.length >= 64) return err(409, 'limit_reached', 'At most 64 devices')
+      if (!b?.name?.trim()) return nameRequired()
+      if (!kindKnown(b.kind)) return unknownKind()
+      if (db.devices.length >= 64) return deviceLimit()
       const p = b.provider
-      let hc: EntityWithCommands | null = null
-      if (p?.type === 'home_assistant') {
-        if (integrationState('ha_main') === 'connected' && b.integration_id !== 'ha_main') return invalid([{ path: '/integration_id', code: 'integration_mismatch', message: 'Home Assistant entities belong to ha_main' }])
-        const c = haEntity(p.entity_id)
-        if ('status' in c) return c
-        hc = c
-      } else if (b.provider?.type !== 'ble_hid' || b.integration_id !== 'ble') return invalid([{ path: '/provider', code: 'integration_mismatch', message: 'Provider does not belong to that integration' }])
-      else if (db.devices.filter((d) => d.provider.type === 'ble_hid').length >= BLE_MAX_DEVICES)
-        return fixtureError(422, 'errors/too_many_bluetooth_devices.json')
-      let id = `dev_${slug(b.name)}`
-      while (db.devices.some((d) => d.id === id)) id = `dev_${slug(b.name).slice(0, 20)}_${rand36(3)}`
-      const d: Device = { id, name: b.name.trim(), integration_id: b.integration_id, kind: b.kind ?? 'other', provider: p.type === 'ble_hid' ? { type: 'ble_hid' } : p, availability: 'available', schema_version: 1, revision: commit() }
+      // Only Home Assistant entities come this way; Bluetooth devices come from a profile.
+      if (p?.type !== 'home_assistant') return invalid([{ path: '/provider', code: 'integration_mismatch', message: 'Provider does not belong to that integration' }])
+      if (integrationState('ha_main') === 'connected' && b.integration_id !== 'ha_main') return invalid([{ path: '/integration_id', code: 'integration_mismatch', message: 'Home Assistant entities belong to ha_main' }])
+      const hc = haEntity(p.entity_id)
+      if ('status' in hc) return hc
+      const d: DeviceDetail = { id: newDeviceId(b.name), name: b.name.trim(), integration_id: b.integration_id, kind: b.kind ?? 'other', provider: p, platform: 'home_assistant', availability: 'available', schema_version: 1, revision: commit() }
       db.devices.push(d)
-      const prov = b.provider
-      const cand = prov.type === 'home_assistant' ? db.discover.candidates.find((x) => x.provider.entity_id === prov.entity_id) : undefined
-      if (cand) cand.registered_device_id = id
-      // Capabilities: reuse a fixture device of the same kind/integration, filtered to the discovered command IDs.
-      const like = db.devices.find((x) => x.id !== id && x.integration_id === d.integration_id && x.kind === d.kind) ?? db.devices.find((x) => x.id !== id && x.integration_id === d.integration_id)
-      const base = like ? db.capabilities.get(like.id)!.commands : []
-      db.capabilities.set(id, { device_id: id, integration_id: d.integration_id, commands: hc ? haCommands(hc) : base })
-      return { status: 201, body: live(d), headers: { location: `/api/v1/devices/${id}` } }
+      const cand = db.discover.candidates.find((x) => x.provider.entity_id === p.entity_id)
+      if (cand) cand.registered_device_id = d.id
+      db.capabilities.set(d.id, { device_id: d.id, integration_id: d.integration_id, commands: haCommands(hc) })
+      return created(d)
     }],
     ['PUT', /^\/admin\/devices\/([^/]+)$/, 'admin', (req, m) => {
       const i = db.devices.findIndex((x) => x.id === m[1])
@@ -855,7 +928,8 @@ export function createMock(opts: MockOptions = {}) {
       const extra = Object.keys(b ?? {}).filter((k) => !['name', 'kind', 'provider', 'revision'].includes(k))
       if (extra.length) return invalid(unknownFields(extra))
       if (b?.revision !== d.revision) return err(409, 'revision_conflict', `Device changed since revision ${b?.revision}`, { current_revision: d.revision })
-      if (b.name !== undefined && !b.name.trim()) return invalid([{ path: '/name', code: 'required', message: 'Name is required' }])
+      if (b.name !== undefined && !b.name.trim()) return nameRequired()
+      if (!kindKnown(b.kind)) return unknownKind()
       let availability = d.availability
       if (b.provider) {
         // Re-link: HA re-reads the entity (even an unchanged provider) and replaces the stored capabilities.
@@ -937,7 +1011,7 @@ export function createMock(opts: MockOptions = {}) {
     ['GET', /^\/admin\/tokens$/, 'admin', () => ok({ tokens: db.tokens })],
     ['POST', /^\/admin\/tokens$/, 'admin', (req) => {
       const name = (req.body as { name?: string })?.name?.trim()
-      if (!name) return invalid([{ path: '/name', code: 'required', message: 'Name is required' }])
+      if (!name) return nameRequired()
       if (db.tokens.length >= 16) return err(409, 'limit_reached', 'At most 16 tokens')
       const id = rand36(8)
       const secret = Array.from({ length: 43 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'[Math.floor(Math.random() * 64)]).join('')
@@ -971,7 +1045,7 @@ export function createMock(opts: MockOptions = {}) {
       const b: Backup = {
         ...db.backup,
         created_at: isoNow(),
-        devices: db.devices.map(({ availability: _a, ...stored }) => stored), // StoredDevice: availability is live state
+        devices: db.devices.map(({ availability: _a, platform: _p, ...stored }) => stored), // StoredDevice: no live state, and platform is provider.type
         activities: db.activities,
         global_bindings: db.globalBindings,
         integrations: [...db.configs.values()].map((c) => ({
@@ -1007,7 +1081,9 @@ export function createMock(opts: MockOptions = {}) {
       if (!dry) {
         // Revisions in the backup may be missing or 0; stampAll() replaces them all.
         // A backup's StoredDevice carries ha_capabilities; a Device (what the API returns) never does.
-        db.devices = b.devices.map(({ ha_capabilities: _, ...d }) => ({ ...d, availability: 'unknown' as const, revision: 0 }))
+        db.devices = b.devices.map(({ ha_capabilities: _, ...d }) => ({ ...d, platform: d.provider.type, availability: 'unknown' as const, revision: 0 }))
+        // A Bluetooth device's commands come from the profile content it carries.
+        for (const d of db.devices) if (d.provider.type === 'ble_hid') db.capabilities.set(d.id, bleCaps(d))
         pruneBonds() // a restored device keeps its bond on this hub; others are dropped
         db.activities = b.activities.map((a) => ({ ...a, schema_version: 1 as const, revision: 0 }))
         db.globalBindings = { bindings: b.global_bindings?.bindings ?? {}, revision: 0 }

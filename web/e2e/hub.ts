@@ -151,14 +151,14 @@ export async function discoverHa(page: Page) {
   await expect.poll(async () => (await hub.get('/admin/integrations/ha_main/discover')).state).toBe('done')
 }
 
-/** Register an HA entity as a device through the API: its details first (§3b), then POST /admin/devices. */
-/** Add a Bluetooth device through the API; returns its id. */
-export async function addBle(page: Page, name: string): Promise<string> {
-  const r = await api(page).post('/admin/devices', { name, integration_id: 'ble', kind: 'streamer', provider: { type: 'ble_hid' } })
+/** Add a Bluetooth device from a built-in profile through the API; returns its id. */
+export async function addBle(page: Page, name: string, profile = 'hubbo:fire-tv'): Promise<string> {
+  const r = await api(page).post('/admin/devices', { profile_id: profile, name })
   expect(r.status(), await r.text()).toBe(201)
   return (await r.json()).id
 }
 
+/** Register an HA entity as a device through the API: its details first (§3b), then POST /admin/devices. */
 export async function registerHa(page: Page, entityId: string, name: string, kind = 'other') {
   const hub = api(page)
   const path = `/admin/integrations/ha_main/entities/${entityId}/details`

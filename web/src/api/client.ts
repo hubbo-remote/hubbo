@@ -3,7 +3,7 @@
 // browser handles; there's no CSRF token (the hub checks Origin instead).
 import type {
   Activity,
-  ActivityDraft,
+  ActivityInput,
   ActivityList,
   ActionParams,
   ApiErrorBody,
@@ -12,6 +12,7 @@ import type {
   Capabilities,
   ConfigState,
   Device,
+  DeviceDetail,
   DeviceRegister,
   DeviceUpdate,
   DiscoverStatus,
@@ -21,6 +22,8 @@ import type {
   Integration,
   IntegrationConfig,
   IntegrationConfigUpdate,
+  Kind,
+  ProfileSummary,
   RemoteConfig,
   RemoteEndpointUpdate,
   RemotePairStatus,
@@ -178,7 +181,7 @@ const put = <T>(p: string, b: unknown) => request<T>('PUT', p, b)
 const del = (p: string) => request<void>('DELETE', p)
 
 /** Strip editor-only fields; PUT accepts id/revision/schema_version, POST does not. */
-const activityBody = (a: ActivityDraft) => ({ name: a.name, startup: a.startup, shutdown: a.shutdown, bindings: a.bindings })
+const activityBody = (a: ActivityInput) => ({ name: a.name, startup: a.startup, shutdown: a.shutdown, bindings: a.bindings })
 
 export const api = {
   // auth
@@ -193,20 +196,23 @@ export const api = {
 
   // devices
   devices: async () => (await get<{ devices: Device[] }>('/devices')).devices,
-  device: (id: string) => get<Device>(`/devices/${enc(id)}`),
+  /** One device in the detail form: a Bluetooth device carries its profile (commands, power, inputs…). */
+  device: (id: string) => get<DeviceDetail>(`/devices/${enc(id)}`),
   capabilities: (id: string) => get<Capabilities>(`/devices/${enc(id)}/capabilities`),
   execute: (id: string, command: string, params: ActionParams) => post<ExecuteResult>(`/devices/${enc(id)}/commands/${enc(command)}/execute`, { params }),
-  registerDevice: (b: DeviceRegister) => post<Device>('/admin/devices', b),
+  registerDevice: (b: DeviceRegister) => post<DeviceDetail>('/admin/devices', b),
+  profiles: async () => (await get<{ profiles: ProfileSummary[] }>('/profiles')).profiles,
+  kinds: async () => (await get<{ kinds: Kind[] }>('/kinds')).kinds,
   updateDevice: (id: string, b: DeviceUpdate) => put<Device>(`/admin/devices/${enc(id)}`, b),
   deleteDevice: (id: string, revision: number) => del(`/admin/devices/${enc(id)}?revision=${revision}`),
 
   // activities
   activities: () => get<ActivityList>('/activities'),
   activity: (id: string) => get<Activity>(`/activities/${enc(id)}`),
-  createActivity: (a: ActivityDraft) => post<Activity>('/activities', activityBody(a)),
-  replaceActivity: (id: string, a: ActivityDraft, revision: number) => put<Activity>(`/activities/${enc(id)}`, { ...activityBody(a), revision }),
+  createActivity: (a: ActivityInput) => post<Activity>('/activities', activityBody(a)),
+  replaceActivity: (id: string, a: ActivityInput, revision: number) => put<Activity>(`/activities/${enc(id)}`, { ...activityBody(a), revision }),
   deleteActivity: (id: string, revision: number) => del(`/activities/${enc(id)}?revision=${revision}`),
-  validateActivity: (a: ActivityDraft) => post<ValidationResult>('/activities/validate', activityBody(a)),
+  validateActivity: (a: ActivityInput) => post<ValidationResult>('/activities/validate', activityBody(a)),
   activate: (id: string) => post<TransitionResult>(`/activities/${enc(id)}/activate`),
   off: () => post<TransitionResult>('/activities/off'),
   globalBindings: () => get<GlobalBindings>('/global-bindings'),

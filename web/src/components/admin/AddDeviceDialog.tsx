@@ -1,9 +1,9 @@
-import { Loader2 } from 'lucide-react'
+import { Loader2, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'wouter'
 import { api, errorMessage, toApiError } from '@/api/client'
 import { invalidate } from '@/api/hooks'
-import type { Device, DeviceKind, DiscoverCandidate, Provider } from '@/api/types'
+import type { Device, DeviceKind, DiscoverCandidate, HomeAssistantProvider, ProfileSummary } from '@/api/types'
 import { EntityPreview, HaCandidates } from '@/components/admin/HaCandidates'
 import { haDeviceError, loadEntityDetails, type EntityDetails } from '@/lib/ha'
 import { Alert } from '@/components/ui/alert'
@@ -11,27 +11,35 @@ import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, Select } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
-import { useDevices, useIntegrations } from '@/hooks/data'
-import { INTEGRATION_ICON, isUserIntegration, KIND_LABEL, providerRef } from '@/lib/health'
-
-const KINDS: DeviceKind[] = ['tv', 'receiver', 'speaker', 'streamer', 'console', 'light', 'switch', 'other']
+import { useDevices, useIntegrations, useKinds, useProfiles } from '@/hooks/data'
+import { INTEGRATION_ICON, providerRef } from '@/lib/health'
 const guessKind = (c: DiscoverCandidate): DeviceKind => (c.domain === 'light' ? 'light' : c.domain === 'switch' ? 'switch' : /tv|oled|bravia|webos/i.test(c.name) ? 'tv' : /denon|marantz|yamaha|onkyo|receiver|avr/i.test(c.name) ? 'receiver' : /sonos|speaker/i.test(c.name) ? 'speaker' : 'other')
 
-interface Pick {
-  provider: Provider
-  /** HA only: the entity's name, shown above the name field with its entity id. */
-  label?: string
-  /** HA only: the entity's details, loaded once it's picked (registering needs them). */
-  details?: { state: 'loading' } | { state: 'done'; d: EntityDetails } | { state: 'failed'; error: string }
-}
+/** What's being added: a built-in profile, or a Home Assistant entity (with its details, which registering needs). */
+type Pick =
+  | { profile: ProfileSummary }
+  | { provider: HomeAssistantProvider; label: string; details?: { state: 'loading' } | { state: 'done'; d: EntityDetails } | { state: 'failed'; error: string } }
 
-/** Integration → discovered target → name (Bluetooth: integration → name; pairing is on the device's page). */
+const matches = (p: ProfileSummary, q: string) => `${p.manufacturer} ${p.model}`.toLowerCase().includes(q.trim().toLowerCase())
+
+/**
+ * One list: the built-in profiles (search by manufacturer and model) and "From Home Assistant".
+ * A profile → its name; Home Assistant → an entity → its name. Bluetooth pairs on the device's page.
+ */
 export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onClose: () => void; onAdded?: (d: Device) => void }) {
   const integrations = useIntegrations()
-  const options = (integrations.data ?? []).filter((i) => isUserIntegration(i) && i.enabled)
+  const enabled = (type: string) => (integrations.data ?? []).filter((i) => i.type === type && i.enabled)
+  const ha = enabled('home_assistant')
+  // Built-in lists: fetched once the dialog opens.
+  const profiles = useProfiles(open)
+  const kinds = useKinds(open).data ?? []
+  // Profiles need their platform's integration on (Bluetooth for now).
+  const offered = (profiles.data ?? []).filter((p) => enabled(p.platform).length > 0)
+  const [query, setQuery] = useState('')
   const [integration, setIntegration] = useState<string | null>(null)
   const [pick, setPick] = useState<Pick | null>(null)
-  const loaded = pick?.details?.state === 'done' ? pick.details.d : null
+  const haPick = pick && 'provider' in pick ? pick : null
+  const loaded = haPick?.details?.state === 'done' ? haPick.details.d : null
   const devices = useDevices(!!loaded?.registered_device_id).data // only to name it
   const [name, setName] = useState('')
   const [kind, setKind] = useState<DeviceKind>('other')
@@ -45,12 +53,13 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
   const loadDetails = async (entityId: string) => {
     const id = ++loadId.current
     const stale = () => id !== loadId.current
-    setPick((p) => p && { ...p, details: { state: 'loading' } })
+    const set = (details: Extract<Pick, { provider: unknown }>['details']) => setPick((p) => p && 'provider' in p ? { ...p, details } : p)
+    set({ state: 'loading' })
     try {
       const d = await loadEntityDetails(integration!, entityId, stale)
-      if (d) setPick((p) => p && { ...p, details: { state: 'done', d } })
+      if (d) set({ state: 'done', d })
     } catch (e) {
-      if (!stale()) setPick((p) => p && { ...p, details: { state: 'failed', error: errorMessage(e) } })
+      if (!stale()) set({ state: 'failed', error: errorMessage(e) })
     }
   }
 
@@ -59,52 +68,49 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
       cancelDetails()
       setIntegration(null)
       setPick(null)
+      setQuery('')
       setName('')
       setError(null)
     }
   }, [open])
 
-  const type = options.find((i) => i.id === integration)?.type
-  const choose = (id: string, t: string) => {
-    setIntegration(id)
-    // Bluetooth has nothing to discover: straight to the name.
-    if (t === 'ble_hid') {
-      setPick({ provider: { type: 'ble_hid' } })
-      setName('')
-      setKind('streamer')
-    }
+  const chooseProfile = (p: ProfileSummary) => {
+    setPick({ profile: p })
+    setName(p.model)
+    setKind(p.kind)
   }
   const submit = async () => {
-    if (!integration || !pick) return
+    if (!pick) return
     setBusy(true)
     setError(null)
     try {
-      const d = await api.registerDevice({ integration_id: integration, provider: pick.provider, name: name.trim(), kind })
+      const d = await api.registerDevice('profile' in pick ? { profile_id: pick.profile.id, name: name.trim(), kind } : { integration_id: integration!, provider: pick.provider, name: name.trim(), kind })
       invalidate('devices', 'discover', 'caps-all', 'integrations')
       onAdded?.(d)
       onClose()
     } catch (e) {
       // Already a device (e.g. the entity was renamed in HA): reload the details, which name it.
-      if (pick.provider.type === 'home_assistant' && toApiError(e).details.some((d) => d.code === 'duplicate_id')) return void loadDetails(pick.provider.entity_id)
-      setError(pick.provider.type === 'home_assistant' ? await haDeviceError(e) : errorMessage(e, { details: true }))
+      if ('provider' in pick && toApiError(e).details.some((d) => d.code === 'duplicate_id')) return void loadDetails(pick.provider.entity_id)
+      setError('provider' in pick ? await haDeviceError(e) : errorMessage(e, { details: true }))
     } finally {
       setBusy(false)
     }
   }
 
-  const step = !integration ? 1 : !pick ? 2 : 3
-  // Back from a picked entity goes to the list; Bluetooth has no list, so it goes to the start.
+  const step = pick ? 3 : integration ? 2 : 1
+  // Back from a picked entity goes to the entity list; anything else goes to the start.
   const back = () => {
     setPick(null)
-    if (step === 3 && type === 'home_assistant') cancelDetails()
+    if (haPick) cancelDetails()
     else setIntegration(null)
   }
+  const shown = offered.filter((p) => matches(p, query))
   return (
     <Dialog
       open={open}
       onClose={onClose}
       title="Add a device"
-      description={step === 1 ? 'How is it connected?' : undefined}
+      description={step === 1 ? 'What are you adding?' : undefined}
       footer={
         <>
           {step > 1 && (
@@ -116,7 +122,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
             Cancel
           </Button>
           {step === 3 && (
-            <Button onClick={submit} disabled={busy || !name.trim() || (!!pick?.details && (!loaded || !loaded.supported || !!loaded.registered_device_id))}>
+            <Button onClick={submit} disabled={busy || !name.trim() || (!!haPick?.details && (!loaded || !loaded.supported || !!loaded.registered_device_id))}>
               {busy && <Loader2 className="animate-spin" />}
               Add device
             </Button>
@@ -126,23 +132,21 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
     >
       {step === 1 && (
         <div className="grid gap-2">
-          {integrations.loading && <Skeleton className="h-24" />}
-          {options.map((i) => {
-            const Icon = INTEGRATION_ICON[i.type]
-            return (
-              <button key={i.id} onClick={() => choose(i.id, i.type)} className="flex items-center gap-3 rounded-lg border p-3 text-left outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 cursor-pointer">
-                <Icon className="size-5 text-muted-foreground" />
-                <div>
-                  <p className="font-medium">{i.name}</p>
-                  <p className="text-xs text-muted-foreground">{i.type === 'home_assistant' ? 'Media players, lights and switches' : 'TV boxes and streamers'}</p>
-                </div>
-              </button>
-            )
-          })}
-          {integrations.data && options.length === 0 && <p className="text-sm text-muted-foreground">Turn on an integration first.</p>}
+          {(integrations.loading || profiles.loading) && <Skeleton className="h-24" />}
+          {offered.length > 0 && (
+            <Input type="search" aria-label="Search devices" placeholder="Search devices" value={query} onChange={(e) => setQuery(e.target.value)} autoFocus />
+          )}
+          {shown.map((p) => (
+            <Choice key={p.id} icon={INTEGRATION_ICON[p.platform]} title={p.model} subtitle={[p.manufacturer !== 'Other' && p.manufacturer, enabled(p.platform)[0]?.name].filter(Boolean).join(' · ')} onClick={() => chooseProfile(p)} />
+          ))}
+          {query && offered.length > 0 && shown.length === 0 && <p className="px-1 text-sm text-muted-foreground">No matches.</p>}
+          {ha.map((i) => (
+            <Choice key={i.id} icon={INTEGRATION_ICON.home_assistant} title={ha.length > 1 ? `From ${i.name}` : 'From Home Assistant'} subtitle="Media players, lights and switches" onClick={() => setIntegration(i.id)} />
+          ))}
+          {integrations.data && profiles.data && offered.length === 0 && ha.length === 0 && <p className="text-sm text-muted-foreground">Turn on an integration first.</p>}
         </div>
       )}
-      {step === 2 && type === 'home_assistant' && (
+      {step === 2 && (
         <HaCandidates
           integration={integration!}
           onPick={(c) => {
@@ -155,13 +159,20 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
       )}
       {step === 3 && pick && (
         <div className="grid gap-4">
-          {pick.label && (
-            <div className="rounded-lg bg-muted px-3 py-2 text-sm">
-              <p className="font-medium">{pick.label}</p>
-              <p className="font-mono text-xs text-muted-foreground">{providerRef(pick.provider)}</p>
-            </div>
-          )}
-          {pick.details?.state === 'loading' && (
+          <div className="rounded-lg bg-muted px-3 py-2 text-sm">
+            {'profile' in pick ? (
+              <>
+                <p className="font-medium">{pick.profile.model}</p>
+                <p className="text-xs text-muted-foreground">{pick.profile.manufacturer}</p>
+              </>
+            ) : (
+              <>
+                <p className="font-medium">{pick.label}</p>
+                <p className="font-mono text-xs text-muted-foreground">{providerRef(pick.provider)}</p>
+              </>
+            )}
+          </div>
+          {haPick?.details?.state === 'loading' && (
             <p className="flex items-center gap-2 rounded-lg border px-3 py-3 text-sm" role="status">
               <Loader2 className="size-4 animate-spin text-primary" /> Loading commands…
             </p>
@@ -171,9 +182,9 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
           ) : (
             loaded && <EntityPreview c={loaded} />
           )}
-          {pick.details?.state === 'failed' && (
-            <Alert variant="error" title="Couldn’t load its commands" action={<Button size="sm" variant="outline" onClick={() => void loadDetails(providerRef(pick.provider))}>Retry</Button>}>
-              {pick.details.error}
+          {haPick?.details?.state === 'failed' && (
+            <Alert variant="error" title="Couldn’t load its commands" action={<Button size="sm" variant="outline" onClick={() => void loadDetails(haPick.provider.entity_id)}>Retry</Button>}>
+              {haPick.details.error}
             </Alert>
           )}
           {error && <Alert variant="error"><p className="whitespace-pre-line">{error}</p></Alert>}
@@ -182,9 +193,10 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
           </Field>
           <Field label="Type" htmlFor="dev-kind">
             <Select id="dev-kind" value={kind} onChange={(e) => setKind(e.target.value as DeviceKind)}>
-              {KINDS.map((k) => (
-                <option key={k} value={k}>
-                  {KIND_LABEL[k]}
+              {!kinds.some((k) => k.id === kind) && <option value={kind}>{kind}</option>}
+              {kinds.map((k) => (
+                <option key={k.id} value={k.id}>
+                  {k.label}
                 </option>
               ))}
             </Select>
@@ -192,6 +204,18 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
         </div>
       )}
     </Dialog>
+  )
+}
+
+function Choice({ icon: Icon, title, subtitle, onClick }: { icon: LucideIcon; title: string; subtitle: string; onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="flex cursor-pointer items-center gap-3 rounded-lg border p-3 text-left outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50">
+      <Icon className="size-5 shrink-0 text-muted-foreground" />
+      <div>
+        <p className="font-medium">{title}</p>
+        <p className="text-xs text-muted-foreground">{subtitle}</p>
+      </div>
+    </button>
   )
 }
 

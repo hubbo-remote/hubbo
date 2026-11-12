@@ -1,16 +1,16 @@
 import { Loader2, Play } from 'lucide-react'
 import { useId, useState } from 'react'
 import { api, errorMessage } from '@/api/client'
-import type { Action, ExecuteResult } from '@/api/types'
+import type { Action, Command, ExecuteResult } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Field, Select } from '@/components/ui/input'
 import { useCapabilities } from '@/hooks/data'
 import { commandFor, defaultParams, isSystem, SYSTEM, systemCommandAllowed, type Catalog } from '@/lib/activity'
+import { commandGroups } from '@/lib/keys'
 import { cn } from '@/lib/utils'
 import { ParamForm } from './ParamForm'
 
 const SYSTEM_VALUE = '__system__'
-
 
 /**
  * Device → command → typed params. Only registered devices and their
@@ -24,8 +24,14 @@ export function ActionPicker({ value, onChange, catalog, context, allowHold = fa
   const caps = useCapabilities(deviceId && deviceId !== SYSTEM_VALUE && !known ? deviceId : null)
   // The binding UI edits one action per trigger, so it is always the last one.
   const systemCommands = catalog.systemCommands.filter((c) => systemCommandAllowed(c.command_id, context === 'sequence' ? 'sequence' : 'binding-last'))
-  const commands = (system ? systemCommands : ((known ?? caps.data)?.commands ?? [])).filter((c) => allowHold || c.effect !== 'hold')
+  // Holds only where a release can follow (a binding's down); waits (wait_connected) only in sequences.
+  const offer = (c: Command) => (allowHold || c.effect !== 'hold') && (context === 'sequence' || c.effect !== 'wait')
+  const commands = (system ? systemCommands : ((known ?? caps.data)?.commands ?? [])).filter(offer)
   const cmd = value ? commandFor(value, catalog) ?? commands.find((c) => c.command_id === value.command_id) : undefined
+  const [showCustom, setShowCustom] = useState(false)
+  const customPicked = cmd?.group === 'custom'
+  const groups = commandGroups(commands, showCustom || customPicked)
+  const hasCustom = commands.some((c) => c.group === 'custom')
 
   const pickDevice = (d: string) => {
     if (!d) return onChange(null)
@@ -34,7 +40,7 @@ export function ActionPicker({ value, onChange, catalog, context, allowHold = fa
       return onChange({ integration_id: SYSTEM, device_id: null, command_id: first?.command_id ?? '', params: first ? defaultParams(first.params) : {} })
     }
     const dev = catalog.devices.get(d)!
-    const first = catalog.capabilities.get(d)?.commands.find((c) => allowHold || c.effect !== 'hold')
+    const first = catalog.capabilities.get(d)?.commands.find(offer)
     onChange({ integration_id: dev.integration_id, device_id: d, command_id: first?.command_id ?? '', params: first ? defaultParams(first.params) : {} })
   }
 
@@ -62,15 +68,29 @@ export function ActionPicker({ value, onChange, catalog, context, allowHold = fa
           <Field label="Command" htmlFor={`${id}-cmd`}>
             <Select id={`${id}-cmd`} value={value.command_id} onChange={(e) => pickCommand(e.target.value)} disabled={caps.loading && !commands.length}>
               {!commands.some((c) => c.command_id === value.command_id) && <option value={value.command_id}>{value.command_id || 'Choose…'}</option>}
-              {commands.map((c) => (
-                <option key={c.command_id} value={c.command_id}>
-                  {c.label}
-                </option>
-              ))}
+              {groups.map(([label, list]) => {
+                const options = list.map((c) => (
+                  <option key={c.command_id} value={c.command_id}>
+                    {c.label}
+                  </option>
+                ))
+                return label ? (
+                  <optgroup key={label} label={label}>
+                    {options}
+                  </optgroup>
+                ) : (
+                  options
+                )
+              })}
             </Select>
           </Field>
         )}
       </div>
+      {hasCustom && !customPicked && (
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input type="checkbox" checked={showCustom} onChange={(e) => setShowCustom(e.target.checked)} /> Show custom codes
+        </label>
+      )}
       {cmd?.description && <p className="text-xs text-muted-foreground">{cmd.description}</p>}
       {value && cmd && <ParamForm params={cmd.params} values={value.params} onChange={(params) => onChange({ ...value, params })} activities={catalog.activities} compact />}
       {testable && value && cmd && !system && cmd.effect === 'momentary' && <TestButton action={value} />}
