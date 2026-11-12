@@ -59,6 +59,8 @@ info:
     # Mirrors core/include/hubbo/domain/limits.h where both define a bound.
     max_devices: 64
     max_activities: 16
+    max_profile_commands: 128
+    max_ble_devices: 4
     max_sequence_actions: 32
     max_binding_actions: 32
     max_params_per_action: 4
@@ -77,6 +79,7 @@ tags:
   - name: auth
   - name: remote
   - name: devices
+  - name: profiles
   - name: activities
   - name: integrations
   - name: admin
@@ -261,14 +264,17 @@ paths:
       tags: [devices]
       operationId: getDevice
       x-hubbo-role: token
-      summary: One registered device
+      summary: One registered device, with its profile's commands
+      description: |
+        A Bluetooth device also carries its profile's `commands`, `buttons`,
+        `power`, `timing`, `inputs` and `channels`, as `GET /devices` doesn't.
       responses:
         '503': {$ref: '#/components/responses/Unavailable'}
         '200':
           description: Device
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/Device'}
+              schema: {$ref: '#/components/schemas/DeviceDetail'}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '404': {$ref: '#/components/responses/NotFound'}
 
@@ -313,6 +319,11 @@ paths:
         command such as `key_down` would leave a key held with nothing to
         release it, so it gets `422` with detail code `hold_not_allowed`;
         use the momentary form (`key_tap`). Bindings may use holds.
+        A `wait` command (`wait_connected`) only makes sense in a startup or
+        shutdown sequence, so it gets `422` with detail code `sequence_only`.
+        A timed `press` (the profile command's `hold_ms`, or the `hold_ms`
+        param) answers once the key is down; the hub releases it after that
+        long.
 
         A stale device (`availability: stale`: its HA entity is missing from
         the latest discovery) answers `200` with `status: failed` and
@@ -336,6 +347,63 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
         '503': {$ref: '#/components/responses/Unavailable'}
+
+  /profiles:
+    get:
+      tags: [profiles]
+      operationId: listProfiles
+      x-hubbo-role: admin
+      summary: The built-in device profiles
+      description: |
+        The light list for picking a device to add: `POST /admin/devices`
+        with a `profile_id`. Search it by `manufacturer` and `model`.
+      responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '200':
+          description: Profiles
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProfileList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /profiles/{profile_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProfileIdPath'
+    get:
+      tags: [profiles]
+      operationId: getProfile
+      x-hubbo-role: admin
+      summary: One built-in profile
+      description: |
+        The profile document as the hub keeps it: the device profile spec's
+        format without `meta`.
+      responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '200':
+          description: Profile
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Profile'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /kinds:
+    get:
+      tags: [profiles]
+      operationId: listKinds
+      x-hubbo-role: admin
+      summary: Device kinds, in display order
+      responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '200':
+          description: Kinds
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KindList'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
 
   /activities:
     get:
@@ -823,10 +891,15 @@ paths:
         re-links it (`PUT /admin/devices/{id}` with a `provider`, which
         refreshes the capabilities the same way).
 
-        Bluetooth (`provider: {type: ble_hid}`, `integration_id: ble`): no
-        discovery; the device starts `not_paired` (pair it with `POST
-        /admin/devices/{id}/pair`). At most 4 Bluetooth devices: a fifth is
-        `422` with `too_many_devices` at `/integration_id`.
+        From a built-in profile (`{profile_id, name?, kind?}`, see `GET
+        /profiles`): the hub copies its own copy of the profile into the
+        device (without `meta`). The integration follows the profile's
+        platform (`ble_hid`: `ble`). `name` defaults to the profile's
+        `model`, `kind` to the profile's. `422` `unknown_profile` at
+        `/profile_id` for an id the hub doesn't have. A Bluetooth device
+        starts `not_paired` (pair it with `POST /admin/devices/{id}/pair`).
+        At most 4 Bluetooth devices: a fifth is `422` with
+        `too_many_devices` at `/integration_id`.
       requestBody:
         required: true
         content:
@@ -845,7 +918,7 @@ paths:
               schema: {type: string}
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/Device'}
+              schema: {$ref: '#/components/schemas/DeviceDetail'}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
@@ -859,8 +932,11 @@ paths:
       operationId: updateDevice
       x-hubbo-role: admin
       x-hubbo-max-body: 4096
-      summary: Rename a device or re-link its provider reference
+      summary: Rename a device, change its kind, or re-link its provider reference
       description: |
+        A Bluetooth device's profile fields are fixed once added
+        (`unknown_field`); to change them, add the device again.
+
         Re-linking a Home Assistant device (`provider` with the entity's new
         `entity_id`, or the same one to refresh) takes its capabilities from
         that entity's loaded details, as registration does (`409
@@ -882,7 +958,7 @@ paths:
           description: Updated
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/Device'}
+              schema: {$ref: '#/components/schemas/DeviceDetail'}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1446,6 +1522,11 @@ components:
       in: path
       required: true
       schema: {$ref: '#/components/schemas/ActivityId'}
+    ProfileIdPath:
+      name: profile_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/ProfileId'}
     IntegrationIdPath:
       name: integration_id
       in: path
@@ -1627,7 +1708,7 @@ components:
             `too_long`, `pattern`, `forbidden_param`, `referenced`, `id_mismatch`,
             `weak_password`).
           type: string
-          enum: [required, unknown_field, wrong_type, too_long, pattern, forbidden_param, referenced, id_mismatch, weak_password, hold_not_allowed, unpaired_hold, integration_disabled, invalid_id, invalid_name, invalid_command_id, duplicate_id, unknown_integration, unknown_device, device_required, device_not_allowed, integration_mismatch, unknown_command, unknown_param, duplicate_param, missing_param, invalid_param_type, param_out_of_range, invalid_enum_value, too_many_params, invalid_trigger, duplicate_trigger, unknown_activity, misplaced_transition, too_many_actions, too_many_activities, too_many_devices, capacity_exceeded, unsupported_schema]
+          enum: [required, unknown_field, wrong_type, too_long, pattern, forbidden_param, referenced, id_mismatch, weak_password, hold_not_allowed, unpaired_hold, integration_disabled, invalid_id, invalid_name, invalid_command_id, duplicate_id, unknown_integration, unknown_device, device_required, device_not_allowed, integration_mismatch, unknown_command, unknown_param, duplicate_param, missing_param, invalid_param_type, param_out_of_range, invalid_enum_value, too_many_params, invalid_trigger, duplicate_trigger, unknown_activity, misplaced_transition, too_many_actions, too_many_activities, too_many_devices, capacity_exceeded, unsupported_schema, unknown_profile, unknown_kind, sequence_only]
         message:
           type: string
           maxLength: 200
@@ -1960,11 +2041,27 @@ components:
         effect:
           description: |
             `momentary`: a one-shot command. `hold`: leaves something held
-            that must be released (e.g. `key_down`). Execute accepts only
-            `momentary` (a `hold` gets 422 `hold_not_allowed`); bindings may
-            use `hold` paired with its release (down/up).
+            that must be released (e.g. `key_down`). `wait`: pauses a
+            startup or shutdown sequence (`wait_connected {timeout_ms}`,
+            default 15000: until the Bluetooth host is connected or the
+            time runs out; either way the sequence goes on). Execute accepts
+            only `momentary` (a `hold` gets 422 `hold_not_allowed`, a `wait`
+            422 `sequence_only`); bindings may use `hold` paired with its
+            release (down/up), and never `wait`.
           type: string
-          enum: [momentary, hold]
+          enum: [momentary, hold, wait]
+        group:
+          description: |
+            Bluetooth key choices only (not `wait_connected`, nor Home
+            Assistant commands): where the command belongs in a picker,
+            shown in this order. `remote`: the device's own commands, from
+            its profile, by name (`press`, `press_down`, `press_up`, with
+            param `command`). `keys`: every named key
+            on every Bluetooth device (`key_tap`, `key_down`, `key_up`).
+            `custom`: a raw consumer usage, 1-1023 (`usage_tap`,
+            `usage_down`, `usage_up`).
+          type: string
+          enum: [remote, keys, custom]
         label: {type: string, maxLength: 48}
         description: {type: string, maxLength: 200}
         params:
@@ -2182,9 +2279,12 @@ components:
 
     # ---------- devices ----------
     DeviceKind:
-      description: UI hint only.
+      description: |
+        A label, an icon and a browse category; nothing else depends on it.
+        The list (with display labels) is `GET /kinds`, from the device
+        profile spec's kinds.json. Anything else is `unknown_kind`.
       type: string
-      enum: [tv, receiver, speaker, streamer, console, light, switch, other]
+      enum: [tv, tv_vcr, tv_dvd, tv_dvd_vcr, tv_dvr, projector, streamer, set_top_box, cable_box, cable_dvr, satellite_box, console, computer, disc_player, dvd_recorder, dvd_vcr, dvd_recorder_vcr, vcr, laserdisc, home_theater, home_theater_vcr, receiver, amplifier, speaker, mini_system, tuner, cd_player, cd_changer, tape_deck, dat_deck, minidisc, portable_audio, hdmi_switch, climate, light, switch, smart_home_hub, accessory, other]
     HomeAssistantProvider:
       type: object
       additionalProperties: false
@@ -2216,7 +2316,10 @@ components:
           home_assistant: '#/components/schemas/HomeAssistantProvider'
           ble_hid: '#/components/schemas/BleHidProvider'
     DeviceFields:
-      description: Shared by Device and StoredDevice (open; each closes it).
+      description: |
+        Shared by the device schemas (open; each closes it). A Bluetooth
+        device was added from a profile and carries `manufacturer`, `model`
+        and `profile`; a Home Assistant device has none of them.
       type: object
       required: [id, name, integration_id, kind, provider, schema_version]
       properties:
@@ -2225,10 +2328,48 @@ components:
         integration_id: {$ref: '#/components/schemas/IntegrationId'}
         kind: {$ref: '#/components/schemas/DeviceKind'}
         provider: {$ref: '#/components/schemas/Provider'}
+        manufacturer: {$ref: '#/components/schemas/ProfileDisplayName'}
+        model: {$ref: '#/components/schemas/ProfileDisplayName'}
+        profile: {$ref: '#/components/schemas/ProfileRef'}
         schema_version: {type: integer, const: 1}
+      if:
+        properties: {provider: {properties: {type: {const: ble_hid}}}}
+      then:
+        required: [manufacturer, model, profile]
+      else:
+        properties: {manufacturer: false, model: false, profile: false}
+    ProfileFields:
+      description: |
+        A profile's content (open; each user closes it). Same names and
+        shapes as the device profile spec.
+      type: object
+      properties:
+        commands: {$ref: '#/components/schemas/ProfileCommands'}
+        buttons: {$ref: '#/components/schemas/ProfileButtons'}
+        power: {$ref: '#/components/schemas/ProfilePower'}
+        timing: {$ref: '#/components/schemas/ProfileTiming'}
+        inputs: {$ref: '#/components/schemas/ProfileInputs'}
+        channels: {$ref: '#/components/schemas/ProfileChannels'}
+    DeviceProfileContent:
+      description: |
+        A device's copy of its profile content (open). Bluetooth devices
+        carry the profile's `commands` (and whichever of the other fields it
+        has); Home Assistant devices carry none.
+      allOf: [{$ref: '#/components/schemas/ProfileFields'}]
+      if:
+        properties: {provider: {properties: {type: {const: ble_hid}}}}
+      then:
+        required: [commands]
+      else:
+        properties: {commands: false, buttons: false, power: false, timing: false, inputs: false, channels: false}
     StoredDevice:
-      description: A device as configured (backups); no runtime state.
-      allOf: [{$ref: '#/components/schemas/DeviceFields'}]
+      description: |
+        A device as configured (backups); no runtime state and no
+        `platform` (it's `provider.type`). Restore checks a Bluetooth
+        device's profile content as adding one does.
+      allOf:
+        - $ref: '#/components/schemas/DeviceFields'
+        - $ref: '#/components/schemas/DeviceProfileContent'
       properties:
         revision: {$ref: '#/components/schemas/BackupRevision'}
         ha_capabilities: {$ref: '#/components/schemas/HaCapabilitySnapshot'}
@@ -2274,9 +2415,25 @@ components:
           maxItems: 4
           items: {$ref: '#/components/schemas/ParamSpec'}
     Device:
+      description: |
+        The light form, as `GET /devices` lists it. `GET /devices/{id}` adds
+        the profile content (`DeviceDetail`).
+      allOf: [{$ref: '#/components/schemas/DeviceRuntimeFields'}]
+      unevaluatedProperties: false
+    DeviceDetail:
+      allOf:
+        - $ref: '#/components/schemas/DeviceRuntimeFields'
+        - $ref: '#/components/schemas/DeviceProfileContent'
+      unevaluatedProperties: false
+    DeviceRuntimeFields:
+      description: Shared by Device and DeviceDetail (open; each closes it).
       allOf: [{$ref: '#/components/schemas/DeviceFields'}]
-      required: [revision, availability]
+      required: [revision, availability, platform]
       properties:
+        platform:
+          description: The device's platform, always `provider.type`.
+          type: string
+          enum: [home_assistant, ble_hid]
         revision: {$ref: '#/components/schemas/Revision'}
         availability:
           description: |
@@ -2294,7 +2451,6 @@ components:
         bluetooth:
           description: Bluetooth devices only (runtime state, never saved).
           $ref: '#/components/schemas/BluetoothStatus'
-      unevaluatedProperties: false
     DeviceList:
       type: object
       additionalProperties: false
@@ -2305,6 +2461,14 @@ components:
           maxItems: 64
           items: {$ref: '#/components/schemas/Device'}
     DeviceRegister:
+      description: |
+        Either a Home Assistant entity (`provider`) or a built-in profile
+        (`profile_id`). A profile device's integration, manufacturer, model
+        and commands come from the profile, never the client.
+      oneOf:
+        - $ref: '#/components/schemas/DeviceRegisterHomeAssistant'
+        - $ref: '#/components/schemas/DeviceRegisterProfile'
+    DeviceRegisterHomeAssistant:
       type: object
       additionalProperties: false
       required: [name, integration_id, provider]
@@ -2312,7 +2476,19 @@ components:
         name: {$ref: '#/components/schemas/Name'}
         integration_id: {$ref: '#/components/schemas/IntegrationId'}
         kind: {$ref: '#/components/schemas/DeviceKind'}
-        provider: {$ref: '#/components/schemas/Provider'}
+        provider: {$ref: '#/components/schemas/HomeAssistantProvider'}
+    DeviceRegisterProfile:
+      type: object
+      additionalProperties: false
+      required: [profile_id]
+      properties:
+        profile_id: {$ref: '#/components/schemas/ProfileId'}
+        name:
+          description: Defaults to the profile's `model`.
+          $ref: '#/components/schemas/Name'
+        kind:
+          description: Defaults to the profile's `kind`.
+          $ref: '#/components/schemas/DeviceKind'
     DeviceUpdate:
       type: object
       additionalProperties: false
@@ -2327,6 +2503,174 @@ components:
             re-reads the entity from HA and replaces its stored capabilities.
           $ref: '#/components/schemas/Provider'
         revision: {$ref: '#/components/schemas/Revision'}
+
+    # ---------- profiles ----------
+    # Mirrors ~/src/hubbo-devices/schema/profile.schema.json (schema_version
+    # 1) for the platforms the hub runs, within the hub's limits
+    # (core/include/hubbo/domain/limits.h).
+    ProfileId:
+      type: string
+      pattern: '^(hubbo|harmony|user):[a-z0-9][a-z0-9.-]{0,47}$'
+      examples: ['hubbo:apple-tv']
+    ProfileDisplayName: {type: string, minLength: 1, maxLength: 64}
+    ProfileCommandName:
+      type: string
+      pattern: '^[A-Za-z0-9]{1,32}$'
+      examples: [DirectionUp, PlayPause]
+    ProfileHoldMs: {type: integer, minimum: 1, maximum: 10000}
+    ProfilePlatform:
+      type: string
+      enum: [ble_hid]
+    ProfileRevision: {type: integer, minimum: 1}
+    ProfileSha256:
+      description: Of the profile's canonical JSON, meta included.
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+    ProfileRef:
+      description: |
+        Which profile the device was added from. `revision` and `sha256`
+        tell whether a newer one exists.
+      type: object
+      additionalProperties: false
+      required: [id, revision, sha256]
+      properties:
+        id: {$ref: '#/components/schemas/ProfileId'}
+        revision: {$ref: '#/components/schemas/ProfileRevision'}
+        sha256: {$ref: '#/components/schemas/ProfileSha256'}
+    BleHidCommand:
+      description: |
+        `keyboard` usages are 0x04-0x65, `consumer` 0x0001-0x03FF (what
+        Hubbo's HID report map carries). `hold_ms` makes the press a hold
+        that long.
+      type: object
+      additionalProperties: false
+      required: [page, usage]
+      properties:
+        page: {type: string, enum: [keyboard, consumer]}
+        usage: {type: string, pattern: '^0x[0-9A-F]{2,4}$'}
+        hold_ms: {$ref: '#/components/schemas/ProfileHoldMs'}
+        label: {type: string, minLength: 1, maxLength: 32}
+    ProfileCommands:
+      type: object
+      minProperties: 1
+      maxProperties: 128
+      propertyNames: {$ref: '#/components/schemas/ProfileCommandName'}
+      additionalProperties: {$ref: '#/components/schemas/BleHidCommand'}
+    ProfileButtons:
+      description: Remote button to command name; `null` leaves the button unfilled.
+      type: object
+      propertyNames: {$ref: '#/components/schemas/Button'}
+      additionalProperties:
+        oneOf:
+          - $ref: '#/components/schemas/ProfileCommandName'
+          - type: 'null'
+    ProfileSteps:
+      type: array
+      minItems: 1
+      maxItems: 16
+      items:
+        oneOf:
+          - type: object
+            additionalProperties: false
+            required: [command]
+            properties:
+              command: {$ref: '#/components/schemas/ProfileCommandName'}
+              hold_ms: {$ref: '#/components/schemas/ProfileHoldMs'}
+          - type: object
+            additionalProperties: false
+            required: [delay_ms]
+            properties:
+              delay_ms: {type: integer, minimum: 1, maximum: 60000}
+    ProfilePower:
+      description: |
+        `discrete`: `on` and `off`. `toggle`: `toggle`. `none`: no steps.
+        `on_delay_ms`: how long the device takes to be ready after power on.
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, enum: [discrete, toggle, none]}
+        'on': {$ref: '#/components/schemas/ProfileSteps'}
+        'off': {$ref: '#/components/schemas/ProfileSteps'}
+        toggle: {$ref: '#/components/schemas/ProfileSteps'}
+        on_delay_ms: {type: integer, minimum: 0, maximum: 60000}
+    ProfileTiming:
+      type: object
+      additionalProperties: false
+      properties:
+        key_delay_ms: {type: integer, minimum: 0, maximum: 5000}
+        input_delay_ms: {type: integer, minimum: 0, maximum: 60000}
+    ProfileInputs:
+      type: array
+      maxItems: 64
+      items:
+        type: object
+        additionalProperties: false
+        required: [name, steps]
+        properties:
+          name: {type: string, minLength: 1, maxLength: 32}
+          steps: {$ref: '#/components/schemas/ProfileSteps'}
+    ProfileChannels:
+      type: object
+      additionalProperties: false
+      properties:
+        digits: {type: integer, minimum: 1, maximum: 4}
+        start: {$ref: '#/components/schemas/ProfileCommandName'}
+        finish: {$ref: '#/components/schemas/ProfileCommandName'}
+    ProfileHeader:
+      description: A profile's identity (open; each user closes it).
+      type: object
+      required: [id, revision, manufacturer, model, kind, platform]
+      properties:
+        id: {$ref: '#/components/schemas/ProfileId'}
+        revision: {$ref: '#/components/schemas/ProfileRevision'}
+        manufacturer: {$ref: '#/components/schemas/ProfileDisplayName'}
+        model: {$ref: '#/components/schemas/ProfileDisplayName'}
+        kind: {$ref: '#/components/schemas/DeviceKind'}
+        platform: {$ref: '#/components/schemas/ProfilePlatform'}
+    ProfileSummary:
+      allOf: [{$ref: '#/components/schemas/ProfileHeader'}]
+      required: [sha256]
+      properties:
+        sha256: {$ref: '#/components/schemas/ProfileSha256'}
+      unevaluatedProperties: false
+    ProfileList:
+      type: object
+      additionalProperties: false
+      required: [profiles]
+      properties:
+        profiles:
+          type: array
+          maxItems: 64
+          items: {$ref: '#/components/schemas/ProfileSummary'}
+    Profile:
+      description: |
+        A built-in profile as the hub keeps it: the device profile spec's
+        document without `meta`.
+      allOf:
+        - $ref: '#/components/schemas/ProfileHeader'
+        - $ref: '#/components/schemas/ProfileFields'
+      required: [schema_version, source, commands]
+      properties:
+        schema_version: {type: integer, const: 1}
+        source: {type: string, enum: [hubbo, harmony, user]}
+      unevaluatedProperties: false
+    Kind:
+      type: object
+      additionalProperties: false
+      required: [id, label]
+      properties:
+        id: {$ref: '#/components/schemas/DeviceKind'}
+        label: {type: string, minLength: 1, maxLength: 32}
+    KindList:
+      type: object
+      additionalProperties: false
+      required: [kinds]
+      properties:
+        kinds:
+          type: array
+          maxItems: 64
+          items: {$ref: '#/components/schemas/Kind'}
 
     # ---------- integrations ----------
     IntegrationSummary:

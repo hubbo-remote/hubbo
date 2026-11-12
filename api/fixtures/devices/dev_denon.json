@@ -8,6 +8,7 @@
     "entity_id": "media_player.family_room_denon",
     "unique_id": "c5a1e0b2f3d44c1aa1b2c3d4e5f60718"
   },
+  "platform": "home_assistant",
   "availability": "available",
   "schema_version": 1,
   "revision": 1

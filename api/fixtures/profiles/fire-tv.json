@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "id": "hubbo:fire-tv",
+  "revision": 1,
+  "source": "hubbo",
+  "manufacturer": "Amazon",
+  "model": "Fire TV",
+  "kind": "streamer",
+  "platform": "ble_hid",
+  "commands": {
+    "DirectionUp": {
+      "page": "consumer",
+      "usage": "0x0042"
+    },
+    "DirectionDown": {
+      "page": "consumer",
+      "usage": "0x0043"
+    },
+    "DirectionLeft": {
+      "page": "consumer",
+      "usage": "0x0044"
+    },
+    "DirectionRight": {
+      "page": "consumer",
+      "usage": "0x0045"
+    },
+    "Select": {
+      "page": "keyboard",
+      "usage": "0x58"
+    },
+    "Back": {
+      "page": "consumer",
+      "usage": "0x0224"
+    },
+    "Home": {
+      "page": "consumer",
+      "usage": "0x0223"
+    },
+    "QuickSettings": {
+      "page": "consumer",
+      "usage": "0x0223",
+      "hold_ms": 1000
+    },
+    "Menu": {
+      "page": "consumer",
+      "usage": "0x0040"
+    },
+    "PlayPause": {
+      "page": "consumer",
+      "usage": "0x00CD"
+    },
+    "FastForward": {
+      "page": "consumer",
+      "usage": "0x00B3"
+    },
+    "Rewind": {
+      "page": "consumer",
+      "usage": "0x00B4"
+    },
+    "VolumeUp": {
+      "page": "consumer",
+      "usage": "0x00E9"
+    },
+    "VolumeDown": {
+      "page": "consumer",
+      "usage": "0x00EA"
+    },
+    "Mute": {
+      "page": "consumer",
+      "usage": "0x00E2"
+    },
+    "Sleep": {
+      "page": "consumer",
+      "usage": "0x0034"
+    },
+    "Backspace": {
+      "page": "keyboard",
+      "usage": "0x2A"
+    }
+  },
+  "buttons": {
+    "menu": "Home"
+  },
+  "power": {
+    "type": "discrete",
+    "on": [
+      {
+        "command": "Home"
+      }
+    ],
+    "off": [
+      {
+        "command": "Home"
+      },
+      {
+        "delay_ms": 500
+      },
+      {
+        "command": "Sleep"
+      }
+    ],
+    "on_delay_ms": 1500
+  },
+  "timing": {
+    "key_delay_ms": 100
+  }
+}

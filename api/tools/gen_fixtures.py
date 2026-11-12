@@ -14,9 +14,60 @@ api/contract.sh checks every capability fixture equals what hub-sim serves).
 import copy
 import json
 import os
+import re
 import sys
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures")
+# The built-in profiles, as synced from hubbo-devices (the hub builds them in).
+PROFILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "profiles")
+
+
+def load_json(name):
+    with open(os.path.join(PROFILES_DIR, name), encoding="utf-8") as f:
+        return json.load(f)
+
+
+# ---------------------------------------------------------------- profiles
+
+PROFILE_INDEX = load_json("index.json")
+# As the hub keeps them: the spec's document without `meta`.
+PROFILES = {}
+for entry in PROFILE_INDEX:
+    doc = load_json(entry["file"])
+    doc.pop("meta", None)
+    assert doc["id"] == entry["id"] and doc["revision"] == entry["revision"], entry
+    PROFILES[entry["id"]] = doc
+SHA256 = {e["id"]: e["sha256"] for e in PROFILE_INDEX}
+KINDS = [{"id": k["id"], "label": k["label"]} for k in load_json("kinds.json")["kinds"]]
+PROFILE_CONTENT = ("commands", "buttons", "power", "timing", "inputs", "channels")
+
+
+def profile_ref(pid):
+    return {"id": pid, "revision": PROFILES[pid]["revision"], "sha256": SHA256[pid]}
+
+
+def profile_summary(pid):
+    d = PROFILES[pid]
+    return dict(profile_ref(pid), manufacturer=d["manufacturer"], model=d["model"], kind=d["kind"],
+                platform=d["platform"])
+
+
+def profile_device(dev_id, pid, name, kind=None, revision=1):
+    """A device added from a built-in profile (the detail form, GET /devices/{id})."""
+    d = PROFILES[pid]
+    out = {"id": dev_id, "name": name, "integration_id": "ble", "kind": kind or d["kind"],
+           "provider": {"type": "ble_hid"}, "platform": "ble_hid",
+           "manufacturer": d["manufacturer"], "model": d["model"],
+           "profile": profile_ref(pid),
+           "availability": "available", "bluetooth": {"state": "connected"},
+           "schema_version": 1, "revision": revision}
+    out.update({k: copy.deepcopy(d[k]) for k in PROFILE_CONTENT if k in d})
+    return out
+
+
+def light(d):
+    """The GET /devices form: no profile content."""
+    return {k: v for k, v in d.items() if k not in PROFILE_CONTENT}
 
 # ---------------------------------------------------------------- commands
 
@@ -37,31 +88,48 @@ def p_bool(name, required=True):
     return {"name": name, "type": "bool", "required": required}
 
 
-def cmd(command_id, label, params=(), effect="momentary"):
-    """effect: "momentary", or "hold" for commands that leave state held (key_down)."""
-    return {"command_id": command_id, "label": label, "effect": effect, "params": list(params)}
+def cmd(command_id, label, params=(), effect="momentary", group=None):
+    """effect: "momentary", "hold" for commands that leave state held
+    (key_down), or "wait" (sequences only). group: Bluetooth picker group."""
+    c = {"command_id": command_id, "label": label, "effect": effect, "params": list(params)}
+    if group:
+        c["group"] = group
+    return c
 
 
-# BLE HID keys offered for the Apple TV: the core BLE adapter's key catalog
-# (core/src/integrations/ble_hid.cpp), as hub-sim serves it.
-HID_KEYS = [
-    "ARROW_UP", "ARROW_DOWN", "ARROW_LEFT", "ARROW_RIGHT", "SELECT", "MENU", "AC_HOME",
-    "PLAY_PAUSE", "SCAN_NEXT", "SCAN_PREVIOUS", "RECORD", "VOLUME_UP", "VOLUME_DOWN", "MUTE",
-    "KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5", "KEY_6", "KEY_7", "KEY_8", "KEY_9", "KEY_0",
-    "ENTER", "F1", "F2", "F3", "F4", "PAGE_UP", "PAGE_DOWN", "KEY_A", "KEY_B", "KEY_C", "KEY_D",
-    "KEY_E", "KEY_F", "KEY_G", "KEY_H", "KEY_I", "KEY_J", "KEY_K", "KEY_L", "KEY_M", "KEY_N",
-    "KEY_O", "KEY_P", "KEY_Q", "KEY_R", "KEY_S", "KEY_T", "KEY_U", "KEY_V", "KEY_W", "KEY_X",
-    "KEY_Y", "KEY_Z", "FAST_FORWARD", "REWIND", "STOP", "AC_BACK", "AC_SEARCH", "MENU_ESCAPE",
-    "CHANNEL_UP", "CHANNEL_DOWN", "INFO", "SLEEP", "KEYPAD_ENTER", "BACKSPACE", "ESCAPE",
-]
+# The `key` options (the All keys table), read from core's
+# HUBBO_BLE_HID_KEYS so the two can't drift.
+def hid_keys():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                        "core", "src", "integrations", "ble_hid.cpp")
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    block = text[text.index("#define HUBBO_BLE_HID_KEYS"):]
+    block = block[:block.index("\n\n")]
+    return re.findall(r'X\("([A-Z0-9_]+)"', block)
 
 
-def ble_commands():
+HID_KEYS = hid_keys()
+
+
+def ble_commands(pid):
+    """A Bluetooth device's catalog: its profile's commands (remote), every
+    named key (keys) and a raw consumer usage (custom)."""
+    command = lambda: dict(p_enum("command", list(PROFILES[pid]["commands"])), label="Remote command")
     key = lambda: p_enum("key", HID_KEYS)
-    return [
-        cmd("key_down", "Key down", [key()], effect="hold"),
-        cmd("key_up", "Key up", [key()]),
-        cmd("key_tap", "Key tap", [key()]),
+    usage = lambda: p_num("usage", "int", 1, 1023)
+    return [  # core's BleHidCommand order
+        cmd("press", "Press", [command(), p_num("hold_ms", "int", 1, 10000, required=False)], group="remote"),
+        cmd("press_down", "Press down", [command()], effect="hold", group="remote"),
+        cmd("press_up", "Press up", [command()], group="remote"),
+        cmd("key_tap", "Key tap", [key()], group="keys"),
+        cmd("key_down", "Key down", [key()], effect="hold", group="keys"),
+        cmd("key_up", "Key up", [key()], group="keys"),
+        cmd("usage_tap", "Usage tap", [usage()], group="custom"),
+        cmd("usage_down", "Usage down", [usage()], effect="hold", group="custom"),
+        cmd("usage_up", "Usage up", [usage()], group="custom"),
+        cmd("wait_connected", "Wait until connected",
+            [p_num("timeout_ms", "int", 1000, 60000, required=False)], effect="wait"),  # default 15000
     ]
 
 
@@ -207,7 +275,7 @@ def ha_provider(entity_id, unique_id=None):
 def ha_device(dev_id, e):
     return {
         "id": dev_id, "name": e["name"], "integration_id": "ha_main", "kind": e["kind"],
-        "provider": ha_provider(e["entity_id"], e["unique_id"]),
+        "provider": ha_provider(e["entity_id"], e["unique_id"]), "platform": "home_assistant",
         "availability": "available", "schema_version": 1, "revision": e.get("revision", 1),
     }
 
@@ -225,7 +293,7 @@ def ha_snapshot(e):
 
 def stored_device(d):
     """A Device as a backup stores it: no runtime state; HA devices carry their snapshot."""
-    out = {k: x for k, x in d.items() if k not in ("availability", "bluetooth")}
+    out = {k: x for k, x in d.items() if k not in ("availability", "bluetooth", "platform")}
     entity = HA_ENTITIES.get(d["id"])
     if entity is not None:
         out["ha_capabilities"] = ha_snapshot(entity)
@@ -242,42 +310,44 @@ def ha_commands(e):
     return []
 
 
+# Detail form (GET /devices/{id}); `light()` gives the list form.
 DEVICES = [
-    {"id": "dev_apple_tv", "name": "Family Room Apple TV", "integration_id": "ble", "kind": "streamer",
-     "provider": {"type": "ble_hid"}, "availability": "available", "bluetooth": {"state": "connected"},
-     "schema_version": 1, "revision": 1},
+    profile_device("dev_apple_tv", "hubbo:apple-tv", "Family Room Apple TV"),
 ] + [ha_device(k, v) for k, v in HA_ENTITIES.items()]
 
-CAPABILITIES = {"dev_apple_tv": {"device_id": "dev_apple_tv", "integration_id": "ble", "commands": ble_commands()}}
+CAPABILITIES = {"dev_apple_tv": {"device_id": "dev_apple_tv", "integration_id": "ble",
+                                 "commands": ble_commands("hubbo:apple-tv")}}
 for k, v in HA_ENTITIES.items():
     CAPABILITIES[k] = {"device_id": k, "integration_id": "ha_main", "commands": ha_commands(v)}
 
 # ---------------------------------------------------------------- activities
 
-def a(device, command, **params):
+def a(device, command_id, /, **params):
     integ = "system" if device is None else next(d["integration_id"] for d in DEVICES if d["id"] == device)
-    return {"integration_id": integ, "device_id": device, "command_id": command, "params": params}
+    return {"integration_id": integ, "device_id": device, "command_id": command_id, "params": params}
 
 
 def wait(ms):
     return a(None, "wait", duration_ms=ms)
 
 
-def key_bindings(button, key):
-    return {f"{button}:down": [a("dev_apple_tv", "key_down", key=key)],
-            f"{button}:up": [a("dev_apple_tv", "key_up", key=key)]}
+def press_bindings(button, command):
+    return {f"{button}:down": [a("dev_apple_tv", "press_down", command=command)],
+            f"{button}:up": [a("dev_apple_tv", "press_up", command=command)]}
 
 
 watch_bindings = {}
-for b, k in [("up", "ARROW_UP"), ("down", "ARROW_DOWN"), ("left", "ARROW_LEFT"),
-             ("right", "ARROW_RIGHT"), ("select", "SELECT"), ("menu", "MENU"),
-             ("back", "AC_HOME"), ("exit", "AC_HOME"), ("skip_forward", "SCAN_NEXT"),
-             ("skip_backward", "SCAN_PREVIOUS")]:
-    watch_bindings.update(key_bindings(b, k))
+for b, k in [("up", "DirectionUp"), ("down", "DirectionDown"), ("left", "DirectionLeft"),
+             ("right", "DirectionRight"), ("select", "Select"), ("menu", "Home"),
+             ("back", "Back"), ("exit", "Back"), ("skip_forward", "NextTrack"),
+             ("skip_backward", "PreviousTrack")]:
+    watch_bindings.update(press_bindings(b, k))
 watch_bindings.update({
-    "play:tap": [a("dev_apple_tv", "key_tap", key="PLAY_PAUSE")],
-    "pause:tap": [a("dev_apple_tv", "key_tap", key="PLAY_PAUSE")],
+    "play:tap": [a("dev_apple_tv", "press", command="PlayPause")],
+    "pause:tap": [a("dev_apple_tv", "press", command="PlayPause")],
+    "menu:hold": [a("dev_apple_tv", "press", command="ControlCenter")],
     "info:hold": [a("dev_apple_tv", "key_tap", key="KEY_I")],
+    "record:tap": [a("dev_apple_tv", "usage_tap", usage=0xB2)],
     "volume_up:down": [a("dev_sonos", "media_player.volume_up")],
     "volume_down:down": [a("dev_sonos", "media_player.volume_down")],
     "mute:tap": [a("dev_sonos", "media_player.volume_mute", muted=True)],
@@ -293,11 +363,15 @@ WATCH = {
     "startup": [
         a("dev_lg_tv", "media_player.turn_on"),
         a("dev_sonos", "media_player.select_source", source="TV"),
+        a("dev_apple_tv", "wait_connected", timeout_ms=15000),
+        a("dev_apple_tv", "press", command="Home"),
         wait(1500),
         a("dev_lg_tv", "media_player.select_source", source="HDMI 1"),
         a("dev_family_room_lights", "light.turn_on", brightness=64, color_temp_kelvin=2700, transition=2),
     ],
     "shutdown": [
+        a("dev_apple_tv", "press", command="Home", hold_ms=2000),
+        a("dev_apple_tv", "press", command="Select"),
         a("dev_lg_tv", "media_player.turn_off"),
         a("dev_sonos", "media_player.media_pause"),
     ],
@@ -458,7 +532,7 @@ fx("auth/session.simulator.json", "getSession", "200", {
     "authenticated": True, "role": "admin", "username": "simulator",
     "setup_required": False, "auth_state": "ok", "config_state": "ok", "auth_mode": "simulator_no_auth"})
 
-fx("devices/list.json", "listDevices", "200", {"devices": DEVICES})
+fx("devices/list.json", "listDevices", "200", {"devices": [light(d) for d in DEVICES]})
 for d in DEVICES:
     fx(f"devices/{d['id']}.json", "getDevice", "200", d)
     fx(f"devices/{d['id']}.capabilities.json", "getDeviceCapabilities", "200", CAPABILITIES[d["id"]])
@@ -469,8 +543,18 @@ fx("devices/execute.timeout.json", "executeCommand", "200", {
     "status": "timeout", "device_id": "dev_sonos", "command_id": "media_player.volume_up", "elapsed_ms": 2000,
     "message": "Home Assistant did not answer within 2000 ms"})
 fx("devices/execute.failed.json", "executeCommand", "200", {
-    "status": "failed", "device_id": "dev_apple_tv", "command_id": "key_tap", "elapsed_ms": 1,
-    "message": "Bluetooth host not connected"})
+    "status": "failed", "device_id": "dev_apple_tv", "command_id": "press", "elapsed_ms": 1,
+    "message": "adapter_unavailable"})
+fx("devices/execute.press.request.json", "executeCommand", "request", {"params": {"command": "Select"}})
+fx("errors/sequence_only.json", "executeCommand", "422", err(
+    "validation_failed", "wait_connected only works in a startup or shutdown", [
+        ("/command_id", "sequence_only", "wait_connected only works in a startup or shutdown"),
+    ]))
+
+fx("profiles/list.json", "listProfiles", "200", {"profiles": [profile_summary(p) for p in PROFILES]})
+for pid, doc in PROFILES.items():
+    fx(f"profiles/{pid.split(':', 1)[1]}.json", "getProfile", "200", doc)
+fx("profiles/kinds.json", "listKinds", "200", {"kinds": KINDS})
 
 fx("activities/list.json", "listActivities", "200",
    {"activities": ACTIVITIES, "active_activity_id": "act_watch_apple_tv"})
@@ -570,6 +654,15 @@ fx("errors/too_many_bluetooth_devices.json", "registerDevice", "422", err(
         ("/integration_id", "too_many_devices", "You can add up to 4 Bluetooth devices"),
     ]))
 
+fx("admin/register_profile.request.json", "registerDevice", "request",
+   {"profile_id": "hubbo:fire-tv", "name": "Bedroom Fire TV"})
+fx("admin/register_profile.json", "registerDevice", "201",
+   dict(profile_device("dev_bedroom_fire_tv", "hubbo:fire-tv", "Bedroom Fire TV"),
+        availability="unavailable", bluetooth={"state": "not_paired"}))
+fx("errors/unknown_profile.json", "registerDevice", "422", err(
+    "validation_failed", "There's no profile hubbo:roku", [
+        ("/profile_id", "unknown_profile", "There's no profile hubbo:roku"),
+    ]))
 fx("admin/register_device.request.json", "registerDevice", "request", {
     "name": "TV Backlight", "integration_id": "ha_main", "kind": "switch",
     "provider": ha_provider("switch.tv_backlight", "0x00158d0001a2b3c4-switch")})

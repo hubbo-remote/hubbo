@@ -310,6 +310,42 @@ def registry_flow(c):
                    f"{d['id']}: served capabilities differ from api/fixtures (regenerate the fixture)")
     c.call("getDevice", "GET", "/devices/dev_nope", expect=404)
     c.call("getDeviceCapabilities", "GET", "/devices/dev_nope/capabilities", expect=404)
+    devices_and_profiles(c, devices)
+
+
+PROFILE_CONTENT = ("commands", "buttons", "power", "timing", "inputs", "channels")
+
+
+def devices_and_profiles(c, devices):
+    """The list is light; a device's detail carries its profile; HA devices
+    have none of it."""
+    for d in devices:
+        expect(d.get("platform") == d["provider"]["type"], f"{d['id']}: platform isn't provider.type: {d}")
+        expect(not any(k in d for k in PROFILE_CONTENT), f"{d['id']}: the list carries profile content")
+        _, got, _ = c.call("getDevice", "GET", f"/devices/{d['id']}", expect=200, label="device detail")
+        got = got or {}
+        if d["provider"]["type"] == "ble_hid":
+            expect("profile" in d and "commands" in got, f"{d['id']}: a Bluetooth device without its profile")
+        else:
+            expect(not any(k in got for k in PROFILE_CONTENT + ("profile", "manufacturer", "model")),
+                   f"{d['id']}: an HA device with profile fields: {got}")
+    _, apple, _ = c.call("getDevice", "GET", "/devices/dev_apple_tv", expect=200, label="fixture Apple TV")
+    expect(apple == fixture("devices/dev_apple_tv.json"), "dev_apple_tv differs from api/fixtures")
+
+
+def profiles_flow(c):
+    """Admin: the built-in profiles and kinds equal api/fixtures."""
+    _, profiles, _ = c.call("listProfiles", "GET", "/profiles", expect=200)
+    expect(profiles == fixture("profiles/list.json"), "GET /profiles differs from api/fixtures")
+    for p in (profiles or {}).get("profiles", []):
+        slug = p["id"].split(":", 1)[1]
+        _, doc, _ = c.call("getProfile", "GET", f"/profiles/{p['id']}", expect=200)
+        expect(doc == fixture(f"profiles/{slug}.json"), f"GET /profiles/{p['id']} differs from api/fixtures")
+        expect("meta" not in (doc or {}), f"{p['id']}: served with meta")
+    c.call("getProfile", "GET", "/profiles/hubbo%3Aapple-tv", expect=200, label="profile id percent-encoded")
+    c.call("getProfile", "GET", "/profiles/hubbo:roku", expect=404, label="unknown profile")
+    _, kinds, _ = c.call("listKinds", "GET", "/kinds", expect=200)
+    expect(kinds == fixture("profiles/kinds.json"), "GET /kinds differs from api/fixtures")
 
 
 def execute_flow(c):
@@ -324,17 +360,58 @@ def execute_flow(c):
            {"params": {}}, expect=422, label="execute unknown command")
     c.call("executeCommand", "POST", "/devices/dev_nope/commands/media_player.turn_on/execute",
            {"params": {}}, expect=404, label="execute unknown device")
-    # Holds are for bindings: execute refuses every `hold` command, accepts momentary ones.
+    # Holds are for bindings and waits for sequences: execute refuses both.
     caps = c.call("getDeviceCapabilities", "GET", "/devices/dev_apple_tv/capabilities", expect=200)[1] or {}
-    holds = [x["command_id"] for x in caps.get("commands", []) if x["effect"] == "hold"]
-    expect("key_down" in holds, f"key_down should be a hold: {holds}")
-    for command in holds:
-        _, body, _ = c.call("executeCommand", "POST", f"/devices/dev_apple_tv/commands/{command}/execute",
-                            {"params": {"key": "SELECT"}}, expect=422, label=f"execute hold {command}")
-        codes = [d["code"] for d in (body or {}).get("error", {}).get("details", [])]
-        expect("hold_not_allowed" in codes, f"execute {command}: expected hold_not_allowed, got {codes}")
-    c.call("executeCommand", "POST", "/devices/dev_apple_tv/commands/key_tap/execute",
-           {"params": {"key": "SELECT"}}, expect=200, label="execute key_tap")
+    commands = caps.get("commands", [])
+    groups = {x["command_id"]: x.get("group") for x in commands}
+    expect(groups.get("press") == "remote" and groups.get("key_tap") == "keys"
+           and groups.get("usage_tap") == "custom" and groups.get("wait_connected") is None,
+           f"Bluetooth command groups: {groups}")
+    refused = {"hold": "hold_not_allowed", "wait": "sequence_only"}
+    expect({"key_down", "press_down", "usage_down"} <= {x["command_id"] for x in commands if x["effect"] == "hold"},
+           f"the *_down commands should be holds: {commands}")
+    for x in commands:
+        if x["effect"] not in refused:
+            continue
+        _, body, _ = c.call("executeCommand", "POST", f"/devices/dev_apple_tv/commands/{x['command_id']}/execute",
+                            {"params": sample_params(x)}, expect=422, label=f"execute {x['effect']} {x['command_id']}")
+        codes = [d["code"] for d in error_details(body)]
+        expect(refused[x["effect"]] in codes, f"execute {x['command_id']}: expected {refused[x['effect']]}, got {codes}")
+    for command, params in [("press", {"command": "Select"}), ("key_tap", {"key": "KEY_A"}),
+                            ("usage_tap", {"usage": 0xCD})]:
+        c.call("executeCommand", "POST", f"/devices/dev_apple_tv/commands/{command}/execute",
+               {"params": params}, expect=200, label=f"execute {command}")
+    # A timed press answers once the key is down; the hub releases it later.
+    _, held, _ = c.call("executeCommand", "POST", "/devices/dev_apple_tv/commands/press/execute",
+                        {"params": {"command": "Home", "hold_ms": 2000}}, expect=200, label="execute a timed press")
+    expect((held or {}).get("status") == "accepted" and (held or {}).get("elapsed_ms", 2000) < 2000,
+           f"a timed press should answer at key down: {held}")
+    for command, params, label in [("press", {"command": "Netflix"}, "a command the profile doesn't have"),
+                                   ("press", {"command": "Select", "hold_ms": 10001}, "hold_ms over 10 s"),
+                                   ("usage_tap", {"usage": 1024}, "a usage past 0x3FF")]:
+        c.call("executeCommand", "POST", f"/devices/dev_apple_tv/commands/{command}/execute",
+               {"params": params}, expect=422, label=f"execute {label}")
+    # wait_connected belongs in a sequence: fine in startup, refused in a binding.
+    wait = {"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "wait_connected",
+            "params": {"timeout_ms": 15000}}
+    act = {"name": "Wait check", "startup": [wait], "shutdown": [], "bindings": {}}
+    _, ok, _ = c.call("validateActivity", "POST", "/activities/validate", act, expect=200,
+                      label="wait_connected in startup")
+    expect((ok or {}).get("valid") is True, f"wait_connected in startup: {ok}")
+    _, bad, _ = c.call("validateActivity", "POST", "/activities/validate",
+                       dict(act, startup=[], bindings={"select:tap": [wait]}), expect=200,
+                       label="wait_connected in a binding")
+    codes = [e["code"] for e in (bad or {}).get("errors", [])]
+    expect("sequence_only" in codes, f"wait_connected in a binding: {bad}")
+
+
+def sample_params(command):
+    """Valid params for a command: each required param's first option or minimum."""
+    out = {}
+    for p in command["params"]:
+        if p["required"]:
+            out[p["name"]] = p["options"][0] if p["type"] == "enum" else p.get("minimum", True)
+    return out
 
 
 def activity_flow(c):
@@ -417,8 +494,18 @@ def admin_flow(c, checker, candidate=None):
                            {"name": "Backlight", "revision": dev["revision"]}, expect=200)
         c.call("updateDevice", "PUT", f"/admin/devices/{dev_id}", {"name": "x", "revision": 99}, expect=409,
                label="device stale revision")
-        c.call("deleteDevice", "DELETE", f"/admin/devices/{dev_id}?revision={upd['revision'] if upd else 2}",
-               expect=204)
+        # Rule breaks are refused before the save (422), never a failed save (500).
+        rev = upd["revision"] if upd else 2
+        for body, label, code, path in [
+            ({"kind": "Not A Kind", "revision": rev}, "update to a malformed kind", "unknown_kind", "/kind"),
+            ({"kind": "toaster", "revision": rev}, "update to an unknown kind", "unknown_kind", "/kind"),
+            ({"provider": {"type": "ble_hid"}, "revision": rev}, "update to another platform",
+             "integration_mismatch", "/provider/type"),
+        ]:
+            _, e, _ = c.call("updateDevice", "PUT", f"/admin/devices/{dev_id}", body, expect=422, label=label)
+            got = [(d["code"], d["path"]) for d in error_details(e)]
+            expect((code, path) in got, f"{label}: expected {code} at {path}, got {got}")
+        c.call("deleteDevice", "DELETE", f"/admin/devices/{dev_id}?revision={rev}", expect=204)
     bad = dict(reg, provider={"type": "home_assistant", "entity_id": "light.all"})
     c.call("registerDevice", "POST", "/admin/devices", bad, expect=422, label="register broadcast entity")
     # A device used by activities can't be deleted.
@@ -491,6 +578,10 @@ def upload(c, image, expect, label, content_type="application/octet-stream"):
 
 def error_code(body):
     return (body or {}).get("error", {}).get("code")
+
+
+def error_details(body):
+    return (body or {}).get("error", {}).get("details") or []
 
 
 def firmware_state(c):
@@ -702,7 +793,7 @@ def ha_flow(c):
         _, e, _ = c.call("registerDevice", "POST", "/admin/devices",
                          registration_from(c, {"name": "Twin", "integration_id": "ha_main"}, taken[0]),
                          expect=422, label="register a registered entity")
-        codes = [x["code"] for x in (e or {}).get("error", {}).get("details", [])]
+        codes = [x["code"] for x in error_details(e)]
         expect("duplicate_id" in codes, f"register a registered entity: {codes}")
     # A YAML-only entity (no registry entry) stays pickable: no platform, no unique_id.
     yaml_only = [x for x in done["candidates"] if "platform" not in x and x["supported"]]
@@ -868,6 +959,7 @@ def ble_pairing_flow(c):
     `ble/bond` control bonds one in the open window), one window at a time,
     a re-pair that runs out keeping the old host, forget, the limit of 4,
     and the radio going down (`ble/radio`)."""
+    profiles_flow(c)
     c.call("getDevicePairing", "GET", "/admin/devices/dev_apple_tv/pair", expect=200)
     c.call("startDevicePairing", "POST", "/admin/devices/dev_apple_tv/pair?window_s=29", expect=422,
            label="pair window too short")
@@ -876,11 +968,41 @@ def ble_pairing_flow(c):
     expect(error_code(body) == "not_found", f"pair a non-Bluetooth device: {body}")
     c.call("getDevicePairing", "GET", "/admin/devices/dev_nope/pair", expect=404, label="pair an unknown device")
 
-    ble = {"integration_id": "ble", "kind": "streamer", "provider": {"type": "ble_hid"}}
+    # A Bluetooth device comes from a profile, never from the client.
+    for body, label, code, path in [
+        ({"profile_id": "hubbo:roku"}, "an unknown profile", "unknown_profile", "/profile_id"),
+        ({"profile_id": "hubbo:fire-tv", "kind": "toaster"}, "an unknown kind", "unknown_kind", "/kind"),
+        ({"profile_id": "hubbo:fire-tv", "kind": "Not A Kind"}, "a malformed kind", "unknown_kind", "/kind"),
+        ({"profile_id": "hubbo:fire-tv", "commands": {}}, "a profile with commands", "unknown_field", "/commands"),
+        ({"profile_id": "hubbo:fire-tv", "integration_id": "ble"}, "a profile with an integration",
+         "unknown_field", "/integration_id"),
+        ({"profile": fixture("profiles/fire-tv.json")}, "a whole profile", "unknown_field", "/profile"),
+        ({"name": "Shield", "integration_id": "ble", "kind": "streamer", "provider": {"type": "ble_hid"}},
+         "a Bluetooth device without a profile", None, None),
+    ]:
+        _, body, _ = c.call("registerDevice", "POST", "/admin/devices", body, expect=422, label=label)
+        details = [(d["code"], d["path"]) for d in error_details(body)]
+        if code:
+            expect((code, path) in details, f"{label}: expected {code} at {path}, got {details}")
+    ble = {"profile_id": "hubbo:fire-tv"}
     _, dev, _ = c.call("registerDevice", "POST", "/admin/devices", dict(ble, name="Shield"), expect=201,
                        label="add a Bluetooth device")
     if not dev:
         return
+    want = fixture("profiles/fire-tv.json")
+    expect(dev.get("integration_id") == "ble" and dev.get("platform") == "ble_hid"
+           and dev.get("kind") == want["kind"] and dev.get("model") == want["model"]
+           and dev.get("commands") == want["commands"]
+           and dev.get("profile", {}).get("id") == "hubbo:fire-tv",
+           f"a device from a profile: {dev}")
+    _, plain, _ = c.call("registerDevice", "POST", "/admin/devices", {"profile_id": "hubbo:android-tv",
+                                                                     "kind": "set_top_box"},
+                         expect=201, label="add with the default name")
+    if plain:
+        expect(plain.get("name") == "Android TV / Google TV" and plain.get("kind") == "set_top_box",
+               f"name defaults to the model, kind as sent: {plain}")
+        c.call("deleteDevice", "DELETE", f"/admin/devices/{plain['id']}?revision={plain['revision']}", expect=204,
+               label="remove the default-name device")
     shield = dev["id"]
     expect(dev.get("bluetooth") == {"state": "not_paired"}, f"a new Bluetooth device: {dev}")
     pair = f"/admin/devices/{shield}/pair"
@@ -926,7 +1048,7 @@ def ble_pairing_flow(c):
             extra.append(d)
     _, body, _ = c.call("registerDevice", "POST", "/admin/devices", dict(ble, name="Fifth"), expect=422,
                         label="a fifth Bluetooth device")
-    detail = ((body or {}).get("error", {}).get("details") or [{}])[0]
+    detail = (error_details(body) or [{}])[0]
     expect(detail.get("code") == "too_many_devices" and detail.get("path") == "/integration_id",
            f"a fifth Bluetooth device: {body}")
     limit_text = "You can add up to 4 Bluetooth devices"
@@ -1310,8 +1432,8 @@ def persistence_flow(c, hub, relogin=None):
     big = fixture("admin/backup.json")
     buttons = checker_buttons(c)
     for n in range(3):
-        bindings = {f"{b}:{e}": [{"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "key_tap",
-                                  "params": {"key": "SELECT"}}] for b in buttons for e in ("down", "up", "tap", "hold")}
+        bindings = {f"{b}:{e}": [{"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "press",
+                                  "params": {"command": "Select"}}] for b in buttons for e in ("down", "up", "tap", "hold")}
         big["activities"].append({"id": f"act_bulk_{n}", "name": f"Bulk {n}", "startup": [], "shutdown": [],
                                   "bindings": bindings, "schema_version": 1, "revision": 1})
     size = len(json.dumps(big))
@@ -1350,8 +1472,8 @@ def persistence_flow(c, hub, relogin=None):
     for n in range(11):  # 11 x 192 triggers > limits::kMaxCompiledActions (2048)
         huge["activities"].append({
             "id": f"act_cap_{n}", "name": f"Cap {n}", "startup": [], "shutdown": [], "schema_version": 1,
-            "bindings": {f"{b}:{e}": [{"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "key_tap",
-                                       "params": {"key": "SELECT"}}]
+            "bindings": {f"{b}:{e}": [{"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "press",
+                                       "params": {"command": "Select"}}]
                          for b in checker_buttons(c) for e in ("down", "up", "tap", "hold")}})
     huge["activities"] = huge["activities"][:16]
     restore_agrees(c, huge, "backup over the compiled-config capacity", None)
@@ -1465,7 +1587,7 @@ def blocked_flow(c, hub, relogin=None):
             _, body, _ = c.call("restoreBackup", "POST", "/admin/restore", raw=raw.encode(),
                                 headers={"Content-Type": "application/json"}, expect=422,
                                 label="restore a blocked-raw export from newer firmware")
-            details = (body or {}).get("error", {}).get("details") or [{}]
+            details = error_details(body) or [{}]
             expect(details[0].get("code") == "unsupported_schema", f"blocked-raw restore refusal: {body}")
             expect(config_state(c).get("state") == "blocked", "a refused restore must leave the hub blocked")
         if fixture_file.endswith("does-not-compile.json") and isinstance(raw, str):

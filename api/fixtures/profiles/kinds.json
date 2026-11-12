@@ -1,0 +1,160 @@
+{
+  "kinds": [
+    {
+      "id": "tv",
+      "label": "TV"
+    },
+    {
+      "id": "tv_vcr",
+      "label": "TV/VCR combo"
+    },
+    {
+      "id": "tv_dvd",
+      "label": "TV/DVD combo"
+    },
+    {
+      "id": "tv_dvd_vcr",
+      "label": "TV/DVD/VCR combo"
+    },
+    {
+      "id": "tv_dvr",
+      "label": "TV with recorder"
+    },
+    {
+      "id": "projector",
+      "label": "Projector"
+    },
+    {
+      "id": "streamer",
+      "label": "Streaming player"
+    },
+    {
+      "id": "set_top_box",
+      "label": "Set-top box"
+    },
+    {
+      "id": "cable_box",
+      "label": "Cable box"
+    },
+    {
+      "id": "cable_dvr",
+      "label": "Cable DVR"
+    },
+    {
+      "id": "satellite_box",
+      "label": "Satellite box"
+    },
+    {
+      "id": "console",
+      "label": "Game console"
+    },
+    {
+      "id": "computer",
+      "label": "Computer"
+    },
+    {
+      "id": "disc_player",
+      "label": "DVD or Blu-ray player"
+    },
+    {
+      "id": "dvd_recorder",
+      "label": "DVD recorder"
+    },
+    {
+      "id": "dvd_vcr",
+      "label": "DVD/VCR combo"
+    },
+    {
+      "id": "dvd_recorder_vcr",
+      "label": "DVD recorder/VCR combo"
+    },
+    {
+      "id": "vcr",
+      "label": "VCR"
+    },
+    {
+      "id": "laserdisc",
+      "label": "LaserDisc player"
+    },
+    {
+      "id": "home_theater",
+      "label": "Home theater system"
+    },
+    {
+      "id": "home_theater_vcr",
+      "label": "Home theater with VCR"
+    },
+    {
+      "id": "receiver",
+      "label": "AV receiver"
+    },
+    {
+      "id": "amplifier",
+      "label": "Amplifier or soundbar"
+    },
+    {
+      "id": "speaker",
+      "label": "Speaker"
+    },
+    {
+      "id": "mini_system",
+      "label": "Stereo system"
+    },
+    {
+      "id": "tuner",
+      "label": "Radio tuner"
+    },
+    {
+      "id": "cd_player",
+      "label": "CD player"
+    },
+    {
+      "id": "cd_changer",
+      "label": "CD changer"
+    },
+    {
+      "id": "tape_deck",
+      "label": "Tape deck"
+    },
+    {
+      "id": "dat_deck",
+      "label": "DAT deck"
+    },
+    {
+      "id": "minidisc",
+      "label": "MiniDisc"
+    },
+    {
+      "id": "portable_audio",
+      "label": "Music player or dock"
+    },
+    {
+      "id": "hdmi_switch",
+      "label": "HDMI switch"
+    },
+    {
+      "id": "climate",
+      "label": "Climate"
+    },
+    {
+      "id": "light",
+      "label": "Light"
+    },
+    {
+      "id": "switch",
+      "label": "Switch"
+    },
+    {
+      "id": "smart_home_hub",
+      "label": "Smart home hub"
+    },
+    {
+      "id": "accessory",
+      "label": "Accessory"
+    },
+    {
+      "id": "other",
+      "label": "Other"
+    }
+  ]
+}

@@ -152,6 +152,46 @@
       "kind": "200"
     },
     {
+      "file": "devices/execute.press.request.json",
+      "operation": "executeCommand",
+      "kind": "request"
+    },
+    {
+      "file": "errors/sequence_only.json",
+      "operation": "executeCommand",
+      "kind": "422"
+    },
+    {
+      "file": "profiles/list.json",
+      "operation": "listProfiles",
+      "kind": "200"
+    },
+    {
+      "file": "profiles/android-tv.json",
+      "operation": "getProfile",
+      "kind": "200"
+    },
+    {
+      "file": "profiles/apple-tv.json",
+      "operation": "getProfile",
+      "kind": "200"
+    },
+    {
+      "file": "profiles/fire-tv.json",
+      "operation": "getProfile",
+      "kind": "200"
+    },
+    {
+      "file": "profiles/generic-keyboard.json",
+      "operation": "getProfile",
+      "kind": "200"
+    },
+    {
+      "file": "profiles/kinds.json",
+      "operation": "listKinds",
+      "kind": "200"
+    },
+    {
       "file": "activities/list.json",
       "operation": "listActivities",
       "kind": "200"
@@ -298,6 +338,21 @@
     },
     {
       "file": "errors/too_many_bluetooth_devices.json",
+      "operation": "registerDevice",
+      "kind": "422"
+    },
+    {
+      "file": "admin/register_profile.request.json",
+      "operation": "registerDevice",
+      "kind": "request"
+    },
+    {
+      "file": "admin/register_profile.json",
+      "operation": "registerDevice",
+      "kind": "201"
+    },
+    {
+      "file": "errors/unknown_profile.json",
       "operation": "registerDevice",
       "kind": "422"
     },

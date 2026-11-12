@@ -10,6 +10,23 @@
   ],
   "shutdown": [
     {
+      "integration_id": "ble",
+      "device_id": "dev_apple_tv",
+      "command_id": "press",
+      "params": {
+        "command": "Home",
+        "hold_ms": 2000
+      }
+    },
+    {
+      "integration_id": "ble",
+      "device_id": "dev_apple_tv",
+      "command_id": "press",
+      "params": {
+        "command": "Select"
+      }
+    },
+    {
       "integration_id": "ha_main",
       "device_id": "dev_lg_tv",
       "command_id": "media_player.turn_off",
@@ -27,9 +44,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_down",
+        "command_id": "press_down",
         "params": {
-          "key": "ARROW_UP"
+          "command": "DirectionUp"
         }
       }
     ],
@@ -37,9 +54,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_up",
+        "command_id": "press_up",
         "params": {
-          "key": "ARROW_UP"
+          "command": "DirectionUp"
         }
       }
     ],
@@ -47,9 +64,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_down",
+        "command_id": "press_down",
         "params": {
-          "key": "ARROW_DOWN"
+          "command": "DirectionDown"
         }
       }
     ],
@@ -57,9 +74,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_up",
+        "command_id": "press_up",
         "params": {
-          "key": "ARROW_DOWN"
+          "command": "DirectionDown"
         }
       }
     ],
@@ -67,9 +84,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_down",
+        "command_id": "press_down",
         "params": {
-          "key": "ARROW_LEFT"
+          "command": "DirectionLeft"
         }
       }
     ],
@@ -77,9 +94,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_up",
+        "command_id": "press_up",
         "params": {
-          "key": "ARROW_LEFT"
+          "command": "DirectionLeft"
         }
       }
     ],
@@ -87,9 +104,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_down",
+        "command_id": "press_down",
         "params": {
-          "key": "ARROW_RIGHT"
+          "command": "DirectionRight"
         }
       }
     ],
@@ -97,9 +114,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_up",
+        "command_id": "press_up",
         "params": {
-          "key": "ARROW_RIGHT"
+          "command": "DirectionRight"
         }
       }
     ],
@@ -107,9 +124,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_down",
+        "command_id": "press_down",
         "params": {
-          "key": "SELECT"
+          "command": "Select"
         }
       }
     ],
@@ -117,9 +134,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_up",
+        "command_id": "press_up",
         "params": {
-          "key": "SELECT"
+          "command": "Select"
         }
       }
     ],
@@ -127,9 +144,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_down",
+        "command_id": "press_down",
         "params": {
-          "key": "MENU"
+          "command": "Home"
         }
       }
     ],
@@ -137,9 +154,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_up",
+        "command_id": "press_up",
         "params": {
-          "key": "MENU"
+          "command": "Home"
         }
       }
     ],
@@ -147,9 +164,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_down",
+        "command_id": "press_down",
         "params": {
-          "key": "AC_HOME"
+          "command": "Back"
         }
       }
     ],
@@ -157,9 +174,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_up",
+        "command_id": "press_up",
         "params": {
-          "key": "AC_HOME"
+          "command": "Back"
         }
       }
     ],
@@ -167,9 +184,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_down",
+        "command_id": "press_down",
         "params": {
-          "key": "AC_HOME"
+          "command": "Back"
         }
       }
     ],
@@ -177,9 +194,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_up",
+        "command_id": "press_up",
         "params": {
-          "key": "AC_HOME"
+          "command": "Back"
         }
       }
     ],
@@ -187,9 +204,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_down",
+        "command_id": "press_down",
         "params": {
-          "key": "SCAN_NEXT"
+          "command": "NextTrack"
         }
       }
     ],
@@ -197,9 +214,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_up",
+        "command_id": "press_up",
         "params": {
-          "key": "SCAN_NEXT"
+          "command": "NextTrack"
         }
       }
     ],
@@ -207,9 +224,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_down",
+        "command_id": "press_down",
         "params": {
-          "key": "SCAN_PREVIOUS"
+          "command": "PreviousTrack"
         }
       }
     ],
@@ -217,9 +234,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_up",
+        "command_id": "press_up",
         "params": {
-          "key": "SCAN_PREVIOUS"
+          "command": "PreviousTrack"
         }
       }
     ],
@@ -227,9 +244,9 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_tap",
+        "command_id": "press",
         "params": {
-          "key": "PLAY_PAUSE"
+          "command": "PlayPause"
         }
       }
     ],
@@ -237,9 +254,19 @@
       {
         "integration_id": "ble",
         "device_id": "dev_apple_tv",
-        "command_id": "key_tap",
+        "command_id": "press",
         "params": {
-          "key": "PLAY_PAUSE"
+          "command": "PlayPause"
+        }
+      }
+    ],
+    "menu:hold": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "press",
+        "params": {
+          "command": "ControlCenter"
         }
       }
     ],
@@ -250,6 +277,16 @@
         "command_id": "key_tap",
         "params": {
           "key": "KEY_I"
+        }
+      }
+    ],
+    "record:tap": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "usage_tap",
+        "params": {
+          "usage": 178
         }
       }
     ],

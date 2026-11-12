@@ -8,6 +8,7 @@
     "entity_id": "media_player.xbox",
     "unique_id": "FD00112233445566"
   },
+  "platform": "home_assistant",
   "availability": "available",
   "schema_version": 1,
   "revision": 1

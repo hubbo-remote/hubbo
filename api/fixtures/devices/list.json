@@ -8,6 +8,14 @@
       "provider": {
         "type": "ble_hid"
       },
+      "platform": "ble_hid",
+      "manufacturer": "Apple",
+      "model": "Apple TV",
+      "profile": {
+        "id": "hubbo:apple-tv",
+        "revision": 3,
+        "sha256": "b02e0555176b2dee82a7d81ac3eb0837aaffc82387cf53a7b1d0c261fc755564"
+      },
       "availability": "available",
       "bluetooth": {
         "state": "connected"
@@ -25,6 +33,7 @@
         "entity_id": "media_player.family_room_denon",
         "unique_id": "c5a1e0b2f3d44c1aa1b2c3d4e5f60718"
       },
+      "platform": "home_assistant",
       "availability": "available",
       "schema_version": 1,
       "revision": 1
@@ -39,6 +48,7 @@
         "entity_id": "media_player.family_room_sonos",
         "unique_id": "RINCON_48A6B8000000001400"
       },
+      "platform": "home_assistant",
       "availability": "available",
       "schema_version": 1,
       "revision": 3
@@ -53,6 +63,7 @@
         "entity_id": "media_player.family_room_lg_tv",
         "unique_id": "1b2e6c3a-9f4d-4a7e-b1c2-d3e4f5a6b7c8"
       },
+      "platform": "home_assistant",
       "availability": "available",
       "schema_version": 1,
       "revision": 1
@@ -67,6 +78,7 @@
         "entity_id": "media_player.xbox",
         "unique_id": "FD00112233445566"
       },
+      "platform": "home_assistant",
       "availability": "available",
       "schema_version": 1,
       "revision": 1
@@ -81,6 +93,7 @@
         "entity_id": "light.family_room",
         "unique_id": "7d3e2a1b-4c5d-4e6f-8a9b-0c1d2e3f4a5b"
       },
+      "platform": "home_assistant",
       "availability": "available",
       "schema_version": 1,
       "revision": 1
