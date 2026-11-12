@@ -142,9 +142,11 @@ actions:
 - `system/activate` and `system/off` may appear only as the last action of a binding, never in
   startup or shutdown.
 
-Global bindings (`GET/PUT /global-bindings`) apply when the active activity doesn't bind the
-trigger. That's where activity buttons go, e.g. `"tv:tap"` → `activate act_watch_apple_tv`, and
-`"off:tap"` → `off`.
+Global bindings (`GET/PUT /global-bindings`) apply per button, not per trigger: if the active
+activity binds any trigger of a button (`down`, `up`, `tap` or `hold`), none of that button's
+global bindings apply. Globals cover only the buttons the activity doesn't bind at all. That's
+where activity buttons go, e.g. `"tv:tap"` → `activate act_watch_apple_tv`, and `"off:tap"` →
+`off`.
 
 ### 1. Validate (dry run)
 
