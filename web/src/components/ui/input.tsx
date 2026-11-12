@@ -1,6 +1,7 @@
 import { ChevronDown } from 'lucide-react'
 import { createContext, useContext, type ComponentProps } from 'react'
 import { cn } from '@/lib/utils'
+import { InfoTip } from './info-tip'
 
 const field =
   'flex h-9 w-full min-w-0 rounded-md border border-input bg-card px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 md:text-sm'
@@ -36,17 +37,48 @@ export function Label({ className, ...props }: ComponentProps<'label'>) {
   return <label className={cn('text-sm font-medium leading-none select-none', className)} {...props} />
 }
 
-export function Field({ label, hint, error, children, htmlFor }: { label: string; hint?: React.ReactNode; error?: string | null; children: React.ReactNode; htmlFor: string }) {
+/**
+ * `inline`: a control in a row, with no hint; its label is for screen readers only, or with
+ * `'beside'` a short one before the control (for a number field, whose value doesn't say what it is).
+ * `info`: a description shown as a tooltip by the label (beside the control when the label is hidden).
+ */
+export function Field({ label, hint, error, children, htmlFor, inline, info }: { label: string; hint?: React.ReactNode; error?: string | null; children: React.ReactNode; htmlFor: string; inline?: boolean | 'beside'; info?: string }) {
   const show = useShowErrors()
+  const tip = info ? <InfoTip text={info} label={label} /> : null
   return (
     <div className="grid gap-1.5">
-      <Label htmlFor={htmlFor}>{label}</Label>
-      {children}
+      {inline === 'beside' ? (
+        <div className="flex items-center gap-2">
+          <span className="flex items-center gap-1">
+            <Label htmlFor={htmlFor} className="text-xs font-normal whitespace-nowrap text-muted-foreground">
+              {label}
+            </Label>
+            {tip}
+          </span>
+          {children}
+        </div>
+      ) : inline ? (
+        <div className="flex items-center gap-1.5">
+          <Label htmlFor={htmlFor} className="sr-only">
+            {label}
+          </Label>
+          {children}
+          {tip}
+        </div>
+      ) : (
+        <>
+          <span className="flex items-center gap-1.5">
+            <Label htmlFor={htmlFor}>{label}</Label>
+            {tip}
+          </span>
+          {children}
+        </>
+      )}
       {error && show ? (
         <p className="text-xs text-destructive" role="alert">
           {error}
         </p>
-      ) : hint ? (
+      ) : hint && !inline ? (
         <p className="text-xs text-muted-foreground">{hint}</p>
       ) : null}
     </div>

@@ -1,23 +1,33 @@
 import type { Action } from '@/api/types'
-import { commandFor, isSystem, type Catalog } from '@/lib/activity'
-import { keyLabel } from '@/lib/keys'
+import { commandFor, isSystem, LEVEL_SCALE, numberChoices, percentLabel, type Catalog } from '@/lib/activity'
+import { commandTitle, friendlyName, namedParam, toggleLabel, toggleOf } from '@/lib/commands'
+import { paramValueLabel } from '@/lib/keys'
 
 export function commandLabel(a: Action, cat: Catalog): string {
-  return commandFor(a, cat)?.label ?? a.command_id
+  const cmd = commandFor(a, cat)
+  const t = toggleOf(a, cmd)
+  return friendlyName(a) ?? (t ? toggleLabel(cmd!, ...t) : cmd && commandTitle(cmd)) ?? a.command_id
 }
 
+const duration = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(ms % 1000 ? 1 : 0)} s` : `${ms} ms`)
+
 export function paramSummary(a: Action, cat?: Catalog): string {
-  if (isSystem(a) && a.command_id === 'wait') {
-    const d = Number(a.params.duration_ms ?? 0)
-    return d >= 1000 ? `${(d / 1000).toFixed(d % 1000 ? 1 : 0)} s` : `${d} ms`
-  }
+  if (isSystem(a) && a.command_id === 'wait') return duration(Number(a.params.duration_ms ?? 0))
+  const cmd = cat && commandFor(a, cat)
+  const named = friendlyName(a) ? namedParam(a) : cmd ? toggleOf(a, cmd)?.[0] : undefined // already in the command's name
   return Object.entries(a.params)
+    .filter(([k]) => k !== named)
     .map(([k, v]) => {
       if (k === 'activity_id' && typeof v === 'string') return cat?.activities.find((x) => x.id === v)?.name ?? v
       if (typeof v === 'boolean') return v ? k.replace(/_/g, ' ') : `not ${k.replace(/_/g, ' ')}`
-      if (k === 'key' && typeof v === 'string') return keyLabel(v).toLowerCase()
-      if (k === 'level' && typeof v === 'number' && v <= 1) return `${Math.round(v * 100)}%`
-      return String(v)
+      if (k === 'hold_ms' && typeof v === 'number') return `held ${duration(v)}`
+      const spec = cmd && cmd.params.find((p) => p.name === k)
+      if (typeof v === 'number') {
+        const choices = spec ? numberChoices(a.command_id, spec) : null
+        if (choices) return choices.phrase(v, commandTitle(cmd!))
+        if (!spec && k === 'level' && v <= 1) return percentLabel(LEVEL_SCALE, v)
+      }
+      return typeof v === 'string' ? paramValueLabel(k, v) : String(v)
     })
     .join(', ')
 }

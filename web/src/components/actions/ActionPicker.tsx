@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Field, Select } from '@/components/ui/input'
 import { useCapabilities } from '@/hooks/data'
 import { commandFor, defaultParams, isSystem, SYSTEM, systemCommandAllowed, type Catalog } from '@/lib/activity'
+import { commandTitle } from '@/lib/commands'
 import { commandGroups } from '@/lib/keys'
 import { cn } from '@/lib/utils'
 import { ParamForm } from './ParamForm'
@@ -37,17 +38,17 @@ export function ActionPicker({ value, onChange, catalog, context, allowHold = fa
     if (!d) return onChange(null)
     if (d === SYSTEM_VALUE) {
       const first = systemCommands[0]
-      return onChange({ integration_id: SYSTEM, device_id: null, command_id: first?.command_id ?? '', params: first ? defaultParams(first.params) : {} })
+      return onChange({ integration_id: SYSTEM, device_id: null, command_id: first?.command_id ?? '', params: first ? defaultParams(first.params, first.command_id) : {} })
     }
     const dev = catalog.devices.get(d)!
     const first = catalog.capabilities.get(d)?.commands.find(offer)
-    onChange({ integration_id: dev.integration_id, device_id: d, command_id: first?.command_id ?? '', params: first ? defaultParams(first.params) : {} })
+    onChange({ integration_id: dev.integration_id, device_id: d, command_id: first?.command_id ?? '', params: first ? defaultParams(first.params, first.command_id) : {} })
   }
 
   const pickCommand = (c: string) => {
     if (!value) return
     const def = commands.find((x) => x.command_id === c)
-    onChange({ ...value, command_id: c, params: def ? defaultParams(def.params) : {} })
+    onChange({ ...value, command_id: c, params: def ? defaultParams(def.params, c) : {} })
   }
 
   return (
@@ -71,7 +72,7 @@ export function ActionPicker({ value, onChange, catalog, context, allowHold = fa
               {groups.map(([label, list]) => {
                 const options = list.map((c) => (
                   <option key={c.command_id} value={c.command_id}>
-                    {c.label}
+                    {commandTitle(c)}
                   </option>
                 ))
                 return label ? (
@@ -92,15 +93,22 @@ export function ActionPicker({ value, onChange, catalog, context, allowHold = fa
         </label>
       )}
       {cmd?.description && <p className="text-xs text-muted-foreground">{cmd.description}</p>}
-      {value && cmd && <ParamForm params={cmd.params} values={value.params} onChange={(params) => onChange({ ...value, params })} activities={catalog.activities} compact />}
+      {value && cmd && <ParamForm key={value.command_id} commandId={value.command_id} name={commandTitle(cmd)} params={cmd.params} values={value.params} onChange={(params) => onChange({ ...value, params })} activities={catalog.activities} compact />}
       {testable && value && cmd && !system && cmd.effect === 'momentary' && <TestButton action={value} />}
     </div>
   )
 }
 
-export function TestButton({ action, size = 'sm', onRun }: { action: Action; size?: 'sm' | 'default'; onRun?: () => void }) {
+export type TestResult = ExecuteResult | { status: 'error'; message: string }
+
+/** `onResult`: the caller shows the result itself (a device page row, under the name), not beside the button. */
+export function TestButton({ action, size = 'sm', onRun, onResult }: { action: Action; size?: 'sm' | 'default'; onRun?: () => void; onResult?: (r: TestResult | null) => void }) {
   const [busy, setBusy] = useState(false)
-  const [res, setRes] = useState<ExecuteResult | { status: 'error'; message: string } | null>(null)
+  const [res, setResState] = useState<TestResult | null>(null)
+  const setRes = (r: TestResult | null) => {
+    setResState(r)
+    onResult?.(r)
+  }
   const run = async () => {
     onRun?.()
     if (!action.device_id) return
@@ -114,20 +122,28 @@ export function TestButton({ action, size = 'sm', onRun }: { action: Action; siz
       setBusy(false)
     }
   }
+  const button = (
+    <Button variant="outline" size={size} onClick={run} disabled={busy}>
+      {busy ? <Loader2 className="animate-spin" /> : <Play />}
+      Test
+    </Button>
+  )
+  if (onResult) return button
   return (
     <div className="flex flex-wrap items-center gap-3">
-      <Button variant="outline" size={size} onClick={run} disabled={busy}>
-        {busy ? <Loader2 className="animate-spin" /> : <Play />}
-        Test
-      </Button>
+      {button}
       <span aria-live="polite" className="text-sm">
-        {res && (
-          <span className={cn(res.status === 'accepted' ? 'text-success' : res.status === 'timeout' ? 'text-[color-mix(in_oklch,var(--warning),black_35%)] dark:text-warning' : 'text-destructive')}>
-            {res.status === 'accepted' ? 'Sent' : res.status === 'timeout' ? 'Timed out' : res.status === 'failed' ? 'Failed' : 'Not sent'}
-            {res.message && <span className="text-muted-foreground"> · {res.message}</span>}
-          </span>
-        )}
+        {res && <TestResultText res={res} />}
       </span>
     </div>
+  )
+}
+
+export function TestResultText({ res }: { res: TestResult }) {
+  return (
+    <span className={cn(res.status === 'accepted' ? 'text-success' : res.status === 'timeout' ? 'text-[color-mix(in_oklch,var(--warning),black_35%)] dark:text-warning' : 'text-destructive')}>
+      {res.status === 'accepted' ? 'Sent' : res.status === 'timeout' ? 'Timed out' : res.status === 'failed' ? 'Failed' : 'Not sent'}
+      {res.message && <span className="text-muted-foreground"> · {res.message}</span>}
+    </span>
   )
 }

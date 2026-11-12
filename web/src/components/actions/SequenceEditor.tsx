@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { isWait, LIMITS, waitAction, type Catalog } from '@/lib/activity'
 import { cn } from '@/lib/utils'
-import { ActionPicker } from './ActionPicker'
+import { CommandPicker } from './CommandPicker'
 import { commandLabel, deviceName, paramSummary } from './describe'
 
 /** Ordered list of actions (startup/shutdown) with add, edit, wait, and reorder (buttons, drag, or Alt+↑/↓). */
@@ -91,7 +91,7 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
                         <span className="font-medium">{deviceName(a, catalog)}</span>
                         <span className="text-muted-foreground"> · </span>
                         {commandLabel(a, catalog)}
-                        {paramSummary(a, catalog) && <span className="text-muted-foreground"> ({paramSummary(a, catalog)})</span>}
+                        {paramSummary(a, catalog) && <span className="text-muted-foreground"> {paramSummary(a, catalog)}</span>}
                       </>
                     )}
                   </p>
@@ -155,7 +155,7 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
           </>
         }
       >
-        {editing && <ActionPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="sequence" />}
+        {editing && <CommandPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="sequence" />}
       </Dialog>
     </div>
   )

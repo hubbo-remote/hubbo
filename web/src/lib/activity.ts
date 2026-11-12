@@ -18,7 +18,7 @@ import type {
   ValidationIssue,
 } from '../api/types.ts'
 import { buttonLabel, isButtonId } from './buttons.ts'
-import { humanize } from './utils.ts'
+import { humanize, sentenceCase } from './utils.ts'
 
 export const EVENT_ORDER: readonly EventKind[] = ['down', 'up', 'tap', 'hold']
 export const LIMITS = { maxSequence: 32, maxBindingActions: 32, nameMax: 64, paramStringMax: 32 } as const
@@ -35,7 +35,7 @@ export function parseTrigger(key: string): { button: ButtonId; event: EventKind 
 }
 
 /** Event kinds with at least one action for this button. */
-export function boundEvents(bindings: Bindings, button: ButtonId): EventKind[] {
+function boundEvents(bindings: Bindings, button: ButtonId): EventKind[] {
   return EVENT_ORDER.filter((e) => (bindings[triggerKey(button, e)]?.length ?? 0) > 0)
 }
 
@@ -68,13 +68,101 @@ const activityIds = (cat: Catalog) => {
   return s
 }
 
-export function defaultParams(params: ParamSpec[]): ActionParams {
+/**
+ * A number param picked and shown as a percent: a 0–1 number (HA's volume level), a light's 0–255
+ * brightness, or a light's ±255 brightness step. `full` is its 100% value; a signed scale runs
+ * −100%…+100% with no 0.
+ */
+export type PercentScale = { full: number; signed: boolean }
+export function percentScale(commandId: string, p: ParamSpec): PercentScale | null {
+  if (p.type === 'number' && p.minimum === 0 && p.maximum === 1) return { full: 1, signed: false }
+  if (!commandId.startsWith('light.') || p.type !== 'int') return null
+  if (p.name === 'brightness' && p.minimum === 0 && p.maximum === 255) return { full: 255, signed: false }
+  if (p.name === 'step' && p.minimum === -255 && p.maximum === 255) return { full: 255, signed: true }
+  return null
+}
+/** A 0–1 level with no spec to go by (an action read without its catalog). */
+export const LEVEL_SCALE: PercentScale = { full: 1, signed: false }
+/** `grid`, plus `current` if it's off it (so a stored value shows and isn't changed). */
+const withCurrent = (grid: number[], current?: number) => (current === undefined || grid.some((g) => Math.abs(g - current) < 1e-9) ? grid : [...grid, current].sort((a, b) => a - b))
+/** The stored value for a whole percent (255 scales store whole numbers). */
+const fromPercent = (s: PercentScale, pct: number) => (s.full === 1 ? pct / 100 : Math.round((pct * s.full) / 100))
+/** A scale's starting value when the param has no default: 35% (a sensible volume), +10% for a step. */
+export const percentDefault = (s: PercentScale) => fromPercent(s, s.signed ? 10 : 35)
+/** Stored values for 0%–100% (or −100%…+100%, no 0) in 5% steps, plus `current` if it's off that grid. */
+export function percentOptions(s: PercentScale, current?: number): number[] {
+  const pcts = s.signed ? [...Array.from({ length: 20 }, (_, i) => -100 + i * 5), ...Array.from({ length: 20 }, (_, i) => 5 + i * 5)] : Array.from({ length: 21 }, (_, i) => i * 5)
+  return withCurrent(
+    pcts.map((pct) => fromPercent(s, pct)),
+    current,
+  )
+}
+/** 0.35 → "35%", 128 of 255 → "50%", a step of 26 → "+10%" (no float noise: 0.335 → "33.5%"). */
+export function percentLabel(s: PercentScale, v: number): string {
+  const pct = s.full === 1 ? Math.round(v * 1000) / 10 : Math.round((v * 100) / s.full)
+  return `${s.signed && pct > 0 ? '+' : ''}${pct < 0 ? `−${-pct}` : pct}%`
+}
+
+/**
+ * A fan's speeds: a `fan.*` percentage with a step over 1 is picked as "Speed n of N", N = 100 / step
+ * (33 → 3, 14 → 7). Speed n is stored as Home Assistant computes it, floor(n × 100 / N); null otherwise.
+ */
+export function fanSpeeds(commandId: string, p: ParamSpec): number | null {
+  return commandId.startsWith('fan.') && p.name === 'percentage' && p.type === 'int' && p.unit === '%' && (p.step ?? 0) > 1 ? Math.round(100 / p.step!) : null
+}
+const speedPercent = (n: number, count: number) => Math.floor((n * 100) / count)
+/** The speed a stored percentage runs at (HA rounds up: 50% of 3 speeds is speed 2); 0 is off. */
+export const speedOf = (value: number, count: number) => Math.min(count, Math.ceil((value * count) / 100))
+/** Stored values for speeds 1..N, plus `current` if it's off that list (so it shows and isn't changed). */
+export function speedOptions(count: number, current?: number): number[] {
+  return withCurrent(
+    Array.from({ length: count }, (_, i) => speedPercent(i + 1, count)),
+    current,
+  )
+}
+const speedText = (value: number, count: number) => `${speedOf(value, count)} of ${count}`
+export const speedLabel = (value: number, count: number) => `Speed ${speedText(value, count)}`
+
+/**
+ * A number param picked from a list (a percent, a fan speed), or null for a plain number: its stored
+ * options, how one reads in a picker, and how it reads after the command's name in a summary.
+ */
+export interface NumberChoices {
+  kind: 'percent' | 'speed'
+  options: (current?: number) => number[]
+  label: (v: number) => string
+  /** "Set speed 2 of 3", "Turn on speed 2 of 3", "Set volume 35%". */
+  phrase: (v: number, commandTitle: string) => string
+}
+export function numberChoices(commandId: string, p: ParamSpec): NumberChoices | null {
+  const speeds = fanSpeeds(commandId, p)
+  if (speeds) return { kind: 'speed', options: (c) => speedOptions(speeds, c), label: (v) => speedLabel(v, speeds), phrase: (v, title) => `${/speed$/i.test(title) ? '' : 'speed '}${speedText(v, speeds)}` }
+  const scale = percentScale(commandId, p)
+  if (scale) return { kind: 'percent', options: (c) => percentOptions(scale, c), label: (v) => percentLabel(scale, v), phrase: (v) => percentLabel(scale, v) }
+  return null
+}
+
+/** A whole-percent param's allowed value (from its minimum, in its steps) nearest `target`, never 0 (a fan's 0% is off). */
+function nearPercent(p: ParamSpec, target: number): number {
+  const min = p.minimum ?? 0, max = p.maximum ?? 100, step = p.step && p.step > 0 ? p.step : 1
+  let best: number | undefined
+  for (let v = min; v <= max; v += step) if (v !== 0 && (best === undefined || Math.abs(v - target) < Math.abs(best - target))) best = v
+  return best ?? min
+}
+
+export function defaultParams(params: ParamSpec[], commandId: string): ActionParams {
   const out: ActionParams = {}
   for (const p of params) {
+    // Optional params aren't sent unless set (one with a default runs as that default).
+    if (!p.required) continue
+    const scale = percentScale(commandId, p)
+    const speeds = fanSpeeds(commandId, p)
     if (p.default !== undefined) out[p.name] = p.default
-    else if (!p.required) continue
     else if (p.type === 'enum') out[p.name] = p.options?.[0] ?? ''
     else if (p.type === 'bool') out[p.name] = false
+    else if (scale) out[p.name] = percentDefault(scale)
+    else if (speeds) out[p.name] = speedPercent(1, speeds)
+    else if (p.type === 'int' && p.unit === '%') out[p.name] = nearPercent(p, 35)
     else if (p.type === 'int' || p.type === 'number') out[p.name] = p.minimum ?? 0
     // Anything else (e.g. an activity_ref) stays unset until picked: an empty string would look
     // chosen in a select while being invalid.
@@ -82,8 +170,28 @@ export function defaultParams(params: ParamSpec[]): ActionParams {
   return out
 }
 
-/** `label` is optional in the spec; fall back to a readable form of the name (`duration_ms` → `Duration ms`). */
-export const paramLabel = (p: ParamSpec) => p.label ?? humanize(p.name)
+/**
+ * The params ParamForm keeps in its drawer: the optional ones, unless a command's one param is
+ * optional with no default (Set timer, Play queue), which it means nothing without.
+ */
+export function drawerParams(params: ParamSpec[]): ParamSpec[] {
+  const sole = params.length === 1 && params[0]!.default === undefined
+  return sole ? [] : params.filter((p) => !p.required)
+}
+
+/** Fallbacks for HA params whose catalog entry has no label or unit. */
+const KNOWN: Record<string, [label: string, unit: string]> = { color_temp_kelvin: ['Color temperature', 'K'], transition: ['Transition', 's'] }
+
+/**
+ * A param's label: the spec's, in sentence case; when missing (or just the name), a readable form of
+ * the name, less a unit suffix the unit already says (`sleep_time` → "Sleep time", `hold_ms` → "Hold").
+ */
+export const paramLabel = (p: ParamSpec) => (p.label && p.label !== p.name ? sentenceCase(p.label) : (KNOWN[p.name]?.[0] ?? humanize(p.unit ? p.name.replace(/_(ms|s|sec|seconds|k|kelvin|pct|percent)$/, '') : p.name)))
+/** A field's label with its unit: "Speed (s)", "Color temperature (K)". */
+export function fieldLabel(p: ParamSpec, commandId: string): string {
+  const unit = numberChoices(commandId, p) ? undefined : (p.unit ?? KNOWN[p.name]?.[1])
+  return unit ? `${paramLabel(p)} (${unit})` : paramLabel(p)
+}
 
 export function checkParam(p: ParamSpec, v: ParamValue | undefined, activityIds?: ReadonlySet<string>): string | null {
   const label = paramLabel(p)
