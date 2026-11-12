@@ -2,26 +2,27 @@
 // Pure, so it's unit-tested without the UI. Each device is first turned into a WizardDevice
 // (its commands under the profile spec's names, its power and inputs as actions), whatever its
 // integration: Bluetooth devices from their profile, Home Assistant devices from what HA reports.
-import type { Action, ActivityInput, ButtonId, Capabilities, Device, DeviceDetail, ProfileButtons, ProfileSteps, TriggerKey } from '../../api/types.ts'
+import type { Action, ActivityInput, Bindings, ButtonId, Capabilities, Device, DeviceDetail, ProfileButtons, ProfileSteps } from '../../api/types.ts'
 import { isWait, waitAction as wait } from '../activity.ts'
+import { writeLongPress, writeMain } from '../commands.ts'
 import { HA_MUTE, HA_NAMES, HA_SELECT_SOURCE } from './haNames.ts'
 
-/** One rule of profiles/buttons.json: a button's role, whether it repeats while held, and its candidates. */
+/** One rule of profiles/buttons.json: a button's role and its candidates. */
 export interface ButtonRule {
   button: ButtonId
   role: 'watch' | 'volume'
-  hold: boolean
   candidates: string[]
 }
 type ProfileStep = ProfileSteps[number]
 
 // ---- The wizard's view of a device
 
-/** How a named command is sent. `press` (down/up) lets a held button repeat; `hold` is what a long press sends. */
+/** How a named command is sent: `tap` is the button's Press (bound as the editor binds it); `hold` is what a long press sends. */
 export interface NamedCommand {
   tap: Action
-  press?: { down: Action; up: Action }
   hold?: Action
+  /** A profile command with its own timed hold: Press stays a tap (see lib/commands `writeMain`). */
+  timed?: boolean
 }
 
 export interface WizardDevice {
@@ -86,19 +87,6 @@ export function matchButton(d: WizardDevice, rule: ButtonRule): string | null {
   return rule.candidates.find((n) => d.commands.has(n.toLowerCase())) ?? null
 }
 
-function bind(bindings: Record<TriggerKey, Action[]>, rule: ButtonRule, c: NamedCommand) {
-  const b = rule.button
-  if (rule.hold && c.press) {
-    bindings[`${b}:down`] = [c.press.down]
-    bindings[`${b}:up`] = [c.press.up]
-  } else if (rule.hold) {
-    bindings[`${b}:down`] = [c.tap] // can't repeat: one send, right away
-  } else {
-    bindings[`${b}:tap`] = [c.tap]
-    if (c.hold) bindings[`${b}:hold`] = [c.hold]
-  }
-}
-
 /** A wait of the device's key delay between two steps in a row to the same device. */
 function spaced(steps: Action[], byId: Map<string, WizardDevice>): Action[] {
   const out: Action[] = []
@@ -115,14 +103,16 @@ function spaced(steps: Action[], byId: Map<string, WizardDevice>): Action[] {
 export function buildStarter(all: WizardDevice[], answers: WizardAnswers, rules: readonly ButtonRule[]): Starter {
   const byId = new Map(all.map((d) => [d.id, d]))
   const picked = answers.devices.map((id) => byId.get(id)).filter((d): d is WizardDevice => !!d)
-  const bindings: Record<TriggerKey, Action[]> = {}
+  let bindings: Bindings = {}
   const filled: FilledButton[] = []
   for (const rule of rules) {
     const d = byId.get((rule.role === 'volume' ? answers.volume : answers.watch) ?? '')
     if (!d || !picked.includes(d)) continue
     const name = matchButton(d, rule)
     if (!name) continue
-    bind(bindings, rule, d.commands.get(name.toLowerCase())!)
+    const c = d.commands.get(name.toLowerCase())!
+    const timed = () => !!c.timed
+    bindings = writeLongPress(writeMain(bindings, rule.button, c.tap, timed), rule.button, c.hold ?? null, timed)
     filled.push({ button: rule.button, deviceId: d.id, command: name })
   }
 
@@ -173,14 +163,14 @@ export function haDevice(d: Device, caps: Capabilities): WizardDevice {
   return { id: d.id, name: d.name, commands, power, inputs, inputDelayMs: 0, keyDelayMs: 0, wakeForInputMs: HA_WAKE_FOR_INPUT_MS }
 }
 
-/** A Bluetooth device, from its profile: `press` for taps, `press_down`/`press_up` for held buttons. */
+/** A Bluetooth device, from its profile: `press` for each command (a button passes it through as press_down/press_up). */
 export function bleDevice(d: DeviceDetail): WizardDevice {
   const action = actionOn(d)
   const steps = (list: ProfileStep[] = []): Action[] =>
     list.map((s) => ('delay_ms' in s ? wait(s.delay_ms) : action('press', s.hold_ms ? { command: s.command, hold_ms: s.hold_ms } : { command: s.command })))
   const commands = new Map<string, NamedCommand>()
-  for (const name of Object.keys(d.commands ?? {})) {
-    commands.set(name.toLowerCase(), { tap: action('press', { command: name }), press: { down: action('press_down', { command: name }), up: action('press_up', { command: name }) } })
+  for (const [name, c] of Object.entries(d.commands ?? {})) {
+    commands.set(name.toLowerCase(), { tap: action('press', { command: name }), timed: !!c.hold_ms })
   }
   const p = d.power ?? { type: 'none' }
   const power: WizardDevice['power'] =

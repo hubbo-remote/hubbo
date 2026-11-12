@@ -16,9 +16,9 @@ export interface RemoteSvgProps {
 }
 
 const EV_COLOR: Record<EventKind, string> = { down: 'var(--ev-down)', up: 'var(--ev-up)', tap: 'var(--ev-tap)', hold: 'var(--ev-hold)' }
-/** How each mark reads: a press (tap), a hold (down, and its release on up), a long press (hold). */
-const EV_LABEL: Record<EventKind, string> = { tap: 'Press', down: 'Hold', up: 'Release', hold: 'Long press' }
-const LEGEND: readonly EventKind[] = ['tap', 'down', 'hold']
+/** How each mark reads: Press, Long press, and raw down/up triggers as they are. */
+const EV_LABEL: Record<EventKind, string> = { tap: 'Press', down: 'Down', up: 'Up', hold: 'Long press' }
+const LEGEND: readonly EventKind[] = ['tap', 'hold'] // Press and Long press (raw down/up only show under Advanced)
 
 const ICONS: Record<IconName, ReactNode> = {
   up: <path d="M-5 2.5 0-2.5 5 2.5" />,
@@ -202,23 +202,24 @@ export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, 
             <title>{`${name} (${k.id})${ev.length ? ` · ${ev.join(', ')}` : ''}`}</title>
             {/* An invisible minimum hit area: small keys (numbers, colours) stay tappable on a phone. */}
             {interactive && <rect x={cx - HIT / 2} y={cy - HIT / 2} width={HIT} height={HIT} fill="transparent" />}
-            {/* Focus/selection ring: the same shape stroked wide behind the key, whose fill hides the inner half. */}
+            {/* Focus/error ring: the same shape stroked wide behind the key, whose fill hides the inner half. */}
             <ShapeEl
               s={k.shape}
               fill="none"
               strokeWidth={6}
               className={cn(
                 'opacity-0 transition-opacity',
-                isSel ? 'opacity-100 stroke-[var(--primary)]' : 'stroke-[var(--ring)] group-focus-visible:opacity-100',
-                isErr && !isSel && 'opacity-100 stroke-[var(--destructive)]',
+                'stroke-[var(--ring)] group-focus-visible:opacity-100',
+                isErr && 'opacity-100 stroke-[var(--destructive)]',
               )}
-              strokeDasharray={!isSel && !isErr ? '3 2' : undefined}
+              strokeDasharray={!isErr ? '3 2' : undefined}
             />
             <ShapeEl
               s={k.shape}
               fill="url(#rm-key)"
-              stroke={isBound ? 'var(--remote-bound)' : 'oklch(1 0 0 / 0.1)'}
-              strokeWidth={isBound ? 1.8 : 0.8}
+              // The key's one border: pink and thick when selected (in place of the teal bound one).
+              stroke={isSel ? 'var(--remote-selected)' : isBound ? 'var(--remote-bound)' : 'oklch(1 0 0 / 0.1)'}
+              strokeWidth={isSel ? 2.6 : isBound ? 1.8 : 0.8}
               className={cn('transition-[filter] duration-100', interactive && 'group-hover:brightness-125 group-active:brightness-90')}
             />
             {isBound && <ShapeEl s={k.shape} fill="var(--remote-bound)" opacity={0.16} pointerEvents="none" />}

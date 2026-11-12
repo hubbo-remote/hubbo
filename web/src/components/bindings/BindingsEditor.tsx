@@ -8,10 +8,10 @@ import { EV_COLOR, EventLegend, RemoteSvg } from '@/components/remote/RemoteSvg'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { buttonForPath, commandFor, isSystem, releaseFor, triggerKey, type Catalog } from '@/lib/activity'
-import { readButton, viewKinds, writeLongPress, writeMain, type Mode } from '@/lib/commands'
+import { buttonForPath, commandFor, isSystem, isTimed, parseTrigger, releaseFor, triggerKey, type Catalog } from '@/lib/activity'
+import { readButton, viewKinds, writeLongPress, writeMain } from '@/lib/commands'
 import { BUTTONS, buttonLabel } from '@/lib/buttons'
-import { cn } from '@/lib/utils'
+import { cn, same } from '@/lib/utils'
 
 /**
  * Clickable remote plus the selected button's down/up/tap/hold bindings.
@@ -88,14 +88,17 @@ export function BindingsEditor({
 }
 
 /** A row's look: its colour dot, title, and what it does now (or the global one it falls back to). */
-function Row({ color, title, action, inherited, catalog, editing, children, actions }: { color: string; title: string; action: Action | Action[] | null; inherited?: Action | null; catalog: Catalog; editing: boolean; children?: ReactNode; actions: ReactNode }) {
+function Row({ color, title, note, action, inherited, catalog, editing, children, actions }: { color: string; title: string; note?: string; action: Action | Action[] | null; inherited?: Action | null; catalog: Catalog; editing: boolean; children?: ReactNode; actions: ReactNode }) {
   const list = Array.isArray(action) ? action : action ? [action] : []
   return (
     <div className={cn('rounded-lg border p-3 transition-colors', editing && 'border-primary/60 bg-accent/30', !list.length && !editing && 'border-dashed')}>
       <div className="flex items-center gap-3">
         <span className="size-3 shrink-0 rounded-full ring-2 ring-background" style={{ background: color }} aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold">{title}</p>
+          <p className="text-sm font-semibold">
+            {title}
+            {note && <span className="ml-2 text-xs font-normal text-muted-foreground">{note}</span>}
+          </p>
           {!editing && (
             <p className={cn('truncate text-sm', !list.length && 'text-muted-foreground')}>
               {list.length ? (
@@ -122,7 +125,9 @@ function Row({ color, title, action, inherited, catalog, editing, children, acti
   )
 }
 
-function RowButtons({ bound, label, onEdit, onClear }: { bound: boolean; label: string; onEdit: () => void; onClear: () => void }) {
+/** Edit when bound; Change when a global applies here (it opens on the global's action); else Bind. */
+function RowButtons({ bound, inherited, label, onEdit, onClear }: { bound: boolean; inherited?: boolean; label: string; onEdit: () => void; onClear: () => void }) {
+  const verb = bound ? 'Edit' : inherited ? 'Change' : 'Bind'
   return (
     <>
       {bound && (
@@ -130,9 +135,9 @@ function RowButtons({ bound, label, onEdit, onClear }: { bound: boolean; label: 
           <Eraser />
         </Button>
       )}
-      <Button variant={bound ? 'ghost' : 'outline'} size="sm" onClick={onEdit} aria-label={`${bound ? 'Edit' : 'Bind'} ${label}`}>
-        {bound ? <Pencil /> : <Plus />}
-        {bound ? 'Edit' : 'Bind'}
+      <Button variant={bound || inherited ? 'ghost' : 'outline'} size="sm" onClick={onEdit} aria-label={`${verb} ${label}`}>
+        {bound || inherited ? <Pencil /> : <Plus />}
+        {verb}
       </Button>
     </>
   )
@@ -156,10 +161,11 @@ function EditButtons({ ok, onApply, onCancel, test }: { ok: boolean; onApply: ()
   )
 }
 
-type Editing = { row: 'main'; mode: Mode; action: Action | null } | { row: 'long'; action: Action | null } | { row: EventKind; action: Action | null }
+/** `from`: the global action an inherited row opened on; applying it unchanged binds nothing. */
+type Editing = { row: 'main' | 'long' | EventKind; action: Action | null; from?: Action }
 
 /**
- * The selected button: what it does on a press (or while held), on a long press, and, for anything
+ * The selected button: what it does on a press (passed straight through), on a long press, and, for anything
  * that doesn't fit those, its raw down/up/tap triggers ("Advanced").
  */
 function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, onChange }: { button: ButtonId; bindings: Bindings; fallback?: Bindings; catalog: Catalog; errors: ValidationIssue[]; warnings: ValidationIssue[]; onChange: (b: Bindings) => void }) {
@@ -168,11 +174,17 @@ function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, o
   useEffect(() => (setEditing(null), setAdvanced(false)), [button])
 
   const view = readButton(bindings, button)
-  const inherited = fallback ? readButton(fallback, button) : null
-  const forced = view.raw.some((e) => e !== 'hold') // doesn't fit Press/Hold: only the raw rows can show it
+  // A button the set binds at all masks every global for it (the hub's rule), so only an untouched button inherits.
+  const owns = Object.keys(bindings).some((k) => parseTrigger(k)?.button === button)
+  const inherited = fallback && !owns ? readButton(fallback, button) : null
+  const timed = isTimed(catalog)
+  const forced = view.raw.some((e) => e !== 'hold') // doesn't fit Press: only the raw rows can show it
   const showRaw = forced || advanced
   const rawRows: EventKind[] = [...(showRaw ? (['down', 'up', 'tap'] as const) : []), ...(view.raw.includes('hold') ? (['hold'] as const) : [])]
   const close = () => setEditing(null)
+  const unchanged = (e: Editing) => !!e.from && same(e.action, e.from)
+  const edit = (row: 'main' | 'long', own: Action | null, global: Action | null | undefined) =>
+    setEditing(own ? { row, action: own } : global ? { row, action: global, from: global } : { row, action: null }) // unbound: nothing guessed
   const testable = (a: Action | null) => (a?.device_id && a.command_id && commandFor(a, catalog)?.effect === 'momentary' ? a : null)
 
   // A raw trigger edits its first action and keeps the rest; a hold on down gets its release on up.
@@ -214,30 +226,21 @@ function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, o
         ))}
         {!showRaw && (
           <Row
-            color={EV_COLOR[view.main?.mode === 'hold' ? 'down' : 'tap']}
-            title={view.main?.mode === 'hold' ? 'Hold' : 'Press'}
-            action={view.main?.action ?? null}
-            inherited={inherited?.main?.action}
+            color={EV_COLOR.tap}
+            title="Press"
+            note={view.main && view.longPress ? 'Sends on release' : undefined}
+            action={view.main}
+            inherited={inherited?.main}
             catalog={catalog}
             editing={editing?.row === 'main'}
-            actions={<RowButtons bound={!!view.main} label={`${buttonLabel(button)} press`} onEdit={() => setEditing({ row: 'main', mode: view.main?.mode ?? 'press', action: view.main?.action ?? null })} onClear={() => onChange(writeMain(bindings, button, null))} />}
+            actions={<RowButtons bound={!!view.main} inherited={!!inherited?.main} label={`${buttonLabel(button)} press`} onEdit={() => edit('main', view.main, inherited?.main)} onClear={() => onChange(writeMain(bindings, button, null, timed))} />}
           >
             {editing?.row === 'main' && (
               <>
                 <CommandPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="binding" testable={false} />
-                {editing.action?.device_id && (
-                  <div role="radiogroup" aria-label="When" className="flex gap-1.5">
-                    {(['press', 'hold'] as const).map((m) => (
-                      <label key={m} className="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5">
-                        <input type="radio" name={`mode-${button}`} className="accent-[var(--color-primary)]" checked={editing.mode === m} onChange={() => setEditing({ ...editing, mode: m })} />
-                        {m === 'press' ? 'Press' : 'Hold'}
-                      </label>
-                    ))}
-                  </div>
-                )}
                 <EditButtons
-                  ok={!editing.action || !!editing.action.command_id}
-                  onApply={() => (onChange(writeMain(bindings, button, editing.action && { mode: editing.action.device_id ? editing.mode : 'press', action: editing.action })), close())}
+                  ok={!!editing.action?.command_id}
+                  onApply={() => (unchanged(editing) || onChange(writeMain(bindings, button, editing.action, timed)), close())}
                   onCancel={close}
                   test={testable(editing.action)}
                 />
@@ -253,12 +256,12 @@ function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, o
             inherited={inherited?.longPress}
             catalog={catalog}
             editing={editing?.row === 'long'}
-            actions={<RowButtons bound={!!view.longPress} label={`${buttonLabel(button)} long press`} onEdit={() => setEditing({ row: 'long', action: view.longPress })} onClear={() => onChange(writeLongPress(bindings, button, null))} />}
+            actions={<RowButtons bound={!!view.longPress} inherited={!!inherited?.longPress} label={`${buttonLabel(button)} long press`} onEdit={() => edit('long', view.longPress, inherited?.longPress)} onClear={() => onChange(writeLongPress(bindings, button, null, timed))} />}
           >
             {editing?.row === 'long' && (
               <>
                 <CommandPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="binding" testable={false} />
-                <EditButtons ok={!editing.action || !!editing.action.command_id} onApply={() => (onChange(writeLongPress(bindings, button, editing.action)), close())} onCancel={close} test={testable(editing.action)} />
+                <EditButtons ok={!!editing.action?.command_id} onApply={() => (unchanged(editing) || onChange(writeLongPress(bindings, button, editing.action, timed)), close())} onCancel={close} test={testable(editing.action)} />
               </>
             )}
           </Row>
@@ -273,7 +276,7 @@ function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, o
               color={EV_COLOR[ev]}
               title={RAW_TITLE[ev]}
               action={list}
-              inherited={fallback?.[triggerKey(button, ev)]?.[0]}
+              inherited={owns ? undefined : fallback?.[triggerKey(button, ev)]?.[0]}
               catalog={catalog}
               editing={isEditing}
               actions={<RowButtons bound={list.length > 0} label={`${buttonLabel(button)} ${ev}`} onEdit={() => setEditing({ row: ev, action: list[0] ?? null })} onClear={() => setRaw(ev, null)} />}
