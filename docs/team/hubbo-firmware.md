@@ -185,12 +185,44 @@ of remote lag during the write are accepted.
   cycle). Loop: 2.2 ms after boot. A ~10 ms stall now and then is a flash erase on core 0 (LittleFS
   `active` save after a switch, NimBLE NVS): IDF pauses core 1 for up to
   `CONFIG_SPI_FLASH_ERASE_YIELD_DURATION_MS` (10). Accepted by the user; not a fix item.
-- Open (next firmware work): after a boot the Fire TV's link stayed unencrypted for about 40 s
-  (presses failed adapter_unavailable). Log connect / encryption result / disconnect per host with
-  the time, then re-request security (and drop the link) if a paired host stays unencrypted ~3 s.
+- After a boot the Fire TV's link stayed unencrypted for about 40 s (presses failed
+  adapter_unavailable). The link log (device-profiles phase) explains it: see the open item there.
 - To measure on the board (section 7): loop max gap and over-5 ms with 4 hosts, sends to each,
   the whitelist with RPA hosts (Apple TV), store-full refusal, re-pair keeping the old host on
   cancel/timeout.
+
+## Device profiles (branch `device-profiles`, in progress; design `docs/design/device-profiles.md` §7)
+
+- Link log: a GAP event listener (`ble_gap_event_listener_register`, beside NimBLE-Arduino's
+  handler) records connect (status, handle), encryption (status, encrypted, bonded) and
+  disconnect (reason) into core's `SpscRing` (16 events) on the host task; `loop()` prints
+  `ble: <ms> <device|(no device)> <address> connected|encryption ok/failed|disconnected (...)`.
+  A full ring drops and counts, never waits. On the board.
+- Sending: the transport already takes a raw keyboard report and a raw consumer usage, so any
+  usage in the report map goes through. The report map's maxima are core's
+  `limits::kHidKeyboardUsageMax` (0x65) and `kHidConsumerUsageMax` (0x3FF), used in the map's
+  bytes, and the sends refuse anything above them. Core's action shape ("a page plus a usage") maps page 0x07 to a key slot and
+  page 0x0C to `sendConsumer`; nothing else in firmware needed.
+- Built-in profiles: `scripts/builtin_profiles.py` (pre) runs core's `core/tools/embed_profiles.py`
+  on `../profiles` into `$BUILD_DIR/profiles_gen/builtin_profiles.cpp` (replaced only on a
+  change) and compiles it; core's `builtinProfiles()` reads `kBuiltinProfileFiles`. The script
+  adds `core/include` to CPPPATH (the generated source is built before the library finder adds it).
+  The generator itself leaves an unchanged file alone, so an unchanged set doesn't recompile.
+  The table and text are in flash rodata (0x3c...).
+- `EngineLog::onActionCompleted` logs a Pending action that finished with an error, e.g.
+  `action <ms> ble dev_apple_tv wait_connected done -> accepted adapter_unavailable`.
+- Board test passed: profile keys, down/up and timed holds, wait_connected, the link log, two
+  hosts routed by device, boot with the built-in profiles.
+- Gate (final): serial RAM 87,640 B, flash 1,976,887 B; OTA RAM 95,856 B, flash 2,005,327 B
+  (about +1.4 KB RAM and +99 KB flash on multi-Bluetooth, mostly core and the profiles).
+- Open, next Bluetooth item (no code yet): the link log after a reboot showed the Fire TV
+  connected at 2.08 s but never started encryption; the link hit supervision timeout (reason
+  0x208) at 45.08 s, and it reconnected and encrypted at 45.2 s. So the "40 s late encryption" is
+  a stalled first link, not slow encryption. We already send a Security Request in `onConnect()`
+  (`startSecurity`), which this Fire TV ignored on that link. Candidate fix: if a paired host stays
+  connected but unencrypted for a few seconds, request security again, and failing that drop the
+  link so the host reconnects at once (a stalled link costs ~43 s today). Bound the retries so a
+  host that always fails can't loop.
 
 ## Task layout (priorities)
 
