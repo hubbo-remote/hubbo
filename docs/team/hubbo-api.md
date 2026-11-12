@@ -1,6 +1,6 @@
 # hubbo-api: working notes
 
-Current as of the device-profiles phase (in progress, uncommitted). Not a log: rewrite sections as they change.
+Current as of the remote-editor phase (HA service labels; uncommitted). Not a log: rewrite sections as they change.
 
 ## State
 
@@ -25,6 +25,41 @@ Current as of the device-profiles phase (in progress, uncommitted). Not a log: r
   `x-hubbo-not-implemented`. (`ErrorCode::NotImplemented` can still map to 501.)
 
 ## Key decisions (and why)
+
+- **HA service metadata** (remote-editor, docs/ha-capabilities.md): labels from HA's
+  translations (`ServiceDirectory::parse(services, platforms, translations)`; core fetches
+  frontend/get_translations into `HaEntityDetails::translations`), else a readable id. Defaults
+  that fit go to `SnapshotParam::hasDefault/defaultNumber/defaultOption` and to
+  `ParamSpec.defaultValue` + `hasDefault` (core's display flag); units shortened. Response-only
+  services are skipped; `skipped_services` is `[{service, reason}]`. `putParam` emits a param's
+  label, unit, `description` and `default` whenever set: HA built-ins have none, so they're
+  unchanged. Field descriptions (tooltips) come from the translations' `fields.F.description`,
+  else get_services' own; whitespace collapsed, cut to 160 bytes at a word with "…"
+  (`tooltip()` in services.cpp; `kMaxSnapshotDescriptionLength`). Command descriptions aren't kept.
+
+- **Fan domain** (remote-editor, docs/ha-capabilities.md "fan"): `EntityDomain::Fan` and
+  `fan_feature` bits (checked against HA's fan/ const.py, services.py and services.yaml). EntityInfo and
+  the snapshot have `presetModes` and `percentageStep`. The snapshot stores the step as an int,
+  rounded down: ArduinoJson doesn't round-trip 33.333… exactly, and the slider step is an int
+  anyway. Core parses the attributes (ha_client, fake_ha). Showcase fans get the "climate" kind,
+  because kinds.json has no fan kind.
+  `fanSpeedStep()` (capabilities.h) is the one rounding rule, used by the snapshot and the commands.
+- One default rule: `applyDefault()` (snapshot_json.h) serves both `parse()` (which drops a default
+  that doesn't fit) and `decodeSnapshot()` (which refuses it). contract.py's `HA_DOMAINS` comes
+  from the spec's discovery `domain` enum.
+- The contract's `integration_param_flow` (noauth, sim only) re-links dev_sonos and asserts that
+  sonos.set_sleep_timer's `sleep_time` comes back exactly as `SLEEP_TIME`: label, description,
+  default 600, unit "s", step 60. These are the fake HA's values (sim/src/fake_ha.cpp). The mock skips it.
+  `putParam` emits `ParamSpec.step`. An int defaults to 1, and a number only gets a step when it
+  has one. Before this fix, step was always 1 for ints and never set for numbers, so HA service
+  steps such as 0.1 were lost too. ApiTest.FanSpeedStepReachesTheCatalog guards it.
+
+- **Discovery `available=true`** (lead review): filters to supported, unregistered candidates
+  before paging. There's no `except_device`, because Replace's own entity is registered to it and
+  so is already hidden. The domain list is `ha::kEntityDomains` (capabilities.h): `entityDomain()`,
+  `entityDomainList()` for 422 messages, and validate.py checks the spec's `domain` enum against it.
+- **Enum defaults are found by value after `filterEnumOptions`** in `EntityCapabilities::build`.
+  A default that gets filtered out loses `hasDefault`.
 
 - **Device profiles** (docs/design/device-profiles.md; profiles synced to `profiles/`):
   - A Bluetooth device only comes from a built-in profile: `deviceFromProfile()` then
