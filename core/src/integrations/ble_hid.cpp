@@ -1,8 +1,10 @@
 #include "hubbo/integrations/ble_hid.h"
 
+#include <cstring>
 #include <iterator>
 
 #include "hubbo/domain/config.h"
+#include "hubbo/domain/time.h"
 
 namespace hubbo::integrations {
 
@@ -81,7 +83,59 @@ namespace {
     X("SLEEP", Consumer, 0x0034)                                 \
     X("KEYPAD_ENTER", Keyboard, 0x58)                            \
     X("BACKSPACE", Keyboard, 0x2A)                               \
-    X("ESCAPE", Keyboard, 0x29)
+    X("ESCAPE", Keyboard, 0x29)                                  \
+    X("TAB", Keyboard, 0x2B)                                     \
+    X("SPACE", Keyboard, 0x2C)                                   \
+    X("MINUS", Keyboard, 0x2D)                                   \
+    X("EQUAL", Keyboard, 0x2E)                                   \
+    X("LEFT_BRACKET", Keyboard, 0x2F)                            \
+    X("RIGHT_BRACKET", Keyboard, 0x30)                           \
+    X("BACKSLASH", Keyboard, 0x31)                               \
+    X("NON_US_HASH", Keyboard, 0x32)                             \
+    X("SEMICOLON", Keyboard, 0x33)                               \
+    X("APOSTROPHE", Keyboard, 0x34)                              \
+    X("GRAVE", Keyboard, 0x35)                                   \
+    X("COMMA", Keyboard, 0x36)                                   \
+    X("PERIOD", Keyboard, 0x37)                                  \
+    X("SLASH", Keyboard, 0x38)                                   \
+    X("CAPS_LOCK", Keyboard, 0x39)                               \
+    X("F5", Keyboard, 0x3E)                                      \
+    X("F6", Keyboard, 0x3F)                                      \
+    X("F7", Keyboard, 0x40)                                      \
+    X("F8", Keyboard, 0x41)                                      \
+    X("F9", Keyboard, 0x42)                                      \
+    X("F10", Keyboard, 0x43)                                     \
+    X("F11", Keyboard, 0x44)                                     \
+    X("F12", Keyboard, 0x45)                                     \
+    X("PRINT_SCREEN", Keyboard, 0x46)                            \
+    X("SCROLL_LOCK", Keyboard, 0x47)                             \
+    X("PAUSE", Keyboard, 0x48)                                   \
+    X("INSERT", Keyboard, 0x49)                                  \
+    X("HOME", Keyboard, 0x4A)                                    \
+    X("DELETE", Keyboard, 0x4C)                                  \
+    X("END", Keyboard, 0x4D)                                     \
+    X("KEYBOARD_RIGHT", Keyboard, 0x4F)                          \
+    X("KEYBOARD_LEFT", Keyboard, 0x50)                           \
+    X("KEYBOARD_DOWN", Keyboard, 0x51)                           \
+    X("KEYBOARD_UP", Keyboard, 0x52)                             \
+    X("NUM_LOCK", Keyboard, 0x53)                                \
+    X("KEYPAD_SLASH", Keyboard, 0x54)                            \
+    X("KEYPAD_ASTERISK", Keyboard, 0x55)                         \
+    X("KEYPAD_MINUS", Keyboard, 0x56)                            \
+    X("KEYPAD_PLUS", Keyboard, 0x57)                             \
+    X("KEYPAD_1", Keyboard, 0x59)                                \
+    X("KEYPAD_2", Keyboard, 0x5A)                                \
+    X("KEYPAD_3", Keyboard, 0x5B)                                \
+    X("KEYPAD_4", Keyboard, 0x5C)                                \
+    X("KEYPAD_5", Keyboard, 0x5D)                                \
+    X("KEYPAD_6", Keyboard, 0x5E)                                \
+    X("KEYPAD_7", Keyboard, 0x5F)                                \
+    X("KEYPAD_8", Keyboard, 0x60)                                \
+    X("KEYPAD_9", Keyboard, 0x61)                                \
+    X("KEYPAD_0", Keyboard, 0x62)                                \
+    X("KEYPAD_PERIOD", Keyboard, 0x63)                           \
+    X("NON_US_BACKSLASH", Keyboard, 0x64)                        \
+    X("APPLICATION", Keyboard, 0x65)
 
 #define HUBBO_KEY_ENTRY(name, page, usage) {name, HidPage::page, usage},
 #define HUBBO_KEY_NAME(name, page, usage) name,
@@ -94,20 +148,80 @@ constexpr const char *kKeyNames[] = {HUBBO_BLE_HID_KEYS(HUBBO_KEY_NAME)};
 #undef HUBBO_BLE_HID_KEYS
 
 constexpr auto kKeyCount = static_cast<uint16_t>(std::size(kKeys));
+static_assert(kKeyCount <= limits::kMaxEnumOptions, "the key param is one enum");
 
 constexpr ParamSpec kKeyParams[] = {
     ParamSpec::enumeration("key", kKeyNames, kKeyCount),
 };
-
-constexpr CommandSpec kCommands[] = {
-    {"key_down", kKeyParams, 1, CommandEffect::Hold, "key_up"},
-    {"key_up", kKeyParams, 1, CommandEffect::Momentary, nullptr},
-    {"key_tap", kKeyParams, 1, CommandEffect::Momentary, nullptr},
+constexpr ParamSpec kUsageParams[] = {
+    ParamSpec::integer("usage", limits::kHidConsumerUsageMin, limits::kHidConsumerUsageMax),
 };
+constexpr ParamSpec kWaitParams[] = {
+    ParamSpec::integer("timeout_ms", kBleWaitConnectedMinMs, kBleWaitConnectedMaxMs, /*required=*/false,
+                       kBleWaitConnectedDefaultMs)
+        .described(nullptr, "ms"),
+};
+
+constexpr const char *kRemote = "remote";
+constexpr const char *kKeysGroup = "keys";
+constexpr const char *kCustom = "custom";
+constexpr uint32_t kPressTimeoutMs = limits::kMaxHoldMs + 1000;
+constexpr uint32_t kWaitTimeoutMs = kBleWaitConnectedMaxMs + 1000;
 
 ExecResult sent(bool ok) { return ok ? ExecResult::accepted() : ExecResult::failed(ErrorCode::AdapterFailed); }
 
+// The same command list, in every field a catalog uses (not the label).
+bool sameCommands(const std::vector<ProfileCommand> &a, const std::vector<ProfileCommand> &b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++) {
+        if (a[i].name != b[i].name || a[i].page != b[i].page || a[i].usage != b[i].usage ||
+            a[i].holdMs != b[i].holdMs) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
+
+// One device's catalog: its profile's commands by name (the `command`
+// enum), and the same keys, usages and wait as every Bluetooth device.
+struct BleHidAdapter::DeviceCatalog {
+    std::vector<ProfileCommand> commands;
+    std::vector<const char *> names;  // into commands[i].name
+    ParamSpec pressParams[2];
+    ParamSpec heldParams[1];
+    CommandSpec specs[static_cast<size_t>(BleHidCommand::WaitConnected) + 1];
+
+    explicit DeviceCatalog(const std::vector<ProfileCommand> &profileCommands) : commands(profileCommands) {
+        for (const ProfileCommand &c : commands) names.push_back(c.name.c_str());
+        const auto count = static_cast<uint16_t>(names.size());
+        heldParams[0] = ParamSpec::enumeration("command", names.data(), count).described("Remote command");
+        pressParams[0] = heldParams[0];
+        pressParams[1] = ParamSpec::integer("hold_ms", 1, static_cast<int32_t>(limits::kMaxHoldMs), false)
+                             .described(nullptr, "ms");
+        const auto spec = [&](BleHidCommand index, const char *id, const ParamSpec *params, uint8_t n,
+                              CommandEffect effect, const char *releasedBy, const char *group, uint32_t timeout) {
+            specs[static_cast<size_t>(index)] = {id, params, n, effect, releasedBy, group, this, timeout};
+        };
+        using E = CommandEffect;
+        using C = BleHidCommand;
+        spec(C::Press, "press", pressParams, 2, E::Momentary, nullptr, kRemote, kPressTimeoutMs);
+        spec(C::PressDown, "press_down", heldParams, 1, E::Hold, "press_up", kRemote, 0);
+        spec(C::PressUp, "press_up", heldParams, 1, E::Momentary, nullptr, kRemote, 0);
+        spec(C::KeyTap, "key_tap", kKeyParams, 1, E::Momentary, nullptr, kKeysGroup, 0);
+        spec(C::KeyDown, "key_down", kKeyParams, 1, E::Hold, "key_up", kKeysGroup, 0);
+        spec(C::KeyUp, "key_up", kKeyParams, 1, E::Momentary, nullptr, kKeysGroup, 0);
+        spec(C::UsageTap, "usage_tap", kUsageParams, 1, E::Momentary, nullptr, kCustom, 0);
+        spec(C::UsageDown, "usage_down", kUsageParams, 1, E::Hold, "usage_up", kCustom, 0);
+        spec(C::UsageUp, "usage_up", kUsageParams, 1, E::Momentary, nullptr, kCustom, 0);
+        spec(C::WaitConnected, "wait_connected", kWaitParams, 1, E::Wait, nullptr, nullptr, kWaitTimeoutMs);
+    }
+    DeviceCatalog(const DeviceCatalog &) = delete;
+    DeviceCatalog &operator=(const DeviceCatalog &) = delete;
+
+    CommandCatalog catalog() const { return {specs, static_cast<uint16_t>(std::size(specs))}; }
+};
 
 size_t bleHidKeyCount() { return kKeyCount; }
 
@@ -121,53 +235,147 @@ int bleHidKeyIndex(const char *name) {
     return -1;
 }
 
-CommandCatalog bleHidCatalog() {
-    return {kCommands, static_cast<uint16_t>(std::size(kCommands))};
-}
-
 const char *BleHidAdapter::integrationType() const { return kBleHidType; }
 
 BleHidAdapter::BleHidAdapter(const char *integrationId, HidTransport &transport)
     : id_(integrationId), transport_(transport) {}
 
+BleHidAdapter::~BleHidAdapter() = default;
+
 CommandCatalog BleHidAdapter::commandsFor(const DeviceSpec &device) const {
-    (void)device;
-    return bleHidCatalog();
+    if (!device.profile) return {};
+    std::lock_guard<std::mutex> lock(catalogsMutex_);
+    // One catalog per distinct command list, shared by every device (and
+    // every compile, dry run or not) with that list. A device's commands come
+    // from the profile it was added from and never change after, so the set
+    // grows only with the profiles ever added, never per edit. Never freed:
+    // compiled configs, queued work and held keys point into them.
+    for (const auto &c : catalogs_) {
+        if (sameCommands(c->commands, device.profile->commands)) return c->catalog();
+    }
+    catalogs_.push_back(std::make_unique<DeviceCatalog>(device.profile->commands));
+    return catalogs_.back()->catalog();
 }
 
 ExecResult BleHidAdapter::execute(const ExecRequest &request) {
-    if (request.command == nullptr || request.params == nullptr || request.deviceId == nullptr ||
-        request.commandIndex >= std::size(kCommands)) {
+    if (request.command == nullptr || request.command->data == nullptr || request.params == nullptr ||
+        request.deviceId == nullptr) {
         return ExecResult::failed(ErrorCode::Internal);
     }
-    const uint16_t option = request.params[0].asOption();
-    if (option >= kKeyCount) {
-        return ExecResult::failed(ErrorCode::Internal);
-    }
+    const auto &catalog = *static_cast<const DeviceCatalog *>(request.command->data);
+    const auto command = static_cast<BleHidCommand>(request.commandIndex);
     const std::string_view deviceId = request.deviceId;
-    if (!transport_.connected(deviceId)) {
+    const bool connected = transport_.connected(deviceId);
+    if (command == BleHidCommand::WaitConnected) {
+        if (connected) return ExecResult::accepted();
+        const auto timeout = static_cast<uint32_t>(request.params[0].integer);
+        return start(request, true, HidKey{}, request.nowMs + timeout);
+    }
+
+    // The key, and for a timed press how long to hold it.
+    HidKey key{};
+    uint32_t holdMs = 0;
+    switch (command) {
+        case BleHidCommand::Press:
+        case BleHidCommand::PressDown:
+        case BleHidCommand::PressUp: {
+            const uint16_t option = request.params[0].asOption();
+            if (option >= catalog.commands.size()) return ExecResult::failed(ErrorCode::Internal);
+            const ProfileCommand &c = catalog.commands[option];
+            key = HidKey{c.name.c_str(), c.page, c.usage};
+            if (command == BleHidCommand::Press) {
+                const bool stepHold = (request.paramsPresent & 0x2) != 0;
+                holdMs = stepHold ? static_cast<uint32_t>(request.params[1].integer) : c.holdMs.value_or(0);
+            }
+            break;
+        }
+        case BleHidCommand::KeyTap:
+        case BleHidCommand::KeyDown:
+        case BleHidCommand::KeyUp: {
+            const uint16_t option = request.params[0].asOption();
+            if (option >= kKeyCount) return ExecResult::failed(ErrorCode::Internal);
+            key = kKeys[option];
+            break;
+        }
+        case BleHidCommand::UsageTap:
+        case BleHidCommand::UsageDown:
+        case BleHidCommand::UsageUp:
+            key = HidKey{nullptr, HidPage::Consumer, static_cast<uint16_t>(request.params[0].integer)};
+            break;
+        case BleHidCommand::WaitConnected:
+            break;
+    }
+
+    if (!connected) {
         // Whatever its host thought was held went with the link.
         if (Host *gone = find(deviceId)) *gone = Host{};
         return ExecResult::failed(ErrorCode::AdapterUnavailable);
     }
     Host *host = findOrAdd(deviceId);
     if (host == nullptr) return ExecResult::failed(ErrorCode::CapacityExceeded);  // more hosts than bonds
-    const HidKey &key = kKeys[option];
     ExecResult result = ExecResult::failed(ErrorCode::Internal);
-    switch (static_cast<BleHidCommand>(request.commandIndex)) {
+    switch (command) {
+        case BleHidCommand::PressDown:
         case BleHidCommand::KeyDown:
+        case BleHidCommand::UsageDown:
             result = press(*host, key);
             break;
+        case BleHidCommand::PressUp:
         case BleHidCommand::KeyUp:
+        case BleHidCommand::UsageUp:
             result = release(*host, key);
             break;
+        case BleHidCommand::Press:
         case BleHidCommand::KeyTap:
+        case BleHidCommand::UsageTap:
             result = press(*host, key);
-            if (result.status == ExecStatus::Accepted) result = release(*host, key);
+            if (result.status != ExecStatus::Accepted) break;
+            if (holdMs != 0) {
+                // A timed press: poll() releases it (and finishes the action).
+                result = start(request, false, key, request.nowMs + holdMs);
+                if (result.status == ExecStatus::Failed) (void)release(*host, key);
+                break;
+            }
+            result = release(*host, key);
+            break;
+        case BleHidCommand::WaitConnected:
             break;
     }
-    if (!host->holding()) *host = Host{};  // free the slot
+    freeIfIdle(*host);
     return result;
+}
+
+ExecResult BleHidAdapter::start(const ExecRequest &request, bool waitConnected, const HidKey &key, uint32_t atMs) {
+    for (Timer &t : timers_) {
+        if (t.inUse()) continue;
+        if (!t.deviceId.assign(request.deviceId)) return ExecResult::failed(ErrorCode::Internal);
+        t.ticket = request.ticket;
+        t.key = key;
+        t.waitConnected = waitConnected;
+        t.detached = request.answerAtStart && !waitConnected;
+        t.atMs = atMs;
+        return t.detached ? ExecResult::accepted() : ExecResult::pending();
+    }
+    return ExecResult::failed(ErrorCode::CapacityExceeded);
+}
+
+void BleHidAdapter::finishTimer(Timer &t) {
+    if (!t.waitConnected) {
+        if (Host *host = find(t.deviceId.view())) {
+            (void)release(*host, t.key);
+            freeIfIdle(*host);
+        }
+    }
+    t = Timer{};
+}
+
+bool BleHidAdapter::timed(const Host &host, HidPage page, uint16_t usage) const {
+    for (const Timer &t : timers_) {
+        if (t.inUse() && !t.waitConnected && t.key.page == page && t.key.usage == usage && t.deviceId == host.deviceId.view()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 ExecResult BleHidAdapter::press(Host &host, const HidKey &key) {
@@ -214,32 +422,49 @@ bool BleHidAdapter::flushKeyboard(const Host &host) {
     return transport_.sendKeyboard(host.deviceId.view(), report);
 }
 
-void BleHidAdapter::releaseHost(Host &host) {
-    const std::string_view id = host.deviceId.view();
-    if (transport_.connected(id)) {
-        if (host.keyCount() != 0) {
-            const uint8_t empty[8] = {};
-            transport_.sendKeyboard(id, empty);
-        }
-        if (host.consumer != 0) transport_.sendConsumer(id, 0);
-    }
-    host = Host{};
-}
-
 void BleHidAdapter::releaseAll(uint32_t nowMs) {
     (void)nowMs;
     for (Host &host : hosts_) {
-        if (host.holding()) releaseHost(host);
+        // Keys a timed press holds stay down until its time (or cancel()).
+        bool keysReleased = false;
+        for (uint8_t &k : host.keys) {
+            if (k == 0 || timed(host, HidPage::Keyboard, k)) continue;
+            k = 0;
+            keysReleased = true;
+        }
+        const bool consumerReleased = host.consumer != 0 && !timed(host, HidPage::Consumer, host.consumer);
+        if (consumerReleased) host.consumer = 0;
+        if (transport_.connected(host.deviceId.view())) {  // if not, poll() drops the host
+            if (keysReleased) (void)flushKeyboard(host);
+            if (consumerReleased) transport_.sendConsumer(host.deviceId.view(), 0);
+        }
+        freeIfIdle(host);
+    }
+}
+
+void BleHidAdapter::cancel(Ticket ticket, uint32_t nowMs) {
+    (void)nowMs;
+    for (Timer &t : timers_) {
+        if (t.inUse() && !t.detached && t.ticket == ticket) return finishTimer(t);
     }
 }
 
 void BleHidAdapter::poll(uint32_t nowMs, CompletionSink &sink) {
-    (void)nowMs;
-    (void)sink;
     // A host that dropped loses its held state, so a stale key isn't re-sent
     // after it reconnects.
     for (Host &host : hosts_) {
         if (host.holding() && !transport_.connected(host.deviceId.view())) host = Host{};
+    }
+    for (Timer &t : timers_) {
+        if (!t.inUse()) continue;
+        const bool arrived = t.waitConnected && transport_.connected(t.deviceId.view());
+        if (!arrived && !timeReached(nowMs, t.atMs)) continue;
+        ExecResult result = ExecResult::accepted();
+        if (!arrived && t.waitConnected) result.error = ErrorCode::AdapterUnavailable;  // gave up: the sequence goes on
+        const Ticket ticket = t.ticket;
+        const bool detached = t.detached;
+        finishTimer(t);
+        if (!detached) sink.complete(ticket, result, nowMs);
     }
 }
 
@@ -250,6 +475,10 @@ size_t BleHidAdapter::Host::keyCount() const {
 }
 
 bool BleHidAdapter::Host::holding() const { return consumer != 0 || keyCount() != 0; }
+
+void BleHidAdapter::freeIfIdle(Host &host) {
+    if (!host.holding()) host = Host{};
+}
 
 BleHidAdapter::Host *BleHidAdapter::find(std::string_view deviceId) {
     for (Host &host : hosts_) {

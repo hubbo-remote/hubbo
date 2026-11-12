@@ -16,7 +16,12 @@ const char *paramTypeName(ParamType type) {
 }
 
 const char *commandEffectName(CommandEffect effect) {
-    return effect == CommandEffect::Hold ? "hold" : "momentary";
+    switch (effect) {
+        case CommandEffect::Hold: return "hold";
+        case CommandEffect::Wait: return "wait";
+        case CommandEffect::Momentary: break;
+    }
+    return "momentary";
 }
 
 int CommandCatalog::find(std::string_view id) const {

@@ -2,6 +2,20 @@
 # The same sources build into the firmware via core/library.json.
 file(GLOB_RECURSE HUBBO_CORE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
+# The built-in device profiles (profiles/, synced from hubbo-devices),
+# embedded by the same script the firmware's build runs.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(HUBBO_PROFILES_DIR ${PROJECT_SOURCE_DIR}/profiles)
+file(GLOB HUBBO_PROFILE_FILES CONFIGURE_DEPENDS ${HUBBO_PROFILES_DIR}/*.json)
+set(HUBBO_BUILTIN_PROFILES ${CMAKE_CURRENT_BINARY_DIR}/builtin_profiles.cpp)
+add_custom_command(
+    OUTPUT ${HUBBO_BUILTIN_PROFILES}
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_profiles.py
+            ${HUBBO_PROFILES_DIR} ${HUBBO_BUILTIN_PROFILES}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_profiles.py ${HUBBO_PROFILE_FILES}
+    COMMENT "Embedding the built-in profiles")
+list(APPEND HUBBO_CORE_SOURCES ${HUBBO_BUILTIN_PROFILES})
+
 add_library(hubbo_core STATIC ${HUBBO_CORE_SOURCES})
 target_include_directories(hubbo_core PUBLIC include third_party/ArduinoJson)
 target_compile_options(hubbo_core PRIVATE -Wall -Wextra -Wpedantic -Werror)

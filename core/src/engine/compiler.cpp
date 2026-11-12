@@ -41,6 +41,18 @@ std::string jsonPointerToken(const std::string &token) {
 
 namespace {
 
+// Where a command runs, and what its effect allows there: a Hold only in a
+// binding (paired with its release there), a Wait only in a startup or
+// shutdown, so a direct execute runs neither. Ok, HoldNotAllowed or
+// SequenceOnly.
+enum class Place { Sequence, Binding, Direct };
+ErrorCode misplacedEffect(const CommandSpec *command, Place place) {
+    if (command == nullptr) return ErrorCode::Ok;
+    if (command->effect == CommandEffect::Hold && place != Place::Binding) return ErrorCode::HoldNotAllowed;
+    if (command->effect == CommandEffect::Wait && place != Place::Sequence) return ErrorCode::SequenceOnly;
+    return ErrorCode::Ok;
+}
+
 // Looks up `commandId` in `catalog` and resolves `params` against it into
 // `out` (command, commandIndex, params, paramsPresent). On failure, adds
 // the issue under `path` (/command_id or /params/<name>) and returns false.
@@ -306,8 +318,9 @@ private:
                 report_.add(ErrorCode::MisplacedTransition, path + "/command_id");
                 continue;
             }
-            if (!isBinding && compiled.command != nullptr && compiled.command->effect == CommandEffect::Hold) {
-                report_.add(ErrorCode::HoldNotAllowed, path + "/command_id");  // nothing would release it
+            const ErrorCode misplaced = misplacedEffect(compiled.command, isBinding ? Place::Binding : Place::Sequence);
+            if (misplaced != ErrorCode::Ok) {
+                report_.add(misplaced, path + "/command_id");
                 continue;
             }
             actions_.push_back(compiled);
@@ -504,8 +517,9 @@ ErrorCode compileDeviceCommand(const ConfigSpec &config, const AdapterSet &adapt
     if (!resolveCommand(catalog, commandId, params, nullptr, "", &compiled.action, r)) {
         return catalog.find(commandId) < 0 ? ErrorCode::UnknownCommand : ErrorCode::ValidationFailed;
     }
-    if (compiled.action.command->effect == CommandEffect::Hold) {
-        r.add(ErrorCode::HoldNotAllowed, "/command_id");  // nothing would release it
+    const ErrorCode misplaced = misplacedEffect(compiled.action.command, Place::Direct);
+    if (misplaced != ErrorCode::Ok) {
+        r.add(misplaced, "/command_id");
         return ErrorCode::ValidationFailed;
     }
     compiled.action.op = ActionOp::Adapter;

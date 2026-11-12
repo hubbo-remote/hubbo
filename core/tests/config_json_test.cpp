@@ -145,14 +145,23 @@ TEST(ConfigJson, Devices) {
     EXPECT_TRUE(decodeDevice(doc.as<JsonVariantConst>(), DeviceShape::Register, &d, &r));
     EXPECT_EQ(providerRef(d), "media_player.tv");
 
-    ASSERT_EQ(parseJson(R"({"name":"TV","integration_id":"ha_main","kind":"fridge",
+    ASSERT_EQ(parseJson(R"({"name":"TV","integration_id":"ha_main","kind":"Fridge",
                             "provider":{"type":"zigbee"}})",
                         doc, kMaxRequestBytes, kRequestNestingLimit),
               ErrorCode::Ok);
     r = {};
     EXPECT_FALSE(decodeDevice(doc.as<JsonVariantConst>(), DeviceShape::Register, &d, &r));
-    EXPECT_TRUE(r.has(ErrorCode::WrongType, "/kind"));
+    EXPECT_TRUE(r.has(ErrorCode::UnknownKind, "/kind"));  // malformed: can't be a kind
     EXPECT_TRUE(r.has(ErrorCode::WrongType, "/provider/type"));
+    // An update's kind, malformed or too long: unknown_kind as well.
+    for (const char *body : {R"({"kind":"Not A Kind","revision":1})",
+                             R"({"kind":"a_kind_far_longer_than_any_id_may_be","revision":1})"}) {
+        ASSERT_EQ(parseJson(body, doc, kMaxRequestBytes, kRequestNestingLimit), ErrorCode::Ok);
+        DeviceUpdate bad;
+        r = {};
+        EXPECT_FALSE(decodeDeviceUpdate(doc.as<JsonVariantConst>(), &bad, &r)) << body;
+        EXPECT_TRUE(r.has(ErrorCode::UnknownKind, "/kind")) << body;
+    }
 
     ASSERT_EQ(parseJson(R"({"name":"Den","revision":3})", doc, kMaxRequestBytes, kRequestNestingLimit), ErrorCode::Ok);
     DeviceUpdate u;
@@ -179,7 +188,7 @@ TEST(ConfigJson, CapabilitiesAreStoredNotSentByClients) {
     EXPECT_EQ(back.haCapabilities->platform, "demo");
     // API responses leave it out; requests can't carry it.
     JsonDocument response;
-    encodeDevice(d, response.to<JsonObject>(), /*withCapabilities=*/false);
+    encodeDevice(d, response.to<JsonObject>(), DeviceDetail::Full);
     EXPECT_TRUE(response["ha_capabilities"].isUnbound());
 
     ASSERT_EQ(parseJson(R"({"name":"TV","integration_id":"ha_main","ha_capabilities":{},

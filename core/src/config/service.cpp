@@ -1,5 +1,7 @@
 #include "hubbo/config/service.h"
 
+#include "hubbo/config/profile.h"
+
 #include <algorithm>
 
 #include "hubbo/domain/ids.h"
@@ -338,7 +340,7 @@ Outcome ConfigService::commit(ConfigSpec next, Outcome outcome, const std::strin
     if (parseConfig(text, &parsed).code != ErrorCode::Ok) return failure(ErrorCode::Internal);
     ValidationReport issues;
     std::unique_ptr<CompiledConfig> compiled = compileConfig(parsed, adapters_, &issues);
-    if (!compiled) {
+    if (!compiled || !issues.ok()) {
         outcome.code = ErrorCode::ValidationFailed;
         outcome.issues = reroot(issues, issuePrefix, "");
         return outcome;
@@ -486,7 +488,28 @@ Outcome ConfigService::replaceGlobalBindings(std::vector<BindingSpec> bindings, 
     return result;
 }
 
+namespace {
+
+// A created or updated device's own rules, checked before it's built so a
+// refusal is a 422 and a failed read-back stays truly internal. Kinds come
+// from kinds.json, but only the device being edited is checked: a saved
+// device whose kind an update dropped never blocks other edits.
+Outcome checkDevice(const DeviceSpec &device, bool kindChanged) {
+    Outcome outcome = failure(ErrorCode::ValidationFailed);
+    if (kindChanged && !builtinProfiles().hasKind(device.kind)) outcome.issues.add(ErrorCode::UnknownKind, "/kind");
+    const bool bluetooth = device.provider.type == kBleHidType;
+    if (bluetooth && !device.profile) outcome.issues.add(ErrorCode::Required, "/profile");
+    if (!bluetooth && device.profile) outcome.issues.add(ErrorCode::UnknownField, "/profile");
+    if (outcome.issues.ok()) outcome.code = ErrorCode::Ok;
+    return outcome;
+}
+
+}  // namespace
+
 Outcome ConfigService::createDevice(DeviceSpec device) {
+    if (editable() != ErrorCode::Ok) return failure(editable());
+    const Outcome checked = checkDevice(device, true);
+    if (checked.code != ErrorCode::Ok) return checked;
     return add(&ConfigSpec::devices, limits::kMaxDevices, "dev_", "device", "/devices", std::move(device));
 }
 
@@ -496,10 +519,15 @@ Outcome ConfigService::updateDevice(std::string_view id, const DeviceUpdate &upd
     if (index < 0) return failure(ErrorCode::NotFound);
     DeviceSpec device = config_.devices[static_cast<size_t>(index)];
     if (update.revision != device.revision) return conflict(device.revision);
+    if (update.provider && update.provider->type != device.provider.type) {
+        return invalid(ErrorCode::IntegrationMismatch, "/provider/type");  // a device stays on its platform
+    }
     if (update.name) device.name = *update.name;
     if (update.kind) device.kind = *update.kind;
     if (update.provider) device.provider = *update.provider;
     if (update.haCapabilities) device.haCapabilities = *update.haCapabilities;
+    const Outcome checked = checkDevice(device, update.kind.has_value());
+    if (checked.code != ErrorCode::Ok) return checked;
     return replace(&ConfigSpec::devices, static_cast<size_t>(index), "/devices", std::move(device));
 }
 

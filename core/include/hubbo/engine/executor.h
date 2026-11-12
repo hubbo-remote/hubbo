@@ -87,10 +87,26 @@ struct DispatchRecord {
     uint32_t atMs;
 };
 
+// A Pending action's result, when its adapter reports it (a timed press
+// released, a wait for a connection ended). A result that is Accepted with an
+// error (wait_connected timing out) lets the sequence go on; this is where it
+// is logged. A deadline the adapter misses is reported as the sequence's
+// failure instead.
+struct CompletionRecord {
+    const SequenceInfo &sequence;
+    uint8_t index;               // position in the sequence
+    const char *integrationId;
+    const CommandSpec *command;
+    const char *target;          // device id
+    ExecResult result;
+    uint32_t atMs;
+};
+
 class ExecutionObserver {
 public:
     virtual ~ExecutionObserver() = default;
     virtual void onActionDispatched(const DispatchRecord &record) { (void)record; }
+    virtual void onActionCompleted(const CompletionRecord &record) { (void)record; }
     virtual void onSequenceFinished(const SequenceReport &report) { (void)report; }
 };
 
@@ -178,6 +194,14 @@ private:
         uint16_t next = kNil;
     };
 
+    // The action a Pending result belongs to, for onActionCompleted.
+    // (and, to cancel it, its adapter).
+    struct PendingAction {
+        IntegrationAdapter *adapter = nullptr;
+        const CommandSpec *command = nullptr;
+        IdString target;
+    };
+
     struct Sequence {
         SequenceInfo info;
         uint16_t head = kNil;
@@ -191,6 +215,7 @@ private:
         Sequence items[limits::kExecutorSequencesPerLane];
         size_t first = 0;
         size_t count = 0;
+        PendingAction pending;  // the front sequence's, while it is Pending
         Sequence &front() { return items[first]; }
         const Sequence &front() const { return items[first]; }
     };
@@ -201,6 +226,7 @@ private:
         SequenceInfo info;
         uint8_t index = 0;
         uint32_t deadlineMs = 0;
+        PendingAction pending;
     };
 
     // Reserves a sequence slot and `count` nodes, or reports Rejected.
@@ -215,6 +241,9 @@ private:
     void freeNode(uint16_t index);
     Ticket nextTicket();
     InFlight *freeInFlight();
+    void cancelPending(const PendingAction &pending, Ticket ticket, uint32_t nowMs);
+    void reportCompletion(const SequenceInfo &info, uint8_t index, const PendingAction &pending,
+                          const ExecResult &result, uint32_t nowMs);
 
     AdapterSet &adapters_;
     ExecutionObserver *observer_ = nullptr;

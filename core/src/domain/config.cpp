@@ -10,6 +10,13 @@ std::string providerRef(const DeviceSpec &device) {
     return device.provider.entityId;
 }
 
+const ProfileCommand *DeviceProfile::findCommand(std::string_view name) const {
+    for (const ProfileCommand &c : commands) {
+        if (c.name == name) return &c;
+    }
+    return nullptr;
+}
+
 void ensureBuiltinIntegrations(ConfigSpec *config) {
     auto has = [&](const char *id) { return indexOfId(config->integrations, id) >= 0; };
     if (!has(kSystemIntegrationId)) {

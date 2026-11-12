@@ -282,6 +282,7 @@ private:
     struct Relay : ExecutionObserver {
         Engine *engine = nullptr;
         void onActionDispatched(const DispatchRecord &record) override;
+        void onActionCompleted(const CompletionRecord &record) override;
         void onSequenceFinished(const SequenceReport &report) override;
     } relay_;
     EngineStats stats_;

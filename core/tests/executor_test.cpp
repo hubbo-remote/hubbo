@@ -34,8 +34,10 @@ struct TestAdapter : IntegrationAdapter {
         return res;
     }
     void releaseAll(uint32_t) override { releases++; }
+    void cancel(Ticket ticket, uint32_t) override { cancelled.push_back(ticket); }
 
     std::vector<int32_t> log;
+    std::vector<Ticket> cancelled;
     std::vector<Ticket> tickets;
     std::deque<ExecResult> results;
     int releases = 0;
@@ -297,6 +299,37 @@ TEST_F(ExecutorTest, CancelForgetsInFlightResults) {
     const size_t n = reports.finished.size();
     exec.complete(adapter.tickets[0], ExecResult::accepted(), 6);
     EXPECT_EQ(reports.finished.size(), n);
+}
+
+// Pending work the executor gives up on is cancelled at its adapter (a
+// Bluetooth wait or timed press frees its slot and releases its key); work
+// that finished, or failed by its own result, isn't.
+TEST_F(ExecutorTest, AbandonedPendingWorkIsCancelledAtTheAdapter) {
+    build({{act(1), act(2)}, {act(3)}});
+    adapter.results = {ExecResult::pending(), ExecResult::pending()};
+    run(0, Lane::Transition);  // parked on its first action
+    run(1, Lane::Input);       // in flight (its last action)
+    exec.pump(0);
+    ASSERT_EQ(adapter.tickets.size(), 2u);
+    exec.cancelAll(1, 10);
+    EXPECT_EQ(adapter.cancelled, (std::vector<Ticket>{adapter.tickets[0], adapter.tickets[1]}));
+
+    // Past its deadline: cancelled too.
+    adapter.cancelled.clear();
+    adapter.results = {ExecResult::pending()};
+    run(0);
+    exec.pump(100);
+    exec.pump(600);
+    EXPECT_EQ(adapter.cancelled, (std::vector<Ticket>{adapter.tickets[2]}));
+
+    // Finished by the adapter, well or not: nothing to cancel.
+    adapter.cancelled.clear();
+    adapter.results = {ExecResult::pending()};
+    run(0);
+    exec.pump(700);
+    exec.complete(adapter.tickets.back(), ExecResult::failed(ErrorCode::AdapterFailed), 710);
+    exec.cancelAll(2, 720);
+    EXPECT_TRUE(adapter.cancelled.empty());
 }
 
 TEST_F(ExecutorTest, GenerationGuardRefusesStaleWork) {

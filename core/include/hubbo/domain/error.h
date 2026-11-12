@@ -75,6 +75,8 @@ enum class ErrorCode : uint8_t {
     HoldNotAllowed,     // a hold command where nothing would release it (direct execute, startup, ...)
     Corrupt,            // a stored record exists but no copy of it is intact (never "absent")
     EntityNotFound,     // the provider no longer knows the target (HA: entity removed or renamed)
+    SequenceOnly,       // a wait command outside a startup or shutdown (a binding, direct execute)
+    UnknownKind,        // a device kind that isn't in kinds.json
 
     Count
 };

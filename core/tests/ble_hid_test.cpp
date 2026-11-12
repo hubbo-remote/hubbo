@@ -1,8 +1,12 @@
-// BleHidAdapter report state: held keys, rollover, consumer replacement,
-// release-all and disconnects.
+// BleHidAdapter: the catalog from a device's profile, report state (held
+// keys, rollover, consumer replacement, release-all, disconnects), timed
+// presses and waiting for a connection.
 #include <gtest/gtest.h>
 
+#include <set>
+
 #include "fakes.h"
+#include "fixtures.h"
 #include "hubbo/integrations/ble_hid.h"
 
 using namespace hubbo;
@@ -17,16 +21,43 @@ protected:
         hosts.bond("dev_shield", "SHIELD");
     }
 
+    // A key from the All keys table.
     ExecResult run(BleHidCommand command, const char *key, const char *device = "dev_apple_tv") {
         const int option = bleHidKeyIndex(key);
         EXPECT_GE(option, 0) << key;
-        ParamValue params[1] = {ParamValue::ofOption(static_cast<uint16_t>(option))};
-        const CommandCatalog catalog = bleHidCatalog();
+        return exec(command, {ParamValue::ofOption(static_cast<uint16_t>(option))}, 1, device);
+    }
+    // Any command of the Apple TV profile's catalog, with params in spec
+    // order; `present` marks which were given.
+    ExecResult exec(BleHidCommand command, std::vector<ParamValue> params, uint8_t present,
+                    const char *device = "dev_apple_tv", uint32_t nowMs = 0, Ticket ticket = 1,
+                    bool direct = false) {
+        const CommandCatalog catalog = adapter.commandsFor(sim::bleDevice(device, "Device", "streamer"));
         const auto index = static_cast<uint16_t>(command);
-        return adapter.execute({&catalog.items[index], index, params, 1, device, "host", 1, 0});
+        const CommandSpec &spec = catalog.items[index];
+        while (params.size() < spec.paramCount) params.push_back(spec.params[params.size()].defaultValue);
+        return adapter.execute({&spec, index, params.data(), present, device, "host", ticket, nowMs, direct});
+    }
+    // press {command} by the profile's command name.
+    ExecResult press(BleHidCommand command, const char *name, std::optional<int32_t> holdMs = std::nullopt,
+                     uint32_t nowMs = 0, Ticket ticket = 1, bool direct = false) {
+        const CommandCatalog catalog = adapter.commandsFor(sim::bleDevice("dev_apple_tv", "Apple TV", "streamer"));
+        const ParamSpec &names = catalog.items[0].params[0];
+        int option = -1;
+        for (uint16_t i = 0; i < names.optionCount; i++) {
+            if (std::string(names.options[i]) == name) option = i;
+        }
+        EXPECT_GE(option, 0) << name;
+        std::vector<ParamValue> params = {ParamValue::ofOption(static_cast<uint16_t>(option))};
+        if (holdMs) params.push_back(ParamValue::ofInt(*holdMs));
+        return exec(command, params, holdMs ? 0x3 : 0x1, "dev_apple_tv", nowMs, ticket, direct);
     }
     std::vector<std::string> &reports() { return hosts.reports(); }
 
+    struct Sink : CompletionSink {
+        std::vector<std::pair<Ticket, ExecResult>> done;
+        void complete(Ticket t, ExecResult r, uint32_t) override { done.push_back({t, r}); }
+    } sink;
     sim::SimulatedBleHosts hosts;
     BleHidAdapter adapter{"ble", hosts};
 };
@@ -56,11 +87,172 @@ TEST(BleHidCatalog, KnownKeysUseVerifiedUsages) {
     }
     EXPECT_EQ(bleHidKeyIndex("NOPE"), -1);
     EXPECT_EQ(bleHidKeyIndex(nullptr), -1);
-    const CommandCatalog c = bleHidCatalog();
-    EXPECT_EQ(c.find("key_down"), 0);
-    EXPECT_EQ(c.find("key_up"), 1);
-    EXPECT_EQ(c.find("key_tap"), 2);
-    EXPECT_EQ(c.items[0].params[0].optionCount, bleHidKeyCount());
+}
+
+// All keys: every keyboard usage the report map carries, once.
+TEST(BleHidCatalog, EveryKeyboardUsageHasOneKey) {
+    std::set<uint16_t> keyboard;
+    for (size_t i = 0; i < bleHidKeyCount(); i++) {
+        const HidKey &key = bleHidKey(i);
+        EXPECT_EQ(bleHidKeyIndex(key.name), static_cast<int>(i)) << key.name;  // unique names
+        if (key.page != HidPage::Keyboard) continue;
+        EXPECT_TRUE(keyboard.insert(key.usage).second) << key.name;
+    }
+    EXPECT_EQ(keyboard.size(), limits::kHidKeyboardUsageMax - limits::kHidKeyboardUsageMin + 1u);
+    EXPECT_EQ(*keyboard.begin(), limits::kHidKeyboardUsageMin);
+    EXPECT_EQ(*keyboard.rbegin(), limits::kHidKeyboardUsageMax);
+}
+
+TEST_F(BleHidTest, TheCatalogFollowsTheProfile) {
+    const DeviceSpec appleTv = sim::bleDevice("dev_apple_tv", "Apple TV", "streamer");
+    const CommandCatalog c = adapter.commandsFor(appleTv);
+    ASSERT_EQ(c.count, 10);
+    const char *ids[] = {"press",     "press_down", "press_up", "key_tap",  "key_down",
+                         "key_up",    "usage_tap",  "usage_down", "usage_up", "wait_connected"};
+    const char *groups[] = {"remote", "remote", "remote", "keys", "keys", "keys", "custom", "custom", "custom", nullptr};
+    for (uint16_t i = 0; i < c.count; i++) {
+        EXPECT_STREQ(c.items[i].id, ids[i]);
+        if (groups[i] == nullptr) {
+            EXPECT_EQ(c.items[i].group, nullptr);
+        } else {
+            EXPECT_STREQ(c.items[i].group, groups[i]);
+        }
+    }
+    EXPECT_EQ(c.items[1].effect, CommandEffect::Hold);
+    EXPECT_STREQ(c.items[1].releasedBy, "press_up");
+    EXPECT_EQ(c.items[7].effect, CommandEffect::Hold);
+    EXPECT_EQ(c.items[9].effect, CommandEffect::Wait);
+    // The `command` options are the profile's names, in order.
+    const ParamSpec &command = c.items[0].params[0];
+    ASSERT_EQ(command.optionCount, appleTv.profile->commands.size());
+    EXPECT_STREQ(command.options[0], appleTv.profile->commands[0].name.c_str());
+    EXPECT_EQ(c.items[3].params[0].optionCount, bleHidKeyCount());
+    // Unchanged commands: the same storage; changed ones: new storage, and
+    // the old catalog stays valid.
+    EXPECT_EQ(adapter.commandsFor(appleTv).items, c.items);
+    DeviceSpec changed = appleTv;
+    changed.profile->commands.pop_back();
+    const CommandCatalog other = adapter.commandsFor(changed);
+    EXPECT_NE(other.items, c.items);
+    EXPECT_EQ(other.items[0].params[0].optionCount, command.optionCount - 1);
+    EXPECT_STREQ(c.items[0].params[0].options[0], appleTv.profile->commands[0].name.c_str());
+    // No profile: no commands.
+    DeviceSpec bare = appleTv;
+    bare.profile.reset();
+    EXPECT_EQ(adapter.commandsFor(bare).count, 0);
+}
+
+TEST_F(BleHidTest, PressSendsTheProfilesUsage) {
+    EXPECT_EQ(press(BleHidCommand::Press, "Back").status, ExecStatus::Accepted);  // Apple TV: 0x223
+    EXPECT_EQ(reports(), (std::vector<std::string>{"consumer 0x0223", "consumer 0x0000"}));
+    press(BleHidCommand::PressDown, "Select");
+    EXPECT_EQ(adapter.heldConsumer("dev_apple_tv"), 0x41);
+    press(BleHidCommand::PressUp, "Select");
+    EXPECT_EQ(adapter.heldConsumer("dev_apple_tv"), 0);
+}
+
+TEST_F(BleHidTest, ACommandsHoldIsATimedPress) {
+    // ControlCenter: Home held 1 s. Pending until poll() releases it.
+    ASSERT_EQ(press(BleHidCommand::Press, "ControlCenter", std::nullopt, 100, 7).status, ExecStatus::Pending);
+    EXPECT_EQ(adapter.heldConsumer("dev_apple_tv"), 0x40);
+    adapter.poll(1099, sink);
+    EXPECT_TRUE(sink.done.empty());
+    adapter.poll(1100, sink);
+    ASSERT_EQ(sink.done.size(), 1u);
+    EXPECT_EQ(sink.done[0].first, 7u);
+    EXPECT_EQ(sink.done[0].second.status, ExecStatus::Accepted);
+    EXPECT_EQ(adapter.heldConsumer("dev_apple_tv"), 0);
+    EXPECT_EQ(reports(), (std::vector<std::string>{"consumer 0x0040", "consumer 0x0000"}));
+}
+
+TEST_F(BleHidTest, AStepsHoldOverridesTheCommands) {
+    ASSERT_EQ(press(BleHidCommand::Press, "Home", 2000, 0, 3).status, ExecStatus::Pending);
+    adapter.poll(1999, sink);
+    EXPECT_TRUE(sink.done.empty());
+    adapter.poll(2000, sink);
+    ASSERT_EQ(sink.done.size(), 1u);
+}
+
+// releaseAll() is for keys a binding holds; a timed press in a sequence (the
+// Apple TV's power-off holds Home 2 s) keeps its key until its time.
+TEST_F(BleHidTest, ReleaseAllLeavesATimedPressAlone) {
+    ASSERT_EQ(press(BleHidCommand::Press, "Home", 2000, 0, 3).status, ExecStatus::Pending);
+    run(BleHidCommand::KeyDown, "KEY_A");  // a binding's held key
+    adapter.releaseAll(500);
+    EXPECT_EQ(adapter.heldConsumer("dev_apple_tv"), 0x40);
+    EXPECT_EQ(adapter.heldKeyboardKeys("dev_apple_tv"), 0u);
+    adapter.poll(1999, sink);
+    EXPECT_TRUE(sink.done.empty());
+    adapter.poll(2000, sink);
+    ASSERT_EQ(sink.done.size(), 1u);
+    EXPECT_EQ(adapter.heldConsumer("dev_apple_tv"), 0);
+}
+
+// Cancelling the sequence ends its timed press and its wait at once, with no
+// completion, and frees their slots.
+TEST_F(BleHidTest, CancelEndsATimedPressOrAWait) {
+    ASSERT_EQ(press(BleHidCommand::Press, "Home", 5000, 0, 4).status, ExecStatus::Pending);
+    adapter.cancel(4, 100);
+    EXPECT_EQ(adapter.heldConsumer("dev_apple_tv"), 0);
+    adapter.cancel(99, 100);  // unknown: ignored
+    hosts.setConnected("dev_apple_tv", false);
+    for (Ticket t = 10; t < 18; t++) {
+        ASSERT_EQ(exec(BleHidCommand::WaitConnected, {}, 0, "dev_apple_tv", 0, t).status, ExecStatus::Pending) << t;
+    }
+    EXPECT_EQ(exec(BleHidCommand::WaitConnected, {}, 0, "dev_apple_tv", 0, 18).error, ErrorCode::CapacityExceeded);
+    adapter.cancel(10, 100);
+    EXPECT_EQ(exec(BleHidCommand::WaitConnected, {}, 0, "dev_apple_tv", 0, 18).status, ExecStatus::Pending);
+    adapter.poll(60000, sink);
+    for (const auto &[ticket, result] : sink.done) EXPECT_NE(ticket, 10u);
+    EXPECT_EQ(sink.done.size(), 8u);
+}
+
+// A direct execute answers at key-down; the release happens by itself.
+TEST_F(BleHidTest, ADirectTimedPressAnswersAtKeyDown) {
+    ASSERT_EQ(press(BleHidCommand::Press, "Home", 2000, 0, 5, /*direct=*/true).status, ExecStatus::Accepted);
+    EXPECT_EQ(adapter.heldConsumer("dev_apple_tv"), 0x40);
+    adapter.poll(2000, sink);
+    EXPECT_EQ(adapter.heldConsumer("dev_apple_tv"), 0);
+    EXPECT_TRUE(sink.done.empty());
+    EXPECT_EQ(reports(), (std::vector<std::string>{"consumer 0x0040", "consumer 0x0000"}));
+}
+
+TEST_F(BleHidTest, ACustomUsage) {
+    EXPECT_EQ(exec(BleHidCommand::UsageTap, {ParamValue::ofInt(0x0224)}, 1).status, ExecStatus::Accepted);
+    EXPECT_EQ(reports(), (std::vector<std::string>{"consumer 0x0224", "consumer 0x0000"}));
+    exec(BleHidCommand::UsageDown, {ParamValue::ofInt(0x0030)}, 1);
+    EXPECT_EQ(adapter.heldConsumer("dev_apple_tv"), 0x30);
+    exec(BleHidCommand::UsageUp, {ParamValue::ofInt(0x0030)}, 1);
+    EXPECT_EQ(adapter.heldConsumer("dev_apple_tv"), 0);
+}
+
+TEST_F(BleHidTest, WaitConnected) {
+    // Connected: done at once.
+    EXPECT_EQ(exec(BleHidCommand::WaitConnected, {}, 0).status, ExecStatus::Accepted);
+    // Not yet: Pending until the host connects.
+    hosts.setConnected("dev_apple_tv", false);
+    ASSERT_EQ(exec(BleHidCommand::WaitConnected, {}, 0, "dev_apple_tv", 0, 5).status, ExecStatus::Pending);
+    adapter.poll(1000, sink);
+    EXPECT_TRUE(sink.done.empty());
+    hosts.setConnected("dev_apple_tv", true);
+    adapter.poll(1200, sink);
+    ASSERT_EQ(sink.done.size(), 1u);
+    EXPECT_EQ(sink.done[0].second.status, ExecStatus::Accepted);
+    EXPECT_EQ(sink.done[0].second.error, ErrorCode::Ok);
+    // Never connects: accepted after the timeout (default 15 s), with why.
+    hosts.setConnected("dev_apple_tv", false);
+    ASSERT_EQ(exec(BleHidCommand::WaitConnected, {}, 0, "dev_apple_tv", 2000, 6).status, ExecStatus::Pending);
+    adapter.poll(16999, sink);
+    EXPECT_EQ(sink.done.size(), 1u);
+    adapter.poll(17000, sink);
+    ASSERT_EQ(sink.done.size(), 2u);
+    EXPECT_EQ(sink.done[1].second.status, ExecStatus::Accepted);
+    EXPECT_EQ(sink.done[1].second.error, ErrorCode::AdapterUnavailable);
+    // A shorter timeout of its own.
+    ASSERT_EQ(exec(BleHidCommand::WaitConnected, {ParamValue::ofInt(1000)}, 1, "dev_apple_tv", 20000, 8).status,
+              ExecStatus::Pending);
+    adapter.poll(21000, sink);
+    EXPECT_EQ(sink.done.size(), 3u);
 }
 
 TEST_F(BleHidTest, ConsumerKeyDownUp) {

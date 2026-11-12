@@ -58,12 +58,14 @@ TEST(HoldPairing, HoldsOnlyInDownBindings) {
 }
 
 TEST(HoldPairing, CatalogDeclaresEffects) {
-    const CommandCatalog c = integrations::bleHidCatalog();
+    FakeAdapters fakes;
+    const CommandCatalog c = fakes.ble.commandsFor(bleDevice("dev_apple_tv", "Apple TV", "streamer"));
     EXPECT_EQ(c.items[c.find("key_down")].effect, CommandEffect::Hold);
     EXPECT_STREQ(c.items[c.find("key_down")].releasedBy, "key_up");
     EXPECT_EQ(c.items[c.find("key_up")].effect, CommandEffect::Momentary);
     EXPECT_EQ(c.items[c.find("key_tap")].effect, CommandEffect::Momentary);
     EXPECT_STREQ(commandEffectName(CommandEffect::Hold), "hold");
+    EXPECT_STREQ(commandEffectName(CommandEffect::Wait), "wait");
 }
 
 TEST(HoldPairing, DirectExecutionIsMomentaryOnly) {
@@ -74,6 +76,25 @@ TEST(HoldPairing, DirectExecutionIsMomentaryOnly) {
     EXPECT_EQ(hold.code, ErrorCode::ValidationFailed);
     EXPECT_TRUE(hold.issues.has(ErrorCode::HoldNotAllowed, "/command_id"));
     EXPECT_TRUE(hub.configService().compileCommand("dev_apple_tv", "key_tap", {param("key", "SELECT")}, &cmd).ok());
+    // A wait is for startups and shutdowns.
+    const config::Outcome wait = hub.configService().compileCommand("dev_apple_tv", "wait_connected", {}, &cmd);
+    EXPECT_EQ(wait.code, ErrorCode::ValidationFailed);
+    EXPECT_TRUE(wait.issues.has(ErrorCode::SequenceOnly, "/command_id"));
+}
+
+// wait_connected runs in a startup or shutdown, never in a binding.
+TEST(WaitConnected, SequencesOnly) {
+    ConfigSpec c = fixtureConfig();
+    FakeAdapters fakes;
+    const ActionSpec wait = action("ble", "dev_apple_tv", "wait_connected", {});
+    c.activities[0].startup.insert(c.activities[0].startup.begin(), wait);
+    c.activities[0].shutdown.push_back(wait);
+    ValidationReport ok;
+    EXPECT_NE(compileConfig(c, fakes.set, &ok), nullptr) << (ok.ok() ? "" : ok.issues()[0].path);
+    c.activities[0].bindings.push_back(bind("red:tap", {wait}));
+    ValidationReport report;
+    EXPECT_EQ(compileConfig(c, fakes.set, &report), nullptr);
+    EXPECT_TRUE(report.has(ErrorCode::SequenceOnly, "/activities/0/bindings/red:tap/0/command_id"));
 }
 
 // ---- the integration resolver ------------------------------------------------

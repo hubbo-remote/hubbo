@@ -35,6 +35,25 @@ static_assert(kMaxParams <= 8, "the params-present mask is one byte");
 // system.wait
 constexpr uint32_t kMaxWaitMs = 60000;
 
+// Device profiles (~/src/hubbo-devices/docs/spec.md), as a device carries them.
+constexpr size_t kMaxProfileCommands = 128;     // the spec allows 512; the hub keeps Bluetooth small
+constexpr size_t kMaxProfileCommandNameLength = 32;
+constexpr size_t kMaxProfileLabelLength = 32;
+constexpr size_t kMaxProfileSteps = 16;         // per power/input step list
+constexpr size_t kMaxProfileInputs = 64;
+constexpr size_t kMaxProfileIdLength = 56;      // "<source>:<slug>", slug 1-48
+constexpr uint32_t kMaxHoldMs = 10000;          // a command's or step's hold_ms
+constexpr uint32_t kMaxStepDelayMs = 60000;     // delay_ms, on_delay_ms, input_delay_ms
+constexpr uint32_t kMaxKeyDelayMs = 5000;       // timing.key_delay_ms
+
+// What Hubbo's HID report map can carry. A usage outside these needs a new
+// descriptor (every host pairs again). The firmware static_asserts its
+// report map against them.
+constexpr uint16_t kHidKeyboardUsageMin = 0x04;
+constexpr uint16_t kHidKeyboardUsageMax = 0x65;
+constexpr uint16_t kHidConsumerUsageMin = 0x0001;
+constexpr uint16_t kHidConsumerUsageMax = 0x03FF;
+
 // Executor (see engine/executor.h).
 constexpr size_t kExecutorActionPool = 64;   // queued actions, all lanes
 constexpr size_t kExecutorSequencesPerLane = 16;
