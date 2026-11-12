@@ -27,16 +27,16 @@ test('build Watch Apple TV by hand, then use it from the remote', async ({ page 
   await connectHa(page)
   const id = await openNewActivity(page, 'E2E Watch Apple TV')
 
-  // Apple TV navigation: key down on press, the matching key up on release (added for us).
+  // Apple TV navigation, held: key down on press, the matching key up on release (added for us).
   for (const [button, key] of [['up', 'ARROW_UP'], ['down', 'ARROW_DOWN'], ['left', 'ARROW_LEFT'], ['right', 'ARROW_RIGHT'], ['select', 'SELECT'], ['back', 'MENU']] as const) {
-    await bind(page, button, 'down', APPLE_TV, 'Key down', key)
-    await expect(page.locator(`[data-key="${button}"]`)).toHaveAttribute('aria-label', /bound: down, up/)
+    await bind(page, button, 'hold', APPLE_TV, 'Keyboard key…', key)
+    await expect(page.locator(`[data-key="${button}"]`)).toHaveAttribute('aria-label', /bound: hold$/)
   }
   // Volume on the Denon (through Home Assistant), the lights on Light 1 / Light 2.
-  await bind(page, 'volume_up', 'down', DENON, 'Volume up')
-  await bind(page, 'volume_down', 'down', DENON, 'Volume down')
-  await bind(page, 'light_1', 'tap', LIGHTS, 'Turn on')
-  await bind(page, 'light_2', 'tap', LIGHTS, 'Turn off')
+  await bind(page, 'volume_up', 'hold', DENON, 'Volume up')
+  await bind(page, 'volume_down', 'hold', DENON, 'Volume down')
+  await bind(page, 'light_1', 'press', LIGHTS, 'Turn on')
+  await bind(page, 'light_2', 'press', LIGHTS, 'Turn off')
 
   // Startup: added out of order, then the Denon moved to the top with the keyboard.
   await page.getByRole('tab', { name: /Startup/ }).click()

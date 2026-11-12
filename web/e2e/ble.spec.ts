@@ -41,9 +41,9 @@ test('add a Bluetooth device, pair it, pair again and cancel, then forget', asyn
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
   await expect(state(page)).toHaveText('Connected')
 
-  await page.getByRole('button', { name: 'Forget', exact: true }).click()
+  await page.getByRole('button', { name: 'Unpair', exact: true }).click()
   await expect(dialog).toContainText('from its Bluetooth settings')
-  await dialog.getByRole('button', { name: 'Forget' }).click()
+  await dialog.getByRole('button', { name: 'Unpair' }).click()
   await expect(state(page)).toHaveText('Not paired')
   expect(await pairStatus(page, 'dev_apple_tv')).toBe('connected')
 })
@@ -61,12 +61,14 @@ test('a window that ends with nothing paired says so', async ({ page }) => {
 test('the device list shows each device’s status; a host that drops is Not connected', async ({ page }) => {
   const id = await addBle(page, 'Shield')
   await open(page, '/devices')
-  const row = (name: string) => page.getByRole('link', { name: new RegExp(`^${name}`) })
-  await expect(row('Family Room Apple TV')).toContainText('Connected')
-  await expect(row('Shield')).toContainText('Not paired')
+  const row = (deviceId: string) => page.locator(`a[href="#/devices/${deviceId}"]`)
+  await expect(row('dev_apple_tv').getByRole('img', { name: 'Bluetooth, connected' })).toBeVisible()
+  await expect(row(id).getByRole('img', { name: 'Bluetooth, not paired' })).toBeVisible()
+  await expect(row(id)).toContainText('Not paired') // something to do: pair it
+  await expect(row('dev_apple_tv').locator('p')).toHaveCount(1) // connected: just the name
   await setHostLink(page, 'dev_apple_tv', false)
   await page.reload()
-  await expect(row('Family Room Apple TV')).toContainText('Not connected')
+  await expect(row('dev_apple_tv').getByRole('img', { name: 'Bluetooth, not connected' })).toBeVisible()
   // A key for a host that isn't connected goes nowhere; Shield is untouched.
   const r = await api(page).post('/devices/dev_apple_tv/commands/key_tap/execute', { params: { key: 'PLAY_PAUSE' } })
   expect(await r.json()).toMatchObject({ status: 'failed', message: 'adapter_unavailable' })
