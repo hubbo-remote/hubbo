@@ -1,5 +1,8 @@
 #include "hubbo/ha/capabilities.h"
 
+#include <algorithm>
+#include <iterator>
+
 #include "hubbo/domain/limits.h"
 #include "hubbo/ha/snapshot.h"
 
@@ -17,6 +20,7 @@ struct CommandDef {
 namespace {
 
 namespace mp = media_player_feature;
+namespace fan = fan_feature;
 
 constexpr CommandDef kCommands[] = {
     {"media_player.turn_on", "Power on", "media_player", "turn_on"},
@@ -40,6 +44,14 @@ constexpr CommandDef kCommands[] = {
     {"light.brightness_step", "Change brightness", "light", "turn_on"},
     {"switch.turn_on", "Turn on", "switch", "turn_on"},
     {"switch.turn_off", "Turn off", "switch", "turn_off"},
+    {"fan.turn_on", "Turn on", "fan", "turn_on"},
+    {"fan.turn_off", "Turn off", "fan", "turn_off"},
+    {"fan.set_percentage", "Set speed", "fan", "set_percentage"},
+    {"fan.increase_speed", "Speed up", "fan", "increase_speed"},
+    {"fan.decrease_speed", "Slow down", "fan", "decrease_speed"},
+    {"fan.oscillate", "Oscillate", "fan", "oscillate"},
+    {"fan.set_direction", "Set direction", "fan", "set_direction"},
+    {"fan.set_preset_mode", "Preset mode", "fan", "set_preset_mode"},
 };
 
 const CommandDef *findDef(std::string_view id) {
@@ -66,7 +78,8 @@ struct ParamDraft {
     ParamSpec spec{};
     std::string field;                 // HA service data key
     std::vector<std::string> options;  // Enum only
-    std::string name, label, unit;     // owned (snapshot services); else spec's static strings
+    std::string name, label, unit, description;  // owned (snapshot services); else spec's static strings
+    std::string defaultOption;  // Enum with a shown default: resolved to its index after filtering
 };
 
 struct CommandDraft {
@@ -181,8 +194,48 @@ void light(const EntityInfo &e, Drafts &out) {
     }
 }
 
+// A fan percentage (HA coerces it to an int in 0..100); `step` from fanSpeedStep().
+ParamDraft percentParam(const char *name, bool required, int32_t step = 0) {
+    return {ParamSpec::integer(name, 0, 100, required).described(nullptr, "%", static_cast<float>(step)), name, {}};
+}
+
+void fanEntity(const EntityInfo &e, Drafts &out) {
+    const uint32_t f = e.supportedFeatures;
+    const bool speed = has(f, fan::kSetSpeed);
+    const int32_t step = fanSpeedStep(e.percentageStep);
+    // Gating mirrors fan/services.py; set_preset_mode is registered for
+    // SET_SPEED or PRESET_MODE, turn_on's preset_mode field for PRESET_MODE.
+    if (has(f, fan::kTurnOn)) {
+        CommandDraft &on = out.add("fan.turn_on");
+        if (speed) on.params.push_back(percentParam("percentage", false, step));
+        if (has(f, fan::kPresetMode) && !e.presetModes.empty()) {
+            ParamDraft preset = enumParam("preset_mode", e.presetModes);
+            preset.spec.required = false;
+            on.params.push_back(std::move(preset));
+        }
+    }
+    if (has(f, fan::kTurnOff)) out.add("fan.turn_off");
+    if (speed) {
+        out.add("fan.set_percentage", {percentParam("percentage", true, step)});
+        out.add("fan.increase_speed", {percentParam("percentage_step", false)});
+        out.add("fan.decrease_speed", {percentParam("percentage_step", false)});
+    }
+    if (has(f, fan::kOscillate)) {
+        out.add("fan.oscillate", {{ParamSpec::boolean("oscillating"), "oscillating", {}}});
+    }
+    if (has(f, fan::kDirection)) {
+        out.add("fan.set_direction", {enumParam("direction", {"forward", "reverse"})});
+    }
+    if ((speed || has(f, fan::kPresetMode)) && !e.presetModes.empty()) {
+        out.add("fan.set_preset_mode", {enumParam("preset_mode", e.presetModes)});
+    }
+}
 
 }  // namespace
+
+int32_t fanSpeedStep(double percentageStep) {
+    return percentageStep >= 1.0 && percentageStep <= 100.0 ? static_cast<int32_t>(percentageStep) : 0;
+}
 
 bool isHaName(std::string_view name) {
     if (name.empty() || name.size() > 32 || name[0] < 'a' || name[0] > 'z') return false;
@@ -225,11 +278,24 @@ bool isValidEntityId(std::string_view id) {
 
 EntityDomain entityDomain(std::string_view id) {
     if (!isValidEntityId(id)) return EntityDomain::Unsupported;
-    const std::string_view domain = id.substr(0, id.find('.'));
-    if (domain == "media_player") return EntityDomain::MediaPlayer;
-    if (domain == "light") return EntityDomain::Light;
-    if (domain == "switch") return EntityDomain::Switch;
+    return domainNamed(id.substr(0, id.find('.')));
+}
+
+EntityDomain domainNamed(std::string_view domain) {
+    for (size_t i = 0; i < std::size(kEntityDomains); i++) {
+        if (domain == kEntityDomains[i]) return static_cast<EntityDomain>(i);
+    }
     return EntityDomain::Unsupported;
+}
+
+std::string entityDomainList() {
+    constexpr size_t count = std::size(kEntityDomains);
+    std::string out;
+    for (size_t i = 0; i < count; i++) {
+        if (i > 0) out += i + 1 == count ? " or " : ", ";
+        out += kEntityDomains[i];
+    }
+    return out;
 }
 
 namespace {
@@ -242,6 +308,7 @@ void builtins(const EntityInfo &entity, Drafts &drafts) {
             drafts.add("switch.turn_on");
             drafts.add("switch.turn_off");
             break;
+        case EntityDomain::Fan: fanEntity(entity, drafts); break;
         case EntityDomain::Unsupported: break;
     }
 }
@@ -266,30 +333,36 @@ bool serviceDraft(const SnapshotService &service, const CapabilitySnapshot &snap
         ParamDraft param;
         param.field = field.name;
         switch (field.type) {
-            case SnapshotParamType::Bool: param.spec = ParamSpec::boolean(nullptr, field.required); break;
+            case SnapshotParamType::Bool:
+                param.spec = ParamSpec::boolean(nullptr, field.required, field.defaultNumber != 0);
+                break;
             case SnapshotParamType::Int:
                 if (field.minimum < -2147483648.0 || field.maximum > 2147483647.0 || field.minimum > field.maximum) {
                     return false;
                 }
-                param.spec = ParamSpec::integer(nullptr, static_cast<int32_t>(field.minimum),
-                                                static_cast<int32_t>(field.maximum), field.required,
-                                                static_cast<int32_t>(field.minimum));
+                param.spec = ParamSpec::integer(
+                    nullptr, static_cast<int32_t>(field.minimum), static_cast<int32_t>(field.maximum), field.required,
+                    static_cast<int32_t>(field.hasDefault ? field.defaultNumber : field.minimum));
                 break;
             case SnapshotParamType::Number:
                 if (!(field.minimum <= field.maximum)) return false;
                 param.spec = ParamSpec::number(nullptr, static_cast<float>(field.minimum),
                                                static_cast<float>(field.maximum), field.required,
-                                               static_cast<float>(field.minimum));
+                                               static_cast<float>(field.hasDefault ? field.defaultNumber
+                                                                                   : field.minimum));
                 break;
             case SnapshotParamType::Enum:
                 param.spec = ParamSpec::enumeration(nullptr, nullptr, 0, field.required);
                 param.options = field.options;
+                param.defaultOption = field.defaultOption;
                 break;
         }
+        if (field.hasDefault) param.spec = param.spec.shownDefault();
         param.spec.step = static_cast<float>(field.step);
         param.name = field.name;
         param.label = field.label;
         param.unit = field.unit;
+        param.description = field.description;
         draft.params.push_back(std::move(param));
     }
     *out = std::move(draft);
@@ -313,6 +386,8 @@ EntityCapabilities EntityCapabilities::fromSnapshot(std::string_view entityId, c
     entity.supportedColorModes = snapshot.supportedColorModes;
     entity.minColorTempKelvin = snapshot.minColorTempKelvin;
     entity.maxColorTempKelvin = snapshot.maxColorTempKelvin;
+    entity.presetModes = snapshot.presetModes;
+    entity.percentageStep = snapshot.percentageStep;
     Drafts drafts;
     builtins(entity, drafts);
     size_t services = 0;
@@ -342,8 +417,17 @@ EntityCapabilities EntityCapabilities::build(std::string_view entityId, Drafts d
     for (auto &draft : drafts.items) {
         bool usable = draft.params.size() <= limits::kMaxParams;
         for (auto &param : draft.params) {
-            if (param.spec.type == ParamType::Enum) {
-                usable = filterEnumOptions(param.options, &caps.droppedOptions_) && usable;
+            if (param.spec.type != ParamType::Enum) continue;
+            usable = filterEnumOptions(param.options, &caps.droppedOptions_) && usable;
+            if (param.spec.hasDefault) {
+                // By value: filtering may have moved or dropped the default
+                // (the spec's fallback stays option 0).
+                const auto at = std::find(param.options.begin(), param.options.end(), param.defaultOption);
+                if (at != param.options.end()) {
+                    param.spec.defaultValue = ParamValue::ofOption(static_cast<uint16_t>(at - param.options.begin()));
+                } else {
+                    param.spec.hasDefault = false;
+                }
             }
         }
         if (!usable) continue;
@@ -360,6 +444,7 @@ EntityCapabilities EntityCapabilities::build(std::string_view entityId, Drafts d
             if (!param.name.empty()) param.spec.name = caps.keep(std::move(param.name));
             if (!param.label.empty()) param.spec.label = caps.keep(std::move(param.label));
             if (!param.unit.empty()) param.spec.unit = caps.keep(std::move(param.unit));
+            if (!param.description.empty()) param.spec.description = caps.keep(std::move(param.description));
             caps.params_.push_back(param.spec);
             caps.fields_.push_back(caps.keep(std::move(param.field)));
         }

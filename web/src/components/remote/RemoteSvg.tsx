@@ -1,6 +1,5 @@
 import { memo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import type { EventKind } from '@/api/types'
-import { EVENT_ORDER } from '@/lib/activity'
 import { buttonLabel } from '@/lib/buttons'
 import { cn } from '@/lib/utils'
 import { BODY, BODY_SEAM, DPAD_BASE, KEYS, ROCKER_LABELS, VIEW_H, VIEW_W, WORDMARK_Y, neighbour, type Glyph, type IconName, type Shape } from './layout'
@@ -17,6 +16,9 @@ export interface RemoteSvgProps {
 }
 
 const EV_COLOR: Record<EventKind, string> = { down: 'var(--ev-down)', up: 'var(--ev-up)', tap: 'var(--ev-tap)', hold: 'var(--ev-hold)' }
+/** How each mark reads: a press (tap), a hold (down, and its release on up), a long press (hold). */
+const EV_LABEL: Record<EventKind, string> = { tap: 'Press', down: 'Hold', up: 'Release', hold: 'Long press' }
+const LEGEND: readonly EventKind[] = ['tap', 'down', 'hold']
 
 const ICONS: Record<IconName, ReactNode> = {
   up: <path d="M-5 2.5 0-2.5 5 2.5" />,
@@ -190,7 +192,7 @@ export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, 
             data-key={k.id}
             role={interactive ? 'button' : 'img'}
             tabIndex={interactive ? (k.id === tabStop ? 0 : -1) : undefined}
-            aria-label={`${name}${ev.length ? `, bound: ${ev.join(', ')}` : interactive ? ', unbound' : ''}${isErr ? ', has errors' : ''}`}
+            aria-label={`${name}${ev.length ? `, bound: ${ev.map((e) => EV_LABEL[e].toLowerCase()).join(', ')}` : interactive ? ', unbound' : ''}${isErr ? ', has errors' : ''}`}
             aria-pressed={interactive ? isSel : undefined}
             onClick={() => onSelect?.(k.id)}
             onFocus={() => setFocusId(k.id)}
@@ -246,10 +248,10 @@ export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, 
 export function EventLegend({ className }: { className?: string }) {
   return (
     <ul className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground', className)} aria-label="Binding legend">
-      {EVENT_ORDER.map((e) => (
+      {LEGEND.map((e) => (
         <li key={e} className="inline-flex items-center gap-1.5">
           <span className="size-2.5 rounded-full" style={{ background: EV_COLOR[e] }} aria-hidden />
-          {e}
+          {EV_LABEL[e]}
         </li>
       ))}
     </ul>

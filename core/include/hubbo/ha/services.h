@@ -29,7 +29,16 @@
 //     (isForbiddenParamName), and a service or platform name that isn't
 //     ^[a-z][a-z0-9_]{0,31}$. Only P's own services are considered, never the
 //     entity domain's (those are the curated allowlist), and never when P is
-//     the entity's domain.
+//     the entity's domain;
+//   - it isn't response-only (`response: {optional: false}`: it only returns
+//     data, which Hubbo can't use).
+//
+// Labels come from HA's English translations (frontend/get_translations,
+// category services: "component.P.services.S.name" and
+// "....fields.F.name"), else the description's own `name`, else the id made
+// readable ("set_sleep_timer" -> "Set sleep timer"). A field's `default` is
+// kept when it fits its type and range; a number's unit_of_measurement is
+// shortened ("seconds" -> "s") and dropped if still too long.
 //
 // Runs on the integration/config task at discovery and registration, never
 // on the RF path.
@@ -42,12 +51,27 @@ public:
     // `json`: get_services' result (domain -> service -> description).
     // `platforms`: the integrations whose services to keep (others are
     // skipped while parsing, to bound memory). Malformed JSON gives an empty
-    // directory.
-    static ServiceDirectory parse(std::string_view json, const std::vector<std::string> &platforms);
+    // directory. `translations`: frontend/get_translations' `resources` (a
+    // flat object of "component.<platform>.services...." -> string), or ""
+    // (malformed is the same as none).
+    static ServiceDirectory parse(std::string_view json, const std::vector<std::string> &platforms,
+                                  std::string_view translations = {});
 
+    // Why a service that matches the entity isn't offered.
+    enum class SkipReason : uint8_t {
+        UnsupportedField,  // a field Hubbo can't type, a filter it can't read, or a bad name
+        TooManyFields,     // more than limits::kMaxParams
+        ResponseOnly,      // it only returns data
+        TooManyServices,   // past kMaxSnapshotServices
+    };
+    static const char *skipReasonName(SkipReason reason);  // "unsupported_field", ...
+    struct Skipped {
+        std::string service;  // "<platform>.<service>"
+        SkipReason reason;
+    };
     struct Offer {
         std::vector<SnapshotService> services;  // offered, sorted by id
-        std::vector<std::string> skipped;       // "<platform>.<service>" matching the entity but not offered
+        std::vector<Skipped> skipped;           // matching the entity but not offered
         size_t droppedOptions = 0;              // select options left out (too long or too many)
     };
     // The services offered to `entityId` (whose domain is its prefix) from
@@ -73,6 +97,7 @@ public:
         std::string service;
         std::string label;
         bool nameValid = false;
+        bool responseOnly = false;
         std::vector<EntityFilter> targets;  // empty: no entity target
         std::vector<Field> fields;
         size_t droppedOptions = 0;

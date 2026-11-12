@@ -91,6 +91,29 @@ std::vector<std::string> ids(const std::vector<SnapshotService> &services) {
     return out;
 }
 
+// "<service> <reason>" for each skipped service.
+std::vector<std::string> skips(const ServiceDirectory::Offer &offer) {
+    std::vector<std::string> out;
+    for (const auto &s : offer.skipped) out.push_back(s.service + " " + ServiceDirectory::skipReasonName(s.reason));
+    return out;
+}
+
+// encode -> text -> decode: the decode must pass and give back the same snapshot.
+::testing::AssertionResult roundTrip(const CapabilitySnapshot &snapshot, CapabilitySnapshot *decoded) {
+    JsonDocument doc;
+    encodeSnapshot(snapshot, doc.to<JsonObject>());
+    std::string text;
+    serializeJson(doc, text);
+    JsonDocument back;
+    if (deserializeJson(back, text)) return ::testing::AssertionFailure() << "unparseable: " << text;
+    ValidationReport report;
+    if (!decodeSnapshot(back.as<JsonVariantConst>(), decoded, &report, "/ha")) {
+        return ::testing::AssertionFailure() << (report.issues().empty() ? "" : report.issues()[0].path) << " in " << text;
+    }
+    if (!(*decoded == snapshot)) return ::testing::AssertionFailure() << "changed: " << text;
+    return ::testing::AssertionSuccess();
+}
+
 }  // namespace
 
 TEST(HaServices, OffersTargetedTypedServicesOfTheEntitysIntegration) {
@@ -102,8 +125,9 @@ TEST(HaServices, OffersTargetedTypedServicesOfTheEntitysIntegration) {
     // Matching the entity but not offerable: a time selector, five fields,
     // a target-like field name, a multiple select. `snapshot` has no entity
     // target at all, so it's neither offered nor counted.
-    EXPECT_EQ(offer.skipped,
-              (std::vector<std::string>{"sonos.multi", "sonos.sneaky", "sonos.too_many", "sonos.update_alarm"}));
+    EXPECT_EQ(skips(offer), (std::vector<std::string>{"sonos.multi unsupported_field", "sonos.sneaky unsupported_field",
+                                                      "sonos.too_many too_many_fields",
+                                                      "sonos.update_alarm unsupported_field"}));
 
     const SnapshotService &timer = offer.services[2];
     ASSERT_EQ(timer.fields.size(), 1u);
@@ -111,7 +135,7 @@ TEST(HaServices, OffersTargetedTypedServicesOfTheEntitysIntegration) {
     EXPECT_EQ(timer.fields[0].name, "sleep_time");
     EXPECT_EQ(timer.fields[0].type, SnapshotParamType::Int);
     EXPECT_EQ(timer.fields[0].maximum, 86399);
-    EXPECT_EQ(timer.fields[0].unit, "seconds");
+    EXPECT_EQ(timer.fields[0].unit, "s") << "HA's \"seconds\", shortened";
 
     // A collapsed section is flattened; number -> int or number; select -> enum.
     const SnapshotService &eq = offer.services[1];
@@ -142,11 +166,148 @@ TEST(HaServices, TargetFilterDecidesWhoGetsAService) {
     // only service takes free text, which Hubbo can't type yet.
     const auto denon = dir.offerFor("media_player.denon", "denonavr", 0);
     EXPECT_TRUE(denon.services.empty());
-    EXPECT_EQ(denon.skipped, (std::vector<std::string>{"denonavr.get_command"}));
+    EXPECT_EQ(skips(denon), (std::vector<std::string>{"denonavr.get_command unsupported_field"}));
     // The domain's own services are the curated allowlist, never offered here.
     EXPECT_TRUE(dir.offerFor("media_player.kitchen", "media_player", 0xFFFFFFFF).services.empty());
     // No platform (not in the registry): nothing.
     EXPECT_TRUE(dir.offerFor("media_player.kitchen", "", 0).services.empty());
+}
+
+// Real HA (2026.11, sim/fixtures/real-ha-sample.json): get_services carries
+// no names; they come from frontend/get_translations.
+const char *kLifx = R"({
+  "lifx": {
+    "effect_flame": {
+      "fields": {"speed": {"default": 3, "selector": {"number": {"min": 1.0, "max": 25.0, "step": 1.0,
+                                                                "unit_of_measurement": "seconds", "mode": "slider"}}},
+                 "power_on": {"default": true, "selector": {"boolean": {}}}},
+      "target": {"entity": [{"integration": "lifx", "domain": ["light"]}]}
+    },
+    "set_hev_cycle_state": {
+      "fields": {"power": {"required": true, "selector": {"boolean": {}}},
+                 "duration": {"default": "big", "selector": {"number": {"min": 0, "max": 86400,
+                                                                      "unit_of_measurement": "a unit far too long"}}},
+                 "mode": {"default": "slow", "selector": {"select": {"options": ["fast", "slow"]}}},
+                 "level": {"default": 2.5, "selector": {"number": {"min": 0, "max": 1, "step": "any"}}}},
+      "target": {"entity": [{"integration": "lifx", "domain": ["light"]}]}
+    },
+    "get_queue": {"fields": {}, "target": {"entity": [{"integration": "lifx", "domain": ["light"]}]},
+                  "response": {"optional": false}},
+    "get_maybe": {"fields": {}, "target": {"entity": [{"integration": "lifx", "domain": ["light"]}]},
+                  "response": {"optional": true}}
+  }
+})";
+const char *kLifxNames = R"({
+  "component.lifx.services.effect_flame.name": "Flame effect",
+  "component.lifx.services.effect_flame.description": "Sets a flame effect.",
+  "component.lifx.services.effect_flame.fields.power_on.name": "Power on",
+  "component.lifx.services.effect_flame.fields.power_on.description": "Powered off lights will be turned on\n  before starting the effect.",
+  "component.lifx.services.set_hev_cycle_state.fields.duration.description": "How long the HEV cycle runs, in seconds. A cycle of zero means the bulb's default duration is used, which is two hours unless it was changed in the LIFX app, so set it here to override that default.",
+  "component.lifx.services.effect_flame.fields.speed.name": "Speed",
+  "component.sonos.services.effect_flame.name": "Not this one"
+})";
+
+TEST(HaServices, NamesDefaultsUnitsAndResponseOnly) {
+    const ServiceDirectory dir = ServiceDirectory::parse(kLifx, {"lifx"}, kLifxNames);
+    const auto offer = dir.offerFor("light.desk", "lifx", 0);
+    EXPECT_EQ(ids(offer.services),
+              (std::vector<std::string>{"lifx.effect_flame", "lifx.get_maybe", "lifx.set_hev_cycle_state"}));
+    EXPECT_EQ(skips(offer), (std::vector<std::string>{"lifx.get_queue response_only"}));
+
+    const SnapshotService &flame = offer.services[0];
+    EXPECT_EQ(flame.label, "Flame effect");
+    ASSERT_EQ(flame.fields.size(), 2u);
+    EXPECT_EQ(flame.fields[0].name, "speed");
+    EXPECT_EQ(flame.fields[0].label, "Speed");
+    EXPECT_EQ(flame.fields[0].unit, "s");
+    EXPECT_TRUE(flame.fields[0].hasDefault);
+    EXPECT_EQ(flame.fields[0].defaultNumber, 3);
+    EXPECT_EQ(flame.fields[1].label, "Power on");
+    EXPECT_EQ(flame.fields[1].description, "Powered off lights will be turned on before starting the effect.");
+    EXPECT_EQ(flame.fields[0].description, "") << "absent when HA has none";
+    EXPECT_TRUE(flame.fields[1].hasDefault);
+    EXPECT_EQ(flame.fields[1].defaultNumber, 1);
+
+    // No translation: the id made readable. A default that doesn't fit is left out.
+    const SnapshotService &hev = offer.services[2];
+    EXPECT_EQ(hev.label, "Set hev cycle state");
+    ASSERT_EQ(hev.fields.size(), 4u);
+    EXPECT_EQ(hev.fields[0].label, "Power");
+    EXPECT_FALSE(hev.fields[0].hasDefault);
+    EXPECT_FALSE(hev.fields[1].hasDefault) << "a string default on a number";
+    EXPECT_EQ(hev.fields[1].unit, "") << "too long to show; never cut";
+    const std::string &cut = hev.fields[1].description;
+    EXPECT_LE(cut.size(), kMaxSnapshotDescriptionLength);
+    EXPECT_EQ(cut.substr(cut.size() - 3), "\xE2\x80\xA6") << cut;
+    EXPECT_NE(cut[cut.size() - 4], ' ') << "cut at a word, then the ellipsis";
+    EXPECT_EQ(cut.rfind("How long the HEV cycle runs", 0), 0u);
+    EXPECT_TRUE(hev.fields[2].hasDefault);
+    EXPECT_EQ(hev.fields[2].defaultOption, "slow");
+    EXPECT_FALSE(hev.fields[3].hasDefault) << "out of range";
+
+    // Without translations (or with junk) the readable fallback still applies.
+    for (const char *names : {"", "{not json", "[1]"}) {
+        const auto bare = ServiceDirectory::parse(kLifx, {"lifx"}, names).offerFor("light.desk", "lifx", 0);
+        ASSERT_FALSE(bare.services.empty());
+        EXPECT_EQ(bare.services[0].label, "Effect flame") << names;
+        EXPECT_EQ(bare.services[0].fields[1].label, "Power on") << names;
+    }
+}
+
+TEST(HaSnapshot, DefaultsRoundTripAndReachTheCommand) {
+    const ServiceDirectory dir = ServiceDirectory::parse(kLifx, {"lifx"}, kLifxNames);
+    EntityInfo entity;
+    entity.entityId = "light.desk";
+    const CapabilitySnapshot snapshot = makeSnapshot(entity, "lifx", dir);
+    CapabilitySnapshot decoded;
+    ASSERT_TRUE(roundTrip(snapshot, &decoded));
+
+    const EntityCapabilities caps = EntityCapabilities::fromSnapshot(entity.entityId, decoded);
+    const CommandCatalog catalog = caps.catalog();
+    const int flame = catalog.find("lifx.effect_flame");
+    ASSERT_GE(flame, 0);
+    const CommandSpec &spec = catalog.items[flame];
+    EXPECT_STREQ(spec.params[0].label, "Speed");
+    EXPECT_STREQ(spec.params[0].unit, "s");
+    EXPECT_EQ(spec.params[0].description, nullptr);
+    EXPECT_STREQ(spec.params[1].description, "Powered off lights will be turned on before starting the effect.");
+    EXPECT_TRUE(spec.params[0].hasDefault);
+    EXPECT_EQ(spec.params[0].defaultValue.integer, 3);
+    EXPECT_TRUE(spec.params[1].hasDefault);
+    EXPECT_TRUE(spec.params[1].defaultValue.asBool());
+    const int hev = catalog.find("lifx.set_hev_cycle_state");
+    ASSERT_GE(hev, 0);
+    EXPECT_FALSE(catalog.items[hev].params[0].hasDefault);
+    EXPECT_TRUE(catalog.items[hev].params[2].hasDefault);
+    EXPECT_EQ(catalog.items[hev].params[2].defaultValue.asOption(), 1);
+}
+
+// An enum default is found by value after the options are filtered, so a
+// dropped option ahead of it doesn't shift it (and a dropped default is gone).
+TEST(HaSnapshot, EnumDefaultSurvivesOptionFiltering) {
+    const std::string tooLong(limits::kMaxParamStringLength + 1, 'x');
+    SnapshotParam mode;
+    mode.name = "mode";
+    mode.type = SnapshotParamType::Enum;
+    mode.options = {tooLong, "a", "b"};
+    mode.hasDefault = true;
+    mode.defaultOption = "b";
+    SnapshotParam gone = mode;
+    gone.name = "gone";
+    gone.defaultOption = tooLong;
+    CapabilitySnapshot s;
+    s.platform = "sonos";
+    s.services = {{"sonos.x", "", {mode, gone}}};
+    const EntityCapabilities caps = EntityCapabilities::fromSnapshot("media_player.kitchen", s);
+    const CommandCatalog catalog = caps.catalog();
+    const int x = catalog.find("sonos.x");
+    ASSERT_GE(x, 0);
+    const ParamSpec &kept = catalog.items[x].params[0];
+    ASSERT_EQ(kept.optionCount, 2);
+    EXPECT_TRUE(kept.hasDefault);
+    EXPECT_STREQ(kept.options[kept.defaultValue.asOption()], "b");
+    EXPECT_FALSE(catalog.items[x].params[1].hasDefault) << "its default was filtered out";
+    EXPECT_EQ(catalog.items[x].params[1].defaultValue.asOption(), 0);
 }
 
 TEST(HaServices, OnlyRequestedPlatformsAreParsedAndJunkIsHarmless) {
@@ -170,16 +331,8 @@ TEST(HaSnapshot, RoundTripsAndBuildsCommands) {
     const CapabilitySnapshot snapshot = makeSnapshot(entity, "sonos", dir);
     ASSERT_EQ(snapshot.services.size(), 4u);
 
-    JsonDocument doc;
-    encodeSnapshot(snapshot, doc.to<JsonObject>());
-    std::string text;
-    serializeJson(doc, text);
-    JsonDocument back;
-    ASSERT_FALSE(deserializeJson(back, text));
     CapabilitySnapshot decoded;
-    ValidationReport report;
-    ASSERT_TRUE(decodeSnapshot(back.as<JsonVariantConst>(), &decoded, &report, "/ha")) << text;
-    EXPECT_TRUE(decoded == snapshot) << text;
+    ASSERT_TRUE(roundTrip(snapshot, &decoded));
 
     // The built-in allowlist plus the services, from the snapshot alone.
     const EntityCapabilities caps = EntityCapabilities::fromSnapshot(entity.entityId, decoded);
@@ -221,7 +374,7 @@ TEST(HaSnapshot, RoundTripsAndBuildsCommands) {
 }
 
 TEST(HaSnapshot, DecodeIsStrict) {
-    auto decode = [](const char *json, std::string *firstIssue) {
+    auto decode = [](const std::string &json, std::string *firstIssue) {
         JsonDocument doc;
         EXPECT_FALSE(deserializeJson(doc, json)) << json;
         CapabilitySnapshot s;
@@ -246,13 +399,53 @@ TEST(HaSnapshot, DecodeIsStrict) {
     EXPECT_FALSE(decode(R"({"platform":"sonos","supported_features":0,"services":[{"service":"sonos.x",
         "fields":[{"name":"entity_id","type":"enum","required":true,"options":["media_player.all"]}]}]})", &issue));
     EXPECT_EQ(issue, "invalid_id /d/services/0/fields/0/name");
+    // One field of a sonos.x service, then the whole snapshot.
+    const auto field = [](const std::string &fragment) {
+        return R"({"platform":"sonos","supported_features":0,"services":[{"service":"sonos.x","fields":[{)" +
+               fragment + "}]}]}";
+    };
     // Inverted ranges, too many fields, unknown types.
-    EXPECT_FALSE(decode(R"({"platform":"sonos","supported_features":0,"services":[{"service":"sonos.x",
-        "fields":[{"name":"a","type":"int","required":true,"minimum":5,"maximum":1}]}]})", &issue));
+    EXPECT_FALSE(decode(field(R"("name":"a","type":"int","required":true,"minimum":5,"maximum":1)"), &issue));
     EXPECT_EQ(issue, "param_out_of_range /d/services/0/fields/0/maximum");
-    EXPECT_FALSE(decode(R"({"platform":"sonos","supported_features":0,"services":[{"service":"sonos.x",
-        "fields":[{"name":"a","type":"string","required":true}]}]})", &issue));
+    EXPECT_FALSE(decode(field(R"("name":"a","type":"string","required":true)"), &issue));
     EXPECT_EQ(issue, "wrong_type /d/services/0/fields/0/type");
+    // A default must fit its param.
+    const std::string intField = R"("name":"a","type":"int","required":false,"minimum":1,"maximum":5,)";
+    EXPECT_TRUE(decode(field(intField + R"("default":3)"), &issue));
+    for (const char *bad : {R"("default":9)", R"("default":2.5)", R"("default":"3")", R"("default":true)"}) {
+        EXPECT_FALSE(decode(field(intField + bad), &issue)) << bad;
+        EXPECT_EQ(issue, "param_out_of_range /d/services/0/fields/0/default") << bad;
+    }
+    EXPECT_FALSE(decode(field(R"("name":"a","type":"enum","required":false,"options":["x"],"default":"y")"), &issue));
+    EXPECT_EQ(issue, "param_out_of_range /d/services/0/fields/0/default");
+    // A fan's attributes.
+    EXPECT_TRUE(decode(R"({"platform":"","supported_features":57,"services":[],"preset_modes":["sleep"],
+        "percentage_step":33})", &issue));
+    for (const char *bad : {"0", "-1", "101"}) {
+        EXPECT_FALSE(decode(std::string(R"({"platform":"","supported_features":1,"services":[],"percentage_step":)") +
+                                bad + "}",
+                            &issue))
+            << bad;
+        EXPECT_EQ(issue, "param_out_of_range /d/percentage_step") << bad;
+    }
+}
+
+TEST(HaSnapshot, FanRoundTripsAndBuildsItsCommands) {
+    EntityInfo fan;
+    fan.entityId = "fan.box_fan";
+    fan.supportedFeatures = 61;
+    fan.presetModes = {"auto"};
+    fan.percentageStep = 14.285714285714286;
+    const CapabilitySnapshot snapshot = makeSnapshot(fan, "", ServiceDirectory::parse("{}", {}));
+    CapabilitySnapshot decoded;
+    ASSERT_TRUE(roundTrip(snapshot, &decoded));
+    EXPECT_EQ(decoded.presetModes, std::vector<std::string>{"auto"});
+    EXPECT_EQ(decoded.percentageStep, 14) << "stored rounded down";
+    const EntityCapabilities caps = EntityCapabilities::fromSnapshot(fan.entityId, decoded);
+    const CommandCatalog catalog = caps.catalog();
+    ASSERT_GE(catalog.find("fan.set_preset_mode"), 0);
+    EXPECT_EQ(catalog.items[catalog.find("fan.set_percentage")].params[0].step, 14.0f);
+    EXPECT_GE(catalog.find("fan.set_direction"), 0);
 }
 
 TEST(HaSnapshot, CommandsAreRecheckedWhenBuilt) {
@@ -292,21 +485,14 @@ TEST(HaSnapshot, OneBuiltFromMessyAttributesAlwaysDecodes) {
     entity.supportedColorModes = {std::string(100, 'c'), "xy"};
     entity.minColorTempKelvin = -5;
     entity.maxColorTempKelvin = 200000;
+    entity.presetModes = {"auto", "auto", ""};
+    entity.percentageStep = 250.0;
 
     for (const std::string &platform : std::vector<std::string>{"sonos", "Bad-Platform", std::string(40, 'p'), ""}) {
         ServiceDirectory::Offer offered;
         const CapabilitySnapshot snapshot = makeSnapshot(entity, platform, dir, &offered);
-        JsonDocument doc;
-        encodeSnapshot(snapshot, doc.to<JsonObject>());
-        std::string text;
-        serializeJson(doc, text);
-        JsonDocument back;
-        ASSERT_FALSE(deserializeJson(back, text));
         CapabilitySnapshot decoded;
-        ValidationReport report;
-        ASSERT_TRUE(decodeSnapshot(back.as<JsonVariantConst>(), &decoded, &report, "/ha"))
-            << platform << ": " << (report.issues().empty() ? "" : report.issues()[0].path);
-        EXPECT_TRUE(decoded == snapshot) << platform;
+        ASSERT_TRUE(roundTrip(snapshot, &decoded)) << platform;
         EXPECT_GT(offered.droppedOptions, 0u);
         EXPECT_LE(snapshot.sourceList.size(), limits::kMaxEnumOptions);
         if (platform != "sonos") {

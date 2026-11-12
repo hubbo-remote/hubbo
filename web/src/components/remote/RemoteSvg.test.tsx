@@ -9,7 +9,7 @@ describe('RemoteSvg', () => {
     const keys = screen.getAllByRole('button')
     expect(keys).toHaveLength(48)
     expect(keys.filter((k) => k.getAttribute('tabindex') === '0')).toHaveLength(1)
-    expect(screen.getByRole('button', { name: /^Info, bound: tap, hold/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Info, bound: press, long press/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^OK, unbound/ }).getAttribute('aria-pressed')).toBe('true')
   })
 

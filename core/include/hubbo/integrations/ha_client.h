@@ -93,6 +93,13 @@ struct HaEntityDetails {
     // hundred KB (large allocations go to PSRAM on the board); free it once
     // normalized.
     std::string services;
+    // frontend/get_translations' `resources` for `platform` (category
+    // services, English), as HA sent it: a flat JSON object,
+    // "component.<platform>.services.<service>.name" (and .description,
+    // .fields.<field>.name, ...) -> string. "" when there's no platform or
+    // the fetch failed: the services' own names are the fallback. Free it
+    // once normalized, like `services`.
+    std::string translations;
 };
 
 enum class DiscoveryStatus : uint8_t { Idle, Running, Done, Failed };
@@ -167,7 +174,9 @@ public:
     ErrorCode discover(DiscoverDone done);
 
     // Integration task: one entity's registry entry (none: YAML-only), its
-    // state and get_services. Ok (started; `done` is called exactly once:
+    // state and get_services, then, when it has a platform, that
+    // integration's service translations (optional: any failure there still
+    // ends Ok, without them). Ok (started; `done` is called exactly once:
     // Ok, or AdapterUnavailable / AdapterTimeout / AdapterFailed /
     // EntityNotFound (HA has no state for it) / MalformedJson), Busy (one is
     // running; a discovery may run alongside), AdapterUnavailable (not
@@ -211,6 +220,7 @@ private:
         DetailsRegistry,  // details: config/entity_registry/get
         DetailsState,     // details: subscribe_entities (one), a subscription
         DetailsServices,  // details: get_services
+        DetailsTranslations,  // details: frontend/get_translations (optional: a failure degrades)
     };
     static bool isSubscription(Kind k) { return k == Kind::States || k == Kind::DetailsState; }
     static bool isDiscovery(Kind k) { return k == Kind::Registry || k == Kind::States; }
@@ -356,6 +366,9 @@ private:
 
     // Entity details in progress (integration task).
     bool detailing_ = false;
+    // Registry, state and services are in: only the optional translations
+    // step is left, and any way it ends (but a cancel) finishes Ok.
+    bool detailsGathered_ = false;
     DetailsDone detailsDone_;
     HaEntityDetails details_;
 

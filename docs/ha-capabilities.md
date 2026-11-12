@@ -14,6 +14,9 @@ Every feature bit and service rule below was checked against Home Assistant's ow
 - `homeassistant/components/light/const.py`: `LightEntityFeature`, `ColorMode`,
   `COLOR_MODES_BRIGHTNESS`, `VALID_BRIGHTNESS` (0–255), `VALID_BRIGHTNESS_STEP` (−255–255),
   `VALID_TRANSITION`, `DEFAULT_MIN_KELVIN`/`DEFAULT_MAX_KELVIN` (2000/6535).
+- `homeassistant/components/fan/const.py`, `services.py`, `services.yaml` and `entity.py`
+  (checked 2026-11-12): `FanEntityFeature`, each service's required features and schema
+  (percentages are `Coerce(int)` 0–100), `percentage_step` = 100 / speeds.
 - `homeassistant/helpers/service.py`: how `required_features` is applied.
 - The fixture masks come from the integrations themselves: `denonavr/media_player.py`
   (`SUPPORT_DENON`), `sonos/media_player.py`, `webostv/media_player.py` (`SUPPORT_WEBOSTV`,
@@ -52,6 +55,8 @@ means both. Hubbo uses the same test, so it never offers a command HA would reje
 
 `LightEntityFeature`: EFFECT 4, FLASH 8, TRANSITION 32. Brightness and colour support come from
 the `supported_color_modes` attribute, not from feature bits.
+
+`FanEntityFeature`: SET_SPEED 1, OSCILLATE 2, DIRECTION 4, PRESET_MODE 8, TURN_OFF 16, TURN_ON 32.
 
 ## The allowlist
 
@@ -99,9 +104,29 @@ params restores the light's last state rather than forcing a brightness.
 
 `switch.turn_on`, `switch.turn_off`. No params, no feature bits.
 
+### fan
+
+Percentages are int 0–100 with unit `%`. A speed slider's `step` is the entity's
+`percentage_step` (100 / speeds) rounded down. HA rounds a percentage up to the next speed, so
+every multiple still lands on the speed it means (3 speeds: 33, 66, 99). It's stored in the
+snapshot as an integer, 1–100. Below 1 there's no step.
+
+| Command | HA service | Needs | Params |
+|---|---|---|---|
+| `fan.turn_on` | `turn_on` | TURN_ON | optional `percentage` (if SET_SPEED), optional `preset_mode` enum of `preset_modes` (if PRESET_MODE and the list isn't empty) |
+| `fan.turn_off` | `turn_off` | TURN_OFF | |
+| `fan.set_percentage` | `set_percentage` | SET_SPEED | `percentage` |
+| `fan.increase_speed` | `increase_speed` | SET_SPEED | optional `percentage_step` int 0–100 % (HA uses the fan's own step when omitted) |
+| `fan.decrease_speed` | `decrease_speed` | SET_SPEED | optional `percentage_step` |
+| `fan.oscillate` | `oscillate` | OSCILLATE | `oscillating` bool |
+| `fan.set_direction` | `set_direction` | DIRECTION | `direction` enum forward/reverse |
+| `fan.set_preset_mode` | `set_preset_mode` | SET_SPEED or PRESET_MODE, and a non-empty `preset_modes` | `preset_mode` enum |
+
+Typical masks: 49 for speed only, 57 with presets, and 61 with presets and direction.
+
 ## Deliberately not offered
 
-- **toggle** (media_player, light, switch): the architecture prefers explicit on/off. Toggles
+- **toggle** (media_player, light, switch, fan): the architecture prefers explicit on/off. Toggles
   break as soon as the hub and the device disagree.
 - **play_media, browse/search, announce, enqueue**: take free-form content IDs or URLs.
 - **join / unjoin** (GROUPING): take other entity IDs.
@@ -110,15 +135,15 @@ params restores the light's last state rather than forcing a brightness.
   `effect_list`; colours need array params, which the param model doesn't have.
 - **Integration-specific services** (`webostv.button`, `sonos.*`, `denonavr.*`): not hand-curated.
   They're resolved from HA's own service metadata; see below.
-- **Domains** remote, scene, script, cover, fan, button, input_*, group, automation and
+- **Domains** remote, scene, script, cover, button, input_*, group, automation and
   everything else: no commands until added here with tests.
   - `remote.send_command` takes arbitrary command strings. If it's ever added it needs a
     per-device allowlist of command names chosen by the admin.
   - `scene.turn_on` and `script.turn_on` are entity-specific, but a scene or script can do
     anything in the house, so registering one should be a deliberate admin choice. They're the
     likely next additions.
-  - `cover` (OPEN 1, CLOSE 2, SET_POSITION 4, STOP 8, ...) and `fan` (SET_SPEED 1, ...) are
-    straightforward when needed. Verify their bits against HA's source at that time.
+  - `cover` (OPEN 1, CLOSE 2, SET_POSITION 4, STOP 8, ...) is straightforward when needed.
+    Verify its bits against HA's source at that time.
 
 ## Safety rules (enforced in code)
 
@@ -196,13 +221,36 @@ that as a fallback, but HA's metadata covers the need.
     `target`, `time`, multiple selects, ...) → the whole service is skipped, as it is for more
     than 4 fields, a field name that isn't a valid param name or names a target (`entity_id`,
     `area_id`, `device_id`, ...), or a service/platform name outside `^[a-z][a-z0-9_]{0,31}$`.
-    Skipped services are listed in the entity details' `skipped_services`.
+- A response-only service (`response: {optional: false}`, e.g. `sonos.get_queue`) is skipped:
+  it only returns data, which Hubbo can't use.
+- Skipped services are listed in the entity details' `skipped_services` as `{service, reason}`:
+  `unsupported_field`, `too_many_fields`, `response_only` or `too_many_services`.
+- **Names come from HA's translations** (2026-11-12). Real HA's `get_services` carries no
+  `name`; the English strings come from WS `frontend/get_translations` `{language: en,
+  category: services, integration: [P]}`, fetched with the details: `component.P.services.S.name`
+  is the command's label and `....fields.F.name` the param's (48 chars at most). Without one, the
+  description's own `name`, else the id made readable (`set_sleep_timer` → "Set sleep timer",
+  `sleep_time` → "Sleep time"); a client never sees a raw id as a label. Command descriptions
+  aren't kept.
+- **Field descriptions** become the param's `description`, shown as a tooltip:
+  `....fields.F.description` from the translations, else the field's own `description`.
+  Whitespace is collapsed, and anything over 160 bytes is cut at a word boundary and ends in "…".
+  Absent when HA has none. Stored in the snapshot and re-checked on load (about 4.6 KB across the
+  29-device showcase).
+- **Defaults and units.** A field's `default` is kept when it fits its type and range (a bool for
+  `bool`, a number in range for `int`/`number`, integral for `int`, one of the options for
+  `enum`), and shown as the param's `default`. A number's `unit_of_measurement` becomes its
+  `unit`, shortened where there's a common form (`seconds` → `s`, `milliseconds` → `ms`,
+  `minutes` → `min`, `hours` → `h`) and dropped if still over 16 chars. All of it is stored in
+  the snapshot and re-checked when it's loaded (a default that doesn't fit is refused).
 - Same safety rules as the allowlist: the target is always the registered entity, only declared
   fields can be sent, and nothing can override `entity_id`, `area_id` or `device_id`.
 - **Discovery is lean** (Phase 4, decided 2026-11-09): `POST`/`GET
   /admin/integrations/ha_main/discover` reads the compact entity registry and all current states
   (about 0.8 MB, ~7 s on the board), never `get_services` (about 230 KB) or the full registry.
-  Each candidate's `command_ids` is a preview from its domain alone.
+  Each candidate's `command_ids` is a preview from its domain alone. `GET` filters by `q`,
+  `domain` and `available=true` (supported and not registered) before paging, so every page is
+  full until the last.
 - **The capabilities snapshot comes from the entity's details.** Picking an entity loads its
   details (`POST`/`GET /admin/integrations/ha_main/entities/{entity_id}/details`, about 2 s):
   fresh attributes (supported features, source and sound mode lists, colour modes, kelvin

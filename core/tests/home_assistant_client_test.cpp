@@ -416,6 +416,12 @@ TEST_F(ClientTest, EntityDetailsAreFetchedForOneEntity) {
     EXPECT_EQ(d.services.front(), '{');
     EXPECT_NE(d.services.find("\"sonos\""), std::string::npos);
     EXPECT_EQ(server.subscriptions(), 0u);
+    // Its integration's service names, as HA's UI shows them; only its own.
+    EXPECT_EQ(d.translations.front(), '{');
+    EXPECT_NE(d.translations.find("\"component.sonos.services.set_sleep_timer.name\":\"Set timer\""),
+              std::string::npos);
+    EXPECT_EQ(d.translations.find("component.denonavr."), std::string::npos);
+    EXPECT_NE(server.received().back().find(R"("integration":["sonos"])"), std::string::npos);
 
     // YAML-only: no registry entry, so no unique_id or platform.
     ASSERT_EQ(fetch(FakeHaServer::kYamlOnlyEntity, &d), ErrorCode::Ok);
@@ -423,6 +429,41 @@ TEST_F(ClientTest, EntityDetailsAreFetchedForOneEntity) {
     EXPECT_EQ(d.platform, "");
     EXPECT_EQ(d.name, "Patio Fountain");
     EXPECT_FALSE(d.services.empty());
+    EXPECT_EQ(d.translations, "");  // no integration: nothing asked
+    EXPECT_EQ(server.received().back().find("get_translations"), std::string::npos);
+
+    // Translations are optional: unanswered, details still arrive, without them.
+    server.answerTranslations = false;
+    ErrorCode slow = ErrorCode::Busy;
+    ASSERT_EQ(client.entityDetails("media_player.denon", [&](ErrorCode e, HaEntityDetails x) {
+                  slow = e;
+                  d = std::move(x);
+              }),
+              ErrorCode::Ok);
+    run(HomeAssistantClient::kCommandTimeoutMs + 200);
+    EXPECT_EQ(slow, ErrorCode::Ok);
+    EXPECT_EQ(d.platform, "denonavr");
+    EXPECT_EQ(d.translations, "");
+
+    // So is a connection drop while they're asked: what was gathered stays.
+    ErrorCode dropped = ErrorCode::Busy;
+    ASSERT_EQ(client.entityDetails("media_player.denon", [&](ErrorCode e, HaEntityDetails x) {
+                  dropped = e;
+                  d = std::move(x);
+              }),
+              ErrorCode::Ok);
+    run(500);
+    ASSERT_NE(server.received().back().find("get_translations"), std::string::npos);
+    EXPECT_EQ(dropped, ErrorCode::Busy);
+    transport.dropConnection();
+    tick();
+    EXPECT_EQ(dropped, ErrorCode::Ok);
+    EXPECT_EQ(d.platform, "denonavr");
+    EXPECT_FALSE(d.services.empty());
+    EXPECT_EQ(d.translations, "");
+    run(1100);  // reconnected
+    ASSERT_EQ(client.state(), HaState::Connected);
+    server.answerTranslations = true;
 
     EXPECT_EQ(fetch("light.nowhere", &d), ErrorCode::EntityNotFound);
     EXPECT_EQ(client.entityDetails("sensor.temperature", nullptr), ErrorCode::InvalidId);

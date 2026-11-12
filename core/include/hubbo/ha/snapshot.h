@@ -28,7 +28,13 @@ struct SnapshotParam {
     double maximum = 0;
     double step = 0;     // 0 = none
     std::string unit;
+    std::string description;           // HA's field description (a tooltip), "" if none
     std::vector<std::string> options;  // Enum
+    // HA's `default` for the field, when it fits the type and range: shown
+    // to clients, and what HA uses when the param is left out.
+    bool hasDefault = false;
+    double defaultNumber = 0;   // Bool (0/1), Int, Number
+    std::string defaultOption;  // Enum: one of `options`
 
     bool operator==(const SnapshotParam &other) const;
 };
@@ -51,6 +57,8 @@ struct CapabilitySnapshot {
     std::vector<std::string> supportedColorModes;
     int32_t minColorTempKelvin = 0;
     int32_t maxColorTempKelvin = 0;
+    std::vector<std::string> presetModes;  // fan
+    int32_t percentageStep = 0;            // fan: HA's percentage_step rounded down, 1..100; 0 = none
     std::vector<SnapshotService> services;
 
     bool operator==(const CapabilitySnapshot &other) const;
@@ -59,5 +67,6 @@ struct CapabilitySnapshot {
 constexpr size_t kMaxSnapshotServices = 32;
 constexpr size_t kMaxSnapshotLabelLength = 48;  // service and field labels (HA's `name`)
 constexpr size_t kMaxSnapshotUnitLength = 16;   // number fields' unit_of_measurement
+constexpr size_t kMaxSnapshotDescriptionLength = 160;  // field descriptions (bytes)
 
 }  // namespace hubbo::ha

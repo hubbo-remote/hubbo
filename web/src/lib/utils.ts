@@ -13,8 +13,26 @@ export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /** Structural equality for plain JSON data (drafts vs saved copies). */
 export const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
+/** An option for display: `_` → space, each word capitalized unless it already has a capital or a digit ("HDMI 1", "eARC"). */
+export const titleCase = (s: string) =>
+  s
+    .replace(/_/g, ' ')
+    .split(' ')
+    .map((w) => (/[A-Z0-9]/.test(w) ? w : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join(' ')
+
 /** `arrow_up` → "Arrow up": first letter capitalised, underscores to spaces. */
 export const humanize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ')
+
+/**
+ * "Sleep Time" → "Sleep time": a label in Title Case (every word with letters Capitalized) goes to
+ * sentence case. Anything else is left as written ("Join Sonos group", "Set HEV Cycle State").
+ */
+export function sentenceCase(s: string): string {
+  const words = s.split(' ')
+  const title = words.every((w) => !/[A-Za-z]/.test(w) || /^[A-Z][a-z]*$/.test(w.replace(/[^A-Za-z]/g, '')))
+  return title ? words.map((w, i) => (i > 0 && /^[A-Z][a-z]+$/.test(w) ? w.toLowerCase() : w)).join(' ') : s
+}
 
 /** `3 bindings`, `1 binding`. */
 export const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`

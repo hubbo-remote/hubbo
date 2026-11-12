@@ -18,7 +18,7 @@ const refreshDevices = () => invalidate('devices')
 
 /**
  * A Bluetooth device's pairing: its status, a pairing window (polled every second while open),
- * cancel and forget. Pairing again replaces only this device's host; a window that ends with no new
+ * cancel and unpair. Pairing again replaces only this device's host; a window that ends with no new
  * host keeps the old one.
  */
 export function BluetoothPairing({ device }: { device: Device }) {
@@ -30,7 +30,7 @@ export function BluetoothPairing({ device }: { device: Device }) {
   const status = useQuery(key, () => api.pairStatus(id), { pollMs: open ? 1000 : undefined })
   const state = status.data?.state
   const [busy, setBusy] = useState(false)
-  const [confirm, setConfirm] = useState<'pair' | 'forget' | null>(null)
+  const [confirm, setConfirm] = useState<'pair' | 'unpair' | null>(null)
   const [failed, setFailed] = useState(false) // the last window ended with nothing paired
   const watching = useRef(false) // a window we opened (or found open) and haven't seen end
   const lock = useConfigLock()
@@ -73,12 +73,12 @@ export function BluetoothPairing({ device }: { device: Device }) {
       refreshDevices()
       await status.refetch()
     })
-  const forget = () =>
-    run('Couldn’t forget the pairing', async () => {
+  const unpair = () =>
+    run('Couldn’t unpair', async () => {
       await api.forgetHost(id)
       setQueryData(key, { state: 'not_paired' })
       refreshDevices()
-      toast('Pairing forgotten', { variant: 'success', description: `Also remove “${hostName}” from its Bluetooth settings.` })
+      toast('Unpaired', { variant: 'success', description: `Also remove “${hostName}” from its Bluetooth settings.` })
     })
 
   return (
@@ -107,8 +107,8 @@ export function BluetoothPairing({ device }: { device: Device }) {
                 </Button>
               )}
               {paired && (
-                <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setConfirm('forget')} disabled={busy || lock.locked} title={lock.title}>
-                  <Unlink /> Forget
+                <Button variant="outline" size="sm" onClick={() => setConfirm('unpair')} disabled={busy || lock.locked} title={lock.title}>
+                  <Unlink /> Unpair
                 </Button>
               )}
             </div>
@@ -117,16 +117,16 @@ export function BluetoothPairing({ device }: { device: Device }) {
         <Dialog
           open={confirm !== null}
           onClose={() => setConfirm(null)}
-          title={confirm === 'forget' ? 'Forget its pairing?' : 'Pair again?'}
-          description={confirm === 'forget' ? `Also remove “${hostName}” from its Bluetooth settings.` : 'This replaces its current pairing.'}
+          title={confirm === 'unpair' ? 'Unpair it?' : 'Pair again?'}
+          description={confirm === 'unpair' ? `Also remove “${hostName}” from its Bluetooth settings.` : 'This replaces its current pairing.'}
           footer={
             <>
               <Button variant="ghost" onClick={() => setConfirm(null)}>
                 Cancel
               </Button>
-              {confirm === 'forget' ? (
-                <Button variant="destructive" onClick={forget}>
-                  Forget
+              {confirm === 'unpair' ? (
+                <Button variant="destructive" onClick={unpair}>
+                  Unpair
                 </Button>
               ) : (
                 <Button onClick={pair}>Pair</Button>

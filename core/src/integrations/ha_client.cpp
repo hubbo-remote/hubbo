@@ -419,6 +419,8 @@ ha::EntityInfo entityInfo(const std::string &entityId, JsonVariantConst attrs) {
     stringList(attrs["supported_color_modes"], &info.supportedColorModes);
     info.minColorTempKelvin = intOr(attrs["min_color_temp_kelvin"]);
     info.maxColorTempKelvin = intOr(attrs["max_color_temp_kelvin"]);
+    stringList(attrs["preset_modes"], &info.presetModes);
+    info.percentageStep = attrs["percentage_step"] | 0.0;
     return info;
 }
 
@@ -568,6 +570,16 @@ void HomeAssistantClient::detailsResult(Kind kind, bool success, std::string tex
     // A registry lookup's not_found is an answer: YAML-only, no registry entry.
     const bool noEntry = !success && kind == Kind::DetailsRegistry &&
                          json::member(text, json::member(text, "error"), "code").in(text) == "\"not_found\"";
+    if (kind == Kind::DetailsTranslations) {
+        // Anything but a result object leaves the fallback labels.
+        const json::Span resources = json::member(text, body, "resources");
+        if (success && resources.found() && text[resources.begin] == '{') {
+            text.erase(resources.end);
+            text.erase(0, resources.begin);
+            details_.translations = std::move(text);
+        }
+        return finishDetails(ErrorCode::Ok);
+    }
     if (!success && !noEntry) return finishDetails(ErrorCode::AdapterFailed);
     ErrorCode sent = ErrorCode::Ok;
     if (kind == Kind::DetailsRegistry) {
@@ -599,7 +611,15 @@ void HomeAssistantClient::detailsResult(Kind kind, bool success, std::string tex
         text.erase(body.end);  // keep only the result, without a second copy
         text.erase(0, body.begin);
         details_.services = std::move(text);
-        return finishDetails(ErrorCode::Ok);
+        if (details_.platform.empty()) return finishDetails(ErrorCode::Ok);  // no integration: none to label
+        // Its integration's service names, as HA's UI shows them. Optional.
+        detailsGathered_ = true;
+        JsonDocument request;
+        request["type"] = "frontend/get_translations";
+        request["language"] = "en";
+        request["category"] = "services";
+        request["integration"].add(details_.platform);
+        sent = sendCommand(Kind::DetailsTranslations, serialize(request), kCommandTimeoutMs, nullptr);
     }
     if (sent != ErrorCode::Ok) finishDetails(sent);
 }
@@ -607,6 +627,10 @@ void HomeAssistantClient::detailsResult(Kind kind, bool success, std::string tex
 void HomeAssistantClient::finishDetails(ErrorCode result) {
     if (!detailing_) return;
     detailing_ = false;
+    // A failed translations step (timeout, error, dropped connection) keeps
+    // what was gathered, with the fallback labels.
+    if (detailsGathered_ && result != ErrorCode::Cancelled) result = ErrorCode::Ok;
+    detailsGathered_ = false;
     forgetPending(false);
     HaEntityDetails out;
     if (result == ErrorCode::Ok) {

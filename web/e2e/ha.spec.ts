@@ -103,7 +103,8 @@ test('add an HA device: discover, search, preview its commands, register', async
   const dialog = await openAddHa(page)
   const list = dialog.getByRole('list', { name: 'Devices found' })
   await expect(list).toBeVisible() // discovery started on its own and finished
-  await expect(list.getByRole('button', { name: /family_room_sonos/ })).toBeDisabled() // already added
+  await expect(list.getByRole('button').first()).toBeVisible()
+  await expect(list.getByRole('button', { name: /family_room_sonos/ })).toHaveCount(0) // already added: not offered
 
   await dialog.getByLabel('Search devices').fill(T.free)
   await expect(list.getByRole('button')).toHaveCount(1)
@@ -115,8 +116,7 @@ test('add an HA device: discover, search, preview its commands, register', async
   await dialog.getByRole('button', { name: 'Add device', exact: true }).click()
   await expect(dialog).toBeHidden()
   await expect(page.getByRole('heading', { name: 'E2E device' })).toBeVisible() // its page, with the stored commands
-  await page.getByRole('button', { name: /^(Turn|Power) on/i }).first().click() // service names show once a command opens
-  await expect(page.getByRole('main')).toContainText(T.freeCommand)
+  await expect(page.getByRole('group', { name: /^(Turn|Power) on$/ }).first().getByRole('button', { name: 'Test' })).toBeVisible()
 })
 
 test('registering after another entity’s details were loaded elsewhere reads clearly (409 details_required)', async ({ page }) => {
@@ -143,8 +143,7 @@ test('the add flow previews integration services, leaves out what it can’t use
   const dialog = await openAddHa(page)
   if (!SIM_URL) {
     await dialog.getByLabel('Search devices').fill('kitchen')
-    await expect(dialog.getByRole('button', { name: /Kitchen Display/ })).toBeDisabled()
-    await expect(dialog.getByRole('list', { name: 'Devices found' })).toContainText('Not supported')
+    await expect(dialog.getByText('Nothing matches.')).toBeVisible() // an unsupported entity isn't offered
   }
 
   await dialog.getByLabel('Search devices').fill(P.search)
@@ -214,19 +213,22 @@ test('a stale device is clearly marked, its commands fail, and a re-link fixes i
   }
   await removeHaEntity(page, entity, SIM_URL ? undefined : target) // HA forgets it; the next discovery notices
   await open(page, '/devices')
-  await expect(page.getByRole('link').filter({ hasText: entity }).getByText('Needs re-link')).toBeVisible()
+  const row = page.locator(`a[href="#/devices/${id}"]`)
+  await expect(row.getByRole('img', { name: 'Home Assistant, needs re-link' })).toBeVisible()
+  await expect(row.getByText('Needs re-link')).toBeVisible()
 
   await open(page, `/devices/${id}`)
   const alert = page.getByRole('alert').filter({ hasText: 'Device not found' })
   await expect(alert).toContainText(entity)
   await expect(alert).toContainText('Change the entity')
 
-  await alert.getByRole('button', { name: 'Change entity…' }).click()
-  const dialog = page.getByRole('dialog')
-  await expect(dialog.getByRole('button', { name: /family_room_sonos|Family Room Sonos/ })).toBeDisabled() // another device's entity
+  await alert.getByRole('button', { name: 'Fix' }).click()
+  const dialog = page.getByRole('dialog', { name: /^Replace / })
+  await expect(dialog.getByRole('list', { name: 'Devices found' }).getByRole('button').first()).toBeVisible()
+  await expect(dialog.getByRole('button', { name: /family_room_sonos/ })).toHaveCount(0) // another device's entity isn't offered
   await dialog.getByLabel('Search devices').fill(target)
   await dialog.getByRole('button', { name: target }).click()
-  await expect(page.getByText(`Linked to ${target}`)).toBeVisible()
+  await expect(page.getByText('Replaced', { exact: true })).toBeVisible()
   await expect(alert).toBeHidden()
 })
 
@@ -242,7 +244,7 @@ test('a re-link that would break an activity or a global button is refused, nami
   expect(put.status(), await put.text()).toBe(200)
   const target = SIM_URL ? T.free : 'switch.tv_backlight' // neither offers the LG TV's inputs
   await open(page, '/devices/dev_lg_tv')
-  await page.getByRole('button', { name: 'Change entity…' }).click()
+  await page.getByRole('button', { name: 'Replace…' }).click()
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('Search devices').fill(target)
   await dialog.getByRole('button', { name: target }).click()
@@ -255,7 +257,7 @@ test('a re-link that would break an activity or a global button is refused, nami
 
 test('search sends the text URL-encoded (spaces too)', async ({ page }) => {
   const dialog = await openAddHa(page)
-  const query = SIM_URL ? 'family_room_sonos' : 'Family Room S' // hub-sim names entities by id (no spaces)
+  const query = SIM_URL ? 'media_player.denon' : 'Patio Fount' // hub-sim names entities by id (no spaces)
   const sent = page.waitForRequest((r) => r.url().includes('/discover?') && r.url().includes(encodeURIComponent(query)))
   await dialog.getByLabel('Search devices').fill(query)
   expect((await sent).url()).not.toContain('+')

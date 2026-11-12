@@ -11,6 +11,7 @@ add_library(hubbo_sim_support STATIC
     src/fixtures.cpp
     src/hub.cpp
     src/scenario.cpp
+    src/showcase.cpp
 )
 target_include_directories(hubbo_sim_support PUBLIC src ${PROJECT_SOURCE_DIR}/core/include
                                                     ${PROJECT_SOURCE_DIR}/core/third_party/ArduinoJson)

@@ -29,6 +29,10 @@ struct FakeHaEntity {
     std::string platform = "demo";
     std::string name;
     bool disabled = false;
+    // A captured state (the showcase): served as is instead of one built
+    // from `info` ("" = build it).
+    std::string state;
+    std::string attributesJson;
 };
 
 class FakeHaServer {
@@ -46,6 +50,7 @@ public:
     bool reachable = true;       // false: connect() fails and an open link drops
     bool answerPings = true;     // false: pings get no pong (dead connection)
     bool answerCommands = true;  // false: commands get no result (timeouts)
+    bool answerTranslations = true;  // false: frontend/get_translations gets no result
     bool rejectAuth = false;     // true: every token gets auth_invalid (auth_failed)
     // true: a connect() never completes (the client stays connecting) until
     // it's set back to false.
@@ -55,6 +60,11 @@ public:
     // Extra registry and state filler entities (sensors), for big discovery
     // payloads.
     size_t fillerEntities = 0;
+
+    // Showcase mode (hub-sim serve --showcase): the fixture entities plus a
+    // real HA's (showcaseHaEntities(), showcase.h), whose states and
+    // services it serves as captured. Kept across reset().
+    void enableShowcase();
 
     void addEntity(FakeHaEntity entity);
     void removeEntity(std::string_view entityId);  // HA forgot it
@@ -79,6 +89,11 @@ public:
 
     // get_services' result, as entity details receive it.
     std::string servicesJson() const;
+    // frontend/get_translations' resources for `integrations` (category
+    // services), filtered by integration as HA does: in the showcase the
+    // captured real strings (realHaTranslations()), else the real ones for
+    // the default services only, inline.
+    std::string translationsJson(const std::vector<std::string> &integrations) const;
 
 private:
     // subscribe_entities' first event, "a": entity id -> compressed state
@@ -93,6 +108,7 @@ private:
     int connections_ = 0;
     int authAttempts_ = 0;
     bool authed_ = false;
+    bool showcase_ = false;
     std::set<uint32_t> subscriptions_;
 };
 

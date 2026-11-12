@@ -4,16 +4,15 @@ import { advance, api, control, expect, open, SIM_URL, test } from './hub.ts'
 test('build an activity: bindings on the remote, startup and shutdown', async ({ page }) => {
   const id = await openNewActivity(page, 'E2E Movie Night')
 
-  // Key-like: down = key down; the matching key up is added automatically.
-  await bind(page, 'up', 'down', 'Family Room Apple TV', 'Key down', 'ARROW_UP')
-  await expect(page.getByText('Key up (arrow up)')).toBeVisible()
-  // Click-or-hold on Info.
-  await bind(page, 'info', 'tap', 'Family Room Apple TV', 'Key tap', 'PLAY_PAUSE')
-  await bind(page, 'info', 'hold', 'Family Room Apple TV', 'Key tap', 'AC_HOME')
-  // A Home Assistant binding.
-  await bind(page, 'volume_up', 'down', 'Family Room Denon', 'Volume up')
-  await expect(page.locator('[data-key="up"]')).toHaveAttribute('aria-label', /bound: down, up/)
-  await expect(page.locator('[data-key="info"]')).toHaveAttribute('aria-label', /bound: tap, hold/)
+  // Held: a key's down, and its up on release (both written for us).
+  await bind(page, 'up', 'hold', 'Family Room Apple TV', 'Keyboard key…', 'ARROW_UP')
+  // Press and long press on Info.
+  await bind(page, 'info', 'press', 'Family Room Apple TV', 'Keyboard key…', 'PLAY_PAUSE')
+  await bind(page, 'info', 'long press', 'Family Room Apple TV', 'Keyboard key…', 'AC_HOME')
+  // A Home Assistant binding, held: one send on down.
+  await bind(page, 'volume_up', 'hold', 'Family Room Denon', 'Volume up')
+  await expect(page.locator('[data-key="up"]')).toHaveAttribute('aria-label', /bound: hold$/)
+  await expect(page.locator('[data-key="info"]')).toHaveAttribute('aria-label', /bound: press, long press$/)
 
   await page.getByRole('tab', { name: /Startup/ }).click()
   await addStep(page, 'Family Room LG TV', 'Power on')
@@ -33,7 +32,9 @@ test('build an activity: bindings on the remote, startup and shutdown', async ({
   const a = await api(page).get(`/activities/${id}`)
   expect(a.name).toBe('E2E Movie Night')
   expect(Object.keys(a.bindings).sort()).toEqual(['info:hold', 'info:tap', 'up:down', 'up:up', 'volume_up:down'])
+  expect(a.bindings['up:down'][0]).toMatchObject({ device_id: 'dev_apple_tv', command_id: 'key_down', params: { key: 'ARROW_UP' } })
   expect(a.bindings['up:up'][0]).toMatchObject({ device_id: 'dev_apple_tv', command_id: 'key_up', params: { key: 'ARROW_UP' } })
+  expect(a.bindings['info:hold'][0]).toMatchObject({ command_id: 'key_tap', params: { key: 'AC_HOME' } })
   expect(a.startup.map((s: { command_id: string }) => s.command_id)).toEqual(['media_player.turn_on', 'media_player.turn_on', 'wait'])
   expect(a.shutdown).toHaveLength(1)
 })
@@ -173,7 +174,7 @@ test('with a single activity, a global button switches to it: the picker sets it
 
   await open(page, '/activities/global')
   await page.locator('[data-key="tv"]').click()
-  await page.getByRole('button', { name: /^Bind TV tap$/i }).click()
+  await page.getByRole('button', { name: /^Bind TV press$/i }).click()
   await page.getByLabel('Device').selectOption({ label: 'Hubbo' })
   await page.getByLabel('Command', { exact: true }).selectOption({ label: 'Switch activity' })
   // Unset shows as unset (never as the first activity, which picking again wouldn't set), and no

@@ -18,6 +18,11 @@ void encodeSnapshot(const CapabilitySnapshot &snapshot, JsonObject out);
 // `path` + JSON Pointer. True (and `out` filled) only without issues. What
 // the snapshot offers is re-checked again when the device's commands are
 // built (EntityCapabilities::fromSnapshot).
+// HA's `default` for a typed param: kept (hasDefault, defaultNumber or
+// defaultOption set) only when it fits the type, range and options. The one
+// rule for both parsing HA's services and decoding a stored snapshot.
+bool applyDefault(JsonVariantConst value, SnapshotParam *param);
+
 bool decodeSnapshot(JsonVariantConst json, CapabilitySnapshot *out, ValidationReport *report,
                     const std::string &path);
 

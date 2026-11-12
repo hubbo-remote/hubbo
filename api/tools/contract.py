@@ -308,12 +308,29 @@ def registry_flow(c):
         if caps is not None and os.path.exists(path):
             expect(caps == fixture(f"devices/{d['id']}.capabilities.json"),
                    f"{d['id']}: served capabilities differ from api/fixtures (regenerate the fixture)")
+        readable_labels(d["id"], caps)
     c.call("getDevice", "GET", "/devices/dev_nope", expect=404)
     c.call("getDeviceCapabilities", "GET", "/devices/dev_nope/capabilities", expect=404)
     devices_and_profiles(c, devices)
 
 
 PROFILE_CONTENT = ("commands", "buttons", "power", "timing", "inputs", "channels")
+
+
+def readable_labels(dev_id, caps):
+    """No command is labelled with its raw id, and every integration-service
+    param (`<platform>.<service>`) has a label."""
+    for x in (caps or {}).get("commands", []):
+        expect(x["label"] != x["command_id"], f"{dev_id}: {x['command_id']} is labelled with its id")
+        platform = x["command_id"].split(".", 1)[0]
+        if "." in x["command_id"] and platform not in HA_DOMAINS:
+            for p in x["params"]:
+                expect(p.get("label"), f"{dev_id}: {x['command_id']} param {p['name']} has no label")
+
+
+# The entity domains with a curated allowlist (docs/ha-capabilities.md): the
+# spec's discovery `domain` filter, which lint checks against core's list.
+HA_DOMAINS = set(v.query_param(v.yaml.safe_load(v.read(v.SPEC_PATH)), "getDiscovery", "domain")["schema"]["enum"])
 
 
 def devices_and_profiles(c, devices):
@@ -489,7 +506,8 @@ def admin_flow(c, checker, candidate=None):
     status, dev, _ = c.call("registerDevice", "POST", "/admin/devices", reg, expect=201)
     if status == 201:
         dev_id = dev["id"]
-        c.call("getDeviceCapabilities", "GET", f"/devices/{dev_id}/capabilities", expect=200)
+        _, caps, _ = c.call("getDeviceCapabilities", "GET", f"/devices/{dev_id}/capabilities", expect=200)
+        readable_labels(dev_id, caps)
         _, upd, _ = c.call("updateDevice", "PUT", f"/admin/devices/{dev_id}",
                            {"name": "Backlight", "revision": dev["revision"]}, expect=200)
         c.call("updateDevice", "PUT", f"/admin/devices/{dev_id}", {"name": "x", "revision": 99}, expect=409,
@@ -783,6 +801,16 @@ def ha_flow(c):
     c.call("getDiscovery", "GET", "/admin/integrations/ha_main/discover?limit=0", expect=422, label="bad limit")
     c.call("getDiscovery", "GET", "/admin/integrations/ha_main/discover?domain=sensor", expect=422,
            label="bad domain")
+    c.call("getDiscovery", "GET", "/admin/integrations/ha_main/discover?available=yes", expect=422,
+           label="bad available")
+    # available=true filters before paging: every candidate is registrable, and a page is full unless it's the last.
+    _, avail, _ = c.call("getDiscovery", "GET", "/admin/integrations/ha_main/discover?available=true&limit=1",
+                         expect=200, label="discovery available")
+    registrable = [x for x in done["candidates"] if x["supported"] and x["registered_device_id"] is None]
+    got = (avail or {}).get("candidates", [])
+    expect(all(x["supported"] and x["registered_device_id"] is None for x in got), f"available=true: {got}")
+    expect(len(got) == 1 if registrable else len(got) <= 1,
+           f"available=true limit=1 page: {len(got)} (registrable on page one: {len(registrable)})")
 
     # One device per entity: a registered entity's details name its device, and registering it again is refused.
     taken = [x for x in done["candidates"] if x["registered_device_id"] and x["supported"]]
@@ -903,6 +931,34 @@ def fresh_ha_setup(c):
 
     done = wait_discovery(c)
     expect(done.get("state") == "done" and done.get("total", 0) > 0, f"fresh discovery: {done}")
+
+
+# hub-sim's fake HA: sonos.set_sleep_timer's sleep_time has HA's default,
+# step, unit and translated name and description (sim/src/fake_ha.cpp).
+SLEEP_TIME = {"name": "sleep_time", "label": "Sleep Time", "type": "int", "required": False,
+              "minimum": 0, "maximum": 7200, "step": 60, "unit": "s",
+              "description": "Number of seconds to set the timer.", "default": 600}
+
+
+def integration_param_flow(c):
+    """Re-linking an HA device takes its integration's services from HA, and
+    the capabilities carry each field's label, description, default, unit and step."""
+    if MOCK:
+        skip("integration service metadata", "the mock serves fixed capabilities, not HA's services")
+        return
+    _, dev, _ = c.call("getDevice", "GET", "/devices/dev_sonos", expect=200, label="sonos before re-link")
+    details = load_details(c, "media_player.family_room_sonos")
+    expect(details.get("state") == "done", f"sonos details: {details}")
+    if not dev or details.get("state") != "done":
+        return
+    c.call("updateDevice", "PUT", "/admin/devices/dev_sonos",
+           {"provider": details["provider"], "revision": dev["revision"]}, expect=200, label="re-link sonos")
+    _, caps, _ = c.call("getDeviceCapabilities", "GET", "/devices/dev_sonos/capabilities", expect=200,
+                        label="sonos after re-link")
+    timer = next((x for x in (caps or {}).get("commands", []) if x["command_id"] == "sonos.set_sleep_timer"), None)
+    expect(timer and timer["label"] == "Set timer", f"sonos.set_sleep_timer after re-link: {timer}")
+    if timer:
+        expect(timer["params"] == [SLEEP_TIME], f"sleep_time param: {timer['params']}")
 
 
 def ha_unlink_flow(c):
@@ -1082,6 +1138,7 @@ def noauth(c, checker):
     ble_pairing_flow(c)
     candidate = ha_flow(c)
     admin_flow(c, checker, candidate)
+    integration_param_flow(c)
     ha_unlink_flow(c)
     factory_reset_flow(c)
 

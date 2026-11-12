@@ -116,13 +116,18 @@ const MAX_BODY = 32 * 1024
 const MAX_JSON_DEPTH = 8
 const MAX_FILE_DEPTH = 12
 const depth = (v: unknown): number => (v !== null && typeof v === 'object' ? 1 + Math.max(0, ...Object.values(v).map(depth)) : 0)
+/** The HA entity domains Hubbo offers (api/openapi.yaml), and how the hub's messages list them. */
+const HA_DOMAINS: readonly string[] = ['media_player', 'light', 'switch', 'fan']
+const DOMAIN_LIST = `${HA_DOMAINS.slice(0, -1).join(', ')} or ${HA_DOMAINS.at(-1)}`
 /** Entity → platform, the integration services Hubbo would offer, and the ones it skips. */
-const PLATFORMS: [RegExp, string, Command[], string[]][] = [
-  [/denon/, 'denonavr', [{ command_id: 'denonavr.set_dynamic_eq', label: 'Dynamic EQ', effect: 'momentary', params: [{ name: 'dynamic_eq', label: 'Dynamic EQ', type: 'bool', required: true }] }], ['denonavr.get_command']],
-  [/sonos/, 'sonos', [{ command_id: 'sonos.set_sleep_timer', label: 'Sleep timer', effect: 'momentary', params: [{ name: 'sleep_time', label: 'Sleep after', type: 'int', required: true, minimum: 0, maximum: 86400, unit: 's' }] }], ['sonos.snapshot', 'sonos.restore', 'sonos.play_queue']],
-  [/lg_tv/, 'webostv', [{ command_id: 'webostv.select_sound_output', label: 'Sound output', effect: 'momentary', params: [{ name: 'sound_output', label: 'Output', type: 'enum', required: true, options: ['tv_speaker', 'external_arc', 'external_optical', 'bt_soundbar'] }] }], ['webostv.command']],
+type Skipped = NonNullable<EntityDetailsStatus['skipped_services']>[number]
+const skip = (reason: Skipped['reason'], ...services: string[]): Skipped[] => services.map((service) => ({ service, reason }))
+const PLATFORMS: [RegExp, string, Command[], Skipped[]][] = [
+  [/denon/, 'denonavr', [{ command_id: 'denonavr.set_dynamic_eq', label: 'Dynamic EQ', effect: 'momentary', params: [{ name: 'dynamic_eq', label: 'Dynamic EQ', type: 'bool', required: true }] }], skip('response_only', 'denonavr.get_command')],
+  [/sonos/, 'sonos', [{ command_id: 'sonos.set_sleep_timer', label: 'Sleep timer', effect: 'momentary', params: [{ name: 'sleep_time', label: 'Sleep after', type: 'int', required: true, minimum: 0, maximum: 86400, unit: 's' }] }, { command_id: 'sonos.snapshot', label: 'Snapshot', effect: 'momentary', params: [{ name: 'with_group', label: 'With group', type: 'bool', required: false, default: true }] }], [...skip('response_only', 'sonos.get_queue'), ...skip('unsupported_field', 'sonos.play_queue')]],
+  [/lg_tv/, 'webostv', [{ command_id: 'webostv.select_sound_output', label: 'Sound output', effect: 'momentary', params: [{ name: 'sound_output', label: 'Output', type: 'enum', required: true, options: ['tv_speaker', 'external_arc', 'external_optical', 'bt_soundbar'] }] }], skip('unsupported_field', 'webostv.command')],
   [/xbox/, 'xbox', [], []],
-  [/^light\./, 'hue', [], ['hue.activate_scene']],
+  [/^light\./, 'hue', [], skip('unsupported_field', 'hue.activate_scene')],
   [/^switch\./, 'hue', [], []],
   [/kitchen/, 'cast', [], []],
 ]
@@ -193,7 +198,7 @@ export function createMock(opts: MockOptions = {}) {
   /** Each HA entity's own command variants (e.g. its source list), from the fixture device on it. */
   let entityCommands: Map<string, Command[]>
   /** What only an entity's details carry (§3b): its integration's services, the skipped ones, its registry id. */
-  let entityExtras: Map<string, { services: string[]; skipped: string[]; uniqueId?: string }>
+  let entityExtras: Map<string, { services: string[]; skipped: Skipped[]; uniqueId?: string }>
   /** The last details request (one at a time); dropped when the HA settings change. */
   let details: { entityId: string; startedAt: number; state: 'running' | 'settled' } | null
   /** A renamed entity's old id (POST /__mock/ha?rename=): like the hub's unique_id match, its details name the device. */
@@ -342,9 +347,10 @@ export function createMock(opts: MockOptions = {}) {
     return rest
   }
 
-  /** A media_player, light or switch entity id; never a broadcast like `light.all`. */
+  /** An entity id in one of the HA_DOMAINS; never a broadcast like `light.all`. */
   function haEntityIdOk(id: string) {
-    return id.length <= 96 && /^(media_player|light|switch)\.[a-z0-9_]+$/.test(id) && !id.endsWith('.all')
+    const [domain, object = ''] = id.split('.', 2)
+    return id.length <= 96 && HA_DOMAINS.includes(domain!) && /^[a-z0-9_]+$/.test(object) && id === `${domain}.${object}` && !id.endsWith('.all')
   }
 
   /** An entity HA has now (whatever the latest discovery saw). */
@@ -383,7 +389,7 @@ export function createMock(opts: MockOptions = {}) {
   type EntityWithCommands = EntityDetailsStatus & { command_ids: string[] }
   function haEntity(entityId: string, selfId?: string): EntityWithCommands | MockResponse {
     // Like the hub: the id's shape first, then the details, then the commands.
-    if (!haEntityIdOk(entityId)) return invalid([{ path: '/provider/entity_id', code: 'pattern', message: 'Not a media_player, light or switch entity id' }])
+    if (!haEntityIdOk(entityId)) return invalid([{ path: '/provider/entity_id', code: 'pattern', message: `Not a ${DOMAIN_LIST} entity id` }])
     if (integrationState('ha_main') !== 'connected') return err(503, 'integration_unavailable', 'Home Assistant is not connected')
     const d = entityDetails(entityId)
     if (d.state !== 'done') return err(409, 'details_required', `Load ${entityId}'s details first (POST …/entities/${entityId}/details)`)
@@ -412,11 +418,13 @@ export function createMock(opts: MockOptions = {}) {
     if (discovery.state !== 'done') return ok({ state: discovery.state } satisfies DiscoverStatus)
     const text = q.get('q')?.toLowerCase() ?? ''
     const domain = q.get('domain')
-    if (domain && !['media_player', 'light', 'switch'].includes(domain)) return invalid([{ path: '/domain', code: 'invalid_enum_value', message: 'domain must be media_player, light or switch' }])
+    if (domain && !HA_DOMAINS.includes(domain)) return invalid([{ path: '/domain', code: 'invalid_enum_value', message: `domain must be ${DOMAIN_LIST}` }])
+    const available = q.get('available')
+    if (available !== null && available !== 'true' && available !== 'false') return invalid([{ path: '/available', code: 'wrong_type', message: 'available must be true or false' }])
     const limit = Number(q.get('limit') ?? 50)
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) return invalid([{ path: '/limit', code: 'param_out_of_range', message: 'limit must be 1 to 100' }])
     const offset = Number(q.get('cursor') ?? 0) || 0
-    const all = db.discover.candidates.filter((c) => (!text || c.name.toLowerCase().includes(text) || c.provider.entity_id.includes(text)) && (!domain || c.domain === domain))
+    const all = db.discover.candidates.filter((c) => (!text || c.name.toLowerCase().includes(text) || c.provider.entity_id.includes(text)) && (!domain || c.domain === domain) && (available !== 'true' || (c.supported && !c.registered_device_id)))
     const page = all.slice(offset, offset + limit)
     return ok({ state: 'done', elapsed_ms: discovery.elapsedMs ?? 0, total: db.discover.candidates.length, truncated: mode.discoverTruncated ?? 0, candidates: page, next_cursor: offset + limit < all.length ? String(offset + limit) : null } satisfies DiscoverStatus)
   }
@@ -859,7 +867,7 @@ export function createMock(opts: MockOptions = {}) {
     ['POST', /^\/admin\/integrations\/([^/]+)\/entities\/([^/]+)\/details$/, 'admin', (_r, m) => {
       if (m[1] !== 'ha_main') return err(404, 'not_found', 'Only Home Assistant has entities')
       const entityId = decodeURIComponent(m[2]!)
-      if (!haEntityIdOk(entityId)) return invalid([{ path: '/entity_id', code: 'pattern', message: 'Not a media_player, light or switch entity id' }])
+      if (!haEntityIdOk(entityId)) return invalid([{ path: '/entity_id', code: 'pattern', message: `Not a ${DOMAIN_LIST} entity id` }])
       if (integrationState('ha_main') !== 'connected') return err(503, 'integration_unavailable', 'Home Assistant is not connected')
       // One at a time: this replaces any earlier request.
       details = { entityId, startedAt: Date.now(), state: 'running' }

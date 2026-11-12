@@ -1,4 +1,4 @@
-import { Check, Loader2, RefreshCw, Search } from 'lucide-react'
+import { Loader2, RefreshCw, Search } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, toApiError } from '@/api/client'
 import { getQueryData, setQueryData, useQuery } from '@/api/hooks'
@@ -10,15 +10,12 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import type { EntityDetails } from '@/lib/ha'
 
-/** Why a candidate can't be picked, or null if it can. */
-type Blocker = (c: DiscoverCandidate) => string | null
-const defaultBlocker: Blocker = (c) => (c.registered_device_id ? 'Added' : !c.supported ? 'Not supported' : null)
-
 /**
  * Home Assistant entities, from an on-demand discovery on the hub: start it, poll
  * until it's done (it reads HA's states, services and entity registry), then search.
+ * Only entities that can be picked are listed: supported, and not already a device here.
  */
-export function HaCandidates({ integration, onPick, blocker = defaultBlocker }: { integration: string; onPick: (c: DiscoverCandidate) => void; blocker?: Blocker }) {
+export function HaCandidates({ integration, onPick, emptyText = 'Nothing matches.' }: { integration: string; onPick: (c: DiscoverCandidate) => void; /** When nothing's left to pick (a search with no match says so instead). */ emptyText?: string }) {
   const [q, setQ] = useState('')
   const [query, setQuery] = useState('')
   useEffect(() => {
@@ -28,7 +25,7 @@ export function HaCandidates({ integration, onPick, blocker = defaultBlocker }: 
   const key = `discover/${integration}/${query}`
   const running = getQueryData<DiscoverStatus>(key)?.state === 'running'
   // keepPrevious: the search box and the last results stay while a new search loads.
-  const disc = useQuery(key, () => api.discovery(integration, query ? { q: query } : {}), { pollMs: running ? 1000 : undefined, keepPrevious: true })
+  const disc = useQuery(key, () => api.discovery(integration, { q: query, available: true }), { pollMs: running ? 1000 : undefined, keepPrevious: true })
   const [startError, setStartError] = useState<unknown>(null)
   const [busy, setBusy] = useState(false)
   const autoStarted = useRef(false)
@@ -97,7 +94,7 @@ export function HaCandidates({ integration, onPick, blocker = defaultBlocker }: 
       </Alert>
     )
 
-  const list = disc.data.candidates ?? []
+  const list = disc.data.candidates ?? [] // only what can be added (the hub filters before paging)
   const truncated = disc.data.truncated ?? 0
   return (
     <div className="grid gap-3">
@@ -112,36 +109,15 @@ export function HaCandidates({ integration, onPick, blocker = defaultBlocker }: 
         </Button>
       </div>
       <ul className="grid max-h-80 gap-1 overflow-y-auto" aria-label="Devices found">
-        {list.map((c) => {
-          const blocked = blocker(c)
-          return (
-            <li key={c.provider.entity_id}>
-              <button
-                disabled={!!blocked}
-                onClick={() => onPick(c)}
-                className="flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{c.name}</p>
-                  <p className="truncate font-mono text-xs text-muted-foreground">
-                    {c.provider.entity_id}
-                    {c.platform && ` · ${c.platform}`}
-                    {c.state && ` · ${c.state}`}
-                  </p>
-                </div>
-                {blocked === 'Added' ? (
-                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                    <Check className="size-3" /> Added
-                  </span>
-                ) : (
-                  // No command count: a candidate previews only its domain's commands; the full list loads once it's picked.
-                  blocked && <span className="text-xs text-muted-foreground">{blocked}</span>
-                )}
-              </button>
-            </li>
-          )
-        })}
-        {list.length === 0 && <li className="px-3 py-6 text-center text-sm text-muted-foreground">Nothing matches.</li>}
+        {list.map((c) => (
+          <li key={c.provider.entity_id}>
+            <button onClick={() => onPick(c)} className="block w-full cursor-pointer rounded-md px-3 py-2 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset">
+              <p className="truncate text-sm font-medium">{c.name}</p>
+              <p className="truncate font-mono text-xs text-muted-foreground">{c.provider.entity_id}</p>
+            </button>
+          </li>
+        ))}
+        {list.length === 0 && <li className="px-3 py-6 text-center text-sm text-muted-foreground">{query ? 'Nothing matches.' : emptyText}</li>}
       </ul>
       {disc.data.next_cursor && <p className="text-xs text-muted-foreground">Search to see more.</p>}
     </div>

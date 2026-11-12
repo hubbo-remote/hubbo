@@ -1,5 +1,6 @@
 #include "hubbo/ha/snapshot_json.h"
 
+#include <algorithm>
 #include <cmath>
 #include <initializer_list>
 #include <string_view>
@@ -146,6 +147,7 @@ private:
 void encodeParam(const SnapshotParam &p, JsonObject out) {
     out["name"] = p.name;
     if (!p.label.empty()) out["label"] = p.label;
+    if (!p.description.empty()) out["description"] = p.description;
     out["type"] = typeName(p.type);
     out["required"] = p.required;
     if (p.type == SnapshotParamType::Int || p.type == SnapshotParamType::Number) {
@@ -155,17 +157,27 @@ void encodeParam(const SnapshotParam &p, JsonObject out) {
         if (!p.unit.empty()) out["unit"] = p.unit;
     }
     if (p.type == SnapshotParamType::Enum) putList(out, "options", p.options);
+    if (!p.hasDefault) return;
+    switch (p.type) {
+        case SnapshotParamType::Bool: out["default"] = p.defaultNumber != 0; break;
+        case SnapshotParamType::Int: out["default"] = static_cast<int64_t>(p.defaultNumber); break;
+        case SnapshotParamType::Number: out["default"] = p.defaultNumber; break;
+        case SnapshotParamType::Enum: out["default"] = p.defaultOption; break;
+    }
 }
 
+// `default`, checked against the param's type, range and options.
 bool decodeParam(JsonVariantConst json, SnapshotParam *out, ValidationReport *report, const std::string &path) {
     Reader r(json, report, path);
     if (!r.ok()) return false;
-    r.only({"name", "label", "type", "required", "minimum", "maximum", "step", "unit", "options", "default"});
+    r.only({"name", "label", "description", "type", "required", "minimum", "maximum", "step", "unit", "options",
+            "default"});
     SnapshotParam p;
     if (r.string("name", &p.name, 32, true) && (!isHaName(p.name) || isForbiddenParamName(p.name))) {
         r.fail(ErrorCode::InvalidId, r.at("name"));
     }
     r.string("label", &p.label, kMaxSnapshotLabelLength);
+    r.string("description", &p.description, kMaxSnapshotDescriptionLength);
     std::string type;
     if (r.string("type", &type, 16, true)) {
         if (type == "bool") {
@@ -203,12 +215,45 @@ bool decodeParam(JsonVariantConst json, SnapshotParam *out, ValidationReport *re
     } else if (!r.get("options", false).isUnbound()) {
         r.fail(ErrorCode::UnknownField, r.at("options"));
     }
+    if (r.ok()) {
+        const JsonVariantConst value = r.get("default", false);
+        if (!value.isUnbound() && !value.isNull() && !applyDefault(value, &p)) {
+            r.fail(ErrorCode::ParamOutOfRange, r.at("default"));
+        }
+    }
     if (!r.ok()) return false;
     *out = std::move(p);
     return true;
 }
 
 }  // namespace
+
+bool applyDefault(JsonVariantConst v, SnapshotParam *param) {
+    switch (param->type) {
+        case SnapshotParamType::Bool:
+            if (!v.is<bool>()) return false;
+            param->defaultNumber = v.as<bool>() ? 1 : 0;
+            break;
+        case SnapshotParamType::Int:
+        case SnapshotParamType::Number: {
+            if (!v.is<double>() || v.is<bool>()) return false;
+            const double d = v.as<double>();
+            if (!(d >= param->minimum && d <= param->maximum)) return false;
+            if (param->type == SnapshotParamType::Int && std::floor(d) != d) return false;
+            param->defaultNumber = d;
+            break;
+        }
+        case SnapshotParamType::Enum: {
+            if (!v.is<const char *>()) return false;
+            const std::string option = v.as<const char *>();
+            if (std::find(param->options.begin(), param->options.end(), option) == param->options.end()) return false;
+            param->defaultOption = option;
+            break;
+        }
+    }
+    param->hasDefault = true;
+    return true;
+}
 
 void encodeSnapshot(const CapabilitySnapshot &s, JsonObject out) {
     out["platform"] = s.platform;
@@ -218,6 +263,8 @@ void encodeSnapshot(const CapabilitySnapshot &s, JsonObject out) {
     putList(out, "supported_color_modes", s.supportedColorModes);
     if (s.minColorTempKelvin > 0) out["min_color_temp_kelvin"] = s.minColorTempKelvin;
     if (s.maxColorTempKelvin > 0) out["max_color_temp_kelvin"] = s.maxColorTempKelvin;
+    putList(out, "preset_modes", s.presetModes);
+    if (s.percentageStep > 0) out["percentage_step"] = s.percentageStep;
     JsonArray services = out["services"].to<JsonArray>();
     for (const auto &service : s.services) {
         JsonObject o = services.add<JsonObject>();
@@ -233,7 +280,7 @@ bool decodeSnapshot(JsonVariantConst json, CapabilitySnapshot *out, ValidationRe
     Reader r(json, report, path);
     if (!r.ok()) return false;
     r.only({"platform", "supported_features", "source_list", "sound_mode_list", "supported_color_modes",
-            "min_color_temp_kelvin", "max_color_temp_kelvin", "services"});
+            "min_color_temp_kelvin", "max_color_temp_kelvin", "preset_modes", "percentage_step", "services"});
     CapabilitySnapshot s;
     if (r.string("platform", &s.platform, 32, true) && !isPlatform(s.platform)) {
         r.fail(ErrorCode::InvalidId, r.at("platform"));
@@ -245,6 +292,8 @@ bool decodeSnapshot(JsonVariantConst json, CapabilitySnapshot *out, ValidationRe
     r.options("supported_color_modes", &s.supportedColorModes);
     if (r.integer("min_color_temp_kelvin", 0, 100000, &n)) s.minColorTempKelvin = static_cast<int32_t>(n);
     if (r.integer("max_color_temp_kelvin", 0, 100000, &n)) s.maxColorTempKelvin = static_cast<int32_t>(n);
+    r.options("preset_modes", &s.presetModes);
+    if (r.integer("percentage_step", 1, 100, &n)) s.percentageStep = static_cast<int32_t>(n);
 
     JsonVariantConst services = r.get("services", true);
     if (!services.isUnbound()) {

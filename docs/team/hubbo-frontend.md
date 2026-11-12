@@ -2,7 +2,87 @@
 
 Current state, not a log. Update when a piece of work lands.
 
-## Device profiles and the activity wizard (branch `device-profiles`, in progress; docs/design/device-profiles.md)
+## Web admin UX review (branch `remote-editor`, simplified, tests caught up)
+
+Quick user-driven changes on hub-sim (the user's :8790 and :5180; don't start servers there). Tests
+were deferred while iterating and are now caught up.
+
+- **Devices**: one flat list sorted by name (no per-integration sections). Each row: platform icon
+  (lit when live: Bluetooth connected / HA available; `role="img"` aria-label like "Bluetooth,
+  connected"), the name, a subtitle only when action is needed (Not paired, Ready to pair, Needs
+  re-link), chevron. No entity id line, no availability badge.
+  Specs caught up (devices, ble device-list, ha stale): rows found by href + icon aria-label.
+- **Device detail**: one column: Device pane (Name + Save, then a Type select from GET /kinds that
+  saves on change via PUT kind+revision, then HA refresh/re-link, Remove), Bluetooth pairing, then
+  Commands. No page subtitle. Bluetooth "Forget" is now "Unpair" (outline sm, like Pair; confirm
+  "Unpair it?"). `useKindLabel` removed (unused).
+- **Commands by name** (`lib/commands.ts`, pure): Bluetooth's press/key/usage families become the
+  device's own commands (`press:<name>` → "Home", "Up", "Play/Pause" via `commandName`), then
+  "Keyboard key…" (key_tap) and "Custom code…" (usage_tap) under More; HA/system commands as they
+  are, minus hold-effect ones. `choices`/`choiceOf`/`actionFor`/`choiceParams` drive the device
+  page's Commands (Test sends a tap; no "Buttons only") and `CommandPicker` (bindings and steps).
+  `friendlyName` makes `commandLabel` read "Home", "Arrow up down", "held 2 s". Key pickers group keys
+  (`groupKeys`: Navigation, Letters, Numbers, Function keys, Media, Symbols, Other) in ParamForm.
+  On/off commands (`toggleParams`: one required bool, or only optional bools) split per bool into
+  `set:<id>:<param>:<true|false>` ("Mute"/"Unmute", "Shuffle on", "Night sound off"); an action
+  setting several bools stays raw. `commandTitle` humanizes raw-id labels (`sonos.set_sleep_timer` →
+  "Set sleep timer"); `paramLabel` does the same for params. Services whose prefix isn't the
+  entity's domain (`domainOf`) go under More (device page heading, picker optgroup). Device page
+  rows are flat: label, inline controls (`ParamForm inline`: dropdowns keep sr-only labels; number fields get a visible short label beside them via `Field inline="beside"`, no placeholder), Test.
+  Percent params (`percentScale(commandId, p)` in lib/activity): a 0–1 number (HA volume level),
+  `light.*` 0–255 `brightness` (stored round(pct×255/100)) and `light.*` ±255 `step` (signed,
+  −100%…+100%, no 0). Selects in 5% steps, off-grid values kept as their own option; defaults
+  35% / +10%; summaries "Set volume 35%", "Change brightness +10%" (no parentheses).
+  ParamForm: primary params (required, or a sole optional one with no default: `drawerParams`)
+  show in place; other optionals sit in a drawer (muted, sectioned) behind a chevron that's always
+  there for such a command ("More settings for <command>", aria-expanded; a dot when a value is set
+  and differs from its default). Device rows: name, then a right-aligned group of primary controls,
+  Test and a chevron slot always reserved (a spacer when none), so Test/chevrons form columns; the
+  test result shows under the name (`TestButton onResult`, `TestResultText`). Slots `before`/`after`;
+  pickers: a "More settings" chevron button under the fields. Opens initially when a stored action
+  has settings; each set drawer field has a quiet "Reset" (to default/unset).
+  Catalog labels go through `sentenceCase` (utils): only a fully Title Case label changes
+  ("Sleep Time" → "Sleep time"); mixed ones stay as HA wrote them ("Join Sonos group").
+  Fan speeds (`fanSpeeds`: a `fan.*` `percentage`, unit "%", step > 1): a "Speed n of N" select,
+  N = round(100/step), speed n stored as floor(n×100/N); an off-list value shows as the speed HA
+  runs (ceil) without being rewritten; default speed 1; summaries "Set speed 2 of 3". Other
+  required "%" ints default to the allowed value nearest 35%, never 0 (`nearPercent`).
+  Percent and fan-speed params share one rule, `numberChoices(commandId, p)` (lib/activity):
+  options, picker label and summary phrase; ParamForm, describe and fieldLabel all use it.
+  Device page rows are keyed by choice + their param spec (`rowKey`), so a refetch that changes a
+  command's spec re-seeds the row; Name and Type save one at a time (`save` in DeviceAdmin, the
+  reply written to the device query so the next save has the latest revision).
+  HaCandidates (Add and Replace) asks discover for `available=true` (supported, unregistered,
+  filtered before paging, so Replace's own entity is hidden too); the mock does the same and
+  answers a bad value with 422 wrong_type at /available.
+  A param `description` shows only as a tooltip: `Field info=` / `ui/info-tip.tsx` (info icon by the
+  label, or after the control when the label is sr-only; hover/focus/tap, Esc closes, fixed to the
+  viewport). Labels: the catalog's
+  command/param `label` as-is, humanized only when missing; `fieldLabel` adds the `unit`
+  ("Speed (s)"), with `KNOWN` (activity.ts) as a fallback for `color_temp_kelvin` / `transition`;
+  a fallback label drops a unit suffix the unit already says (`hold_ms` → "Hold (ms)").
+  Mock entity details: `skipped_services` are `{service, reason}` (`skip()` in mock/handler.ts);
+  the mock offers `sonos.snapshot` (with_group, default true) to show a modifier.
+  `defaultParams` fills required params only: an optional param with a default is a modifier, not
+  sent unless changed, shown pre-set to its default (no "Not set").
+  On/off split (`toggleParams`): one required bool (other params follow as usual), or optional bools
+  with no default (each choice sends just its bool). Optional bools with a default don't split.
+  Enum option labels go through `paramValueLabel` → `titleCase` (utils; words with a capital or digit
+  kept: "HDMI 1", "eARC"); values unchanged. The catalog has no option labels to prefer today.
+- **Binding rows** (`BindingsEditor`): Press/Hold row (picker + Press|Hold radio; Hold writes
+  `down` press_down + `up` press_up, or one send on `down` for HA), Long press row (`hold` event),
+  and raw Down/Up/Tap rows under "Advanced" (forced when `readButton` can't fold: mismatched
+  pairs, several actions, tap+down...; a toggle otherwise). Raw edits keep a trigger's other
+  actions. `CommandPicker` falls back to the catalog `ActionPicker` for actions it can't show.
+  Legend/marks: Press (tap), Hold (down), Long press (hold); aria "bound: press, long press".
+- **Tests (caught up)**: e2e `bind(page, button, 'press' | 'hold' | 'long press', device, command, key?)`
+  picks commands by name ("Keyboard key…" + key); device page rows are `role="group"` named by
+  the command (find Test inside one); HA pickers list only supported, unregistered entities.
+  Unit tests: `lib/commands.test.ts`, percent/drawer/label rules in `activity.test.ts`, key
+  sections and casing in `keys.test.ts`, the drawer and tooltip in `ParamForm.test.tsx`.
+  watch-apple-tv (hub-sim only) is updated but not yet run on the sim. devices.spec checks a Type change (toast, stored kind, reload).
+
+## Device profiles and the activity wizard (committed on `device-profiles`; docs/design/device-profiles.md)
 
 - **Add device** (`AddDeviceDialog`): one list. Built-in profiles (GET /profiles, searchable by
   manufacturer and model; shown when their platform's integration is on) plus "From Home

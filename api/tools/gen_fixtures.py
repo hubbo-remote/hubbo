@@ -72,7 +72,8 @@ def light(d):
 # ---------------------------------------------------------------- commands
 
 # These build exactly what the hub serves (core ParamSpec/CommandSpec):
-# no param labels, units or command descriptions; int params have step 1.
+# no command descriptions; int params have step 1; a param's label, unit and
+# default only where the integration gives them (HA services, Bluetooth).
 def p_enum(name, options, required=True):
     return {"name": name, "type": "enum", "required": required, "options": options}
 
@@ -119,7 +120,8 @@ def ble_commands(pid):
     key = lambda: p_enum("key", HID_KEYS)
     usage = lambda: p_num("usage", "int", 1, 1023)
     return [  # core's BleHidCommand order
-        cmd("press", "Press", [command(), p_num("hold_ms", "int", 1, 10000, required=False)], group="remote"),
+        cmd("press", "Press", [command(), dict(p_num("hold_ms", "int", 1, 10000, required=False), unit="ms")],
+            group="remote"),
         cmd("press_down", "Press down", [command()], effect="hold", group="remote"),
         cmd("press_up", "Press up", [command()], group="remote"),
         cmd("key_tap", "Key tap", [key()], group="keys"),
@@ -129,7 +131,8 @@ def ble_commands(pid):
         cmd("usage_down", "Usage down", [usage()], effect="hold", group="custom"),
         cmd("usage_up", "Usage up", [usage()], group="custom"),
         cmd("wait_connected", "Wait until connected",
-            [p_num("timeout_ms", "int", 1000, 60000, required=False)], effect="wait"),  # default 15000
+            [dict(p_num("timeout_ms", "int", 1000, 60000, required=False), unit="ms", default=15000)],
+            effect="wait"),
     ]
 
 
@@ -634,7 +637,8 @@ fx("integrations/ha_main.entity_details.done.json", "getEntityDetails", "200", {
     "provider": ha_provider("switch.tv_backlight", "0x00158d0001a2b3c4-switch"),
     "name": "TV Backlight", "domain": "switch", "platform": "zha", "supported": True,
     "command_ids": [c["command_id"] for c in switch_commands()], "dropped_options": 0,
-    "skipped_services": ["zha.issue_zigbee_cluster_command"], "registered_device_id": None})
+    "skipped_services": [{"service": "zha.issue_zigbee_cluster_command", "reason": "unsupported_field"}],
+    "registered_device_id": None})
 fx("integrations/ha_main.entity_details.failed.json", "getEntityDetails", "200",
    {"state": "failed", "entity_id": "switch.not_in_ha", "error": "switch.not_in_ha isn't in Home Assistant"})
 fx("errors/details_required.json", "registerDevice", "409", err(

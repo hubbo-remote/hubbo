@@ -1,22 +1,17 @@
 import { AlertTriangle, Eraser, Pencil, Plus } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
-import type { Action, Bindings, EventKind, ValidationIssue } from '@/api/types'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import type { Action, Bindings, ButtonId, EventKind, ValidationIssue } from '@/api/types'
 import { ActionPicker, TestButton } from '@/components/actions/ActionPicker'
+import { CommandPicker } from '@/components/actions/CommandPicker'
 import { commandLabel, deviceName, paramSummary } from '@/components/actions/describe'
 import { EV_COLOR, EventLegend, RemoteSvg } from '@/components/remote/RemoteSvg'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { boundEvents, buttonForPath, commandFor, EVENT_ORDER, isSystem, releaseFor, triggerKey, type Catalog } from '@/lib/activity'
+import { buttonForPath, commandFor, isSystem, releaseFor, triggerKey, type Catalog } from '@/lib/activity'
+import { readButton, viewKinds, writeLongPress, writeMain, type Mode } from '@/lib/commands'
 import { BUTTONS, buttonLabel } from '@/lib/buttons'
 import { cn } from '@/lib/utils'
-
-const EVENT_HELP: Record<EventKind, string> = {
-  down: 'on press',
-  up: 'on release',
-  tap: 'quick press',
-  hold: 'press and hold',
-}
 
 /**
  * Clickable remote plus the selected button's down/up/tap/hold bindings.
@@ -46,7 +41,7 @@ export function BindingsEditor({
   const bound = useMemo(() => {
     const out: Record<string, EventKind[]> = {}
     for (const b of BUTTONS) {
-      const ev = boundEvents(bindings, b.id)
+      const ev = viewKinds(readButton(bindings, b.id))
       if (ev.length) out[b.id] = ev
     }
     return out
@@ -54,21 +49,6 @@ export function BindingsEditor({
   // Keyed on the joined ids so a re-validation with the same result keeps the Set (and RemoteSvg's memo) stable.
   const errorKey = [...new Set(errors.map((e) => buttonForPath(e.path)).filter(Boolean))].sort().join(' ')
   const errorButtons = useMemo(() => new Set(errorKey ? errorKey.split(' ') : []), [errorKey])
-
-  const setBinding = (button: string, event: EventKind, action: Action | null) => {
-    const next = { ...bindings }
-    const key = triggerKey(button, event)
-    if (action) next[key] = [action]
-    else delete next[key]
-    // Key-like convenience: a key pressed on down is released on up.
-    // A hold (e.g. key down) is released on up, so the key never sticks.
-    if (event === 'down' && action && commandFor(action, catalog)?.effect === 'hold') {
-      const upKey = triggerKey(button, 'up')
-      const up = next[upKey]?.[0]
-      if (!up || up.device_id === action.device_id) next[upKey] = [releaseFor(action)]
-    }
-    onChange(next)
-  }
 
   return (
     <div className="grid gap-4 md:grid-cols-[minmax(13rem,17rem)_minmax(0,1fr)] lg:gap-6">
@@ -88,13 +68,13 @@ export function BindingsEditor({
       <div className="grid content-start gap-4">
         {selected ? (
           <BindingPanel
-            button={selected}
+            button={selected as ButtonId}
             bindings={bindings}
             fallback={fallback}
             catalog={catalog}
             errors={errors.filter((e) => buttonForPath(e.path) === selected)}
             warnings={warnings.filter((e) => buttonForPath(e.path) === selected)}
-            onChange={(ev, a) => setBinding(selected, ev, a)}
+            onChange={onChange}
           />
         ) : (
           <Card>
@@ -107,21 +87,118 @@ export function BindingsEditor({
   )
 }
 
-function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, onChange }: { button: string; bindings: Bindings; fallback?: Bindings; catalog: Catalog; errors: ValidationIssue[]; warnings: ValidationIssue[]; onChange: (e: EventKind, a: Action | null) => void }) {
-  const [editing, setEditing] = useState<EventKind | null>(null)
-  const [pending, setPending] = useState<Action | null>(null)
-  useEffect(() => setEditing(null), [button])
+/** A row's look: its colour dot, title, and what it does now (or the global one it falls back to). */
+function Row({ color, title, action, inherited, catalog, editing, children, actions }: { color: string; title: string; action: Action | Action[] | null; inherited?: Action | null; catalog: Catalog; editing: boolean; children?: ReactNode; actions: ReactNode }) {
+  const list = Array.isArray(action) ? action : action ? [action] : []
+  return (
+    <div className={cn('rounded-lg border p-3 transition-colors', editing && 'border-primary/60 bg-accent/30', !list.length && !editing && 'border-dashed')}>
+      <div className="flex items-center gap-3">
+        <span className="size-3 shrink-0 rounded-full ring-2 ring-background" style={{ background: color }} aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold">{title}</p>
+          {!editing && (
+            <p className={cn('truncate text-sm', !list.length && 'text-muted-foreground')}>
+              {list.length ? (
+                list.map((a, i) => (
+                  <span key={i}>
+                    {i > 0 && ', then '}
+                    <ActionText action={a} catalog={catalog} />
+                  </span>
+                ))
+              ) : inherited ? (
+                <span className="italic">
+                  Global: <ActionText action={inherited} catalog={catalog} />
+                </span>
+              ) : (
+                'Nothing'
+              )}
+            </p>
+          )}
+        </div>
+        {!editing && <div className="flex shrink-0 gap-1">{actions}</div>}
+      </div>
+      {editing && <div className="mt-3 grid gap-3 border-t pt-3">{children}</div>}
+    </div>
+  )
+}
 
-  const begin = (ev: EventKind) => {
-    setEditing(ev)
-    setPending(bindings[triggerKey(button, ev)]?.[0] ?? null)
+function RowButtons({ bound, label, onEdit, onClear }: { bound: boolean; label: string; onEdit: () => void; onClear: () => void }) {
+  return (
+    <>
+      {bound && (
+        <Button variant="ghost" size="icon" className="size-8 hover:text-destructive" aria-label={`Clear ${label}`} onClick={onClear}>
+          <Eraser />
+        </Button>
+      )}
+      <Button variant={bound ? 'ghost' : 'outline'} size="sm" onClick={onEdit} aria-label={`${bound ? 'Edit' : 'Bind'} ${label}`}>
+        {bound ? <Pencil /> : <Plus />}
+        {bound ? 'Edit' : 'Bind'}
+      </Button>
+    </>
+  )
+}
+
+function EditButtons({ ok, onApply, onCancel, test }: { ok: boolean; onApply: () => void; onCancel: () => void; test?: Action | null }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button size="sm" disabled={!ok} onClick={onApply}>
+        Apply
+      </Button>
+      <Button size="sm" variant="ghost" onClick={onCancel}>
+        Cancel
+      </Button>
+      {test && (
+        <div className="ml-auto">
+          <TestButton action={test} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+type Editing = { row: 'main'; mode: Mode; action: Action | null } | { row: 'long'; action: Action | null } | { row: EventKind; action: Action | null }
+
+/**
+ * The selected button: what it does on a press (or while held), on a long press, and, for anything
+ * that doesn't fit those, its raw down/up/tap triggers ("Advanced").
+ */
+function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, onChange }: { button: ButtonId; bindings: Bindings; fallback?: Bindings; catalog: Catalog; errors: ValidationIssue[]; warnings: ValidationIssue[]; onChange: (b: Bindings) => void }) {
+  const [editing, setEditing] = useState<Editing | null>(null)
+  const [advanced, setAdvanced] = useState(false)
+  useEffect(() => (setEditing(null), setAdvanced(false)), [button])
+
+  const view = readButton(bindings, button)
+  const inherited = fallback ? readButton(fallback, button) : null
+  const forced = view.raw.some((e) => e !== 'hold') // doesn't fit Press/Hold: only the raw rows can show it
+  const showRaw = forced || advanced
+  const rawRows: EventKind[] = [...(showRaw ? (['down', 'up', 'tap'] as const) : []), ...(view.raw.includes('hold') ? (['hold'] as const) : [])]
+  const close = () => setEditing(null)
+  const testable = (a: Action | null) => (a?.device_id && a.command_id && commandFor(a, catalog)?.effect === 'momentary' ? a : null)
+
+  // A raw trigger edits its first action and keeps the rest; a hold on down gets its release on up.
+  const setRaw = (ev: EventKind, action: Action | null) => {
+    const key = triggerKey(button, ev)
+    const next = { ...bindings }
+    if (action) next[key] = [action, ...(bindings[key] ?? []).slice(1)]
+    else delete next[key]
+    if (ev === 'down' && action && commandFor(action, catalog)?.effect === 'hold') {
+      const upKey = triggerKey(button, 'up')
+      const up = next[upKey]?.[0]
+      if (!up || up.device_id === action.device_id) next[upKey] = [releaseFor(action)]
+    }
+    onChange(next)
   }
 
   return (
     <Card aria-live="polite">
       <CardHeader>
-        <div>
+        <div className="flex items-center justify-between gap-2">
           <CardTitle className="text-lg">{buttonLabel(button)}</CardTitle>
+          {!forced && (
+            <Button variant="link" size="sm" className="h-auto p-0 text-muted-foreground" onClick={() => (close(), setAdvanced(!advanced))} aria-pressed={advanced}>
+              {advanced ? 'Simple' : 'Advanced'}
+            </Button>
+          )}
         </div>
       </CardHeader>
       <CardContent className="grid gap-2">
@@ -135,75 +212,80 @@ function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, o
             {i.message}
           </Alert>
         ))}
-        {EVENT_ORDER.map((ev) => {
-          const key = triggerKey(button, ev)
-          const action = bindings[key]?.[0] ?? null
-          const inherited = !action ? fallback?.[key]?.[0] : undefined
-          const isEditing = editing === ev
-          return (
-            <div key={ev} className={cn('rounded-lg border p-3 transition-colors', isEditing && 'border-primary/60 bg-accent/30', !action && !isEditing && 'border-dashed')}>
-              <div className="flex items-center gap-3">
-                <span className="size-3 shrink-0 rounded-full ring-2 ring-background" style={{ background: EV_COLOR[ev] }} aria-hidden />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm">
-                    <span className="font-semibold capitalize">{ev}</span>
-                    <span className="text-muted-foreground"> · {EVENT_HELP[ev]}</span>
-                  </p>
-                  {!isEditing && (
-                    <p className={cn('truncate text-sm', !action && 'text-muted-foreground')}>
-                      {action ? (
-                        <ActionText action={action} catalog={catalog} />
-                      ) : inherited ? (
-                        <span className="italic">
-                          Global: <ActionText action={inherited} catalog={catalog} />
-                        </span>
-                      ) : (
-                        'Nothing'
-                      )}
-                    </p>
-                  )}
-                </div>
-                {!isEditing && (
-                  <div className="flex shrink-0 gap-1">
-                    {action && (
-                      <Button variant="ghost" size="icon" className="size-8 hover:text-destructive" aria-label={`Clear ${ev} binding`} onClick={() => onChange(ev, null)}>
-                        <Eraser />
-                      </Button>
-                    )}
-                    <Button variant={action ? 'ghost' : 'outline'} size="sm" onClick={() => begin(ev)} aria-label={`${action ? 'Edit' : 'Bind'} ${buttonLabel(button)} ${ev}`}>
-                      {action ? <Pencil /> : <Plus />}
-                      {action ? 'Edit' : 'Bind'}
-                    </Button>
+        {!showRaw && (
+          <Row
+            color={EV_COLOR[view.main?.mode === 'hold' ? 'down' : 'tap']}
+            title={view.main?.mode === 'hold' ? 'Hold' : 'Press'}
+            action={view.main?.action ?? null}
+            inherited={inherited?.main?.action}
+            catalog={catalog}
+            editing={editing?.row === 'main'}
+            actions={<RowButtons bound={!!view.main} label={`${buttonLabel(button)} press`} onEdit={() => setEditing({ row: 'main', mode: view.main?.mode ?? 'press', action: view.main?.action ?? null })} onClear={() => onChange(writeMain(bindings, button, null))} />}
+          >
+            {editing?.row === 'main' && (
+              <>
+                <CommandPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="binding" testable={false} />
+                {editing.action?.device_id && (
+                  <div role="radiogroup" aria-label="When" className="flex gap-1.5">
+                    {(['press', 'hold'] as const).map((m) => (
+                      <label key={m} className="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                        <input type="radio" name={`mode-${button}`} className="accent-[var(--color-primary)]" checked={editing.mode === m} onChange={() => setEditing({ ...editing, mode: m })} />
+                        {m === 'press' ? 'Press' : 'Hold'}
+                      </label>
+                    ))}
                   </div>
                 )}
-              </div>
-              {isEditing && (
-                <div className="mt-3 grid gap-3 border-t pt-3">
-                  <ActionPicker value={pending} onChange={setPending} catalog={catalog} context="binding" allowHold={ev === 'down'} testable={false} />
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      size="sm"
-                      disabled={!!pending && !pending.command_id}
-                      onClick={() => {
-                        onChange(ev, pending)
-                        setEditing(null)
-                      }}
-                    >
-                      Apply
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
-                      Cancel
-                    </Button>
-                    {pending?.device_id && pending.command_id && commandFor(pending, catalog)?.effect === 'momentary' && (
-                      <div className="ml-auto">
-                        <TestButton action={pending} />
-                      </div>
-                    )}
-                  </div>
-                  {pending && commandFor(pending, catalog)?.effect === 'hold' && <p className="text-xs text-muted-foreground">The release is added to Up.</p>}
-                </div>
+                <EditButtons
+                  ok={!editing.action || !!editing.action.command_id}
+                  onApply={() => (onChange(writeMain(bindings, button, editing.action && { mode: editing.action.device_id ? editing.mode : 'press', action: editing.action })), close())}
+                  onCancel={close}
+                  test={testable(editing.action)}
+                />
+              </>
+            )}
+          </Row>
+        )}
+        {!view.raw.includes('hold') && (
+          <Row
+            color={EV_COLOR.hold}
+            title="Long press"
+            action={view.longPress}
+            inherited={inherited?.longPress}
+            catalog={catalog}
+            editing={editing?.row === 'long'}
+            actions={<RowButtons bound={!!view.longPress} label={`${buttonLabel(button)} long press`} onEdit={() => setEditing({ row: 'long', action: view.longPress })} onClear={() => onChange(writeLongPress(bindings, button, null))} />}
+          >
+            {editing?.row === 'long' && (
+              <>
+                <CommandPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="binding" testable={false} />
+                <EditButtons ok={!editing.action || !!editing.action.command_id} onApply={() => (onChange(writeLongPress(bindings, button, editing.action)), close())} onCancel={close} test={testable(editing.action)} />
+              </>
+            )}
+          </Row>
+        )}
+        {rawRows.length > 0 && <p className="mt-2 text-xs font-medium text-muted-foreground">Advanced</p>}
+        {rawRows.map((ev) => {
+          const list = bindings[triggerKey(button, ev)] ?? []
+          const isEditing = editing?.row === ev
+          return (
+            <Row
+              key={ev}
+              color={EV_COLOR[ev]}
+              title={RAW_TITLE[ev]}
+              action={list}
+              inherited={fallback?.[triggerKey(button, ev)]?.[0]}
+              catalog={catalog}
+              editing={isEditing}
+              actions={<RowButtons bound={list.length > 0} label={`${buttonLabel(button)} ${ev}`} onEdit={() => setEditing({ row: ev, action: list[0] ?? null })} onClear={() => setRaw(ev, null)} />}
+            >
+              {editing && isEditing && (
+                <>
+                  <ActionPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="binding" allowHold={ev === 'down'} testable={false} />
+                  <EditButtons ok={!editing.action || !!editing.action.command_id} onApply={() => (setRaw(ev, editing.action), close())} onCancel={close} test={testable(editing.action)} />
+                  {editing.action && commandFor(editing.action, catalog)?.effect === 'hold' && <p className="text-xs text-muted-foreground">The release is added to Up.</p>}
+                </>
               )}
-            </div>
+            </Row>
           )
         })}
       </CardContent>
@@ -211,13 +293,15 @@ function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, o
   )
 }
 
+const RAW_TITLE: Record<EventKind, string> = { down: 'Down', up: 'Up', tap: 'Tap', hold: 'Long press' }
+
 function ActionText({ action, catalog }: { action: Action; catalog: Catalog }) {
   const summary = paramSummary(action, catalog)
   return (
     <>
       {!isSystem(action) && <span className="font-medium">{deviceName(action, catalog)} → </span>}
       {commandLabel(action, catalog)}
-      {summary && <span className="text-muted-foreground"> ({summary})</span>}
+      {summary && <span className="text-muted-foreground"> {summary}</span>}
     </>
   )
 }

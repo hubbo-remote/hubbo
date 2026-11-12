@@ -110,6 +110,17 @@ def max_body(op):
     return 0, "Json"
 
 
+def cpp_string_array(name, text):
+    """The strings of `name[] = {"a", "b", ...}` in `text`."""
+    return re.findall(r'"(\w+)"', re.search(name + r'\[\] = \{([^}]*)\}', text).group(1))
+
+
+def query_param(spec, op_id, name):
+    """Operation `op_id`'s query parameter `name`."""
+    op = next(op for _, _, op in operations(spec) if op.get("operationId") == op_id)
+    return next(p for p in op.get("parameters", []) if p.get("name") == name)
+
+
 def cpp_constant(name, sources):
     """Value of `constexpr ... name = <integer arithmetic over other constants>;` in `sources`."""
     for text in sources:
@@ -167,8 +178,7 @@ def check_core_names(spec):
     schemas = spec["components"]["schemas"]
     buttons = re.findall(r'\{Button::\w+, kGroup\w+, 0x[0-9A-Fa-f]+, "(\w+)"\}',
                          read(os.path.join(CORE_SRC, "remote", "button.cpp")))
-    events = re.findall(r'"(\w+)"', re.search(r'kEventKindNames\[\] = \{([^}]*)\}',
-                                              read(os.path.join(CORE_SRC, "remote", "input.cpp"))).group(1))
+    events = cpp_string_array("kEventKindNames", read(os.path.join(CORE_SRC, "remote", "input.cpp")))
     if schemas["Button"]["enum"] != buttons:
         fail("Button enum differs from core/src/remote/button.cpp")
     if schemas["EventKind"]["enum"] != events:
@@ -176,10 +186,13 @@ def check_core_names(spec):
     trigger = f"^({'|'.join(buttons)}):({'|'.join(events)})$"
     if schemas["Trigger"]["pattern"] != trigger:
         fail(f"Trigger pattern should be {trigger}")
-    forbidden = re.findall(r'"(\w+)"', re.search(r'kForbiddenNames\[\] = \{([^}]*)\}',
-                                                 read(os.path.join(CORE_SRC, "ha", "capabilities.cpp"))).group(1))
+    forbidden = cpp_string_array("kForbiddenNames", read(os.path.join(CORE_SRC, "ha", "capabilities.cpp")))
     if sorted(schemas["ParamName"]["not"]["enum"]) != sorted(forbidden):
         fail("ParamName.not.enum differs from kForbiddenNames in core/src/ha/capabilities.cpp")
+    domains = cpp_string_array("kEntityDomains",
+                               read(os.path.join(ROOT, "core", "include", "hubbo", "ha", "capabilities.h")))
+    if query_param(spec, "getDiscovery", "domain")["schema"]["enum"] != domains:
+        fail("getDiscovery domain enum differs from kEntityDomains in core/include/hubbo/ha/capabilities.h")
     kinds = [k["id"] for k in json.loads(read(os.path.join(ROOT, "profiles", "kinds.json")))["kinds"]]
     if schemas["DeviceKind"]["enum"] != kinds:
         fail("DeviceKind enum differs from profiles/kinds.json")

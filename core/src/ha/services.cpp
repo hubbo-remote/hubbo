@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 #include "hubbo/domain/limits.h"
 #include "hubbo/ha/capabilities.h"
+#include "hubbo/ha/snapshot_json.h"
 
 namespace hubbo::ha {
 
@@ -66,6 +68,60 @@ ServiceDirectory::EntityFilter readEntityFilter(JsonObjectConst f) {
     return filter;
 }
 
+// HA's units, shortened where there's a common short form. A unit that
+// still doesn't fit is dropped (never cut).
+std::string shortUnit(JsonVariantConst v) {
+    if (!v.is<const char *>()) return {};
+    const std::string_view unit = v.as<const char *>();
+    static constexpr struct {
+        const char *from, *to;
+    } kShort[] = {{"seconds", "s"}, {"second", "s"}, {"milliseconds", "ms"}, {"minutes", "min"},
+                  {"minute", "min"}, {"hours", "h"},  {"hour", "h"},          {"percent", "%"}};
+    for (const auto &s : kShort) {
+        if (unit == s.from) return s.to;
+    }
+    return unit.size() <= kMaxSnapshotUnitLength ? std::string(unit) : std::string();
+}
+
+// HA's description as a short tooltip: whitespace runs become one space,
+// and anything over kMaxSnapshotDescriptionLength bytes is cut at a word
+// boundary (else a UTF-8 boundary) with an ellipsis. "" if it isn't a string.
+std::string tooltip(JsonVariantConst v) {
+    if (!v.is<const char *>()) return {};
+    std::string out;
+    for (const char *c = v.as<const char *>(); *c != '\0'; c++) {
+        const bool space = *c == ' ' || *c == '\t' || *c == '\n' || *c == '\r';
+        if (space) {
+            if (!out.empty() && out.back() != ' ') out += ' ';
+        } else {
+            out += *c;
+        }
+    }
+    if (!out.empty() && out.back() == ' ') out.pop_back();
+    if (out.size() <= kMaxSnapshotDescriptionLength) return out;
+    static constexpr std::string_view kEllipsis = "\xE2\x80\xA6";  // U+2026
+    size_t cut = kMaxSnapshotDescriptionLength - kEllipsis.size();
+    const size_t space = out.rfind(' ', cut);
+    if (space != std::string::npos && space > 0) {
+        cut = space;
+    } else {
+        while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80) cut--;  // a continuation byte
+    }
+    out.resize(cut);
+    while (!out.empty() && (out.back() == ' ' || out.back() == ',' || out.back() == '.')) out.pop_back();
+    return out + std::string(kEllipsis);
+}
+
+// "set_sleep_timer" -> "Set sleep timer": the label when HA gives none.
+std::string readable(std::string_view id) {
+    std::string out(id.substr(0, kMaxSnapshotLabelLength));
+    for (char &c : out) {
+        if (c == '_') c = ' ';
+    }
+    if (!out.empty() && out[0] >= 'a' && out[0] <= 'z') out[0] = static_cast<char>(out[0] - 'a' + 'A');
+    return out;
+}
+
 // Integral and within int32.
 bool isInt(double v) {
     return std::isfinite(v) && std::floor(v) == v && v >= -2147483648.0 && v <= 2147483647.0;
@@ -104,7 +160,7 @@ bool readSelector(JsonObjectConst selector, SnapshotParam *param, size_t *droppe
         const bool integral = !any && isInt(s) && isInt(param->minimum) && isInt(param->maximum);
         param->type = integral ? SnapshotParamType::Int : SnapshotParamType::Number;
         param->step = any ? 0 : s;
-        param->unit = bounded(config["unit_of_measurement"], kMaxSnapshotUnitLength);
+        param->unit = shortUnit(config["unit_of_measurement"]);
         return true;
     }
     if (kind == "select") {
@@ -138,6 +194,7 @@ void readFields(JsonObjectConst fields, ServiceDirectory::Service *service) {
         ServiceDirectory::Field f;
         f.param.name = pair.key().c_str();
         f.param.label = bounded(field["name"], kMaxSnapshotLabelLength);
+        f.param.description = tooltip(field["description"]);
         f.param.required = field["required"] | false;
         JsonObjectConst filter = field["filter"].as<JsonObjectConst>();
         for (JsonPairConst key : filter) {
@@ -146,13 +203,50 @@ void readFields(JsonObjectConst fields, ServiceDirectory::Service *service) {
         if (!readFeatures(filter["supported_features"], &f.features)) f.unknownFilter = true;
         f.supported = isHaName(f.param.name) && !isForbiddenParamName(f.param.name) &&
                       readSelector(field["selector"].as<JsonObjectConst>(), &f.param, &service->droppedOptions);
+        if (f.supported) applyDefault(field["default"], &f.param);  // a default that doesn't fit is dropped
         service->fields.push_back(std::move(f));
+    }
+}
+
+// Labels from frontend/get_translations' resources (flat keys), over the
+// description's own names.
+void applyTranslations(std::string_view json, std::vector<ServiceDirectory::Service> *services) {
+    if (json.empty() || services->empty()) return;
+    JsonDocument doc;
+    if (deserializeJson(doc, json.data(), json.size(), DeserializationOption::NestingLimit(2))) return;
+    JsonObjectConst resources = doc.as<JsonObjectConst>();
+    // A translation replaces the description's own text only when it has one.
+    const auto take = [](std::string text, std::string *out) {
+        if (!text.empty()) *out = std::move(text);
+    };
+    const auto name = [&](const std::string &key, std::string *out) {
+        take(bounded(resources[key], kMaxSnapshotLabelLength), out);
+    };
+    for (ServiceDirectory::Service &service : *services) {
+        const std::string base = "component." + service.domain + ".services." + service.service;
+        name(base + ".name", &service.label);
+        for (ServiceDirectory::Field &field : service.fields) {
+            const std::string key = base + ".fields." + field.param.name;
+            name(key + ".name", &field.param.label);
+            take(tooltip(resources[key + ".description"]), &field.param.description);
+        }
     }
 }
 
 }  // namespace
 
-ServiceDirectory ServiceDirectory::parse(std::string_view json, const std::vector<std::string> &platforms) {
+const char *ServiceDirectory::skipReasonName(SkipReason reason) {
+    switch (reason) {
+        case SkipReason::UnsupportedField: return "unsupported_field";
+        case SkipReason::TooManyFields: return "too_many_fields";
+        case SkipReason::ResponseOnly: return "response_only";
+        case SkipReason::TooManyServices: return "too_many_services";
+    }
+    return "unsupported_field";
+}
+
+ServiceDirectory ServiceDirectory::parse(std::string_view json, const std::vector<std::string> &platforms,
+                                         std::string_view translations) {
     ServiceDirectory directory;
     JsonDocument filter;
     for (const auto &platform : platforms) {
@@ -172,6 +266,8 @@ ServiceDirectory ServiceDirectory::parse(std::string_view json, const std::vecto
             service.service = entry.key().c_str();
             service.nameValid = isHaName(service.domain) && isHaName(service.service);
             service.label = bounded(description["name"], kMaxSnapshotLabelLength);
+            service.responseOnly = description["response"].is<JsonObjectConst>() &&
+                                   description["response"]["optional"] == false;
             JsonVariantConst entity = description["target"]["entity"];
             if (entity.is<JsonObjectConst>()) {
                 service.targets.push_back(readEntityFilter(entity.as<JsonObjectConst>()));
@@ -187,6 +283,13 @@ ServiceDirectory ServiceDirectory::parse(std::string_view json, const std::vecto
     std::sort(directory.services_.begin(), directory.services_.end(), [](const Service &a, const Service &b) {
         return a.domain != b.domain ? a.domain < b.domain : a.service < b.service;
     });
+    applyTranslations(translations, &directory.services_);
+    for (Service &service : directory.services_) {
+        if (service.label.empty()) service.label = readable(service.service);
+        for (Field &field : service.fields) {
+            if (field.param.label.empty()) field.param.label = readable(field.param.name);
+        }
+    }
     return directory;
 }
 
@@ -227,9 +330,15 @@ ServiceDirectory::Offer ServiceDirectory::offerFor(std::string_view entityId, st
             usable = usable && field.supported;
             offered.fields.push_back(field.param);
         }
-        usable = usable && offered.fields.size() <= limits::kMaxParams;
-        if (!usable || offer.services.size() >= kMaxSnapshotServices) {
-            if (offer.skipped.size() < kMaxSnapshotServices) offer.skipped.push_back(id);
+        // The first reason that applies, in this order; none: offered.
+        const std::optional<SkipReason> reason =
+            service.responseOnly                              ? SkipReason::ResponseOnly
+            : !usable                                         ? SkipReason::UnsupportedField
+            : offered.fields.size() > limits::kMaxParams      ? SkipReason::TooManyFields
+            : offer.services.size() >= kMaxSnapshotServices   ? std::optional<SkipReason>(SkipReason::TooManyServices)
+                                                              : std::nullopt;
+        if (reason) {
+            if (offer.skipped.size() < kMaxSnapshotServices) offer.skipped.push_back({id, *reason});
             continue;
         }
         offer.droppedOptions += service.droppedOptions;

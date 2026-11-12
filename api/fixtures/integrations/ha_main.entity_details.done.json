@@ -16,7 +16,10 @@
   ],
   "dropped_options": 0,
   "skipped_services": [
-    "zha.issue_zigbee_cluster_command"
+    {
+      "service": "zha.issue_zigbee_cluster_command",
+      "reason": "unsupported_field"
+    }
   ],
   "registered_device_id": null
 }

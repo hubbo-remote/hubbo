@@ -58,7 +58,11 @@ struct ParamSpec {
     // Display metadata for the API/UI (GET /devices/{id}/capabilities).
     const char *label = nullptr;  // e.g. "Volume"
     const char *unit = nullptr;   // e.g. "%", "ms"
+    const char *description = nullptr;  // e.g. HA's field description (a tooltip)
     float step = 0.0f;            // UI increment; 0 = none
+    // defaultValue is a real default to show (the API's `default`), not
+    // just the value an omitted optional param falls back to.
+    bool hasDefault = false;
 
     constexpr ParamSpec described(const char *newLabel, const char *newUnit = nullptr,
                                   float newStep = 0.0f) const {
@@ -66,6 +70,11 @@ struct ParamSpec {
         s.label = newLabel;
         s.unit = newUnit;
         s.step = newStep;
+        return s;
+    }
+    constexpr ParamSpec shownDefault() const {
+        ParamSpec s = *this;
+        s.hasDefault = true;
         return s;
     }
 

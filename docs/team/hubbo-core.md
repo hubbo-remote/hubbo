@@ -1,13 +1,44 @@
 # hubbo-core: working notes
 
-Current as of the device-profiles phase, on branch `device-profiles`, not yet committed
-(multi-Bluetooth and everything before are committed). Design: `docs/design/device-profiles.md`;
+Current as of the remote-editor phase, on branch `remote-editor` (device profiles and everything
+before are committed). Design: `docs/design/device-profiles.md`;
 the profile spec is `~/src/hubbo-devices/docs/spec.md`. This file covers state, decisions and
 traps only.
 
 ## State
 
-- Device profiles (device-profiles, uncommitted):
+- hub-sim showcase (remote-editor): `hub-sim serve --showcase` (sim/src/showcase.*) is built
+  from a REAL HA capture, never invented, and the capture is LOCAL ONLY: sim/fixtures/local/
+  (gitignored by sim/.gitignore) holds real-ha-sample.json (states, platforms, /api/services) and
+  real-ha-translations.json. The user doesn't want their HA data in the repo, so no entity id or
+  name from it goes in any tracked file, tests included. Without the files, `--showcase` exits
+  with a one-line message and SimShowcase skips. `FakeHaServer::enableShowcase()` (kept across
+  reset) adds the captured entities, serving their state and attributes as is
+  (`FakeHaEntity::attributesJson`), plus the captured services and translations.
+  `showcaseConfig()` keeps the fixture's BLE Apple TV and the fixture HA devices whose entity
+  isn't captured. It adds a device per captured entity, with the snapshot fetched by the real HA
+  client and normalized (as registration does), the Fire TV Stick and SHIELD profiles, and
+  `act_watch_tv` on the first captured player with sources (none: no activity). Fans are kind
+  "climate" (there's no fan kind). The test checks generic properties only.
+- HA service translations (remote-editor, uncommitted): entity details also send WS
+  `frontend/get_translations` (en, services, `integration:[platform]`), and only when the entity
+  has a platform. `HaEntityDetails::translations` holds the raw flat `resources` object, or "".
+  It's optional: once registry, state and services are in (`detailsGathered_`), finishDetails
+  turns any failure (timeout, error, send failure, dropped connection) into Ok with what was
+  gathered. Only a cancel stays a cancel. hubbo-api's `ServiceDirectory::parse(json, platforms,
+  translations)` consumes it. The fake HA serves it, filtered by integration prefix: in showcase
+  mode from the local capture, and by default from a small inline table of
+  the real strings for `baseServicesJson`'s services (the default fake reads no capture file).
+  `answerTranslations = false` (reset on reset()) tests the timeout. Contract boundary field:
+  sonos.set_sleep_timer sleep_time, with default 600, step 60, unit seconds and a translated
+  description.
+- Open: the original sim fixture (sim/src/fixtures.cpp, since the first hub-sim commit, mirrored
+  in api/fixtures, core tests and web) has an LG TV whose entity id and name match the user's
+  house. Renaming it spans every area; that's the lead's call.
+- `ParamSpec::description` (HA field tooltip, set by hubbo-api's capabilities.cpp) and
+  `ParamSpec::hasDefault` / `.shownDefault()`: `defaultValue` is shown as the API's `default`
+  only when set (wait_connected's timeout_ms sets it).
+- Device profiles (device-profiles, committed: 60c0e59, 19ca417, 69ba133):
   - `config/profile.h`: `parseProfile` (spec schema_version 1, strict: unknown fields are errors,
     `meta` dropped, `ir` is UnsupportedSchema at /platform), `ProfileLibrary` (index.json order,
     kinds.json, buttons.json kept raw; any issue leaves it empty + ValidationFailed),
