@@ -42,11 +42,11 @@ const order = (i: Integration) => (i.type === 'home_assistant' ? 0 : 1)
  * Family Room"); others add their detail to the state.
  */
 function stateLine(i: Integration) {
-  if (!i.enabled || i.state === 'disabled' || !i.detail) return healthLabel(i.state)
+  if (!i.enabled || i.state === 'disabled' || !i.detail) return healthLabel(i.state, i.type)
   if (i.type === 'ble_hid') return i.detail
   return (
     <>
-      {healthLabel(i.state)} <span>· {i.detail}</span>
+      {healthLabel(i.state, i.type)} <span>· {i.detail}</span>
     </>
   )
 }

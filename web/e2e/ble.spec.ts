@@ -1,15 +1,18 @@
 // Bluetooth devices: each pairs on its own page. A host bonds through a test control
 // (hub-sim: /sim/ble/bond; the mock: /__mock/ble/bond), and sim time runs a window down.
 import type { Page } from '@playwright/test'
+import { deviceIdFromUrl } from './editor.ts'
 import { addBle, advance, api, bondHost, expect, open, setBleRadio, setHostLink, test } from './hub.ts'
 
-/** Add a Bluetooth device through the Devices page's dialog; returns the dialog. */
-const addInDialog = async (page: Page, name: string) => {
+/** Add a device from a built-in profile through the Devices page's dialog; returns the dialog. */
+const addInDialog = async (page: Page, name: string | null, model = 'Android TV / Google TV') => {
   await open(page, '/devices')
   await page.getByRole('button', { name: 'Add device' }).first().click()
   const dialog = page.getByRole('dialog')
-  await dialog.getByRole('button', { name: /Bluetooth/ }).click()
-  await dialog.getByLabel('Name').fill(name)
+  await dialog.getByRole('searchbox', { name: 'Search devices' }).fill(model.split(' ')[0]!)
+  await dialog.getByRole('button', { name: new RegExp(`^${model.replace(/[/()]/g, '\\$&')}`) }).click()
+  await expect(dialog.getByLabel('Name')).toHaveValue(model) // the model is the default name
+  if (name) await dialog.getByLabel('Name').fill(name)
   await dialog.getByRole('button', { name: 'Add device', exact: true }).click()
   return dialog
 }
@@ -20,7 +23,7 @@ test('add a Bluetooth device, pair it, pair again and cancel, then forget', asyn
   const dialog = await addInDialog(page, 'Shield') // the confirms below reuse the dialog role
   await expect(dialog).toBeHidden()
   await expect(page.getByRole('heading', { name: 'Shield' })).toBeVisible()
-  const id = new URL(page.url()).hash.split('/').pop()!
+  const id = deviceIdFromUrl(page)
   await expect(state(page)).toHaveText('Not paired')
 
   await page.getByRole('button', { name: 'Pair', exact: true }).click()
@@ -75,18 +78,32 @@ test('a fifth Bluetooth device is refused with the hub’s message', async ({ pa
   await expect(await addInDialog(page, 'One too many')).toContainText('You can add up to 4 Bluetooth devices')
 })
 
-test('the Bluetooth card shows only the radio', async ({ page }) => {
+test('the Bluetooth card shows only the radio: a working radio reads Ready', async ({ page }) => {
   await open(page, '/integrations')
   const card = page.getByTestId('state-ble')
-  await expect(card).toHaveText('Connected')
+  await expect(card).toHaveText('Ready')
   await expect(page.getByRole('button', { name: /pair/i })).toHaveCount(0)
   await setBleRadio(page, false)
   await expect(card).toHaveText("Bluetooth isn't working")
   await setBleRadio(page, true)
-  await expect(card).toHaveText('Connected')
+  await expect(card).toHaveText('Ready')
 
   await page.getByRole('switch', { name: 'Enable Bluetooth' }).click()
   await expect(card).toHaveText('Disabled')
   await page.getByRole('switch', { name: 'Enable Bluetooth' }).click()
-  await expect(card).toHaveText('Connected')
+  await expect(card).toHaveText('Ready')
+})
+
+test('each built-in profile adds a device named after its model', async ({ page }) => {
+  const { profiles } = (await api(page).get('/profiles')) as { profiles: { id: string; model: string; manufacturer: string }[] }
+  for (const p of profiles) {
+    await expect(await addInDialog(page, null, p.model)).toBeHidden()
+    await expect(page.getByRole('heading', { name: p.model })).toBeVisible()
+    await expect(state(page)).toHaveText('Not paired')
+    const id = deviceIdFromUrl(page)
+    const d = await api(page).get(`/devices/${id}`)
+    expect(d).toMatchObject({ profile: { id: p.id }, manufacturer: p.manufacturer, model: p.model })
+    // Make room for the next one (at most four Bluetooth devices).
+    expect((await api(page).del(`/admin/devices/${id}?revision=${d.revision}`)).ok()).toBeTruthy()
+  }
 })
