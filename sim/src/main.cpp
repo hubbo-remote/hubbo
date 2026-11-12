@@ -2,8 +2,11 @@
 // Scenario script syntax: sim/src/scenario.h.
 //
 //   hub-sim run <script|->...  [-v]   run scenario scripts; exit 1 on failure
-//   hub-sim serve [--port 8780] [--data DIR] [--reset] [--seed FILE] [--auth]
+//   hub-sim serve [--port 8780] [--data DIR] [--reset] [--seed FILE | --showcase] [--auth]
 //                 [--storage-unavailable] [--ha-token] [--bind 127.0.0.1] [--allow-remote] [-v]
+//       --showcase: the fake HA also serves a real HA's captured entities
+//       (sim/fixtures/local/, gitignored: see sim/src/showcase.h), and the
+//       seed registers them all, for the web admin.
 //       Home Assistant is the in-process fake HA (never a real one). It's
 //       not_configured until a token is set (PUT /admin/integrations/ha_main
 //       with "fake-ha-token"); --ha-token stores that token at boot if none is.
@@ -37,6 +40,7 @@
 #include "noauth.h"
 #include "scenario.h"
 #include "runtime.h"
+#include "showcase.h"
 #include "sim_api.h"
 
 namespace {
@@ -53,8 +57,9 @@ void onStorageSignal(int signal) { gStorageSignal = signal; }
 int usage() {
     std::cerr << "usage:\n"
                  "  hub-sim run <script|->... [-v]\n"
-                 "  hub-sim serve [--port N] [--data DIR] [--reset] [--seed FILE] [--auth]\n"
+                 "  hub-sim serve [--port N] [--data DIR] [--reset] [--seed FILE | --showcase] [--auth]\n"
                  "                [--storage-unavailable] [--ha-token] [--bind ADDR] [--allow-remote] [-v]\n"
+                 "      --showcase: serve a real HA's captured entities, all registered (sim/src/showcase.h)\n"
                  "      --ha-token: store the fake HA's token (fake-ha-token) at boot if none is\n"
                  "      --storage-unavailable: boot with storage down; POST /sim/storage?health=\n"
                  "      available|unavailable|read_only (admin) switches it at runtime, as do the\n"
@@ -124,6 +129,7 @@ int serve(const std::vector<std::string> &args) {
     bool reset = false;
     bool storageUnavailable = false;
     bool haToken = false;
+    bool showcase = false;
     std::string dataDir;
     std::string seedPath = HUBBO_API_FIXTURES_DIR "/admin/backup.json";
     for (size_t i = 0; i < args.size(); i++) {
@@ -136,6 +142,8 @@ int serve(const std::vector<std::string> &args) {
             dataDir = args[++i];
         } else if (a == "--seed" && i + 1 < args.size()) {
             seedPath = args[++i];
+        } else if (a == "--showcase") {
+            showcase = true;
         } else if (a == "--reset") {
             reset = true;
         } else if (a == "--storage-unavailable") {
@@ -182,7 +190,16 @@ int serve(const std::vector<std::string> &args) {
     if (storageUnavailable) medium.setHealth(hubbo::storage::Health::Unavailable);
 
     hubbo::ConfigSpec seed;
-    if (!loadSeed(seedPath, &seed)) return 1;
+    if (showcase) {
+        const std::string missing = hubbo::sim::showcaseMissing();
+        if (!missing.empty()) {
+            std::cerr << "hub-sim: --showcase needs a local Home Assistant capture; missing " << missing << "\n";
+            return 1;
+        }
+        seed = hubbo::sim::showcaseConfig();  // a real HA's entities, for looking over the web admin
+    } else if (!loadSeed(seedPath, &seed)) {
+        return 1;
+    }
     // The secrets' record store shares the medium (and so its trust, see
     // Storage::distrust) with the config's.
     if (disk) {
@@ -205,6 +222,7 @@ int serve(const std::vector<std::string> &args) {
     hubbo::sim::ScenarioRunner runner(&std::cout, &medium, /*pinned=*/true, &seed, /*state=*/nullptr, &credentials,
                                       /*realHomeAssistant=*/true, /*bonds=*/disk.get());
     if (!verbose) runner.hub().onLog = nullptr;
+    if (showcase) runner.hub().haServer().enableShowcase();
     if (reset) runner.runLine("reset");
     hubbo::sim::SimApi api(runner, authEnabled, credentials, &medium, secrets.get());
     hubbo::sim::HttpServer server;

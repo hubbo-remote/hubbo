@@ -1,5 +1,6 @@
 // hub-sim: scenario runner behaviour, simulator routes (without sockets),
 // and the loopback / no-auth guard rails.
+#include <ArduinoJson.h>
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -15,6 +16,7 @@
 #include "http_server.h"
 #include "noauth.h"
 #include "scenario.h"
+#include "showcase.h"
 #include "sim_api.h"
 
 using namespace hubbo;
@@ -229,6 +231,42 @@ TEST(SimSeed, ApiBackupFixtureIsAValidConfig) {
     ASSERT_TRUE(report.ok()) << errorCodeName(report.issues()[0].code) << " " << report.issues()[0].path;
     EXPECT_NE(hub.configService().findDevice("dev_sonos"), nullptr);
     EXPECT_EQ(hub.activate("act_watch_apple_tv"), ErrorCode::Ok);
+}
+
+// `hub-sim serve --showcase`: every entity captured from a real HA is a
+// device whose snapshot came through the client and the normalizer, the
+// seed survives a backup round trip and the hub's load-time checks, and
+// what HA offers that the hub doesn't model stays out.
+TEST(SimShowcase, EveryCapturedEntityIsADevice) {
+    // The capture is local only (sim/fixtures/local/, gitignored).
+    if (!showcaseMissing().empty()) GTEST_SKIP() << "no local HA capture: " << showcaseMissing();
+    const ConfigSpec seed = showcaseConfig();
+    ConfigSpec back;
+    const config::ParseResult parsed = config::parseBackup(config::serializeBackup(seed, {}), &back);
+    ASSERT_EQ(parsed.code, ErrorCode::Ok) << (parsed.report.ok() ? "" : parsed.report.issues()[0].path);
+
+    SimHub hub(nullptr, nullptr, /*realHomeAssistant=*/true);
+    hub.haServer().enableShowcase();
+    const ValidationReport report = hub.load(back);
+    ASSERT_TRUE(report.ok()) << errorCodeName(report.issues()[0].code) << " " << report.issues()[0].path;
+
+    for (const FakeHaEntity &e : showcaseHaEntities()) {
+        const auto d = std::find_if(hub.config().devices.begin(), hub.config().devices.end(),
+                                    [&](const DeviceSpec &x) { return x.provider.entityId == e.info.entityId; });
+        ASSERT_NE(d, hub.config().devices.end()) << e.info.entityId;
+        ASSERT_TRUE(d->haCapabilities) << e.info.entityId;
+        EXPECT_EQ(d->haCapabilities->platform, e.platform) << e.info.entityId;
+        if (ha::entityDomain(e.info.entityId) != ha::EntityDomain::Fan) continue;
+        // A fan's preset_modes and percentage_step come through the client.
+        JsonDocument attrs;
+        ASSERT_EQ(deserializeJson(attrs, e.attributesJson), DeserializationError::Ok);
+        EXPECT_EQ(d->kind, "climate");
+        EXPECT_EQ(d->haCapabilities->presetModes.empty(), attrs["preset_modes"].as<JsonArrayConst>().size() == 0)
+            << e.info.entityId;
+        EXPECT_EQ(d->haCapabilities->percentageStep > 0, (attrs["percentage_step"] | 0.0) >= 1) << e.info.entityId;
+    }
+    EXPECT_EQ(hub.configService().findDevice("dev_shield")->profile->id, "hubbo:android-tv");
+    for (const ActivitySpec &a : hub.config().activities) EXPECT_EQ(hub.activate(a.id), ErrorCode::Ok) << a.id;
 }
 
 TEST(SimSeed, ServeRestartKeepsConfig) {
@@ -882,6 +920,19 @@ TEST_F(RealHa, TheFakeHomeAssistantLooksReal) {
     EXPECT_FALSE(has(c.devices[0], "denonavr.get_command"));  // a text field
     EXPECT_EQ(firstParam(c.devices[0], "media_player.select_source"), ParamType::Enum);
     EXPECT_EQ(firstParam(c.devices[1], "sonos.set_sleep_timer"), ParamType::Int);
+    // A field with HA's default, step, unit and translated name and description.
+    const auto timer = std::find_if(c.devices[1].haCapabilities->services.begin(),
+                                    c.devices[1].haCapabilities->services.end(),
+                                    [](const ha::SnapshotService &s) { return s.service == "sonos.set_sleep_timer"; });
+    ASSERT_NE(timer, c.devices[1].haCapabilities->services.end());
+    const ha::SnapshotParam &sleep = timer->fields.at(0);
+    EXPECT_EQ(timer->label, "Set timer");
+    EXPECT_EQ(sleep.label, "Sleep Time");
+    EXPECT_EQ(sleep.description, "Number of seconds to set the timer.");
+    EXPECT_TRUE(sleep.hasDefault);
+    EXPECT_EQ(sleep.defaultNumber, 600);
+    EXPECT_EQ(sleep.step, 60);
+    EXPECT_EQ(sleep.unit, "s");  // HA's "seconds", shortened
     EXPECT_EQ(firstParam(c.devices[1], "sonos.set_option"), ParamType::Bool);
     EXPECT_FALSE(has(c.devices[1], "denonavr.set_dynamic_eq"));  // not its integration
     EXPECT_EQ(firstParam(c.devices[2], "webostv.select_sound_output"), ParamType::Enum);

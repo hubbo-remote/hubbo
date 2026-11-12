@@ -3,10 +3,12 @@
 #include <ArduinoJson.h>
 
 #include <algorithm>
+#include <utility>
 
 #include "fakes.h"
 #include "fixtures.h"
 #include "hubbo/ha/services.h"
+#include "showcase.h"
 
 namespace hubbo::sim {
 
@@ -43,6 +45,7 @@ void FakeHaServer::reset() {
     reachable = true;
     answerPings = true;
     answerCommands = true;
+    answerTranslations = true;
     rejectAuth = false;
     stallConnect = false;
     failing.clear();
@@ -63,6 +66,14 @@ void FakeHaServer::reset() {
     yaml.registered = false;
     yaml.platform.clear();
     addEntity(std::move(yaml));
+    if (showcase_) {
+        for (const FakeHaEntity &e : showcaseHaEntities()) addEntity(e);
+    }
+}
+
+void FakeHaServer::enableShowcase() {
+    showcase_ = true;
+    reset();
 }
 
 void FakeHaServer::removeEntity(std::string_view entityId) {
@@ -143,6 +154,13 @@ std::vector<std::string> FakeHaServer::onMessage(const std::string &text) {
         return {result(id, "null")};
     }
     if (type == "get_services") return {result(id, servicesJson())};
+    if (type == "frontend/get_translations") {
+        if (!answerTranslations) return {};
+        if (std::string(doc["category"] | "") != "services") return {result(id, R"({"resources":{}})")};
+        std::vector<std::string> integrations;
+        for (JsonVariantConst v : doc["integration"].as<JsonArrayConst>()) integrations.emplace_back(v | "");
+        return {result(id, "{\"resources\":" + translationsJson(integrations) + "}")};
+    }
     return {error(id, "unknown_command")};
 }
 
@@ -155,6 +173,15 @@ std::string FakeHaServer::compressedStates(const std::vector<std::string> &ids) 
     for (const FakeHaEntity &e : entities_) {
         if (e.disabled || !wanted(e.info.entityId)) continue;  // HA has no state for a disabled entity
         JsonObject s = states[e.info.entityId].to<JsonObject>();
+        s["c"] = "01JC0000000000000000000000";
+        s["lc"] = 1762646400.0;
+        if (!e.attributesJson.empty()) {  // captured: as HA sent it
+            s["s"] = e.state;
+            JsonDocument attrs;
+            deserializeJson(attrs, e.attributesJson);
+            s["a"] = attrs;
+            continue;
+        }
         const bool player = ha::entityDomain(e.info.entityId) == ha::EntityDomain::MediaPlayer;
         s["s"] = player ? "on" : "off";
         JsonObject a = s["a"].to<JsonObject>();
@@ -175,8 +202,8 @@ std::string FakeHaServer::compressedStates(const std::vector<std::string> &ids) 
         list("supported_color_modes", e.info.supportedColorModes);
         if (e.info.minColorTempKelvin != 0) a["min_color_temp_kelvin"] = e.info.minColorTempKelvin;
         if (e.info.maxColorTempKelvin != 0) a["max_color_temp_kelvin"] = e.info.maxColorTempKelvin;
-        s["c"] = "01JC0000000000000000000000";
-        s["lc"] = 1762646400.0;
+        list("preset_modes", e.info.presetModes);
+        if (e.info.percentageStep != 0.0) a["percentage_step"] = e.info.percentageStep;
     }
     for (size_t i = 0; i < fillerEntities; i++) {
         const std::string entityId = "sensor.filler_" + std::to_string(i);
@@ -224,7 +251,9 @@ std::string FakeHaServer::registryEntry(const FakeHaEntity &e) const {
     return serialize(doc);
 }
 
-std::string FakeHaServer::servicesJson() const {
+namespace {
+
+std::string baseServicesJson() {
     // Domain services (the hub's own allowlist decides those), plus
     // integration services shaped like real HA's, one per selector kind the
     // hub maps (boolean, number, select) and one it skips (text).
@@ -243,7 +272,7 @@ std::string FakeHaServer::servicesJson() const {
            service("get_command", "denonavr", R"("command":{"required":true,"selector":{"text":{}}})") +
            R"(},"sonos":{)" +
            service("set_sleep_timer", "sonos",
-                   R"("sleep_time":{"selector":{"number":{"min":0,"max":7200,"step":1,"unit_of_measurement":"s"}}})") +
+                   R"("sleep_time":{"default":600,"selector":{"number":{"min":0,"max":7200,"step":60,"unit_of_measurement":"seconds","mode":"slider"}}})") +
            "," +
            service("play_queue", "sonos", R"("queue_position":{"selector":{"number":{"min":0,"max":10000000,"mode":"box"}}})") +
            "," +
@@ -255,6 +284,59 @@ std::string FakeHaServer::servicesJson() const {
                    R"(["tv_speaker","external_arc","external_optical","bt_soundbar"]}}})") +
            "}}";
 }
+
+// Real HA's service translations (its English strings) for
+// baseServicesJson()'s integration services: the default fake is
+// self-contained.
+const std::vector<std::pair<std::string, std::string>> &baseTranslations() {
+    static const std::vector<std::pair<std::string, std::string>> rows = {
+        {"component.denonavr.services.get_command.description", "Sends a generic HTTP get command."},
+        {"component.denonavr.services.get_command.fields.command.description", "Endpoint of the command, including associated parameters."},
+        {"component.denonavr.services.get_command.fields.command.name", "Command"},
+        {"component.denonavr.services.get_command.name", "Get command"},
+        {"component.denonavr.services.set_dynamic_eq.description", "Enables or disables DynamicEQ."},
+        {"component.denonavr.services.set_dynamic_eq.fields.dynamic_eq.description", "Whether DynamicEQ should be enabled or disabled."},
+        {"component.denonavr.services.set_dynamic_eq.fields.dynamic_eq.name", "Dynamic equalizer"},
+        {"component.denonavr.services.set_dynamic_eq.name", "Set dynamic equalizer"},
+        {"component.denonavr.services.update_audyssey.description", "Updates Audyssey settings."},
+        {"component.denonavr.services.update_audyssey.name", "Update Audyssey"},
+        {"component.sonos.services.play_queue.description", "Starts playing the queue from the first item."},
+        {"component.sonos.services.play_queue.fields.queue_position.description", "Position of the song in the queue to start playing from."},
+        {"component.sonos.services.play_queue.fields.queue_position.name", "Queue position"},
+        {"component.sonos.services.play_queue.name", "Play queue"},
+        {"component.sonos.services.set_sleep_timer.description", "Sets a Sonos timer."},
+        {"component.sonos.services.set_sleep_timer.fields.sleep_time.description", "Number of seconds to set the timer."},
+        {"component.sonos.services.set_sleep_timer.fields.sleep_time.name", "Sleep Time"},
+        {"component.sonos.services.set_sleep_timer.name", "Set timer"},
+        {"component.webostv.services.select_sound_output.description", "Sends the TV the command to change sound output."},
+        {"component.webostv.services.select_sound_output.fields.entity_id.description", "Name(s) of the webOS TV entities to change sound output on."},
+        {"component.webostv.services.select_sound_output.fields.entity_id.name", "Entity"},
+        {"component.webostv.services.select_sound_output.fields.sound_output.description", "Name of the sound output to switch to."},
+        {"component.webostv.services.select_sound_output.fields.sound_output.name", "Sound output"},
+        {"component.webostv.services.select_sound_output.name", "Select sound output"},
+    };
+    return rows;
+}
+
+}  // namespace
+
+std::string FakeHaServer::translationsJson(const std::vector<std::string> &integrations) const {
+    JsonDocument doc;
+    JsonObject out = doc.to<JsonObject>();
+    for (const auto &[key, text] : showcase_ ? realHaTranslations() : baseTranslations()) {
+        // "component.<integration>.services...."
+        for (const std::string &integration : integrations) {
+            if (key.rfind("component." + integration + ".", 0) == 0) out[key] = text;
+        }
+    }
+    return serialize(doc);
+}
+
+std::string FakeHaServer::servicesJson() const {
+    // The showcase serves the real HA's services instead.
+    return showcase_ ? showcaseServicesJson() : baseServicesJson();
+}
+
 
 // ---- transport ---------------------------------------------------------
 
@@ -337,7 +419,8 @@ void FakeHaTransport::poll(uint32_t timeoutMs) {
 void addFakeHaSnapshots(ConfigSpec *config, const FakeHaServer &server) {
     std::vector<std::string> platforms;
     for (const FakeHaEntity &e : server.entities()) platforms.push_back(e.platform);
-    const ha::ServiceDirectory services = ha::ServiceDirectory::parse(server.servicesJson(), platforms);
+    const ha::ServiceDirectory services =
+        ha::ServiceDirectory::parse(server.servicesJson(), platforms, server.translationsJson(platforms));
     for (DeviceSpec &device : config->devices) {
         if (device.provider.type != kHomeAssistantType || device.haCapabilities) continue;
         for (const FakeHaEntity &e : server.entities()) {
