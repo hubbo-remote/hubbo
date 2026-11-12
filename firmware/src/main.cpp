@@ -126,12 +126,14 @@ void flushEventLog() {
 class EngineLog : public hubbo::EngineObserver {
 public:
     void onActionDispatched(const hubbo::DispatchRecord &r) override {
-        flushEventLog();
-        const char *command = r.action.command != nullptr ? r.action.command->id : "?";
-        const bool ok = r.result.error == hubbo::ErrorCode::Ok;
-        logf("action %lu %s %s %s -> %s%s%s", static_cast<unsigned long>(r.atMs), r.integrationId,
-             r.target[0] ? r.target : "-", command, hubbo::execStatusName(r.result.status), ok ? "" : " ",
-             ok ? "" : hubbo::errorCodeName(r.result.error));
+        logAction(r.atMs, r.integrationId, r.target, r.action.command, "", r.result);
+    }
+    // A Pending action's outcome (e.g. a wait_connected that timed out), when
+    // it failed; successes stay quiet.
+    void onActionCompleted(const hubbo::CompletionRecord &r) override {
+        if (r.result.error != hubbo::ErrorCode::Ok) {
+            logAction(r.atMs, r.integrationId, r.target, r.command, " done", r.result);
+        }
     }
     void onSequenceFinished(const hubbo::SequenceReport &r) override {
         flushEventLog();
@@ -151,6 +153,17 @@ public:
     }
     void onConfigChanged(uint32_t revision, uint32_t) override {
         logf("config revision %lu active", static_cast<unsigned long>(revision));
+    }
+
+private:
+    // `action <ms> <integration> <target> <command>[ done] -> <status>[ <error>]`
+    static void logAction(uint32_t atMs, const char *integrationId, const char *target,
+                          const hubbo::CommandSpec *command, const char *suffix, const hubbo::ExecResult &result) {
+        flushEventLog();
+        const bool ok = result.error == hubbo::ErrorCode::Ok;
+        logf("action %lu %s %s %s%s -> %s%s%s", static_cast<unsigned long>(atMs), integrationId,
+             target[0] ? target : "-", command != nullptr ? command->id : "?", suffix,
+             hubbo::execStatusName(result.status), ok ? "" : " ", ok ? "" : hubbo::errorCodeName(result.error));
     }
 };
 EngineLog engineLog;
