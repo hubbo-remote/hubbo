@@ -17,6 +17,7 @@
 #   bin/hubbo web [pnpm args] web admin (default: `dev`, e.g. `web build`)
 #   bin/hubbo web e2e [--sim [--auth]] [args]  Playwright e2e against the mock, or (--sim)
 #                             against a fresh hub-sim that it starts and stops itself
+#   bin/hubbo profiles sync [dir]  copy the built-in profiles from hubbo-devices (default ../hubbo-devices)
 #   bin/hubbo gate <core|api|web|fw|all>  an area's full phase-end gate, as one command
 set -euo pipefail
 
@@ -46,7 +47,7 @@ lock() {  # <fd> <file>
 
 # Rebuild web/dist unless it is newer than every web admin source.
 web_build_if_stale() {
-    if [ -f web/dist/index.html ] && [ -z "$(find web/src web/public web/index.html \
+    if [ -f web/dist/index.html ] && [ -z "$(find web/src web/public web/index.html profiles \
             web/package.json web/pnpm-lock.yaml web/vite.config.ts web/tsconfig*.json \
             -newer web/dist/index.html -print -quit)" ]; then
         echo "fw: web/dist is up to date"
@@ -203,6 +204,23 @@ case "$cmd" in
             [ "$1" = build ] && lock 8 build/web-dist.lock
             run_in web "$@"
         fi
+        ;;
+    profiles)
+        # Copy the built-in profiles, kinds.json and buttons.json from
+        # hubbo-devices into profiles/, byte for byte, after its validator
+        # passes, and write profiles/index.json (id, revision, sha256 per file).
+        [ "${1:-}" = sync ] || { echo "usage: bin/hubbo profiles sync [hubbo-devices dir]" >&2; exit 2; }
+        src="$(cd "${2:-../hubbo-devices}" && pwd)"
+        "$src/bin/validate" >/dev/null
+        hashes="$("$src/bin/validate" --hashes profiles)"
+        rm -f profiles/*.json
+        mkdir -p profiles
+        cp "$src"/profiles/*.json "$src/kinds.json" "$src/buttons.json" profiles/
+        printf '%s\n' "$hashes" | awk -F'\t' '
+            BEGIN { print "[" }
+            { n = split($4, p, "/"); printf "%s  {\"file\": \"%s\", \"id\": \"%s\", \"revision\": %s, \"sha256\": \"%s\"}", (NR > 1 ? ",\n" : ""), p[n], $1, $2, $3 }
+            END { print "\n]" }' >profiles/index.json
+        echo "profiles: synced $(printf '%s\n' "$hashes" | wc -l) profiles from $src"
         ;;
     gate)
         # One area's full phase-end gate, stopping at the first failure. Run it
