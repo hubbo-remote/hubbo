@@ -182,13 +182,23 @@ void SimHub::logEvent(std::string text) {
     if (onLog) onLog("event", events_.back());
 }
 
+namespace {
+
+// "<integration> <target or -> <command>", the start of every command line.
+std::string commandLine(const char *integrationId, const char *target, const CommandSpec *command) {
+    std::string line = integrationId;
+    line += ' ';
+    line += target[0] != '\0' ? target : "-";
+    line += ' ';
+    line += command != nullptr ? command->id : "?";
+    return line;
+}
+
+}  // namespace
+
 void SimHub::onActionDispatched(const DispatchRecord &record) {
     const bool activate = record.action.op == ActionOp::Activate;
-    std::string line = record.integrationId;
-    line += ' ';
-    line += (!activate && record.target[0] != '\0') ? record.target : "-";
-    line += ' ';
-    line += record.action.command != nullptr ? record.action.command->id : "?";
+    std::string line = commandLine(record.integrationId, activate ? "" : record.target, record.action.command);
     if (activate) {
         line += std::string(" activity_id=") + record.target;  // the param holds an index
     } else if (record.action.command != nullptr) {
@@ -200,6 +210,18 @@ void SimHub::onActionDispatched(const DispatchRecord &record) {
     if (record.result.status == ExecStatus::Failed) {
         line += std::string(" ") + errorCodeName(record.result.error);
     }
+    logCommand(std::move(line));
+}
+
+// A Pending action finishing with an error: "ble dev_x wait_connected done ->
+// accepted adapter_unavailable" (the wait timed out; its sequence goes on).
+// Clean results aren't logged; the dispatch line already shows them.
+void SimHub::onActionCompleted(const CompletionRecord &record) {
+    if (record.result.error == ErrorCode::Ok) return;
+    std::string line = commandLine(record.integrationId, record.target, record.command);
+    line += " done -> ";
+    line += execStatusName(record.result.status);
+    line += std::string(" ") + errorCodeName(record.result.error);
     logCommand(std::move(line));
 }
 

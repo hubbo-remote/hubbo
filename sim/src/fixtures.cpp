@@ -1,7 +1,10 @@
 #include "fixtures.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 
+#include "hubbo/config/profile.h"
 #include "hubbo/domain/limits.h"
 
 namespace hubbo::sim {
@@ -60,8 +63,18 @@ DeviceSpec haDevice(std::string id, std::string name, std::string kind, std::str
                   {"home_assistant", std::move(entityId), ""});
 }
 
-DeviceSpec bleDevice(std::string id, std::string name, std::string kind) {
-    return device(std::move(id), std::move(name), "ble", std::move(kind), {"ble_hid", "", ""});
+// As the API adds one from a profile. An unknown profile id is a broken
+// fixture: stop at once rather than build a device the decoder refuses.
+DeviceSpec bleDevice(std::string id, std::string name, std::string kind, const char *profileId) {
+    const config::BuiltinProfile *profile = config::builtinProfiles().find(profileId);
+    if (profile == nullptr) {
+        std::fprintf(stderr, "sim::bleDevice: no built-in profile %s\n", profileId);
+        std::abort();
+    }
+    DeviceSpec d = config::deviceFromProfile(*profile, std::move(name), std::move(kind));
+    d.id = std::move(id);
+    d.revision = 1;
+    return d;
 }
 
 IntegrationSpec integration(std::string id, std::string type, std::string name) {

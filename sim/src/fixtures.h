@@ -31,7 +31,8 @@ BindingSpec bind(std::string trigger, std::vector<ActionSpec> actions);
 DeviceSpec device(std::string id, std::string name, std::string integration, std::string kind,
                   ProviderSpec provider);
 DeviceSpec haDevice(std::string id, std::string name, std::string kind, std::string entityId);
-DeviceSpec bleDevice(std::string id, std::string name, std::string kind);
+// A Bluetooth device added from a built-in profile (default: the Apple TV).
+DeviceSpec bleDevice(std::string id, std::string name, std::string kind, const char *profileId = "hubbo:apple-tv");
 IntegrationSpec integration(std::string id, std::string type, std::string name);
 
 // Devices: dev_apple_tv (ble), dev_lg_tv, dev_denon, dev_xbox, dev_lights

@@ -91,6 +91,45 @@ TEST(Scenario, PassingScript) {
     )")) << runner.error();
 }
 
+// A startup that waits for the Apple TV: connected, it goes straight on; not
+// connected, it gives up after timeout_ms, logs it and still goes on.
+TEST(Scenario, WaitConnectedLogsATimeoutAndGoesOn) {
+    ConfigSpec seed = fixtureConfig();
+    ActivitySpec &watch = seed.activities[0];
+    ASSERT_EQ(watch.id, "act_watch_apple_tv");
+    watch.startup.insert(watch.startup.begin(),
+                         action("ble", "dev_apple_tv", "wait_connected", {param("timeout_ms", int64_t{2000})}));
+    ScenarioRunner runner(nullptr, nullptr, false, &seed);
+    EXPECT_TRUE(runScript(runner, R"(
+        activate act_watch_apple_tv
+        expect ble dev_apple_tv wait_connected timeout_ms=2000 -> accepted
+        expect ha_main dev_lg_tv media_player.turn_on -> accepted
+        off
+        advance 5000
+        drain
+        ble disconnected
+        activate act_watch_apple_tv
+        expect ble dev_apple_tv wait_connected timeout_ms=2000 -> pending
+        advance 1999
+        expect_none
+        advance 1
+        expect ble dev_apple_tv wait_connected done -> accepted adapter_unavailable
+        expect ha_main dev_lg_tv media_player.turn_on -> accepted
+    )")) << runner.error();
+
+    // Switching away cancels the wait and frees its slot: flipping
+    // activities faster than the timeout never runs the adapter out of them.
+    ASSERT_TRUE(runScript(runner, "off\nadvance 5000\ndrain\n")) << runner.error();
+    for (int i = 0; i < 10; i++) {
+        ASSERT_TRUE(runScript(runner, R"(
+            activate act_watch_apple_tv
+            expect ble dev_apple_tv wait_connected timeout_ms=2000 -> pending
+            activate act_play_xbox
+            drain
+        )")) << i << ": " << runner.error();
+    }
+}
+
 TEST(Scenario, FailuresNameTheLine) {
     ScenarioRunner runner;
     EXPECT_FALSE(runScript(runner, "activate act_play_xbox\nexpect ble dev_apple_tv key_down key=SELECT\n"));
