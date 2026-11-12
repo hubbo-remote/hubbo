@@ -61,8 +61,9 @@ public:
 
     // HidTransport. connected(): that device's host is linked and encrypted
     // (the state loop() refreshes on every link event). The sends ask the
-    // stack for that host's live connection and return false without one or
-    // if the notify failed; they queue to the NimBLE host task.
+    // stack for that host's live connection and return false without one, if
+    // a usage is outside the report map, or if the notify failed; they queue
+    // to the NimBLE host task.
     bool connected(std::string_view deviceId) const override;
     bool sendKeyboard(std::string_view deviceId, const uint8_t report[8]) override;
     bool sendConsumer(std::string_view deviceId, uint16_t usage) override;
@@ -113,6 +114,7 @@ private:
     void disconnect(const Host &host);
     void forgetHost(Host &host);  // no table save or advertising update
     bool notify(std::string_view deviceId, NimBLECharacteristic *input, const uint8_t *report, size_t length);
+    void logLinkEvents();
     void refreshLinks();
     void adoptBond(uint16_t handle, uint8_t type, const uint8_t addr[6]);
     void closeWindow();

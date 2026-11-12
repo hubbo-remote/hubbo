@@ -5,6 +5,8 @@
 #pragma GCC diagnostic ignored "-Woverloaded-virtual="
 #include "ble_hid.h"
 #include "console.h"
+#include "hubbo/domain/limits.h"
+#include "hubbo/engine/spsc.h"
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
@@ -14,6 +16,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 
 // Each host plus one (include/sdkconfig.h).
@@ -23,6 +26,12 @@ static_assert(CONFIG_BT_NIMBLE_MAX_BONDS == hubbo::fw::BleHid::kMaxHosts + 1, "s
 namespace hubbo::fw {
 
 namespace {
+
+// The report map's ranges are core's (what an action can name): any usage
+// within them can be sent, and the sends refuse anything above (0 is none
+// or released).
+using hubbo::limits::kHidConsumerUsageMax;
+using hubbo::limits::kHidKeyboardUsageMax;
 
 constexpr uint8_t kKeyboardReportId = 1;
 constexpr uint8_t kConsumerReportId = 2;
@@ -65,10 +74,10 @@ const uint8_t kReportMap[] = {
     0x95, 0x06,        //   Report Count (6)
     0x75, 0x08,        //   Report Size (8)
     0x15, 0x00,        //   Logical Minimum (0)
-    0x25, 0x65,        //   Logical Maximum (101)
+    0x25, kHidKeyboardUsageMax,  // Logical Maximum (core's keyboard max)
     0x05, 0x07,        //   Usage Page (Keyboard/Keypad)
     0x19, 0x00,        //   Usage Minimum (0)
-    0x29, 0x65,        //   Usage Maximum (101)
+    0x29, kHidKeyboardUsageMax,  // Usage Maximum (core's keyboard max)
     0x81, 0x00,        //   Input (Data, Array, Absolute): keys
     0xC0,              // End Collection
     0x05, 0x0C,        // Usage Page (Consumer)
@@ -76,9 +85,9 @@ const uint8_t kReportMap[] = {
     0xA1, 0x01,        // Collection (Application)
     0x85, kConsumerReportId,
     0x15, 0x00,        //   Logical Minimum (0)
-    0x26, 0xFF, 0x03,  //   Logical Maximum (1023)
+    0x26, kHidConsumerUsageMax & 0xFF, kHidConsumerUsageMax >> 8,  // Logical Maximum (core's consumer max)
     0x19, 0x00,        //   Usage Minimum (0)
-    0x2A, 0xFF, 0x03,  //   Usage Maximum (1023)
+    0x2A, kHidConsumerUsageMax & 0xFF, kHidConsumerUsageMax >> 8,  // Usage Maximum (core's consumer max)
     0x75, 0x10,        //   Report Size (16)
     0x95, 0x01,        //   Report Count (1)
     0x81, 0x00,        //   Input (Data, Array, Absolute)
@@ -97,6 +106,69 @@ std::atomic<bool> linksChanged{false};
 std::atomic<uint32_t> authenticated{0};
 
 uint32_t handleBit(uint16_t handle) { return 1u << (handle & 31u); }
+
+// Link events for the log: pushed by a GAP listener on the host task,
+// printed by loop(). A full ring counts and drops; nothing waits.
+struct LinkEvent {
+    enum class Kind : uint8_t { Connect, Encryption, Disconnect };
+    uint32_t atMs = 0;
+    Kind kind = Kind::Connect;
+    uint16_t handle = 0;
+    int code = 0;  // connect / encryption status, disconnect reason (NimBLE host codes)
+    bool encrypted = false;
+    bool bonded = false;
+    uint8_t addrType = 0;  // identity address (an unresolved one before pairing)
+    uint8_t addr[6] = {};
+};
+hubbo::SpscRing<LinkEvent, 17> linkEvents;  // 16 events
+std::atomic<uint32_t> linkEventsDropped{0};
+
+void recordLinkEvent(LinkEvent::Kind kind, uint16_t handle, int code, const ble_gap_conn_desc *desc) {
+    LinkEvent event;
+    event.atMs = millis();
+    event.kind = kind;
+    event.handle = handle;
+    event.code = code;
+    if (desc != nullptr) {
+        event.encrypted = desc->sec_state.encrypted;
+        event.bonded = desc->sec_state.bonded;
+        event.addrType = desc->peer_id_addr.type;
+        memcpy(event.addr, desc->peer_id_addr.val, sizeof(event.addr));
+    }
+    if (!linkEvents.push(event)) {
+        linkEventsDropped.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+// Alongside NimBLE-Arduino's own handler, which keeps the server callbacks
+// (they drive the links); this one sees the connect and encryption statuses
+// they don't pass on, and logs disconnects with them in order.
+int onGapEvent(ble_gap_event *event, void *) {
+    ble_gap_conn_desc desc{};
+    switch (event->type) {
+        case BLE_GAP_EVENT_CONNECT: {
+            const bool found = event->connect.status == 0 && ble_gap_conn_find(event->connect.conn_handle, &desc) == 0;
+            recordLinkEvent(LinkEvent::Kind::Connect, event->connect.conn_handle, event->connect.status,
+                            found ? &desc : nullptr);
+            break;
+        }
+        case BLE_GAP_EVENT_ENC_CHANGE: {
+            const bool found = ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0;
+            recordLinkEvent(LinkEvent::Kind::Encryption, event->enc_change.conn_handle, event->enc_change.status,
+                            found ? &desc : nullptr);
+            break;
+        }
+        case BLE_GAP_EVENT_DISCONNECT:
+            recordLinkEvent(LinkEvent::Kind::Disconnect, event->disconnect.conn.conn_handle, event->disconnect.reason,
+                            &event->disconnect.conn);
+            break;
+        default:
+            break;
+    }
+    return 0;
+}
+
+ble_gap_event_listener gapListener;
 
 // The host table in NVS: device id -> identity address, next to NimBLE's
 // bonds. One blob, rewritten whole when it changes.
@@ -167,6 +239,7 @@ bool BleHid::begin(const char *name) {
     }
     static DeviceCallbacks deviceCallbacks;
     NimBLEDevice::setDeviceCallbacks(&deviceCallbacks);
+    ble_gap_event_listener_register(&gapListener, onGapEvent, nullptr);
     NimBLEDevice::setPower(kTxPowerDbm);
     NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
     setBondingAllowed(false);
@@ -254,6 +327,7 @@ void BleHid::loop(uint32_t nowMs) {
         con.printf("ble: pairing window for %s closed with no new host\n", windowDevice_.c_str());
         closeWindow();
     }
+    logLinkEvents();
     const bool linkEvent = linksChanged.exchange(false);
     if (linkEvent) {
         refreshLinks();
@@ -266,6 +340,39 @@ void BleHid::loop(uint32_t nowMs) {
     if (linkEvent || nowMs - advertisingCheckedMs_ >= kAdvertisingCheckMs) {
         advertisingCheckedMs_ = nowMs;
         updateAdvertising();
+    }
+}
+
+// One line per link event, naming the device when the address is a host's.
+void BleHid::logLinkEvents() {
+    if (linkEventsDropped.load(std::memory_order_relaxed) != 0) {
+        con.printf("ble: %lu link event(s) not logged\n",
+                   static_cast<unsigned long>(linkEventsDropped.exchange(0, std::memory_order_relaxed)));
+    }
+    LinkEvent event;
+    while (linkEvents.pop(&event)) {
+        const Host *host = findByIdentity(event.addrType, event.addr);
+        const char *who = host != nullptr ? host->deviceId.c_str() : "(no device)";
+        const unsigned long at = event.atMs;
+        char address[18];  // as NimBLEAddress::toString(), without the heap
+        snprintf(address, sizeof(address), "%02x:%02x:%02x:%02x:%02x:%02x", event.addr[5], event.addr[4],
+                 event.addr[3], event.addr[2], event.addr[1], event.addr[0]);
+        switch (event.kind) {
+            case LinkEvent::Kind::Connect:
+                if (event.code == 0) {
+                    con.printf("ble: %lu %s %s connected (handle %u)\n", at, who, address, event.handle);
+                } else {
+                    con.printf("ble: %lu connect failed (status 0x%x)\n", at, event.code);
+                }
+                break;
+            case LinkEvent::Kind::Encryption:
+                con.printf("ble: %lu %s %s encryption %s (status 0x%x, encrypted %d, bonded %d)\n", at, who, address,
+                           event.code == 0 ? "ok" : "failed", event.code, event.encrypted, event.bonded);
+                break;
+            case LinkEvent::Kind::Disconnect:
+                con.printf("ble: %lu %s %s disconnected (reason 0x%x)\n", at, who, address, event.code);
+                break;
+        }
     }
 }
 
@@ -441,10 +548,18 @@ bool BleHid::notify(std::string_view deviceId, NimBLECharacteristic *input, cons
 }
 
 bool BleHid::sendKeyboard(std::string_view deviceId, const uint8_t report[8]) {
+    for (size_t i = 2; i < 8; i++) {
+        if (report[i] > kHidKeyboardUsageMax) {
+            return false;  // outside the report map: the host would ignore it
+        }
+    }
     return notify(deviceId, keyboardInput, report, 8);
 }
 
 bool BleHid::sendConsumer(std::string_view deviceId, uint16_t usage) {
+    if (usage > kHidConsumerUsageMax) {
+        return false;
+    }
     const uint8_t report[2] = {static_cast<uint8_t>(usage & 0xFF), static_cast<uint8_t>(usage >> 8)};
     return notify(deviceId, consumerInput, report, sizeof(report));
 }
