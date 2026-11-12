@@ -251,22 +251,23 @@ const char *const kNoKeys = "keyboard 00 00 00 00 00 00 00 00";
 
 }  // namespace
 
-// Review high #2: the down comes from the global bindings, the activity
-// overrides only the up. The key is released anyway.
-TEST_F(EngineTest, AGlobalHoldIsReleasedWhenTheActivityOverridesOnlyTheUp) {
+// Review high #2: the down comes from the global bindings, and by the up an
+// activity that binds the button is active, so its up runs instead. The
+// key is released anyway.
+TEST_F(EngineTest, AGlobalHoldIsReleasedWhenAnActivityTakesOverTheButton) {
     ConfigSpec cfg = fixtureConfig();
     unbind(cfg.activities[0], "select");
     cfg.activities[0].bindings.push_back(bind("select:up", {haAction("dev_lights", "light.turn_on")}));
     cfg.globalBindings.push_back(bind("select:down", {bleKey("key_down", "ENTER")}));
     cfg.globalBindings.push_back(bind("select:up", {bleKey("key_up", "ENTER")}));
     ASSERT_TRUE(hub.load(cfg).ok());
-    hub.activate("act_watch_apple_tv");
-    hub.advance(1000);
     take();
-    hub.press(Button::Select);
+    hub.press(Button::Select);  // no activity: the global down
     hub.advance(100);
     EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 1u);
     EXPECT_EQ(hub.engine().openHolds(), 1u);
+    hub.activate("act_watch_apple_tv");
+    hub.advance(1000);
     hub.release(Button::Select);
     hub.advance(100);
     const Lines lines = take();
@@ -276,6 +277,23 @@ TEST_F(EngineTest, AGlobalHoldIsReleasedWhenTheActivityOverridesOnlyTheUp) {
     EXPECT_EQ(hub.engine().openHolds(), 0u);
     ASSERT_FALSE(hub.bleHosts().reports().empty());
     EXPECT_EQ(hub.bleHosts().reports().back(), kNoKeys);
+}
+
+// Fallback is per button: an activity's pass-through Off (:down/:up) never
+// runs the global off:tap on release.
+TEST_F(EngineTest, AnActivityPassThroughMasksTheGlobalTap) {
+    ConfigSpec cfg = fixtureConfig();
+    unbind(cfg.activities[0], "off");
+    cfg.activities[0].bindings.push_back(bind("off:down", {bleKey("key_down", "MENU")}));
+    cfg.activities[0].bindings.push_back(bind("off:up", {bleKey("key_up", "MENU")}));
+    ASSERT_TRUE(hub.load(cfg).ok());
+    hub.activate("act_watch_apple_tv");
+    hub.advance(1000);
+    take();
+    hub.tap(Button::Off);
+    hub.advance(1000);
+    EXPECT_EQ(take(), (Lines{"ble dev_apple_tv key_down key=MENU", "ble dev_apple_tv key_up key=MENU"}));
+    EXPECT_STREQ(hub.engine().activeActivityId(), "act_watch_apple_tv");
 }
 
 // Review high #3: the up sequence fails before its own release.

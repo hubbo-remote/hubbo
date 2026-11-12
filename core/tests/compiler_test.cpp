@@ -93,6 +93,33 @@ TEST_F(CompilerTest, ActivityBindingOverridesGlobal) {
     EXPECT_EQ(c->span(c->lookup(1, Button::Off, EventKind::Tap))[0].op, ActionOp::Off);
 }
 
+// Fallback is per button, not per trigger: an activity that binds any
+// trigger of a button masks all of that button's global bindings.
+TEST_F(CompilerTest, AnActivityBindingMasksTheWholeButtonsGlobals) {
+    ConfigSpec cfg = fixtureConfig();
+    cfg.globalBindings.push_back(bind("off:hold", {bleKey("key_tap", "HOME")}));
+    cfg.globalBindings.push_back(bind("menu:tap", {offAction()}));
+    cfg.globalBindings.push_back(bind("menu:hold", {offAction()}));
+    cfg.activities[0].bindings.push_back(bind("off:down", {bleKey("key_down", "MENU")}));
+    cfg.activities[0].bindings.push_back(bind("off:up", {bleKey("key_up", "MENU")}));
+    auto c = compile(cfg);
+    ASSERT_NE(c, nullptr) << (report.ok() ? "" : report.issues()[0].path);
+    bool global = true;
+    // A down/up pass-through masks the global tap and hold.
+    EXPECT_EQ(c->lookup(0, Button::Off, EventKind::Tap, &global).count, 0);
+    EXPECT_FALSE(global);
+    EXPECT_EQ(c->lookup(0, Button::Off, EventKind::Hold).count, 0);
+    EXPECT_EQ(c->lookup(0, Button::Off, EventKind::Down).count, 1);
+    // A tap (the fixture's menu:tap) masks the global hold.
+    EXPECT_EQ(c->span(c->lookup(0, Button::Menu, EventKind::Tap))[0].op, ActionOp::Adapter);
+    EXPECT_EQ(c->lookup(0, Button::Menu, EventKind::Hold).count, 0);
+    // A button the activity doesn't bind still gets every global.
+    EXPECT_EQ(c->span(c->lookup(1, Button::Off, EventKind::Tap, &global))[0].op, ActionOp::Off);
+    EXPECT_TRUE(global);
+    EXPECT_EQ(c->lookup(1, Button::Off, EventKind::Hold).count, 1);
+    EXPECT_EQ(c->lookup(1, Button::Menu, EventKind::Hold).count, 1);
+}
+
 TEST_F(CompilerTest, EmptyArraysAreValid) {
     ConfigSpec cfg = fixtureConfig();
     cfg.activities[0].startup.clear();
@@ -102,6 +129,7 @@ TEST_F(CompilerTest, EmptyArraysAreValid) {
     ASSERT_NE(c, nullptr) << (report.ok() ? "" : report.issues()[0].path);
     EXPECT_EQ(c->activities[0].startup.count, 0);
     EXPECT_EQ(c->lookup(0, Button::Number1, EventKind::Down).count, 0);
+    EXPECT_EQ(c->activities[0].table.bound & remote::buttonBit(Button::Number1), 0u);  // masks no global
 
     ConfigSpec empty;
     auto e = compile(empty);
