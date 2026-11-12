@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Activity } from '../api/types'
 import { fixture, loadSeed } from '../../mock/fixtures.ts'
 import type { ParamSpec } from '../api/types'
-import { buttonForPath, defaultParams, hubboCommands, mostUsedDevice, drawerParams, fanSpeeds, fieldLabel, speedLabel, speedOf, speedOptions, paramLabel, parseTrigger, percentLabel, percentOptions, percentScale, validateActivity, validateBindings, waitAction, systemAction, type Catalog } from './activity'
+import { bindsButton, buttonForPath, defaultParams, hubboCommands, mostUsedDevice, drawerParams, fanSpeeds, fieldLabel, speedLabel, speedOf, speedOptions, paramLabel, parseTrigger, percentLabel, percentOptions, percentScale, validateActivity, validateBindings, waitAction, systemAction, type Catalog } from './activity'
 
 const s = loadSeed()
 const cat: Catalog = {
@@ -18,6 +18,13 @@ describe('activity helpers', () => {
     expect(parseTrigger('volume_up:double')).toBeNull()
     expect(buttonForPath('/bindings/info:hold/0/params/key')).toBe('info')
     expect(buttonForPath('/startup/2')).toBeNull()
+  })
+
+  it('counts a button as bound only when one of its triggers has an action (the hub’s masking rule)', () => {
+    const a = waitAction()
+    expect(bindsButton({ 'up:tap': [a] }, 'up')).toBe(true)
+    expect(bindsButton({ 'up:hold': [] }, 'up')).toBe(false)
+    expect(bindsButton({ 'down:tap': [a] }, 'up')).toBe(false)
   })
 
   it('accepts every fixture activity and the global bindings', () => {

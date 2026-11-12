@@ -39,6 +39,12 @@ function boundEvents(bindings: Bindings, button: ButtonId): EventKind[] {
   return EVENT_ORDER.filter((e) => (bindings[triggerKey(button, e)]?.length ?? 0) > 0)
 }
 
+/**
+ * The hub's masking rule: a set binds a button when any of its triggers has an action. Such a button
+ * masks every global binding for it; any other button falls through to the globals.
+ */
+export const bindsButton = (bindings: Bindings, button: ButtonId) => boundEvents(bindings, button).length > 0
+
 /** Visit every action of an activity (or a bindings set) with its JSON-pointer path, e.g. `/bindings/up:down/0`. */
 export function forEachAction(doc: { startup?: Action[]; shutdown?: Action[]; bindings: Bindings }, fn: (a: Action, path: string) => void) {
   doc.startup?.forEach((a, i) => fn(a, `/startup/${i}`))

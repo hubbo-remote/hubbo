@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Action, Command, Device } from '@/api/types'
 import type { Catalog } from '@/lib/activity'
-import { commandLabel, paramSummary } from './describe'
+import { actionText, commandLabel, paramSummary } from './describe'
 
 const pct = { name: 'percentage', type: 'int', minimum: 0, maximum: 100, step: 33, unit: '%' } as const
 const commands: Command[] = [
@@ -31,5 +31,13 @@ describe('how a wait reads', () => {
     expect(paramSummary(wait(1500))).toBe('1.5 s')
     expect(paramSummary(wait(2250))).toBe('2.25 s')
     expect(paramSummary(wait(60000))).toBe('60 s')
+  })
+})
+
+describe('an action as one line', () => {
+  it('names the device first, and Hubbo’s own commands without one', () => {
+    const fan: Catalog = { ...cat, devices: new Map([['dev_fan', { id: 'dev_fan', name: 'Fan' } as Device]]) }
+    expect(actionText(act('fan.set_percentage', { percentage: 66 }), fan)).toBe('Fan → Set speed 2 of 3')
+    expect(actionText({ integration_id: 'system', device_id: null, command_id: 'wait', params: { duration_ms: 1500 } }, fan)).toBe('wait 1.5 s')
   })
 })

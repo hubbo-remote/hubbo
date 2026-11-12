@@ -36,12 +36,17 @@
   --remote-glyph: oklch(0.93 0.005 260);
   --remote-bound: oklch(0.72 0.12 190);
   --remote-accent: oklch(0.76 0.15 62);
-  /* The selected key's border: pink-500, apart from the teal bound mark and every pip (green, amber, blue, violet). */
+  /* The selected key's border: pink-500, apart from the bound marks (blue, amber) and every dot. */
   --remote-selected: #ec4899;
+  /* A key bound only by a global: amber-500 on the always-dark remote; on the page (legend,
+     Global tag) amber-700 in light (≥4.5:1 on white) and amber-400 in dark. */
+  --remote-global: #f59e0b;
+  --global: #b45309;
   --ev-down: oklch(0.68 0.15 200);
-  --ev-up: oklch(0.7 0.13 290);
+  /* Event dots. Long press is violet: amber means Global, blue the activity, pink the selection. */
+  --ev-up: oklch(0.74 0.11 240);
   --ev-tap: oklch(0.74 0.15 150);
-  --ev-hold: oklch(0.77 0.15 70);
+  --ev-hold: oklch(0.7 0.16 300);
 }
 
 .dark {
@@ -72,6 +77,7 @@
   --remote-edge: oklch(0.42 0.01 260);
   --remote-key: oklch(0.36 0.01 260);
   --remote-key-hi: oklch(0.45 0.01 260);
+  --global: #fbbf24;
 }
 
 @theme inline {
