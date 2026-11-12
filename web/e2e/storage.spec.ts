@@ -29,6 +29,24 @@ test('storage goes down: banner, edits disabled, switching still works; it comes
   expect(saved.status()).toBe(200)
 })
 
+test('storage goes down during the activity wizard: Create is disabled until it comes back', async ({ page }) => {
+  await open(page, '/activities/new')
+  await page.getByLabel('Name', { exact: true }).fill('E2E Paused')
+  await page.getByLabel('Family Room Lights').check()
+  const next = page.getByRole('button', { name: 'Continue' })
+  await next.click() // power
+  await next.click() // review
+  const create = page.getByRole('button', { name: 'Create activity' })
+  await expect(create).toBeEnabled()
+
+  await setStorage(page, 'unavailable')
+  await expect(create).toBeDisabled() // with the next status poll
+  await expect(create).toHaveAttribute('title', 'Changes are paused')
+  await setStorage(page, 'available')
+  await expect(create).toBeEnabled()
+  await expect(create).not.toHaveAttribute('title')
+})
+
 test('storage failing after a good load: a backup still exports the running config (the last acknowledged save)', async ({ page }) => {
   await open(page, '/status/backups')
   await setStorage(page, 'unavailable')

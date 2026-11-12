@@ -14,6 +14,7 @@ import { CredentialsProblem } from '@/pages/CredentialsProblem'
 
 // Code-split: Activities (home) ships in the entry chunk, everything else loads on demand.
 const ActivityEditor = lazy(() => import('@/pages/ActivityEditor'))
+const ActivityWizard = lazy(() => import('@/pages/ActivityWizard'))
 const GlobalBindings = lazy(() => import('@/pages/GlobalBindings'))
 const Devices = lazy(() => import('@/pages/Devices'))
 const DeviceDetail = lazy(() => import('@/pages/DeviceDetail'))
@@ -113,7 +114,7 @@ function SignedIn({ session, onSignedOut, onSetupDone }: { session: Session; onS
         <Switch>
           <Route path="/" component={Activities} />
           <Route path="/activities/global" component={GlobalBindings} />
-          <Route path="/activities/new">{() => <ActivityEditor id={null} />}</Route>
+          <Route path="/activities/new" component={ActivityWizard} />
           <Route path="/activities/:id">{(p) => <ActivityEditor id={p.id} />}</Route>
           <Route path="/devices" component={Devices} />
           <Route path="/devices/:id">{(p) => <DeviceDetail id={p.id} />}</Route>

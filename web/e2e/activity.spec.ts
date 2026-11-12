@@ -1,9 +1,8 @@
-import { activityIdFromUrl, addStep, bind } from './editor.ts'
+import { activityIdFromUrl, addStep, bind, openNewActivity, saveActivity, stepIds } from './editor.ts'
 import { advance, api, control, expect, open, SIM_URL, test } from './hub.ts'
 
-test('create an activity: bindings on the remote, startup and shutdown', async ({ page }) => {
-  await open(page, '/activities/new')
-  await page.getByLabel('Activity name').fill('E2E Movie Night')
+test('build an activity: bindings on the remote, startup and shutdown', async ({ page }) => {
+  const id = await openNewActivity(page, 'E2E Movie Night')
 
   // Key-like: down = key down; the matching key up is added automatically.
   await bind(page, 'up', 'down', 'Family Room Apple TV', 'Key down', 'ARROW_UP')
@@ -28,10 +27,9 @@ test('create an activity: bindings on the remote, startup and shutdown', async (
 
   await page.getByRole('button', { name: 'Check' }).click()
   await expect(page.getByText('No problems found')).toBeVisible()
-  await page.getByRole('button', { name: /^Create/ }).click()
+  await saveActivity(page)
 
   // What the hub stored.
-  const id = await activityIdFromUrl(page)
   const a = await api(page).get(`/activities/${id}`)
   expect(a.name).toBe('E2E Movie Night')
   expect(Object.keys(a.bindings).sort()).toEqual(['info:hold', 'info:tap', 'up:down', 'up:up', 'volume_up:down'])
@@ -40,18 +38,19 @@ test('create an activity: bindings on the remote, startup and shutdown', async (
   expect(a.shutdown).toHaveLength(1)
 })
 
-test('a new activity shows no errors until Save; Save then shows them and saves nothing; they clear live', async ({ page }) => {
-  const before = (await api(page).get('/activities')).activities.length
-  await open(page, '/activities/new')
+test('errors show only from Save on; Save then saves nothing; they clear live', async ({ page }) => {
+  const id = await openNewActivity(page, 'E2E Errors')
+  const { revision } = await api(page).get(`/activities/${id}`)
   const name = page.getByLabel('Activity name')
+  await name.fill('')
   await expect(name).toHaveAttribute('placeholder', 'Activity name') // a native, muted placeholder
   await expect(page.getByText('Name is required')).toHaveCount(0)
   await expect(name).not.toHaveAttribute('aria-invalid', 'true')
 
-  await page.getByRole('button', { name: /^Create/ }).click()
+  await page.getByRole('button', { name: /^Save/ }).click()
   await expect(page.getByText('Name is required').first()).toBeVisible()
   await expect(name).toHaveAttribute('aria-invalid', 'true')
-  expect((await api(page).get('/activities')).activities.length).toBe(before)
+  expect((await api(page).get(`/activities/${id}`)).revision).toBe(revision)
 
   await name.fill('E2E Errors Clear')
   await expect(page.getByText('Name is required')).toHaveCount(0)
@@ -90,8 +89,7 @@ test('an activity referenced by a button cannot be deleted', async ({ page }) =>
 })
 
 test('steps reorder by keyboard (Alt+↑/↓) and by drag', async ({ page }) => {
-  await open(page, '/activities/new')
-  await page.getByLabel('Activity name').fill('E2E Reorder')
+  const id = await openNewActivity(page, 'E2E Reorder')
   await page.getByRole('tab', { name: /Startup/ }).click()
   await addStep(page, 'Family Room LG TV', 'Power on')
   await page.getByRole('button', { name: 'Add wait' }).click()
@@ -109,9 +107,9 @@ test('steps reorder by keyboard (Alt+↑/↓) and by drag', async ({ page }) => 
 
   await steps.nth(2).dragTo(steps.nth(0)) // the wait, to the top
   await expect(steps.nth(0)).toContainText('Wait')
-  await page.getByRole('button', { name: /^Create/ }).click()
-  const a = await api(page).get(`/activities/${await activityIdFromUrl(page)}`)
-  expect(a.startup.map((s: { device_id: string | null; command_id: string }) => `${s.device_id ?? ''} ${s.command_id}`)).toEqual([' wait', 'dev_lg_tv media_player.turn_on', 'dev_denon media_player.turn_on'])
+  await saveActivity(page)
+  const a = await api(page).get(`/activities/${id}`)
+  expect(stepIds(a.startup)).toEqual([' wait', 'dev_lg_tv media_player.turn_on', 'dev_denon media_player.turn_on'])
 })
 
 test('duplicate asks for the new name; the tile menu works from the keyboard', async ({ page }) => {
@@ -177,7 +175,7 @@ test('with a single activity, a global button switches to it: the picker sets it
   await page.locator('[data-key="tv"]').click()
   await page.getByRole('button', { name: /^Bind TV tap$/i }).click()
   await page.getByLabel('Device').selectOption({ label: 'Hubbo' })
-  await page.getByLabel('Command').selectOption({ label: 'Switch activity' })
+  await page.getByLabel('Command', { exact: true }).selectOption({ label: 'Switch activity' })
   // Unset shows as unset (never as the first activity, which picking again wouldn't set), and no
   // error is painted before Save.
   const target = page.getByLabel(/^Activity/)
