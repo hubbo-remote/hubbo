@@ -53,6 +53,7 @@ TEST(AuthPolicy, RoleMatrix) {
         "activateActivity", "getGlobalBindings", "replaceGlobalBindings", "listIntegrations",
     };
     const char *adminOnly[] = {
+        "listProfiles", "getProfile", "listKinds",
         "getIntegrationConfig", "configureIntegration", "discoverIntegration", "getDiscovery", "cancelDiscovery",
         "requestEntityDetails", "getEntityDetails",
         "startDevicePairing", "getDevicePairing", "cancelDevicePairing", "forgetDevicePairing", "registerDevice", "updateDevice",

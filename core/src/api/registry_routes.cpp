@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "hubbo/config/json.h"
+#include "hubbo/config/profile.h"
 #include "hubbo/config/service.h"
 #include "hubbo/domain/system.h"
 #include "hubbo/ha/capabilities.h"
@@ -22,8 +23,19 @@ const char *commandLabel(std::string_view id) {
         const char *id;
         const char *label;
     } kLabels[] = {
-        {"key_down", "Key down"}, {"key_up", "Key up"}, {"key_tap", "Key tap"},
-        {"wait", "Wait"},         {"activate", "Switch activity"}, {"off", "Off"},
+        {"press", "Press"},
+        {"press_down", "Press down"},
+        {"press_up", "Press up"},
+        {"wait_connected", "Wait until connected"},
+        {"key_down", "Key down"},
+        {"key_up", "Key up"},
+        {"key_tap", "Key tap"},
+        {"usage_down", "Usage down"},
+        {"usage_up", "Usage up"},
+        {"usage_tap", "Usage tap"},
+        {"wait", "Wait"},
+        {"activate", "Switch activity"},
+        {"off", "Off"},
     };
     for (const auto &l : kLabels) {
         if (id == l.id) return l.label;
@@ -72,8 +84,15 @@ void putCommands(JsonArray out, CommandCatalog catalog, const DeviceSpec *device
         }
         cmd["label"] = label != nullptr ? label : c.id;
         cmd["effect"] = commandEffectName(c.effect);
+        if (c.group != nullptr) cmd["group"] = c.group;
         JsonArray params = cmd["params"].to<JsonArray>();
-        for (uint8_t p = 0; p < c.paramCount; p++) putParam(params.add<JsonObject>(), c.params[p]);
+        for (uint8_t p = 0; p < c.paramCount; p++) {
+            JsonObject param = params.add<JsonObject>();
+            putParam(param, c.params[p]);
+            // Bluetooth commands (they have a group) show core's param labels;
+            // Home Assistant params stay as they are (no labels).
+            if (c.group != nullptr && c.params[p].label != nullptr) param["label"] = c.params[p].label;
+        }
     }
 }
 
@@ -83,8 +102,11 @@ CommandCatalog catalogFor(const ApiContext &ctx, const DeviceSpec &device) {
     return index < 0 ? CommandCatalog{} : adapters.at(static_cast<size_t>(index))->commandsFor(device);
 }
 
-void putDevice(JsonObject out, const ApiContext &ctx, const DeviceSpec &device) {
-    config::encodeDevice(device, out, false);  // the snapshot stays on the hub
+// `detail`: Full (GET /devices/{id} and the admin answers) or Summary (the list).
+void putDevice(JsonObject out, const ApiContext &ctx, const DeviceSpec &device,
+               config::DeviceDetail detail = config::DeviceDetail::Full) {
+    config::encodeDevice(device, out, detail);  // never the HA snapshot
+    out["platform"] = device.provider.type;
     out["availability"] = ctx.runtime.deviceAvailability(device);
     if (device.provider.type == kBleHidType && ctx.bleHosts != nullptr) {
         putBluetoothStatus(out["bluetooth"].to<JsonObject>(), ctx.bleHosts->status(device.id));
@@ -141,13 +163,37 @@ bool snapshotFor(ApiContext &ctx, ProviderSpec *provider, std::string_view selfI
     return true;
 }
 
+// {profile_id, name?, kind?}: a device copied from a built-in profile. False
+// after sending 422.
+bool deviceFromBody(JsonVariantConst body, DeviceSpec *device, http::Response &out) {
+    ValidationReport report;
+    if (!checkObject(body,
+                     {{"profile_id", Field::Kind::String, true, limits::kMaxProfileIdLength},
+                      {"name", Field::Kind::String, false, limits::kMaxNameLength},
+                      {"kind", Field::Kind::String, false, limits::kMaxTypeLength}},
+                     &report)) {
+        sendIssues(out, report, "Send {profile_id, name?, kind?}");
+        return false;
+    }
+    const std::string_view id = body["profile_id"].as<const char *>();
+    const config::BuiltinProfile *profile = config::builtinProfiles().find(id);
+    if (profile == nullptr) {
+        sendDetail(out, "/profile_id", "unknown_profile", "There's no profile " + std::string(id));
+        return false;
+    }
+    *device = config::deviceFromProfile(*profile, body["name"] | std::string(), body["kind"] | std::string());
+    return true;
+}
+
 }  // namespace
 
 void addRegistryRoutes(RouteSink &sink, ApiContext &ctx) {
     sink.add("/api/v1/devices", auth::Operation::ListDevices, [&ctx](auto &, auto &, auto &out) {
         JsonDocument doc;
         JsonArray devices = doc["devices"].to<JsonArray>();
-        for (const auto &d : ctx.config.config().devices) putDevice(devices.add<JsonObject>(), ctx, d);
+        for (const auto &d : ctx.config.config().devices) {
+            putDevice(devices.add<JsonObject>(), ctx, d, config::DeviceDetail::Summary);
+        }
         sendJson(out, 200, doc);
     });
 
@@ -230,13 +276,21 @@ void addRegistryRoutes(RouteSink &sink, ApiContext &ctx) {
     sink.add("/api/v1/admin/devices", auth::Operation::RegisterDevice, [&ctx](auto &request, auto &, auto &out) {
         JsonDocument doc;
         if (!readJson(request, out, doc)) return;
-        ValidationReport report;
         DeviceSpec device;
-        if (!config::decodeDevice(doc.as<JsonVariantConst>(), config::DeviceShape::Register, &device, &report)) {
-            return sendIssues(out, report, "The device is invalid");
-        }
-        if (!checkProvider(device.provider, out, "/provider/entity_id")) return;
-        if (device.provider.type == kHomeAssistantType) {
+        if (!doc["profile_id"].isNull()) {
+            if (!deviceFromBody(doc.as<JsonVariantConst>(), &device, out)) return;
+        } else {
+            // Bluetooth devices come from a profile; a client never sends one
+            // (checked first: the decoder would ask for the profile's fields).
+            // Any other device's decoder reports profile fields as unknown_field.
+            if (doc["provider"]["type"] == kBleHidType) {
+                return sendDetail(out, "/profile_id", "required", "Add a Bluetooth device from a profile");
+            }
+            ValidationReport report;
+            if (!config::decodeDevice(doc.as<JsonVariantConst>(), config::DeviceShape::Register, &device, &report)) {
+                return sendIssues(out, report, "The device is invalid");
+            }
+            if (!checkProvider(device.provider, out, "/provider/entity_id")) return;
             ha::CapabilitySnapshot snapshot;
             if (!snapshotFor(ctx, &device.provider, {}, &snapshot, out)) return;
             device.haCapabilities = std::move(snapshot);

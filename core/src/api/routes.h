@@ -123,6 +123,7 @@ void addBleRoutes(RouteSink &sink, ApiContext &ctx);          // Bluetooth devic
 void putBluetoothStatus(JsonObject out, const integrations::BleHostStatus &status);
 void addAuthRoutes(RouteSink &sink, ApiContext &ctx);      // setup, login, logout, session, password, tokens
 void addRegistryRoutes(RouteSink &sink, ApiContext &ctx);  // devices, capabilities, execute, integrations
+void addProfileRoutes(RouteSink &sink, ApiContext &ctx);   // built-in profiles, kinds
 void addActivityRoutes(RouteSink &sink, ApiContext &ctx);  // activities, global bindings, activate, off
 void addStatusRoutes(RouteSink &sink, ApiContext &ctx);    // status, remote status/buttons
 void addBackupRoutes(RouteSink &sink, ApiContext &ctx);    // backup download, restore

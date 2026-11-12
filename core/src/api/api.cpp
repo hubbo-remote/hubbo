@@ -14,6 +14,7 @@ void Api::registerRoutes(http::Router &router) {
     RouteSink sink{router, handlers_, ctx_.config, ctx_.clock};
     addAuthRoutes(sink, ctx_);
     addRegistryRoutes(sink, ctx_);
+    addProfileRoutes(sink, ctx_);
     addActivityRoutes(sink, ctx_);
     addStatusRoutes(sink, ctx_);
     addBackupRoutes(sink, ctx_);
