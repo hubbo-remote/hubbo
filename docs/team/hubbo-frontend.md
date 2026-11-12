@@ -2,6 +2,45 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## Web polish (branch `web-polish`; review fixes in, gate after them)
+
+- **What's on**: no per-page activity chip. The nav's `Brand` shows `NowOn` (`role="status"`, dot +
+  running activity or Off) under "Hubbo", sidebar and phone header. Desktop main `md:pt-8`.
+- **⋯ menu** (`ui/menu.tsx`): hands its trigger the menu props; closes on outside pointerdown, Esc
+  (focus back on the trigger), Tab, item chosen; arrows/Home/End. On open it focuses the checked
+  item, else the first (callers never autoFocus); `onOpenChange` is held in a ref.
+- **One shared remote editor**: `BindingsEditor` takes `set: BindingSet` (`{source:'global'}` or
+  `{source:'activity', globals}`: an activity always gets the globals, so legend, amber marks, Global
+  tag + Change are identical on both hosts) and `selected: string | null` (null → the set's first
+  button: select / tv). A `selected` change from the page (ActivityEditor's error jump) opens the
+  phone sheet too. Both hosts wait for the globals before showing the editor.
+- **One shared host** (`hooks/draft.ts` `useDraft(store, server, catalog)` + `components/
+  ConflictDialog.tsx`): draft/saved, validation (errors from the first Save on), Save + Cmd/Ctrl+S,
+  conflict (fetch theirs; Keep / Load theirs / Save mine), beforeunload guard. Stores:
+  `activityStore(id)` (whole activity, `toDraft`) and `globalStore`. The draft resets only when the
+  store key changes, or the saved copy's revision changes while clean, so refetches never wipe edits;
+  a save that lands after a switch only updates its own set. Retry uses `retryFailed(...queries)`
+  (useCatalog has `refetch`). Pages show ErrorState only when nothing has loaded.
+- **Remote page** (`pages/Remote.tsx`, `/remote` Global, `/remote/:activityId`): one route, never
+  remounted; while the next set loads the last draft shows dimmed. Picker disabled while saving; a
+  dirty switch asks "Discard unsaved changes?" (confirm; the user can veto). An activity here edits
+  the whole activity draft (validateActivity), same as the activity editor.
+- **Masking rule**: `bindsButton` (lib/activity): a button is bound only if a trigger has ≥1 action;
+  both the remote's inherited marks and the panel's `owns` use it. Inherited tooltip keeps the key
+  name: "TV, Global: Press → … · Long press → …".
+- **Colours**: amber means Global (`--remote-global` on the remote, `--global` page bits); Long
+  press dots violet, raw Up sky blue. `SourceLegend` only for an activity set.
+- **Phone**: `useWide` (hooks/media.ts, one module-level MediaQueryList; true without matchMedia).
+  Below md, a tapped key opens `ui/sheet.tsx` (55dvh, Done, Esc, focus back to the key, no scrim or
+  gestures). Gear menu (theme radios + Settings) is phone-only; tab bar has five sections.
+- **Tests**: `e2e/remote-page.spec.ts` (picker in place + Back, activity save, dirty-switch confirm,
+  global conflict, nav status, sidebar Settings/theme, tile menu; phone tab bar, gear, sheet).
+  activity.spec (inherited keys), conflict.spec (activity), a11y (/remote, /remote/<act>). Units:
+  menu (focus on open), RemoteSvg (48 keys, one tab stop, arrows, Enter; global marks, tooltip),
+  describe (actionText), activity (`bindsButton`).
+- **Open**: no e2e for the phone sheet opening on an error jump (hard to make a local binding error
+  in the mock).
+
 ## Web admin UX review (branch `remote-editor`, simplified, tests caught up)
 
 Quick user-driven changes on hub-sim (the user's :8790 and :5180; don't start servers there). Tests
