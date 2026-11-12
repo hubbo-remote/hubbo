@@ -118,19 +118,22 @@ test('steps reorder by keyboard (Alt+↑/↓) and by drag', async ({ page }) => 
 test('a button inherits the global bindings only while the activity binds none of it', async ({ page }) => {
   const id = await openNewActivity(page, 'E2E Inherit')
   await page.locator('[data-key="tv"]').click()
-  const panel = page.getByRole('main')
-  await expect(panel.getByText(/^Global: /)).toBeVisible()
+  const tv = page.locator('[data-key="tv"]')
+  const globalRow = page.getByRole('main').getByText(/^Press\s*Global/) // the row's title and its Global tag
+  await expect(tv).toHaveAttribute('aria-label', /global: press$/) // amber, with the global's dots
+  await expect(globalRow).toBeVisible()
 
   // Change opens on the global's action; applying it unchanged binds nothing.
   await page.getByRole('button', { name: 'Change TV press' }).click()
   await expect(page.getByLabel('Device').locator('option:checked')).toHaveText('Hubbo')
   await expect(page.getByLabel('Command', { exact: true }).locator('option:checked')).toHaveText('Switch activity')
   await page.getByRole('button', { name: 'Apply' }).click()
-  await expect(page.locator('[data-key="tv"]')).toHaveAttribute('aria-label', /unbound$/)
+  await expect(tv).toHaveAttribute('aria-label', /global: press$/) // still the global's
 
   // Binding any of the button masks every global for it.
   await bind(page, 'tv', 'long press', 'Family Room Apple TV', 'Keyboard key…', 'AC_HOME')
-  await expect(panel.getByText(/^Global: /)).toHaveCount(0)
+  await expect(tv).toHaveAttribute('aria-label', /bound: long press$/)
+  await expect(globalRow).toHaveCount(0)
   // An unbound row opens empty: nothing guessed, and Apply waits for a command.
   await page.getByRole('button', { name: 'Bind TV press' }).click()
   await expect(page.getByLabel('Device').locator('option:checked')).toHaveText('Choose…')
@@ -237,7 +240,7 @@ test('with a single activity, a global button switches to it: the picker sets it
   }
   if (SIM_URL) await hub.post('/activities/off')
 
-  await open(page, '/activities/global')
+  await open(page, '/remote')
   await page.locator('[data-key="tv"]').click()
   await page.getByRole('button', { name: /^Bind TV press$/i }).click()
   await expect(page.getByLabel('Device').locator('option', { hasText: /^None$/ })).toHaveCount(0)

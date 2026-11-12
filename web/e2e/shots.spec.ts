@@ -25,7 +25,7 @@ const SHOTS: [string, string][] = [
   ['02-activities', '/'],
   ['03-activity-editor', '/activities/act_watch_apple_tv'],
   ['05-activity-new', '/activities/new'],
-  ['06-global-buttons', '/activities/global'],
+  ['06-remote-global', '/remote'],
   ['07-devices', '/devices'],
   ['09-device-detail', '/devices/dev_denon'],
   ['10-integrations', '/integrations'],
