@@ -21,3 +21,15 @@ describe('how an action reads', () => {
     expect(reads(act('light.brightness_step', { step: 26 }))).toBe('Change brightness +10%')
   })
 })
+
+describe('how a wait reads', () => {
+  const wait = (duration_ms: number): Action => ({ integration_id: 'system', device_id: null, command_id: 'wait', params: { duration_ms } })
+  it('says milliseconds under a second, else seconds without trailing zeros', () => {
+    expect(paramSummary(wait(0))).toBe('0 ms')
+    expect(paramSummary(wait(500))).toBe('500 ms')
+    expect(paramSummary(wait(1000))).toBe('1 s')
+    expect(paramSummary(wait(1500))).toBe('1.5 s')
+    expect(paramSummary(wait(2250))).toBe('2.25 s')
+    expect(paramSummary(wait(60000))).toBe('60 s')
+  })
+})
