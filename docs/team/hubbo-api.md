@@ -1,6 +1,6 @@
 # hubbo-api: working notes
 
-Current as of polish round 1 (after Phase 5). Not a log: rewrite sections as they change.
+Current as of the device-profiles phase (in progress, uncommitted). Not a log: rewrite sections as they change.
 
 ## State
 
@@ -8,7 +8,9 @@ Current as of polish round 1 (after Phase 5). Not a log: rewrite sections as the
   on hub-sim, `mock mock-auth` on the web mock). Core's gate runs the native tests, tsan and asan.
   While working, run my own suites with `bin/hubbo test -R <regex>`.
 - Routes in `core/src/api/`, one file per area:
-  - `registry_routes.cpp`: devices and registration;
+  - `registry_routes.cpp`: devices and registration (HA, or `{profile_id, name?, kind?}`);
+  - `profile_routes.cpp`: GET /profiles, /profiles/{profile_id} (percent-decoded; the published
+    file minus `meta`) and /kinds, all admin, over `config::builtinProfiles()`;
   - `integration_routes.cpp`: HA settings, discovery, entity details, `applyHomeAssistantSettings()`;
   - `remote_routes.cpp` / `ble_routes.cpp`: the remote, and Bluetooth device pairing over core's
     `integrations::BleHostPort` (`ctx.bleHosts`; `SimulatedRemote` / hub-sim's hosts);
@@ -24,6 +26,21 @@ Current as of polish round 1 (after Phase 5). Not a log: rewrite sections as the
 
 ## Key decisions (and why)
 
+- **Device profiles** (docs/design/device-profiles.md; profiles synced to `profiles/`):
+  - A Bluetooth device only comes from a built-in profile: `deviceFromProfile()` then
+    `createDevice()`. The HA branch refuses a ble_hid provider (`required` at /profile_id,
+    checked before decodeDevice); the decoder reports profile fields on an HA device as
+    `unknown_field`. A whole `profile` document (the catalog, later) is
+    `unknown_field` until then. Unknown id: 422 `unknown_profile` at /profile_id.
+  - Responses add `platform` (= provider.type, never stored). The list uses
+    `DeviceDetail::Summary`; the detail and the admin 201/200 use `Full` (spec `DeviceDetail`).
+    The profile identity is `profile: {id, revision, sha256}` (the spec's `revision` clashes).
+  - Capabilities: `group` remote/keys/custom (none for HA and `wait_connected`); effect `wait`
+    (execute and bindings: `sequence_only`). Command labels live in `commandLabel()` here.
+  - Fixtures load `profiles/` and read the `key` options from core's `HUBBO_BLE_HID_KEYS`
+    (gen_fixtures.py `hid_keys()`); `dev_apple_tv` is hubbo:apple-tv, and hub-sim
+    seeds it from admin/backup.json. The contract compares profiles, kinds and dev_apple_tv
+    with the fixtures.
 - **Messages the UI shows as-is are product copy** (docs/design/polish-ux.md): e.g. "X isn't in
   Home Assistant", "This update is for a different device", "This isn't a Hubbo update file",
   referrers "Used by <activity name>" / "Used by global buttons" (from
@@ -196,6 +213,23 @@ Current as of polish round 1 (after Phase 5). Not a log: rewrite sections as the
   end-of-phase instruction (CLAUDE.md), and only your own files, staged by path.
 
 ## Open items
+
+- **Waiting on core (review round):**
+  - Device rule breaks become 422 before the save: the contract already expects unknown_kind at
+    /kind and a 422 at /provider/type; pin that code when core picks it.
+  - Direct execute of a timed press answers at key-down (sequences still wait for release); the
+    contract checks elapsed_ms < hold_ms.
+  - "Remote command" moves into core's ParamSpec: then emit `spec.label` only for commands with
+    a group (Bluetooth; HA params stay unlabelled, the user's call) and drop the name check in
+    putCommands.
+
+- **Suggested to core (/simplify, not done):** `DeviceShape::Register` = the HA body only (drops
+  the ble_hid pre-check); keep built-in profile text meta-stripped and in flash (`const char *`)
+  so GET /profiles/{id} sends it without a parse; a `label` on `CommandSpec` (drops
+  `commandLabel()`'s Bluetooth rows); an `encodeProfileSummary` for GET /profiles.
+
+- **Profiles phase:** API tests, lint and contract noauth/auth pass; the mock modes wait on the
+  web mock's new routes. Then /simplify and the gate.
 
 - **Stale coverage:** no API-level test drives `stale` yet. A fresh-hub-sim contract case
   (`/sim/ha?remove=`, discover, `GET /devices/{id}`, execute → `entity_not_found`) would cover

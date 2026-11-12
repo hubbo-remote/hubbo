@@ -38,7 +38,8 @@ Can: read status, remote buttons, devices and capabilities; run registered comma
 replace, delete, validate and activate activities; turn the current activity off; edit global
 bindings; list integrations.
 
-Can't (`403 forbidden`): register, edit or delete devices; configure or discover integrations;
+Can't (`403 forbidden`): list the built-in profiles or kinds; register, edit or delete devices;
+configure or discover integrations;
 set the remote's endpoint or pair the remote or Bluetooth; manage tokens or the password; back
 up, restore or update firmware. Ask the admin for those.
 
@@ -70,6 +71,22 @@ labels are HA's. A device whose entity is missing from the latest discovery show
 until an admin re-links it. Until a discovery runs, a renamed or removed entity's commands are
 reported `accepted` (HA itself says success).
 
+A Bluetooth device was added from a profile (an Apple TV, a Fire TV...). `GET /devices/{id}`
+shows the profile's `commands` (names like `Select`, `Home`, `PlayPause`), `buttons`, `power`
+and `inputs`; `GET /devices` leaves those out. Its capabilities come in three `group`s:
+
+- `remote`: `press {command, hold_ms?}`, `press_down {command}` and `press_up {command}`, where
+  `command` is one of the profile's names. `press` holds as long as the profile says, or
+  `hold_ms` (1-10000) if you send it.
+- `keys`: `key_tap`, `key_down` and `key_up` with `key` (`KEY_A`, `ARROW_UP`, `F1`...), on
+  every Bluetooth device whatever its profile.
+- `custom`: `usage_tap`, `usage_down` and `usage_up` with a raw consumer `usage` (1-1023).
+
+Prefer `remote`: the same name sends the right code for that device. `wait_connected
+{timeout_ms?}` (1000-60000, default 15000) waits for the device's Bluetooth link, then the
+sequence goes on; if the time runs out, it goes on anyway. It works only in a startup or
+shutdown.
+
 Deviceless commands come from the `system` integration in `GET /integrations` (`commands`):
 `wait {duration_ms}`, `activate {activity_id}`, `off {}`. Use them with `"device_id": null`.
 
@@ -79,7 +96,7 @@ Every action has the same four fields:
 
 ```json
 {"integration_id": "ha_main", "device_id": "dev_denon", "command_id": "media_player.volume_set", "params": {"level": 0.35}}
-{"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "key_tap", "params": {"key": "PLAY_PAUSE"}}
+{"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "press", "params": {"command": "PlayPause"}}
 {"integration_id": "system", "device_id": null, "command_id": "wait", "params": {"duration_ms": 1500}}
 ```
 
@@ -99,9 +116,10 @@ curl -s -X POST -H "Authorization: Bearer $HUBBO_TOKEN" -H 'Content-Type: applic
 `4xx` means nothing was sent: read `error.details`.
 
 Only `momentary` commands can be executed (each command's `effect` in capabilities says which).
-A `hold` command such as `key_down` would leave a key held with nothing to release it, so execute
-answers `422` with detail code `hold_not_allowed`: send `key_tap` instead. Holds belong in
-bindings, as a `down`/`up` pair (`up:down` → `key_down`, `up:up` → `key_up`).
+A `hold` command such as `press_down` would leave a key held with nothing to release it, so
+execute answers `422` with detail code `hold_not_allowed`: send `press` instead. Holds belong in
+bindings, as a `down`/`up` pair (`up:down` → `press_down`, `up:up` → `press_up`). A `wait`
+command (`wait_connected`) answers `422` `sequence_only`, and a binding can't use it either.
 
 A Bluetooth device's key goes to that device's own host (an Apple TV, a Shield), never another.
 Each Bluetooth device in `/devices` has `bluetooth.state`: `connected`, `not_connected`,
@@ -119,7 +137,7 @@ actions:
 - **Shutdown** runs only on Off (the remote's Off, or `POST /activities/off`).
 - **Bindings** map `"<button>:<event>"` to actions. Events are `down`, `up`, `tap` (released
   before 800 ms) and `hold` (still held at 800 ms, fires once). Use `down` + `up` for key-like
-  behaviour (Bluetooth `key_down`/`key_up`, so holding a remote arrow holds the key). Use `tap` +
+  behaviour (Bluetooth `press_down`/`press_up`, so holding a remote arrow holds the key). Use `tap` +
   `hold` for click-or-hold. Unbound triggers do nothing.
 - `system/activate` and `system/off` may appear only as the last action of a binding, never in
   startup or shutdown.
