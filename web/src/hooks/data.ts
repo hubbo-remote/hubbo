@@ -17,11 +17,6 @@ export const useGlobalBindings = () => useQuery('global-bindings', () => api.glo
 export const useIntegrations = (pollMs?: number) => useQuery('integrations', () => api.integrations(), { pollMs })
 export const useProfiles = (enabled = true) => useQuery(enabled ? 'profiles' : null, () => api.profiles())
 export const useKinds = (enabled = true) => useQuery(enabled ? 'kinds' : null, () => api.kinds())
-/** A device kind's label (GET /kinds), or the id until the list is in. */
-export function useKindLabel() {
-  const kinds = useKinds().data
-  return (id: string) => kinds?.find((k) => k.id === id)?.label ?? id
-}
 export const useIntegrationConfig = (id: string) => useQuery(`integration-config/${id}`, () => api.integrationConfig(id))
 
 /** Everything the binding/sequence editors validate against: devices, their commands, system commands, activities. */
