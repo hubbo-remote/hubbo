@@ -753,7 +753,7 @@ paths:
         registering it needs. One at a time: a new request replaces the
         earlier one. Poll the GET until `done` or `failed`. `home_assistant`
         integrations only (404 for others); `422` if `entity_id` isn't one
-        `media_player`, `light` or `switch` entity; `503
+        `media_player`, `light`, `switch` or `fan` entity; `503
         integration_unavailable` if HA isn't connected.
       responses:
         '202':
@@ -829,7 +829,15 @@ paths:
         - name: domain
           in: query
           required: false
-          schema: {type: string, enum: [media_player, light, switch]}
+          schema: {type: string, enum: [media_player, light, switch, fan]}
+        - name: available
+          in: query
+          required: false
+          description: |
+            `true`: only candidates that can be registered (`supported`, with
+            no `registered_device_id`). Applied before paging, like `q` and
+            `domain`, so every page is full until the last.
+          schema: {type: boolean, default: false}
         - name: limit
           in: query
           required: false
@@ -2010,13 +2018,21 @@ components:
     ParamSpec:
       description: |
         Schema of one command parameter. Scalars only; nested objects and arrays
-        are never accepted as parameter values.
+        are never accepted as parameter values. `label`, `unit` and `default`
+        (and `description`) are display metadata, present when the integration gives them
+        (Home Assistant services: HA's English names, units and defaults;
+        Bluetooth: the hub's). A `default` is what's used when an optional
+        param is left out.
       type: object
       additionalProperties: false
       required: [name, type, required]
       properties:
         name: {$ref: '#/components/schemas/ParamName'}
         label: {type: string, maxLength: 48}
+        description:
+          description: A tooltip (Home Assistant's field description, shortened).
+          type: string
+          maxLength: 160
         type:
           description: Same names as core `paramTypeName()`. `activity_ref` takes an activity ID.
           type: string
@@ -2392,6 +2408,12 @@ components:
         supported_color_modes: {$ref: '#/components/schemas/HaOptionList'}
         min_color_temp_kelvin: {type: integer, minimum: 0, maximum: 100000}
         max_color_temp_kelvin: {type: integer, minimum: 0, maximum: 100000}
+        preset_modes: {$ref: '#/components/schemas/HaOptionList'}
+        percentage_step:
+          description: A fan's percentage per speed (HA's 100 / speeds), rounded down.
+          type: integer
+          minimum: 1
+          maximum: 100
         services:
           description: Integration-specific services offered for the entity, already typed.
           type: array
@@ -2870,10 +2892,21 @@ components:
           type: integer
           minimum: 0
         skipped_services:
-          description: Integration services that match the entity but aren't offered (a field Hubbo can't type, more than 4 fields, or no entity target).
+          description: |
+            Integration services that match the entity but aren't offered,
+            and why: `unsupported_field` (a field Hubbo can't type, or a
+            filter or name it can't read), `too_many_fields` (more than 4),
+            `response_only` (it only returns data), `too_many_services`
+            (past 32).
           type: array
           maxItems: 32
-          items: {type: string, maxLength: 65}
+          items:
+            type: object
+            additionalProperties: false
+            required: [service, reason]
+            properties:
+              service: {type: string, maxLength: 65}
+              reason: {type: string, enum: [unsupported_field, too_many_fields, response_only, too_many_services]}
         registered_device_id:
           $ref: '#/components/schemas/NullableDeviceId'
     DiscoverStatus:
