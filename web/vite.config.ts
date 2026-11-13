@@ -1,6 +1,6 @@
 /// <reference types="vitest/config" />
 import path from 'node:path'
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, type Plugin, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { mockMiddleware, optionsFromEnv } from './mock/node.ts'
@@ -10,6 +10,16 @@ import { mockMiddleware, optionsFromEnv } from './mock/node.ts'
 //   http://127.0.0.1:8780     hub-sim (the real C++ core)
 //   http://hubbo.local        a board on your LAN
 const target = process.env.HUBBO_API_TARGET || 'mock'
+
+// The hub rejects a foreign Origin on unsafe requests (403 csrf_failed). Served from the hub the UI
+// is same-origin; through this dev proxy it isn't, so send the target's Host and drop Origin (the hub
+// accepts requests without one).
+const toHub: ProxyOptions = {
+  target,
+  changeOrigin: true,
+  secure: false,
+  configure: (proxy) => proxy.on('proxyReq', (req) => req.removeHeader('origin')),
+}
 
 function hubboMock(): Plugin {
   return {
@@ -27,21 +37,8 @@ export default defineConfig({
     host: process.env.HUBBO_WEB_HOST || '0.0.0.0',
     port: Number(process.env.HUBBO_WEB_PORT || 5180),
     strictPort: true,
-    proxy:
-      target === 'mock'
-        ? undefined
-        : {
-            '/api': {
-              target,
-              // The hub rejects a foreign Origin on unsafe requests (403
-              // csrf_failed). Served from the hub the UI is same-origin;
-              // through this dev proxy it isn't, so send the target's Host
-              // and drop Origin (the hub accepts requests without one).
-              changeOrigin: true,
-              secure: false,
-              configure: (proxy) => proxy.on('proxyReq', (req) => req.removeHeader('origin')),
-            },
-          },
+    // The API, and /llms.txt beside it (the agents' entry point), go to the hub.
+    proxy: target === 'mock' ? undefined : Object.fromEntries(['/api', '/llms.txt'].map((path) => [path, toHub])),
   },
   build: {
     target: 'es2022',
