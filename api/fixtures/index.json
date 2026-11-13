@@ -272,6 +272,41 @@
       "kind": "request"
     },
     {
+      "file": "integrations/ha_main.entities/scene.movie_night.capabilities.json",
+      "operation": "getDeviceCapabilities",
+      "kind": "200"
+    },
+    {
+      "file": "integrations/ha_main.entities/script.goodnight.capabilities.json",
+      "operation": "getDeviceCapabilities",
+      "kind": "200"
+    },
+    {
+      "file": "integrations/ha_main.entities/cover.office_blinds.capabilities.json",
+      "operation": "getDeviceCapabilities",
+      "kind": "200"
+    },
+    {
+      "file": "integrations/ha_main.entities/button.restart_router.capabilities.json",
+      "operation": "getDeviceCapabilities",
+      "kind": "200"
+    },
+    {
+      "file": "integrations/ha_main.entities/input_boolean.guest_mode.capabilities.json",
+      "operation": "getDeviceCapabilities",
+      "kind": "200"
+    },
+    {
+      "file": "integrations/ha_main.entities/humidifier.bedroom_humidifier.capabilities.json",
+      "operation": "getDeviceCapabilities",
+      "kind": "200"
+    },
+    {
+      "file": "integrations/ha_main.entities/select.dryer_cycle.capabilities.json",
+      "operation": "getDeviceCapabilities",
+      "kind": "200"
+    },
+    {
       "file": "integrations/ha_main.discover.json",
       "operation": "discoverIntegration",
       "kind": "202"

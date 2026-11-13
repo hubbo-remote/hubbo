@@ -1,0 +1,57 @@
+{
+  "device_id": "dev_bedroom_humidifier",
+  "integration_id": "ha_main",
+  "commands": [
+    {
+      "command_id": "humidifier.turn_on",
+      "label": "Turn on",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "humidifier.turn_off",
+      "label": "Turn off",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "humidifier.toggle",
+      "label": "Toggle",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "humidifier.set_humidity",
+      "label": "Set humidity",
+      "effect": "momentary",
+      "params": [
+        {
+          "name": "humidity",
+          "type": "int",
+          "required": true,
+          "minimum": 30,
+          "maximum": 80,
+          "step": 1,
+          "unit": "%"
+        }
+      ]
+    },
+    {
+      "command_id": "humidifier.set_mode",
+      "label": "Set mode",
+      "effect": "momentary",
+      "params": [
+        {
+          "name": "mode",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "normal",
+            "eco",
+            "sleep"
+          ]
+        }
+      ]
+    }
+  ]
+}

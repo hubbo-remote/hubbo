@@ -27,8 +27,13 @@
 // - Commands are offered only when HA itself would accept them for the
 //   entity (same supported_features test as HA's entity service
 //   registration), and only from a curated allowlist: no play_media,
-//   join/unjoin (take other entity ids), toggle (we prefer explicit power),
-//   browse/search, or anything taking free text or URLs.
+//   join/unjoin (take other entity ids), browse/search, or anything taking
+//   free text or URLs. Toggle only where HA's own UI leans on it (covers,
+//   humidifiers, input booleans).
+//
+// Feature bits, attribute names and service gating were checked against
+// HA's dev branch: homeassistant/components/<domain>/const.py and
+// services.py (2026-11-13). docs/ha-capabilities.md has the tables.
 namespace hubbo::ha {
 
 // MediaPlayerEntityFeature, homeassistant/components/media_player/const.py.
@@ -74,19 +79,40 @@ constexpr uint32_t kTurnOff = 16;
 constexpr uint32_t kTurnOn = 32;
 }  // namespace fan_feature
 
+// CoverEntityFeature, homeassistant/components/cover/const.py.
+namespace cover_feature {
+constexpr uint32_t kOpen = 1;
+constexpr uint32_t kClose = 2;
+constexpr uint32_t kSetPosition = 4;
+constexpr uint32_t kStop = 8;
+constexpr uint32_t kOpenTilt = 16;
+constexpr uint32_t kCloseTilt = 32;
+constexpr uint32_t kStopTilt = 64;
+constexpr uint32_t kSetTiltPosition = 128;
+}  // namespace cover_feature
+
+// HumidifierEntityFeature, homeassistant/components/humidifier/const.py.
+namespace humidifier_feature {
+constexpr uint32_t kModes = 1;
+}  // namespace humidifier_feature
+
 // HA's default colour temperature range when the entity reports none
 // (DEFAULT_MIN_KELVIN / DEFAULT_MAX_KELVIN in light/const.py).
 constexpr int32_t kDefaultMinKelvin = 2000;
 constexpr int32_t kDefaultMaxKelvin = 6535;
 
-enum class EntityDomain : uint8_t { MediaPlayer, Light, Switch, Fan, Unsupported };
+enum class EntityDomain : uint8_t {
+    MediaPlayer, Light, Switch, Fan, Scene, Script, Cover, Button, InputBoolean, Humidifier, Select, Unsupported
+};
 
 // The entity domains with a curated allowlist, in EntityDomain order. The
 // spec's discovery `domain` enum matches it (api/tools/validate.py checks).
-constexpr const char *kEntityDomains[] = {"media_player", "light", "switch", "fan"};
+constexpr const char *kEntityDomains[] = {"media_player", "light",         "switch",     "fan",
+                                          "scene",        "script",        "cover",      "button",
+                                          "input_boolean", "humidifier",   "select"};
 static_assert(sizeof(kEntityDomains) / sizeof(kEntityDomains[0]) == static_cast<size_t>(EntityDomain::Unsupported),
               "one name per EntityDomain");
-// "media_player, light, switch or fan", for messages.
+// "media_player, light, ... or select", for messages.
 std::string entityDomainList();
 EntityDomain domainNamed(std::string_view domain);  // "fan" -> Fan; Unsupported if none
 
@@ -96,10 +122,25 @@ EntityDomain domainNamed(std::string_view domain);  // "fan" -> Fan; Unsupported
 bool isValidEntityId(std::string_view entityId);
 EntityDomain entityDomain(std::string_view entityId);  // Unsupported if invalid
 
+// Integration services (e.g. sonos.*) are offered only for media players,
+// lights, switches and fans; the newer domains get their allowlist alone.
+bool offersIntegrationServices(std::string_view entityId);
+
 // A fan's speed-slider step: HA's percentage_step (100 / speeds) rounded down
 // to 1..100, so every multiple still lands on the speed it means (HA rounds a
 // percentage up to the next speed). 0: none (not reported, or under 1).
 int32_t fanSpeedStep(double percentageStep);
+
+// A humidifier's reported range as whole percent within 0..100, lo < hi:
+// the one rule for the snapshot and the command. False: not reported or
+// unusable (HA's default 0..100 applies).
+bool humidityRange(double min, double max, int32_t *lo, int32_t *hi);
+
+// The device kind (a DeviceKind, GET /kinds) a new device of this entity
+// starts with: by `domain` ("media_player"), and for a media player by its
+// device_class or platform (apple_tv -> streamer). Never nullptr: "other"
+// when nothing fits.
+const char *suggestedKind(std::string_view domain, std::string_view platform, std::string_view deviceClass);
 
 struct EntityInfo {
     std::string entityId;
@@ -111,6 +152,12 @@ struct EntityInfo {
     int32_t maxColorTempKelvin = 0;
     std::vector<std::string> presetModes;          // fan preset_modes
     double percentageStep = 0.0;                   // fan percentage_step (100 / speeds); 0 = not reported
+    // humidifier min_humidity / max_humidity; not reported (min >= max):
+    // HA's 0..100.
+    double minHumidity = 0.0;
+    double maxHumidity = 0.0;
+    std::vector<std::string> availableModes;       // humidifier available_modes
+    std::vector<std::string> options;              // select options
 };
 
 struct ServiceValue {

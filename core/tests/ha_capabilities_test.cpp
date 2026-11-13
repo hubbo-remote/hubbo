@@ -85,6 +85,37 @@ EntityInfo directionFan() {  // + DIRECTION, 7 speeds
     return e;
 }
 
+// One made-up entity per newer domain (as api/tools/gen_fixtures.py).
+EntityInfo blinds() {  // OPEN | CLOSE | SET_POSITION | STOP
+    EntityInfo e;
+    e.entityId = "cover.office_blinds";
+    e.supportedFeatures = 15;
+    return e;
+}
+
+EntityInfo humidifierEntity() {  // MODES
+    EntityInfo e;
+    e.entityId = "humidifier.bedroom_humidifier";
+    e.supportedFeatures = 1;
+    e.availableModes = {"normal", "eco", "sleep"};
+    e.minHumidity = 30;
+    e.maxHumidity = 80;
+    return e;
+}
+
+EntityInfo dryerCycle() {
+    EntityInfo e;
+    e.entityId = "select.dryer_cycle";
+    e.options = {"normal", "delicate", "towels"};
+    return e;
+}
+
+EntityInfo plain(const char *entityId) {
+    EntityInfo e;
+    e.entityId = entityId;
+    return e;
+}
+
 std::vector<std::string> fans(std::initializer_list<const char *> names) {
     std::vector<std::string> out;
     for (const char *n : names) out.push_back(std::string("fan.") + n);
@@ -155,6 +186,95 @@ TEST(HaFeatureBits, MatchHomeAssistantSource) {
     EXPECT_EQ(fan_feature::kPresetMode, 8u);
     EXPECT_EQ(fan_feature::kTurnOff, 16u);
     EXPECT_EQ(fan_feature::kTurnOn, 32u);
+    // homeassistant/components/cover/const.py CoverEntityFeature
+    EXPECT_EQ(cover_feature::kOpen, 1u);
+    EXPECT_EQ(cover_feature::kClose, 2u);
+    EXPECT_EQ(cover_feature::kSetPosition, 4u);
+    EXPECT_EQ(cover_feature::kStop, 8u);
+    EXPECT_EQ(cover_feature::kOpenTilt, 16u);
+    EXPECT_EQ(cover_feature::kCloseTilt, 32u);
+    EXPECT_EQ(cover_feature::kStopTilt, 64u);
+    EXPECT_EQ(cover_feature::kSetTiltPosition, 128u);
+    // homeassistant/components/humidifier/const.py HumidifierEntityFeature
+    EXPECT_EQ(humidifier_feature::kModes, 1u);
+}
+
+TEST(HaCapabilities, NewerDomains) {
+    using V = std::vector<std::string>;
+    EXPECT_EQ(ids(EntityCapabilities::fromEntity(plain("scene.movie_night"))), V{"scene.turn_on"});
+    EXPECT_EQ(ids(EntityCapabilities::fromEntity(plain("script.goodnight"))), (V{"script.turn_on", "script.turn_off"}));
+    EXPECT_EQ(ids(EntityCapabilities::fromEntity(plain("button.restart_router"))), V{"button.press"});
+    EXPECT_EQ(ids(EntityCapabilities::fromEntity(plain("input_boolean.guest_mode"))),
+              (V{"input_boolean.turn_on", "input_boolean.turn_off", "input_boolean.toggle"}));
+    EXPECT_EQ(ids(EntityCapabilities::fromEntity(blinds())),
+              (V{"cover.open_cover", "cover.close_cover", "cover.stop_cover", "cover.toggle", "cover.set_cover_position"}));
+    EntityInfo tilt = blinds();
+    tilt.supportedFeatures = 1 | 16 | 32 | 64 | 128;  // OPEN alone: no toggle
+    EXPECT_EQ(ids(EntityCapabilities::fromEntity(tilt)),
+              (V{"cover.open_cover", "cover.open_cover_tilt", "cover.close_cover_tilt", "cover.stop_cover_tilt",
+                 "cover.set_cover_tilt_position"}));
+    EXPECT_EQ(ids(EntityCapabilities::fromEntity(humidifierEntity())),
+              (V{"humidifier.turn_on", "humidifier.turn_off", "humidifier.toggle", "humidifier.set_humidity",
+                 "humidifier.set_mode"}));
+    EXPECT_EQ(ids(EntityCapabilities::fromEntity(dryerCycle())),
+              (V{"select.select_option", "select.select_next", "select.select_previous"}));
+    EXPECT_TRUE(EntityCapabilities::fromEntity(plain("select.empty")).empty()) << "no options: nothing to choose";
+}
+
+TEST(HaCapabilities, NewerDomainParams) {
+    const auto h = EntityCapabilities::fromEntity(plain("humidifier.bare"));
+    EXPECT_EQ(command(h, "humidifier.set_humidity").params[0].minInt, 0);
+    EXPECT_EQ(command(h, "humidifier.set_humidity").params[0].maxInt, 100);
+    const auto hum = EntityCapabilities::fromEntity(humidifierEntity());
+    EXPECT_EQ(command(hum, "humidifier.set_humidity").params[0].minInt, 30);
+    EXPECT_EQ(command(hum, "humidifier.set_humidity").params[0].maxInt, 80);
+    EXPECT_STREQ(command(hum, "humidifier.set_humidity").params[0].unit, "%");
+
+    const auto cover = EntityCapabilities::fromEntity(blinds());
+    const ParamSpec &pos = command(cover, "cover.set_cover_position").params[0];
+    EXPECT_STREQ(pos.name, "position");
+    EXPECT_EQ(pos.type, ParamType::Int);
+    EXPECT_EQ(pos.minInt, 0);
+    EXPECT_EQ(pos.maxInt, 100);
+    EXPECT_STREQ(pos.unit, "%");
+}
+
+TEST(HaServiceCall, NewerDomainsCallTheRightService) {
+    ServiceCall c;
+    const auto cover = EntityCapabilities::fromEntity(blinds());
+    ASSERT_EQ(call(cover, "cover.set_cover_position", {in("position", ParamLiteral::ofInt(40))}, &c), ErrorCode::Ok);
+    EXPECT_EQ(c.service, "set_cover_position");
+    EXPECT_EQ(c.data[0].value.integer, 40);
+
+    const auto select = EntityCapabilities::fromEntity(dryerCycle());
+    ASSERT_EQ(call(select, "select.select_option", {in("option", ParamLiteral::ofString("towels"))}, &c),
+              ErrorCode::Ok);
+    EXPECT_EQ(c.service, "select_option");
+    EXPECT_EQ(c.data[0].value.string, "towels");
+    EXPECT_EQ(call(select, "select.select_option", {in("option", ParamLiteral::ofString("wool"))}, &c),
+              ErrorCode::InvalidEnumValue);
+}
+
+TEST(HaSuggestedKind, ByDomainPlatformAndDeviceClass) {
+    for (const char *deviceClass : {"shade", "blind", "garage", "gate", "door", ""}) {
+        EXPECT_STREQ(suggestedKind("cover", "", deviceClass), "cover") << deviceClass;
+    }
+    EXPECT_STREQ(suggestedKind("scene", "", ""), "scene");
+    EXPECT_STREQ(suggestedKind("script", "", ""), "script");
+    EXPECT_STREQ(suggestedKind("humidifier", "", "humidifier"), "climate");
+    EXPECT_STREQ(suggestedKind("fan", "", ""), "fan");
+    EXPECT_STREQ(suggestedKind("light", "hue", ""), "light");
+    EXPECT_STREQ(suggestedKind("switch", "", "outlet"), "switch");
+    for (const char *d : {"button", "input_boolean", "select", "remote", "climate", "lock", "sensor", ""}) {
+        EXPECT_STREQ(suggestedKind(d, "", ""), "other") << d;
+    }
+    EXPECT_STREQ(suggestedKind("media_player", "denonavr", "receiver"), "receiver");
+    EXPECT_STREQ(suggestedKind("media_player", "sonos", "speaker"), "speaker");
+    EXPECT_STREQ(suggestedKind("media_player", "alexa_media", ""), "speaker");
+    EXPECT_STREQ(suggestedKind("media_player", "group", ""), "speaker");
+    EXPECT_STREQ(suggestedKind("media_player", "apple_tv", ""), "streamer");
+    EXPECT_STREQ(suggestedKind("media_player", "webostv", "tv"), "tv");
+    EXPECT_STREQ(suggestedKind("media_player", "", ""), "tv");
 }
 
 TEST(HaCapabilities, TypicalFans) {
@@ -310,8 +430,8 @@ TEST(HaCapabilities, LightModes) {
 }
 
 TEST(HaCapabilities, UnsupportedDomainsAndBadIdsGetNothing) {
-    for (const char *id : {"scene.movie", "script.all_off", "cover.blinds", "climate.hall",
-                           "remote.lg_tv", "group.all_lights", "homeassistant.restart",
+    for (const char *id : {"remote.living_room_hub", "climate.hallway", "lock.front_door", "vacuum.kitchen",
+                           "alarm_control_panel.home", "valve.main", "scene.all", "group.all_lights", "homeassistant.restart",
                            "light.all", "light.none", "all", "light.a,light.b", "Light.Kitchen",
                            "light.", ".kitchen", "light.kit chen", "light.kitchen\n", ""}) {
         EntityInfo e;
@@ -472,7 +592,7 @@ TEST(HaServiceCall, OnlyAllowlistedKeysEverReachHomeAssistant) {
     const char *allowed[] = {"volume_level", "is_volume_muted", "source", "sound_mode", "shuffle",
                              "repeat", "brightness", "color_temp_kelvin", "transition",
                              "brightness_step", "percentage", "preset_mode", "percentage_step",
-                             "oscillating", "direction"};
+                             "oscillating", "direction", "position", "tilt_position", "humidity", "mode", "option"};
     EntityInfo all;
     all.entityId = "media_player.everything";
     all.supportedFeatures = 0xFFFFFFFF;
@@ -480,7 +600,13 @@ TEST(HaServiceCall, OnlyAllowlistedKeysEverReachHomeAssistant) {
     all.soundModeList = {"B"};
     EntityInfo fan = directionFan();
     fan.supportedFeatures = 0xFFFFFFFF;
-    for (const EntityInfo &e : {all, hue(), sonos(), fan}) {
+    std::vector<EntityInfo> entities{all, hue(), sonos(), fan, blinds(), humidifierEntity(), dryerCycle(), plain("scene.movie_night"),
+                                     plain("script.goodnight"), plain("button.restart_router"),
+                                     plain("input_boolean.guest_mode")};
+    for (EntityInfo &e : entities) {
+        if (e.entityId.rfind("media_player.", 0) != 0) e.supportedFeatures = 0xFFFFFFFF;
+    }
+    for (const EntityInfo &e : entities) {
         const auto caps = EntityCapabilities::fromEntity(e);
         const CommandCatalog c = caps.catalog();
         for (uint16_t i = 0; i < c.count; i++) {

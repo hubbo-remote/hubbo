@@ -1,0 +1,18 @@
+{
+  "device_id": "dev_goodnight",
+  "integration_id": "ha_main",
+  "commands": [
+    {
+      "command_id": "script.turn_on",
+      "label": "Run",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "script.turn_off",
+      "label": "Stop",
+      "effect": "momentary",
+      "params": []
+    }
+  ]
+}

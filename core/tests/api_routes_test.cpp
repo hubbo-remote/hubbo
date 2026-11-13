@@ -1268,6 +1268,8 @@ TEST_F(ApiTest, DiscoveryIsAsyncAndFiltered) {
             EXPECT_GT(c["command_ids"].size(), 0u);
             sawRegistered = true;
         }
+        // ha::suggestedKind() (HaSuggestedKind covers the mapping).
+        EXPECT_TRUE(c["suggested_kind"].is<const char *>()) << c["provider"]["entity_id"].as<std::string>();
     }
     EXPECT_TRUE(sawRegistered);
 
@@ -1288,6 +1290,7 @@ TEST_F(ApiTest, DiscoveryIsAsyncAndFiltered) {
     // available=true: only registrable candidates, filtered before paging
     // (a page of 1 is never empty while some are left).
     size_t registrable = 0;
+    r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover?limit=100");
     for (JsonVariant c : r.json["candidates"].as<JsonArray>()) {
         registrable += c["supported"] == true && c["registered_device_id"].isNull() ? 1 : 0;
     }
@@ -1310,7 +1313,8 @@ TEST_F(ApiTest, DiscoveryIsAsyncAndFiltered) {
             << bad;
     }
     r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover?domain=sensor");
-    EXPECT_EQ(r.json["error"]["details"][0]["message"], "domain must be media_player, light, switch or fan");
+    EXPECT_EQ(r.json["error"]["details"][0]["message"], "domain must be media_player, light, switch, fan, scene, script, cover, button, input_boolean, "
+              "humidifier or select");
 
     // Cancel drops the candidates.
     EXPECT_EQ(call(http::Method::Delete, "/api/v1/admin/integrations/ha_main/discover").status, 204);

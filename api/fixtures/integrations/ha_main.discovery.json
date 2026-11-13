@@ -1,6 +1,6 @@
 {
   "state": "done",
-  "total": 8,
+  "total": 15,
   "truncated": 0,
   "elapsed_ms": 1840,
   "candidates": [
@@ -24,7 +24,8 @@
         "media_player.select_sound_mode"
       ],
       "dropped_options": 0,
-      "registered_device_id": "dev_denon"
+      "registered_device_id": "dev_denon",
+      "suggested_kind": "receiver"
     },
     {
       "provider": {
@@ -51,7 +52,8 @@
         "media_player.repeat_set"
       ],
       "dropped_options": 0,
-      "registered_device_id": "dev_sonos"
+      "registered_device_id": "dev_sonos",
+      "suggested_kind": "speaker"
     },
     {
       "provider": {
@@ -77,7 +79,8 @@
         "media_player.select_source"
       ],
       "dropped_options": 0,
-      "registered_device_id": "dev_lg_tv"
+      "registered_device_id": "dev_lg_tv",
+      "suggested_kind": "tv"
     },
     {
       "provider": {
@@ -101,7 +104,8 @@
         "media_player.media_previous_track"
       ],
       "dropped_options": 0,
-      "registered_device_id": "dev_xbox"
+      "registered_device_id": "dev_xbox",
+      "suggested_kind": "tv"
     },
     {
       "provider": {
@@ -118,7 +122,140 @@
         "light.brightness_step"
       ],
       "dropped_options": 0,
-      "registered_device_id": "dev_family_room_lights"
+      "registered_device_id": "dev_family_room_lights",
+      "suggested_kind": "light"
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "scene.movie_night"
+      },
+      "name": "Movie Night",
+      "domain": "scene",
+      "platform": "demo",
+      "state": "unknown",
+      "supported": true,
+      "command_ids": [
+        "scene.turn_on"
+      ],
+      "dropped_options": 0,
+      "registered_device_id": null,
+      "suggested_kind": "scene"
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "script.goodnight"
+      },
+      "name": "Goodnight",
+      "domain": "script",
+      "platform": "demo",
+      "state": "off",
+      "supported": true,
+      "command_ids": [
+        "script.turn_on",
+        "script.turn_off"
+      ],
+      "dropped_options": 0,
+      "registered_device_id": null,
+      "suggested_kind": "script"
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "cover.office_blinds"
+      },
+      "name": "Office Blinds",
+      "domain": "cover",
+      "platform": "demo",
+      "state": "open",
+      "supported": true,
+      "command_ids": [
+        "cover.open_cover",
+        "cover.close_cover",
+        "cover.stop_cover",
+        "cover.toggle",
+        "cover.set_cover_position"
+      ],
+      "dropped_options": 0,
+      "registered_device_id": null,
+      "suggested_kind": "cover"
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "button.restart_router"
+      },
+      "name": "Restart Router",
+      "domain": "button",
+      "platform": "demo",
+      "state": "unknown",
+      "supported": true,
+      "command_ids": [
+        "button.press"
+      ],
+      "dropped_options": 0,
+      "registered_device_id": null,
+      "suggested_kind": "other"
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "input_boolean.guest_mode"
+      },
+      "name": "Guest Mode",
+      "domain": "input_boolean",
+      "platform": "demo",
+      "state": "off",
+      "supported": true,
+      "command_ids": [
+        "input_boolean.turn_on",
+        "input_boolean.turn_off",
+        "input_boolean.toggle"
+      ],
+      "dropped_options": 0,
+      "registered_device_id": null,
+      "suggested_kind": "other"
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "humidifier.bedroom_humidifier"
+      },
+      "name": "Bedroom Humidifier",
+      "domain": "humidifier",
+      "platform": "demo",
+      "state": "on",
+      "supported": true,
+      "command_ids": [
+        "humidifier.turn_on",
+        "humidifier.turn_off",
+        "humidifier.toggle",
+        "humidifier.set_humidity",
+        "humidifier.set_mode"
+      ],
+      "dropped_options": 0,
+      "registered_device_id": null,
+      "suggested_kind": "climate"
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "select.dryer_cycle"
+      },
+      "name": "Dryer Cycle",
+      "domain": "select",
+      "platform": "demo",
+      "state": "normal",
+      "supported": true,
+      "command_ids": [
+        "select.select_option",
+        "select.select_next",
+        "select.select_previous"
+      ],
+      "dropped_options": 0,
+      "registered_device_id": null,
+      "suggested_kind": "other"
     },
     {
       "provider": {
@@ -134,7 +271,8 @@
         "switch.turn_off"
       ],
       "dropped_options": 0,
-      "registered_device_id": null
+      "registered_device_id": null,
+      "suggested_kind": "switch"
     },
     {
       "provider": {
@@ -149,7 +287,8 @@
         "switch.turn_off"
       ],
       "dropped_options": 0,
-      "registered_device_id": null
+      "registered_device_id": null,
+      "suggested_kind": "switch"
     },
     {
       "provider": {
@@ -162,7 +301,8 @@
       "supported": false,
       "command_ids": [],
       "dropped_options": 0,
-      "registered_device_id": null
+      "registered_device_id": null,
+      "suggested_kind": "tv"
     }
   ],
   "next_cursor": null

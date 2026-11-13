@@ -1,0 +1,12 @@
+{
+  "device_id": "dev_restart_router",
+  "integration_id": "ha_main",
+  "commands": [
+    {
+      "command_id": "button.press",
+      "label": "Press",
+      "effect": "momentary",
+      "params": []
+    }
+  ]
+}

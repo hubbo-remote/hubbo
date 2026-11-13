@@ -259,6 +259,7 @@ void fillCache(DiscoveryCache *cache, integrations::HaDiscovery discovery) {
         const CommandCatalog catalog = caps.catalog();
         for (uint16_t i = 0; i < catalog.count; i++) out.commandIds.emplace_back(catalog.items[i].id);
         out.droppedOptions = offer.droppedOptions + caps.droppedOptions();
+        out.suggestedKind = ha::suggestedKind(c.domain, c.platform, c.deviceClass);
         out.entityId = std::move(c.entityId);
         out.name = std::move(c.name);
         out.domain = std::move(c.domain);
@@ -384,6 +385,7 @@ void putEntity(JsonObject out, const ApiContext &ctx, const HaEntity &e) {
 void putCandidate(JsonObject out, const ApiContext &ctx, const DiscoveryCache::Candidate &c) {
     putEntity(out, ctx, c);
     if (!c.state.empty()) out["state"] = c.state;
+    out["suggested_kind"] = c.suggestedKind;
 }
 
 // ---- entity details ---------------------------------------------------------

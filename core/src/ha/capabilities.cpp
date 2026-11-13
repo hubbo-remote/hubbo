@@ -1,6 +1,7 @@
 #include "hubbo/ha/capabilities.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 
 #include "hubbo/domain/limits.h"
@@ -52,6 +53,30 @@ constexpr CommandDef kCommands[] = {
     {"fan.oscillate", "Oscillate", "fan", "oscillate"},
     {"fan.set_direction", "Set direction", "fan", "set_direction"},
     {"fan.set_preset_mode", "Preset mode", "fan", "set_preset_mode"},
+    {"scene.turn_on", "Activate", "scene", "turn_on"},
+    {"script.turn_on", "Run", "script", "turn_on"},
+    {"script.turn_off", "Stop", "script", "turn_off"},
+    {"cover.open_cover", "Open", "cover", "open_cover"},
+    {"cover.close_cover", "Close", "cover", "close_cover"},
+    {"cover.stop_cover", "Stop", "cover", "stop_cover"},
+    {"cover.toggle", "Toggle", "cover", "toggle"},
+    {"cover.set_cover_position", "Set position", "cover", "set_cover_position"},
+    {"cover.open_cover_tilt", "Open tilt", "cover", "open_cover_tilt"},
+    {"cover.close_cover_tilt", "Close tilt", "cover", "close_cover_tilt"},
+    {"cover.stop_cover_tilt", "Stop tilt", "cover", "stop_cover_tilt"},
+    {"cover.set_cover_tilt_position", "Set tilt", "cover", "set_cover_tilt_position"},
+    {"button.press", "Press", "button", "press"},
+    {"input_boolean.turn_on", "Turn on", "input_boolean", "turn_on"},
+    {"input_boolean.turn_off", "Turn off", "input_boolean", "turn_off"},
+    {"input_boolean.toggle", "Toggle", "input_boolean", "toggle"},
+    {"humidifier.turn_on", "Turn on", "humidifier", "turn_on"},
+    {"humidifier.turn_off", "Turn off", "humidifier", "turn_off"},
+    {"humidifier.toggle", "Toggle", "humidifier", "toggle"},
+    {"humidifier.set_humidity", "Set humidity", "humidifier", "set_humidity"},
+    {"humidifier.set_mode", "Set mode", "humidifier", "set_mode"},
+    {"select.select_option", "Choose", "select", "select_option"},
+    {"select.select_next", "Next", "select", "select_next"},
+    {"select.select_previous", "Previous", "select", "select_previous"},
 };
 
 const CommandDef *findDef(std::string_view id) {
@@ -194,9 +219,10 @@ void light(const EntityInfo &e, Drafts &out) {
     }
 }
 
-// A fan percentage (HA coerces it to an int in 0..100); `step` from fanSpeedStep().
-ParamDraft percentParam(const char *name, bool required, int32_t step = 0) {
-    return {ParamSpec::integer(name, 0, 100, required).described(nullptr, "%", static_cast<float>(step)), name, {}};
+// An int percentage (HA: Coerce(int), 0..100 or the entity's range); a
+// fan's `step` from fanSpeedStep().
+ParamDraft percentParam(const char *name, bool required, int32_t step = 0, int32_t lo = 0, int32_t hi = 100) {
+    return {ParamSpec::integer(name, lo, hi, required).described(nullptr, "%", static_cast<float>(step)), name, {}};
 }
 
 void fanEntity(const EntityInfo &e, Drafts &out) {
@@ -231,10 +257,98 @@ void fanEntity(const EntityInfo &e, Drafts &out) {
     }
 }
 
+void coverEntity(const EntityInfo &e, Drafts &out) {
+    namespace c = cover_feature;
+    const uint32_t f = e.supportedFeatures;
+    // Gating mirrors cover/services.py (toggle needs OPEN and CLOSE).
+    if (has(f, c::kOpen)) out.add("cover.open_cover");
+    if (has(f, c::kClose)) out.add("cover.close_cover");
+    if (has(f, c::kStop)) out.add("cover.stop_cover");
+    if (has(f, c::kOpen | c::kClose)) out.add("cover.toggle");
+    if (has(f, c::kSetPosition)) out.add("cover.set_cover_position", {percentParam("position", true)});
+    if (has(f, c::kOpenTilt)) out.add("cover.open_cover_tilt");
+    if (has(f, c::kCloseTilt)) out.add("cover.close_cover_tilt");
+    if (has(f, c::kStopTilt)) out.add("cover.stop_cover_tilt");
+    if (has(f, c::kSetTiltPosition)) out.add("cover.set_cover_tilt_position", {percentParam("tilt_position", true)});
+}
+
+void humidifier(const EntityInfo &e, Drafts &out) {
+    // humidifier/services.py: all but set_mode for every humidifier.
+    out.add("humidifier.turn_on");
+    out.add("humidifier.turn_off");
+    out.add("humidifier.toggle");
+    // HA checks the humidity against the entity's range.
+    int32_t lo = 0;
+    int32_t hi = 100;
+    humidityRange(e.minHumidity, e.maxHumidity, &lo, &hi);
+    out.add("humidifier.set_humidity", {percentParam("humidity", true, 0, lo, hi)});
+    if (has(e.supportedFeatures, humidifier_feature::kModes) && !e.availableModes.empty()) {
+        out.add("humidifier.set_mode", {enumParam("mode", e.availableModes)});
+    }
+}
+
+void selectEntity(const EntityInfo &e, Drafts &out) {
+    if (e.options.empty()) return;  // HA requires options; none: nothing to pick
+    out.add("select.select_option", {enumParam("option", e.options)});
+    out.add("select.select_next");
+    out.add("select.select_previous");
+}
+
 }  // namespace
 
 int32_t fanSpeedStep(double percentageStep) {
     return percentageStep >= 1.0 && percentageStep <= 100.0 ? static_cast<int32_t>(percentageStep) : 0;
+}
+
+bool humidityRange(double min, double max, int32_t *lo, int32_t *hi) {
+    if (!(min >= 0.0 && max <= 100.0)) return false;  // NaN fails too
+    const double low = std::ceil(min);
+    const double high = std::floor(max);
+    if (low >= high) return false;
+    *lo = static_cast<int32_t>(low);
+    *hi = static_cast<int32_t>(high);
+    return true;
+}
+
+namespace {
+
+// Per-domain facts, in EntityDomain order (kEntityDomains holds the names).
+struct DomainTraits {
+    const char *kind;          // suggestedKind(); nullptr: by device class and platform
+    bool integrationServices;  // offersIntegrationServices()
+};
+constexpr DomainTraits kDomainTraits[] = {
+    {nullptr, true},      // media_player
+    {"light", true},      // light
+    {"switch", true},     // switch
+    {"fan", true},        // fan
+    {"scene", false},     // scene
+    {"script", false},    // script
+    {"cover", false},     // cover
+    {"other", false},     // button
+    {"other", false},     // input_boolean
+    {"climate", false},   // humidifier
+    {"other", false},     // select
+    {"other", false},     // Unsupported
+};
+static_assert(std::size(kDomainTraits) == std::size(kEntityDomains) + 1, "one row per EntityDomain");
+
+const DomainTraits &traits(EntityDomain domain) { return kDomainTraits[static_cast<size_t>(domain)]; }
+
+}  // namespace
+
+const char *suggestedKind(std::string_view domain, std::string_view platform, std::string_view deviceClass) {
+    if (const char *kind = traits(domainNamed(domain)).kind) return kind;
+    // A media player: HA's device_class (tv, speaker, receiver), else what
+    // the integration usually is.
+    if (deviceClass == "receiver") return "receiver";
+    if (deviceClass == "speaker" || platform == "alexa_media" || platform == "group") return "speaker";
+    if (platform == "apple_tv") return "streamer";
+    return "tv";
+}
+
+bool offersIntegrationServices(std::string_view entityId) {
+    return traits(entityDomain(entityId)).integrationServices;
 }
 
 bool isHaName(std::string_view name) {
@@ -309,6 +423,20 @@ void builtins(const EntityInfo &entity, Drafts &drafts) {
             drafts.add("switch.turn_off");
             break;
         case EntityDomain::Fan: fanEntity(entity, drafts); break;
+        case EntityDomain::Scene: drafts.add("scene.turn_on"); break;
+        case EntityDomain::Script:
+            drafts.add("script.turn_on");
+            drafts.add("script.turn_off");
+            break;
+        case EntityDomain::Cover: coverEntity(entity, drafts); break;
+        case EntityDomain::Button: drafts.add("button.press"); break;
+        case EntityDomain::InputBoolean:
+            drafts.add("input_boolean.turn_on");
+            drafts.add("input_boolean.turn_off");
+            drafts.add("input_boolean.toggle");
+            break;
+        case EntityDomain::Humidifier: humidifier(entity, drafts); break;
+        case EntityDomain::Select: selectEntity(entity, drafts); break;
         case EntityDomain::Unsupported: break;
     }
 }
@@ -389,8 +517,14 @@ EntityCapabilities EntityCapabilities::fromSnapshot(std::string_view entityId, c
     entity.maxColorTempKelvin = snapshot.maxColorTempKelvin;
     entity.presetModes = snapshot.presetModes;
     entity.percentageStep = snapshot.percentageStep;
+    entity.minHumidity = snapshot.minHumidity;
+    entity.maxHumidity = snapshot.maxHumidity;
+    entity.availableModes = snapshot.availableModes;
+    entity.options = snapshot.options;
     Drafts drafts;
     builtins(entity, drafts);
+    // Re-checked here as well as in offerFor: a stored snapshot can come from a backup.
+    if (!offersIntegrationServices(entityId)) return build(entityId, std::move(drafts));
     size_t services = 0;
     for (const SnapshotService &service : snapshot.services) {
         if (services >= kMaxSnapshotServices || findDef(service.service) != nullptr) continue;

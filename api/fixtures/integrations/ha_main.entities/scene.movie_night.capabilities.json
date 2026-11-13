@@ -1,0 +1,12 @@
+{
+  "device_id": "dev_movie_night",
+  "integration_id": "ha_main",
+  "commands": [
+    {
+      "command_id": "scene.turn_on",
+      "label": "Activate",
+      "effect": "momentary",
+      "params": []
+    }
+  ]
+}

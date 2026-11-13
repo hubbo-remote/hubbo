@@ -278,6 +278,12 @@ void encodeSnapshot(const CapabilitySnapshot &s, JsonObject out) {
     if (s.maxColorTempKelvin > 0) out["max_color_temp_kelvin"] = s.maxColorTempKelvin;
     putList(out, "preset_modes", s.presetModes);
     if (s.percentageStep > 0) out["percentage_step"] = s.percentageStep;
+    if (s.minHumidity < s.maxHumidity) {
+        out["min_humidity"] = s.minHumidity;
+        out["max_humidity"] = s.maxHumidity;
+    }
+    putList(out, "available_modes", s.availableModes);
+    putList(out, "options", s.options);
     JsonArray services = out["services"].to<JsonArray>();
     for (const auto &service : s.services) {
         JsonObject o = services.add<JsonObject>();
@@ -343,7 +349,8 @@ bool decodeSnapshot(JsonVariantConst json, CapabilitySnapshot *out, ValidationRe
     Reader r(json, report, path);
     if (!r.ok()) return false;
     r.only({"platform", "supported_features", "source_list", "sound_mode_list", "supported_color_modes",
-            "min_color_temp_kelvin", "max_color_temp_kelvin", "preset_modes", "percentage_step", "services"});
+            "min_color_temp_kelvin", "max_color_temp_kelvin", "preset_modes", "percentage_step", "min_humidity",
+            "max_humidity", "available_modes", "options", "services"});
     CapabilitySnapshot &s = *out;  // decoded in place: no snapshot on this frame
     if (r.string("platform", &s.platform, 32, true) && !isPlatform(s.platform)) {
         r.failAt(ErrorCode::InvalidId, "platform");
@@ -357,6 +364,16 @@ bool decodeSnapshot(JsonVariantConst json, CapabilitySnapshot *out, ValidationRe
     if (r.integer("max_color_temp_kelvin", 0, 100000, &n)) s.maxColorTempKelvin = static_cast<int32_t>(n);
     r.options("preset_modes", &s.presetModes);
     if (r.integer("percentage_step", 1, 100, &n)) s.percentageStep = static_cast<int32_t>(n);
+    // Both or neither (makeSnapshot writes humidityRange()'s result), min < max.
+    const bool hasMin = r.integer("min_humidity", 0, 100, &n);
+    if (hasMin) s.minHumidity = static_cast<int32_t>(n);
+    const bool hasMax = r.integer("max_humidity", 0, 100, &n);
+    if (hasMax) s.maxHumidity = static_cast<int32_t>(n);
+    if (hasMin && !hasMax) r.failAt(ErrorCode::Required, "max_humidity");
+    if (hasMax && !hasMin) r.failAt(ErrorCode::Required, "min_humidity");
+    if (hasMin && hasMax && s.minHumidity >= s.maxHumidity) r.failAt(ErrorCode::ParamOutOfRange, "max_humidity");
+    r.options("available_modes", &s.availableModes);
+    r.options("options", &s.options);
 
     JsonVariantConst services = r.get("services", true);
     if (!services.isUnbound()) {

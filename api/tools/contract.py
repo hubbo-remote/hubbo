@@ -326,10 +326,8 @@ def registry_flow(c):
         _, caps, _ = c.call("getDeviceCapabilities", "GET", f"/devices/{d['id']}/capabilities", expect=200)
         # hub-sim boots from api/fixtures: the served capabilities must equal
         # the fixture the web mock serves, or the mock has drifted.
-        path = os.path.join(FIXTURES, "devices", f"{d['id']}.capabilities.json")
-        if caps is not None and os.path.exists(path):
-            expect(caps == fixture(f"devices/{d['id']}.capabilities.json"),
-                   f"{d['id']}: served capabilities differ from api/fixtures (regenerate the fixture)")
+        if caps is not None and os.path.exists(os.path.join(FIXTURES, "devices", f"{d['id']}.capabilities.json")):
+            expect_fixture_commands(d["id"], caps, f"devices/{d['id']}.capabilities.json")
         readable_labels(d["id"], caps)
     c.call("getDevice", "GET", "/devices/dev_nope", expect=404)
     c.call("getDeviceCapabilities", "GET", "/devices/dev_nope/capabilities", expect=404)
@@ -337,6 +335,12 @@ def registry_flow(c):
 
 
 PROFILE_CONTENT = ("commands", "buttons", "power", "timing", "inputs", "channels")
+
+
+def expect_fixture_commands(what, caps, name):
+    """Served capabilities equal the fixture (the web mock serves it), whatever the device id."""
+    expect(dict(caps or {}, device_id=None) == dict(fixture(name), device_id=None),
+           f"{what}: served capabilities differ from api/fixtures (regenerate the fixture)")
 
 
 def readable_labels(dev_id, caps):
@@ -1082,6 +1086,43 @@ def integration_param_flow(c):
         expect(timer["params"] == [SLEEP_TIME], f"sleep_time param: {timer['params']}")
 
 
+# One made-up entity per newer domain (gen_fixtures.py NEW_DOMAIN_ENTITIES);
+# hub-sim's fake HA has the same ones.
+NEW_DOMAIN_FIXTURES = os.path.join(FIXTURES, "integrations", "ha_main.entities")
+
+
+def new_domains_flow(c):
+    """Each newer-domain entity is a candidate with the fixture's
+    suggested_kind, and registering it gives exactly the fixture's commands."""
+    if MOCK:
+        skip("newer HA domains", "the mock serves these fixtures; hub-sim checks them against the allowlist")
+        return
+    c.call("discoverIntegration", "POST", "/admin/integrations/ha_main/discover", expect=202,
+           label="discover the newer domains")
+    done = wait_discovery(c)
+    found = {x["provider"]["entity_id"]: x for x in done.get("candidates", [])}
+    want = {x["provider"]["entity_id"]: x for x in fixture("integrations/ha_main.discovery.json")["candidates"]}
+    for name in sorted(os.listdir(NEW_DOMAIN_FIXTURES)):
+        entity_id = name[:-len(".capabilities.json")]
+        cand = found.get(entity_id)
+        expect(cand, f"{entity_id} isn't a discovery candidate")
+        if not cand:
+            continue
+        expect(cand["suggested_kind"] == want[entity_id]["suggested_kind"]
+               and cand["command_ids"] == want[entity_id]["command_ids"],
+               f"{entity_id}: candidate differs from the fixture: {cand}")
+        reg = registration_from(c, {"name": cand["name"], "integration_id": "ha_main",
+                                    "kind": cand["suggested_kind"]}, cand)
+        _, dev, _ = c.call("registerDevice", "POST", "/admin/devices", reg, expect=201, label=f"register {entity_id}")
+        if not dev:
+            continue
+        _, caps, _ = c.call("getDeviceCapabilities", "GET", f"/devices/{dev['id']}/capabilities", expect=200,
+                            label=f"{entity_id} capabilities")
+        expect_fixture_commands(entity_id, caps, f"integrations/ha_main.entities/{name}")
+        c.call("deleteDevice", "DELETE", f"/admin/devices/{dev['id']}?revision={dev['revision']}", expect=204,
+               label=f"remove {entity_id}")
+
+
 def ha_unlink_flow(c):
     """Cancel drops the candidates; a new URL clears the token."""
     c.call("cancelDiscovery", "DELETE", "/admin/integrations/ha_main/discover", expect=204)
@@ -1262,6 +1303,7 @@ def noauth(c, checker):
     admin_flow(c, checker, candidate)
     hub_flow(c)
     integration_param_flow(c)
+    new_domains_flow(c)
     ha_unlink_flow(c)
     factory_reset_flow(c)
 

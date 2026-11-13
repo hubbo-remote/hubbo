@@ -77,6 +77,7 @@ struct DiscoveryCache {
     using State = FetchState;
     struct Candidate : HaEntity {  // commandIds: a preview, domain commands only
         std::string state;         // HA's current state ("on")
+        const char *suggestedKind = "other";  // ha::suggestedKind()
     };
     State state = State::Idle;
     std::string error;  // Failed
