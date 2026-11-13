@@ -1341,7 +1341,7 @@ TEST_F(ApiTest, FanSpeedStepReachesTheCatalog) {
     connectHa();
     ASSERT_EQ(details("fan.ceiling_fan").json["state"], "done");
     Reply r = call(http::Method::Post, "/api/v1/admin/devices",
-                   R"({"name":"Ceiling Fan","integration_id":"ha_main","kind":"climate",
+                   R"({"name":"Ceiling Fan","integration_id":"ha_main","kind":"fan",
                        "provider":{"type":"home_assistant","entity_id":"fan.ceiling_fan"}})");
     ASSERT_EQ(r.status, 201) << dump(r);
     r = call(http::Method::Get, "/api/v1/devices/" + r.json["id"].as<std::string>() + "/capabilities");
