@@ -421,6 +421,10 @@ ha::EntityInfo entityInfo(const std::string &entityId, JsonVariantConst attrs) {
     info.maxColorTempKelvin = intOr(attrs["max_color_temp_kelvin"]);
     stringList(attrs["preset_modes"], &info.presetModes);
     info.percentageStep = attrs["percentage_step"] | 0.0;
+    info.minHumidity = attrs["min_humidity"] | 0.0;  // humidifier
+    info.maxHumidity = attrs["max_humidity"] | 0.0;
+    stringList(attrs["available_modes"], &info.availableModes);
+    stringList(attrs["options"], &info.options);                 // select
     return info;
 }
 
@@ -503,6 +507,7 @@ void HomeAssistantClient::parseStateEntry(std::string_view id, std::string_view 
     c.entityId = entityId;
     c.domain = domainOf(entityId);
     c.state = stringOr(doc["s"]);
+    c.deviceClass = stringOr(attrs["device_class"]);
     c.info = entityInfo(entityId, attrs);
     c.name = stringOr(attrs["friendly_name"]);
     // An entity without a registry entry (YAML-only) is still offered.

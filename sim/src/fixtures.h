@@ -54,6 +54,8 @@ struct FixtureHaEntity {
     ha::EntityInfo info;
     std::string name;
     std::string platform;
+    std::string state;        // "" = the fake's default ("on" for a player, else "off")
+    std::string deviceClass;  // "" = none
 };
 std::vector<FixtureHaEntity> fixtureHaEntities();
 std::vector<ha::EntityInfo> fixtureEntities();  // fixtureHaEntities()' infos
