@@ -5,6 +5,7 @@
 #pragma GCC diagnostic ignored "-Woverloaded-virtual="
 #include "ble_hid.h"
 #include "console.h"
+#include "hub_name.h"
 #include "hubbo/domain/limits.h"
 #include "hubbo/engine/spsc.h"
 
@@ -22,6 +23,7 @@
 // Each host plus one (include/sdkconfig.h).
 static_assert(CONFIG_BT_NIMBLE_MAX_CONNECTIONS == hubbo::fw::BleHid::kMaxHosts + 1, "see include/sdkconfig.h");
 static_assert(CONFIG_BT_NIMBLE_MAX_BONDS == hubbo::fw::BleHid::kMaxHosts + 1, "see include/sdkconfig.h");
+static_assert(MYNEWT_VAL_BLE_SVC_GAP_DEVICE_NAME_MAX_LENGTH >= hubbo::config::kHubNameMaxBytes, "see include/sdkconfig.h");
 
 namespace hubbo::fw {
 
@@ -262,10 +264,8 @@ bool BleHid::begin(const char *name) {
     NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
     advertising->setAppearance(HID_KEYBOARD);
     advertising->addServiceUUID(hid->getHidService()->getUUID());
-    // Scan response first: setName puts the name there only if it's already
-    // on, and a longer name doesn't fit in the advertisement itself.
-    advertising->enableScanResponse(true);
-    advertising->setName(name);
+    advertising->enableScanResponse(true);  // the name goes there
+    setScanName(name);  // init() set the GAP name
 
     started_ = true;
     loadHosts();
@@ -274,7 +274,7 @@ bool BleHid::begin(const char *name) {
     for (const Host &host : hosts_) {
         paired += host.paired();
     }
-    con.printf("ble: started as \"%s\", %u paired host(s), %d bond(s)\n", name, static_cast<unsigned>(paired),
+    con.printf("ble: started, %u paired host(s), %d bond(s)\n", static_cast<unsigned>(paired),
                NimBLEDevice::getNumBonds());
     return true;
 }
@@ -596,6 +596,42 @@ void BleHid::updateAdvertising() {
     advertising->setScanFilter(false, filtered);  // connect: paired hosts only, unless pairing
     advertisingFiltered_ = filtered;
     advertising->start();
+}
+
+// The advertisement is full with the flags, the HID appearance and service
+// UUID, so the name goes in the scan response: whole up to 29 bytes,
+// otherwise cut at a UTF-8 boundary and marked shortened. A host reads the
+// whole name from the GAP Device Name characteristic once connected. Bonds
+// don't involve the name, so paired hosts stay paired; each shows the new
+// name once it reads it again (most on their next connection).
+void BleHid::setName(std::string_view name) {
+    if (!started_) {
+        return;
+    }
+    if (!NimBLEDevice::setDeviceName(std::string(name))) {
+        con.printf("ble: name not set (%u bytes)\n", static_cast<unsigned>(name.size()));
+        return;
+    }
+    // The scan response can't change under a running advertisement: stop it
+    // and let updateAdvertising() start it again.
+    NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
+    if (advertising->isAdvertising()) {
+        advertising->stop();
+    }
+    setScanName(name);
+    updateAdvertising();
+}
+
+// Advertising stopped (or not yet started).
+void BleHid::setScanName(std::string_view name) {
+    const size_t fits = hubbo::fw::utf8Prefix(name, BLE_HS_ADV_MAX_FIELD_SZ);
+    NimBLEAdvertisementData scan;
+    scan.setName(std::string(name.substr(0, fits)), fits == name.size());
+    if (!NimBLEDevice::getAdvertising()->setScanResponseData(scan)) {
+        con.println("ble: couldn't set the scan response");
+    }
+    con.printf("ble: name \"%.*s\"%s\n", static_cast<int>(name.size()), name.data(),
+               fits == name.size() ? "" : " (shortened in the advertisement)");
 }
 
 bool BleHid::startPairing(std::string_view deviceId, uint32_t nowMs, uint32_t windowMs) {

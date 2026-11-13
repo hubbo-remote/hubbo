@@ -5,7 +5,6 @@
 //   httpd,    core 0  API handlers, ConfigService, and everything posted to
 //                     it with HttpServer::post()/every().
 #include <Arduino.h>
-#include <ESPmDNS.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <esp_timer.h>
@@ -36,6 +35,7 @@
 #include "flash_fs.h"
 #include "ha_task.h"
 #include "http_server.h"
+#include "hub_name.h"
 #include "image_marker.h"
 #include "hubbo/api/api.h"
 #include "hubbo/api/remote_port.h"
@@ -62,13 +62,10 @@
 #include "nvs_secret_store.h"
 #include "ota.h"
 #include "remote_radio.h"
+#include "restart.h"
 #include "ble_host_runtime.h"
 #include "remote_runtime.h"
 #include "ws_transport.h"
-
-#ifndef HUBBO_BLE_NAME
-#define HUBBO_BLE_NAME "Hubbo"
-#endif
 
 using hubbo::remote::RemoteEvent;
 using namespace hubbo::fw;
@@ -79,7 +76,7 @@ namespace {
 constexpr uint32_t kStatusIntervalMs = 30000;
 constexpr uint32_t kPublishIntervalMs = 250;
 
-char hostname[24];
+HubName hubName;  // Bluetooth and mDNS names, live; DHCP and OTA at boot
 
 // --- RF/engine side (declaration order = construction order) -----------------
 
@@ -223,6 +220,7 @@ hubbo::api::Authenticator authenticator(credentials, sessions, apiClock);
 LittleFsStorage fsStorage;
 hubbo::storage::SlotRecordStore records(fsStorage, hubbo::config::kMaxConfigFileBytes);
 hubbo::storage::RecordStateStore stateStore(records);
+hubbo::config::HubSettings hubSettings(stateStore);  // the hub's name ("hub_name")
 std::unique_ptr<hubbo::config::ConfigService> configService;
 hubbo::ActivePersister activePersister(stateStore);
 hubbo::config::LoadReport bootConfig;  // for the console; the API reads live state
@@ -260,7 +258,7 @@ void beginEthernetOnCore0() {
         init.done != nullptr &&
         xTaskCreatePinnedToCore(
             [](void *) {
-                ethernet.begin(hostname);
+                ethernet.begin(hubName.bootHostname());
                 init.stackLeft = uxTaskGetStackHighWaterMark(nullptr);
                 xSemaphoreGive(init.done);
                 vTaskDelete(nullptr);
@@ -268,7 +266,7 @@ void beginEthernetOnCore0() {
             "eth_init", kStackBytes, nullptr, 5, nullptr, 0) == pdPASS;
     if (!started) {
         con.println("eth: couldn't start the core-0 init task; starting Ethernet on this core");
-        ethernet.begin(hostname);
+        ethernet.begin(hubName.bootHostname());
         return;
     }
     // Never block boot on it: the loop and its watchdog aren't running yet.
@@ -313,7 +311,12 @@ void restartNow() {
     esp_restart();
 }
 
+// Normally on httpd, queued behind the handler that asked for the reboot,
+// so its response has been handed to lwIP: first a moment for lwIP to put it
+// on the wire before the restart cuts the connection.
 void flushAndRestart() {
+    constexpr uint32_t kDrainMs = 100;
+    vTaskDelay(pdMS_TO_TICKS(kDrainMs));
     activePersister.flush(engine.activeActivityIdShared(),
                           configService && configService->state() == hubbo::config::ConfigState::Ok);
     con.println("restarting");
@@ -362,6 +365,7 @@ void onOtaWritten() {
 
 FirmwareUpdate firmwareUpdate(&requestReboot, hash);  // updates from the web admin
 FactoryReset factoryReset(&requestReboot);           // POST /admin/factory-reset
+Restart restart(&requestReboot);                     // POST /admin/restart
 
 // --- Boot ----------------------------------------------------------------------
 
@@ -403,6 +407,19 @@ void mountFilesystem() {
             break;
     }
     printStorage();
+}
+
+// The saved name (or the default) for Bluetooth, mDNS, DHCP and OTA, and
+// renames from the API applied live (hub_name.h).
+void loadHubName() {
+    const hubbo::ErrorCode loaded = hubSettings.load();
+    const hubbo::config::HubIdentity identity = hubSettings.identity();
+    hubName.begin(identity);
+    hubSettings.onChanged([](const hubbo::config::HubIdentity &renamed) { hubName.apply(renamed); });
+    con.printf("name: \"%s\", hostname %s\n", identity.name.c_str(), identity.hostname.c_str());
+    if (loaded != hubbo::ErrorCode::Ok && loaded != hubbo::ErrorCode::NotFound) {
+        con.printf("name: saved name unreadable (%s); using the default\n", hubbo::errorCodeName(loaded));
+    }
 }
 
 void printConfigState(const hubbo::config::LoadReport &r) {
@@ -501,12 +518,13 @@ void startApi() {
     hubbo::api::HubInfo info;
     info.version = image::version();
     info.board = board::kName;
-    info.hostname = hostname;
     hubbo::api::ApiContext context{credentials, sessions, apiClock, *configService, runtime, info};
     context.remote = &remoteRuntime;
     context.bleHosts = &bleHosts;
     context.firmware = &firmwareUpdate;
     context.factoryReset = &factoryReset;
+    context.hub = &hubSettings;
+    context.restart = &restart;
     context.homeAssistant = &haClient;
     context.secrets = &secretStore;
     api = std::make_unique<hubbo::api::Api>(std::move(context));
@@ -567,18 +585,20 @@ void startApi() {
 
 // --- Running -----------------------------------------------------------------
 
-// A new address: mDNS on httpd (MDNS.begin can block for
-// tens of ms, and the router belongs to httpd); OTA here (cheap, and its
-// handle() runs on this task).
+// A new address: mDNS on httpd (its calls wait on the mDNS task, and
+// renames run there too); OTA here (cheap, and its handle() runs on this
+// task).
 void onAddressChanged() {
-    httpServer.post([] {
-        static bool mdnsStarted = false;
-        if (!mdnsStarted && MDNS.begin(hostname)) {
-            mdnsStarted = true;
-            MDNS.addService("http", "tcp", HttpServer::kPort);
-        }
-    });
-    ota::begin(hostname, &releaseOutputs, &onOtaWritten);  // no-op if disabled or already started
+    httpServer.post([] { hubName.startMdns(hubSettings.identity(), HttpServer::kPort); });
+    ota::begin(hubName.bootHostname(), &releaseOutputs, &onOtaWritten);  // no-op if disabled or already started
+}
+
+// A rename's Bluetooth half (hub_name.h): BleHid is this task's.
+void pollHubName() {
+    static HubNameString name;
+    if (hubName.takeBleName(name)) {
+        ble.setName(name.view());
+    }
 }
 
 // Status for the API, copied for the HTTP task a few times a second.
@@ -1009,9 +1029,7 @@ void setup() {
     // (no USB) this times out.
     while (!Serial && millis() < 1000) {
     }
-    snprintf(hostname, sizeof(hostname), "hubbo-%012llX", static_cast<unsigned long long>(ESP.getEfuseMac()));
-
-    con.printf("\nHubbo %s on %s (%s)\n", image::version(), board::kName, hostname);
+    con.printf("\nHubbo %s on %s\n", image::version(), board::kName);
     con.printf("reset reason: %s\n", resetReasonName(esp_reset_reason()));
     diag::printPreviousRun();
     con.printf("chip %s rev %u, %u cores, %lu MHz, flash %lu MB, psram %lu KB\n", ESP.getChipModel(),
@@ -1022,10 +1040,11 @@ void setup() {
 
     factory_reset::wipeIfRequested();  // POST /admin/factory-reset before this restart, or a gate build
     mountFilesystem();
+    loadHubName();
     if (!radio.begin()) {
         con.println("radio: failed; check wiring and the 10 uF capacitor. Continuing without it.");
     }
-    if (ble.begin(HUBBO_BLE_NAME)) {
+    if (ble.begin(hubSettings.identity().name.c_str())) {
         randomSource.setEntropyReady(true);  // RF is on: esp_fill_random is now secure
     } else {
         con.println("ble: failed. Continuing without it; logins and tokens are refused (no RNG entropy).");
@@ -1097,6 +1116,7 @@ void loop() {
     engine.poll(nowMs);
     pollReboot();
 
+    pollHubName();
     ble.loop(nowMs);
     ethernet.loop(nowMs);
     if (ethernet.takeAddressChange()) {

@@ -17,3 +17,10 @@
 #define CONFIG_BT_NIMBLE_MAX_BONDS 5
 #undef CONFIG_BT_NIMBLE_MAX_CCCDS
 #define CONFIG_BT_NIMBLE_MAX_CCCDS 32
+
+// The GAP Device Name holds the hub's whole name: 32 code points, up to 128
+// bytes (core's kHubNameMaxBytes; hub_name.h). nimconfig.h sets
+// CONFIG_BT_NIMBLE_GAP_DEVICE_NAME_MAX_LEN to 31 unconditionally, so the
+// NimBLE value it feeds is set here instead (both its definitions are
+// #ifndef-guarded).
+#define MYNEWT_VAL_BLE_SVC_GAP_DEVICE_NAME_MAX_LENGTH 128

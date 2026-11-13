@@ -48,15 +48,20 @@ void wipeIfRequested() {
 
 bool FactoryReset::requestFactoryReset() {
     // Held until the restart: no update can start after this. A repeat
-    // request still holds it, so it's scheduled again (the same flag).
-    if (!ota::claim(ota::Owner::Reset)) {
+    // request, or one after a restart was accepted, finds it held already;
+    // a failed save then leaves it held (only httpd claims Reboot, so the
+    // check and the claim can't race).
+    const bool alreadyHeld = ota::holds(ota::Owner::Reboot);
+    if (!ota::claim(ota::Owner::Reboot)) {
         return false;  // an update is writing, or another reboot is pending
     }
     Preferences prefs;
     const bool saved = prefs.begin(kPrefsNamespace, false) && prefs.putUChar(kPrefsRequested, 1) == 1;
     prefs.end();
     if (!saved) {
-        ota::release(ota::Owner::Reset);
+        if (!alreadyHeld) {
+            ota::release(ota::Owner::Reboot);
+        }
         con.println("factory reset: couldn't save the request");
         return false;
     }

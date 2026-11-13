@@ -23,9 +23,9 @@
 //   of dropping a paired host.
 //
 // Ported from Harmonizer's src/bluetooth.cpp (soaresbrun0/Harmonizer,
-// AGPL-3.0), including its advertising fix: the scan response is enabled
-// before setName(), or a name over ~10 characters doesn't fit and the
-// device advertises with no name (the Apple TV then doesn't list it).
+// AGPL-3.0), including its advertising fix: the name goes in the scan
+// response, or a name over ~10 characters doesn't fit and the device
+// advertises with no name (the Apple TV then doesn't list it).
 //
 // All methods are for the main loop only (the engine runs there too).
 // NimBLE callbacks run on the host task and only set flags that loop()
@@ -51,6 +51,9 @@ public:
 
     bool begin(const char *name);
     bool started() const { return started_; }
+    // The hub's name (hub_name.h), live: GAP Device Name and scan response,
+    // advertising restarted. Paired hosts stay paired.
+    void setName(std::string_view name);
     void loop(uint32_t nowMs);
 
     // Bond deletions and the host table write NVS, which the RF task must
@@ -123,6 +126,7 @@ private:
     void loadHosts();
     void runNvsJob(std::function<void()> job);
     void updateAdvertising();
+    void setScanName(std::string_view name);
 
     bool started_ = false;
     Host hosts_[kMaxHosts];
