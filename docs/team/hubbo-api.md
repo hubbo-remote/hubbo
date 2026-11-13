@@ -54,6 +54,14 @@ Current as of the ha-domains branch (seven more HA domains). Not a log: rewrite 
   Contract: `hub_flow` (both modes), restart 409 inside `factory_reset_flow`, the default name
   after a factory reset, and `snapshot()` holds /status `hubbo.name`. `anonymous_matrix` (auth
   mode) sends every non-public operation without credentials and expects 401.
+- **Default hub name and real hostname** (hub-name, docs/design/hub-name.md): a new hub is
+  "Hubbo XXXX" (core `defaultHubName(mac)`; hub-sim "Hubbo 534D"). Hub is `{name, hostname,
+  hostname_conflict}`: `hostname` is `HubIdentity::shownHostname()` (what mDNS advertises after
+  a clash), the bool is `hostnameConflict()`; /status network.hostname is the same. A rename
+  clears it. The contract learns the hub's default on its first read (pattern `^Hubbo
+  [0-9A-F]{4}$`) and expects it back after a factory reset, so hub-sim and the mock needn't
+  share a suffix. `validate.load_spec()` (validate and contract) loads the spec with a strict loader (duplicated keys fail: js-yaml
+  refuses them, PyYAML doesn't).
 - **Global-binding fallback is per button** (core, button-press): an activity that binds any
   trigger of a button hides all of that button's globals. agent-api.md and the
   `/global-bindings` description say so.
