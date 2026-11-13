@@ -375,8 +375,28 @@ def activities_in(entry, data):
     return []
 
 
+class StrictLoader(yaml.SafeLoader):
+    """safe_load that reports a duplicated mapping key (PyYAML keeps the last
+    one silently; js-yaml, which the web build uses, refuses the file)."""
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                fail(f"{self.name} line {key_node.start_mark.line + 1}: duplicated key {key!r}")
+            seen.add(key)
+        return super().construct_mapping(node, deep)
+
+
+def load_spec():
+    """api/openapi.yaml, parsed; a duplicated key is a lint failure."""
+    with open(SPEC_PATH, encoding="utf-8") as f:
+        return yaml.load(f, Loader=StrictLoader)  # noqa: S506 (a SafeLoader)
+
+
 def main():
-    spec = yaml.safe_load(read(SPEC_PATH))
+    spec = load_spec()
     try:
         validate_spec(spec)
     except Exception as e:  # noqa: BLE001
