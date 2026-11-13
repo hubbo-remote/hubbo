@@ -33,6 +33,8 @@ function hubboMock(): Plugin {
 export default defineConfig({
   plugins: [react(), tailwindcss(), ...(target === 'mock' ? [hubboMock()] : [])],
   resolve: { alias: { '@': path.resolve(import.meta.dirname, 'src') } },
+  // e2e on the mock and on hub-sim may run at once: each Vite keeps its own dependency cache.
+  cacheDir: process.env.HUBBO_VITE_CACHE_DIR || undefined,
   server: {
     host: process.env.HUBBO_WEB_HOST || '0.0.0.0',
     port: Number(process.env.HUBBO_WEB_PORT || 5180),

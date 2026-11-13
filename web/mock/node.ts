@@ -16,8 +16,12 @@ export function optionsFromEnv(env: NodeJS.ProcessEnv = process.env): MockOption
   }
 }
 
+/** e2e runs specs in parallel: each Playwright worker sends this header and gets a hub of its own. */
+export const MOCK_HUB_HEADER = 'x-hubbo-mock-hub'
+
 export function mockMiddleware(opts: MockOptions) {
-  const mock = createMock(opts)
+  const hubs = new Map<string, ReturnType<typeof createMock>>()
+  const hubFor = (key: string) => hubs.get(key) ?? hubs.set(key, createMock(opts)).get(key)!
   return async (req: IncomingMessage, res: ServerResponse, next?: () => void) => {
     const url = new URL(req.url ?? '/', 'http://mock')
     // The llms.txt convention's place, outside the API (like core's host route).
@@ -32,7 +36,8 @@ export function mockMiddleware(opts: MockOptions) {
     const chunks: Buffer[] = []
     for await (const c of req) chunks.push(c as Buffer)
     const raw = Buffer.concat(chunks)
-    const out = await mock.handle({
+    const hub = req.headers[MOCK_HUB_HEADER]
+    const out = await hubFor(typeof hub === 'string' ? hub : '').handle({
       method: req.method ?? 'GET',
       path: url.pathname.slice(API_PREFIX.length),
       query: url.searchParams,

@@ -7,6 +7,7 @@ import { API_BASE } from '../src/api/constants.ts'
 import type { Session } from '../src/api/types.ts'
 import { fixture } from '../mock/fixtures.ts'
 import type { ResetFlags } from '../mock/handler.ts'
+import { MOCK_HUB_HEADER } from '../mock/node.ts'
 
 export const SIM_URL = process.env.HUBBO_API_TARGET && process.env.HUBBO_API_TARGET !== 'mock' ? process.env.HUBBO_API_TARGET.replace(/\/$/, '') : null
 /** The admin e2e sets up on a fresh hub, and the one a set-up mock has. */
@@ -70,6 +71,9 @@ async function factoryResetSim(page: Page, s: Session): Promise<Session> {
 
 export const test = base.extend<{ reset: ResetFlags; hub: void }>({
   reset: [{}, { option: true }],
+  // The mock gives each worker its own hub, so its specs run in parallel (hub-sim runs one worker).
+  extraHTTPHeaders: async ({ extraHTTPHeaders }, provide, testInfo) =>
+    provide(SIM_URL ? extraHTTPHeaders : { ...extraHTTPHeaders, [MOCK_HUB_HEADER]: String(testInfo.parallelIndex) }),
   hub: [
     async ({ page, reset }, use, testInfo) => {
       if (testInfo.project.name === 'noauth') testInfo.skip((await session(page)).auth_mode === 'enforced', 'the noauth project is for hub-sim without auth')
