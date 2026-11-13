@@ -361,6 +361,18 @@ describe('mock behaviour', () => {
     expect((await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body).toMatchObject({ state: 'failed', error: expect.any(String) })
   })
 
+  it('registering one of the newer domains stores its fixture’s commands, typed params and all', async () => {
+    const m = createMock({ discoverDelayMs: 0 })
+    for (const entityId of ['scene.movie_night', 'script.goodnight', 'cover.office_blinds', 'button.restart_router', 'input_boolean.guest_mode', 'humidifier.bedroom_humidifier', 'select.dryer_cycle']) {
+      await loadDetails(m, entityId)
+      const r = await m.handle(req('POST', '/admin/devices', { integration_id: 'ha_main', provider: { type: 'home_assistant', entity_id: entityId }, name: entityId, kind: 'other' }))
+      expect(r.status).toBe(201)
+      const { id } = r.body as { id: string }
+      const caps = (await m.handle(req('GET', `/devices/${id}/capabilities`))).body as Capabilities
+      expect(caps.commands).toEqual(fixture<Capabilities>(`integrations/ha_main.entities/${entityId}.capabilities.json`).commands)
+    }
+  })
+
   it('registering checks the id shape (422), then needs done details for that entity (409), then commands (422); HA connected (503)', async () => {
     const m = createMock({ discoverDelayMs: 0 })
     const backlight = { integration_id: 'ha_main', provider: { type: 'home_assistant', entity_id: 'switch.tv_backlight' }, name: 'Backlight', kind: 'switch' }
@@ -414,7 +426,7 @@ describe('mock behaviour', () => {
     await m.handle(req('POST', '/__mock/ha?rename=media_player.family_room_lg_tv&to=media_player.living_room_lg_tv'))
     expect(((await m.handle(req('GET', '/devices/dev_lg_tv'))).body as { availability: string }).availability).toBe('available') // not yet noticed
     await m.handle(req('POST', '/admin/integrations/ha_main/discover'))
-    expect(((await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body as DiscoverStatus).total).toBe(10) // renamed, not removed
+    expect(((await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body as DiscoverStatus).total).toBe(17) // renamed, not removed
     expect(((await m.handle(req('GET', '/devices/dev_lg_tv'))).body as { availability: string }).availability).toBe('stale')
     const exec = await m.handle(req('POST', '/devices/dev_lg_tv/commands/media_player.turn_on/execute', { params: {} }))
     expect([exec.status, exec.body]).toEqual([200, expect.objectContaining({ status: 'failed', message: 'entity_not_found' })])

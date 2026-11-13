@@ -33,12 +33,13 @@ export async function bind(page: Page, button: string, how: 'press' | 'long pres
   await page.getByRole('button', { name: 'Apply' }).click()
 }
 
-/** Add a step to the open Startup or Shutdown tab. */
-export async function addStep(page: Page, device: string, command: string) {
+/** Add a step to the open Startup or Shutdown tab; `fields` fills its settings by label. */
+export async function addStep(page: Page, device: string, command: string, fields: Record<string, string> = {}) {
   await page.getByRole('button', { name: 'Add step' }).click()
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('Device').selectOption({ label: device })
   await dialog.getByLabel('Command', { exact: true }).selectOption({ label: command })
+  for (const [label, value] of Object.entries(fields)) await dialog.getByLabel(label).fill(value)
   await dialog.getByRole('button', { name: 'Add step' }).click()
   await expect(dialog).toBeHidden()
 }

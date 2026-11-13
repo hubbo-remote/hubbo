@@ -181,7 +181,7 @@ export function defaultParams(params: ParamSpec[], commandId: string): ActionPar
     else if (p.type === 'bool') out[p.name] = false
     else if (scale) out[p.name] = percentDefault(scale)
     else if (speeds) out[p.name] = speedPercent(1, speeds)
-    else if (p.type === 'int' && p.unit === '%') out[p.name] = nearPercent(p, 35)
+    else if (p.type === 'int' && p.unit === '%') out[p.name] = nearPercent(p, p.name === 'humidity' ? 45 : 35)
     else if (p.type === 'int' || p.type === 'number') out[p.name] = p.minimum ?? 0
     // Anything else (e.g. an activity_ref) stays unset until picked: an empty string would look
     // chosen in a select while being invalid.
@@ -206,9 +206,13 @@ const KNOWN: Record<string, [label: string, unit: string]> = { color_temp_kelvin
  * the name, less a unit suffix the unit already says (`sleep_time` → "Sleep time", `hold_ms` → "Hold").
  */
 export const paramLabel = (p: ParamSpec) => (p.label && p.label !== p.name ? sentenceCase(p.label) : (KNOWN[p.name]?.[0] ?? humanize(p.unit ? p.name.replace(/_(ms|s|sec|seconds|k|kelvin|pct|percent)$/, '') : p.name)))
+/** A param's unit: the spec's, else a known one for its name. */
+export const paramUnit = (p: ParamSpec) => p.unit ?? KNOWN[p.name]?.[1]
+/** A value with its unit: "50%", "300 s". */
+export const withUnit = (v: number | string, unit?: string) => (unit ? `${v}${unit === '%' ? '' : ' '}${unit}` : String(v))
 /** A field's label with its unit: "Speed (s)", "Color temperature (K)". */
 export function fieldLabel(p: ParamSpec, commandId: string): string {
-  const unit = numberChoices(commandId, p) ? undefined : (p.unit ?? KNOWN[p.name]?.[1])
+  const unit = numberChoices(commandId, p) ? undefined : paramUnit(p)
   return unit ? `${paramLabel(p)} (${unit})` : paramLabel(p)
 }
 

@@ -8,6 +8,8 @@ const commands: Command[] = [
   { command_id: 'fan.set_percentage', label: 'Set speed', effect: 'momentary', params: [{ ...pct, required: true }] },
   { command_id: 'fan.turn_on', label: 'Turn on', effect: 'momentary', params: [{ ...pct, required: false }] },
   { command_id: 'light.brightness_step', label: 'Change brightness', effect: 'momentary', params: [{ name: 'step', type: 'int', required: true, minimum: -255, maximum: 255 }] },
+  { command_id: 'sonos.set_sleep_timer', label: 'Sleep timer', effect: 'momentary', params: [{ name: 'sleep_time', type: 'int', required: true, minimum: 0, maximum: 86400, unit: 's' }] },
+  { command_id: 'cover.set_cover_position', label: 'Set position', effect: 'momentary', params: [{ name: 'position', type: 'int', required: true, minimum: 0, maximum: 100, unit: '%' }] },
 ]
 const cat: Catalog = { devices: new Map([['dev_fan', { id: 'dev_fan' } as Device]]), capabilities: new Map([['dev_fan', { device_id: 'dev_fan', integration_id: 'ha_main', commands }]]), systemCommands: [], activities: [] }
 const act = (command_id: string, params: Action['params']): Action => ({ integration_id: 'ha_main', device_id: 'dev_fan', command_id, params })
@@ -19,6 +21,10 @@ describe('how an action reads', () => {
     expect(reads(act('fan.set_percentage', { percentage: 50 }))).toBe('Set speed 2 of 3') // off-list: the speed HA runs
     expect(reads(act('fan.turn_on', { percentage: 100 }))).toBe('Turn on speed 3 of 3')
     expect(reads(act('light.brightness_step', { step: 26 }))).toBe('Change brightness +10%')
+  })
+  it('says a number with its unit', () => {
+    expect(reads(act('cover.set_cover_position', { position: 50 }))).toBe('Set position 50%')
+    expect(reads(act('sonos.set_sleep_timer', { sleep_time: 300 }))).toBe('Sleep timer 300 s')
   })
 })
 

@@ -4,7 +4,7 @@ import type { ActionParams, ParamSpec, ParamValue } from '@/api/types'
 import { Field, Input, Select } from '@/components/ui/input'
 import { InfoTip } from '@/components/ui/info-tip'
 import { Switch } from '@/components/ui/switch'
-import { checkParam, drawerParams, fieldLabel, numberChoices, paramLabel } from '@/lib/activity'
+import { checkParam, drawerParams, fieldLabel, numberChoices, paramLabel, withUnit } from '@/lib/activity'
 import { groupKeys, paramValueLabel } from '@/lib/keys'
 import { cn } from '@/lib/utils'
 
@@ -110,9 +110,8 @@ export function ParamForm({ commandId, name, params, values, onChange, activitie
         const ranged = p.minimum !== undefined && p.maximum !== undefined
         const step = p.step ?? (p.type === 'int' ? 1 : 0.01)
         const display = typeof v === 'number' ? v : ''
-        const unit = p.unit ? ` ${p.unit}` : ''
         return (
-          <Field key={p.name} label={label} htmlFor={id} error={error} info={p.description} hint={ranged ? `${p.minimum}–${p.maximum}${unit}` : undefined} inline={inRow && 'beside'}>
+          <Field key={p.name} label={label} htmlFor={id} error={error} info={p.description} hint={ranged ? withUnit(`${p.minimum}–${p.maximum}`, p.unit) : undefined} inline={inRow && 'beside'}>
             <div className="flex items-center gap-3">
               {ranged && !inRow && !fit && (
                 <input

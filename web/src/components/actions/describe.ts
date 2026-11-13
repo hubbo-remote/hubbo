@@ -1,5 +1,5 @@
 import type { Action } from '@/api/types'
-import { commandFor, isSystem, LEVEL_SCALE, numberChoices, percentLabel, type Catalog } from '@/lib/activity'
+import { commandFor, isSystem, LEVEL_SCALE, numberChoices, paramUnit, percentLabel, withUnit, type Catalog } from '@/lib/activity'
 import { commandTitle, friendlyName, namedParam, toggleLabel, toggleOf } from '@/lib/commands'
 import { paramValueLabel } from '@/lib/keys'
 
@@ -27,6 +27,7 @@ export function paramSummary(a: Action, cat?: Catalog): string {
         const choices = spec ? numberChoices(a.command_id, spec) : null
         if (choices) return choices.phrase(v, commandTitle(cmd!))
         if (!spec && k === 'level' && v <= 1) return percentLabel(LEVEL_SCALE, v)
+        if (spec) return withUnit(v, paramUnit(spec))
       }
       return typeof v === 'string' ? paramValueLabel(k, v) : String(v)
     })
