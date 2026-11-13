@@ -7,7 +7,7 @@ Version 0.1 • 2026-11-04
 - Start every task by identifying the architecture sections and API/schema contracts affected.
 - Preserve existing working RF protocol code where possible. Experimental Ethernet/BLE fork is not yet supplied; request or inspect it when available, otherwise use a clearly isolated implementation and record the difference.
 - Implement one milestone at a time, build/test it, report firmware size, heap/PSRAM use and relevant latency; do not silently advance through failed acceptance gates.
-- Never add hardware targets, power-state tracking, unrestricted HA commands, MQTT dependency, or extra authentication roles without explicit approval.
+- Never add hardware targets, power-state tracking, unrestricted HA commands, MQTT beyond Home Assistant device discovery (approved 2026-11-13, docs/design/mqtt-discovery.md), or extra authentication roles without explicit approval.
 - Keep firmware hot path independent of HTTP, config parsing and network operations.
 - No web UI code may call private firmware internals: all changes go through versioned API.
 - Keep code modular and document behavior/failure modes; include test fixtures and CI checks with each milestone.
