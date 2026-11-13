@@ -42,6 +42,7 @@ import type {
 import { BLE_MAX_DEVICES, BLE_PAIR_WINDOW_MAX_S, BLE_PAIR_WINDOW_MIN_S, BLE_PAIR_WINDOW_S, REMOTE_CHANNEL_MAX, REMOTE_SCAN_TIMEOUT_S } from '../src/api/constants.ts'
 import { forEachAction, validateActivity, validateBindings, type Catalog } from '../src/lib/activity.ts'
 import { addressProblem } from '../src/lib/remote.ts'
+import { GUIDE_PATH, loadDocs, sendDoc } from './docs.ts'
 import { checkFirmwareImage } from './firmware.ts'
 import { fixture, fixtureBytes, loadSeed, type Seed } from './fixtures.ts'
 import { activityShape, bindingsShape } from './shape.ts'
@@ -153,6 +154,8 @@ const err = (status: number, code: ErrorCode, message: string, extra: Record<str
 const invalid = (details: ValidationIssue[], message = details[0]?.message ?? 'Invalid request') => err(422, 'validation_failed', message, { details: details.slice(0, 32) })
 const nameRequired = () => invalid([{ path: '/name', code: 'required', message: 'Name is required' }])
 const deviceLimit = () => err(409, 'limit_reached', 'At most 64 devices')
+/** Like core: a path under /api the API doesn't have is a 404 pointing at the agent guide. */
+export const unknownPath = (what: string) => err(404, 'not_found', `No route for ${what}`, { docs: GUIDE_PATH })
 const ok = (body?: unknown, status = 200): MockResponse => ({ status: body === undefined ? 204 : status, body })
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] }
@@ -676,7 +679,13 @@ export function createMock(opts: MockOptions = {}) {
     req.query.has('revision') ? null : err(422, 'validation_failed', 'Send ?revision=N (the revision you last read)', { details: [{ path: '/revision', code: 'required', message: 'Required field is missing' }] })
 
   // ---------- routes ----------
+  const docs = loadDocs()
+  const apiIndex = fixture<Record<string, unknown>>('discovery/index.json')
   const routes: [string, RegExp, Role, Handler][] = [
+    // The agent docs (no sign-in): the index, the spec and the guide. /llms.txt is outside /api/v1 (node.ts).
+    ['GET', /^\/?$/, 'public', () => ok({ ...apiIndex, version: db.status.hubbo.version })],
+    ['GET', /^\/openapi\.json$/, 'public', (req) => sendDoc(req, docs.openapi)],
+    ['GET', /^\/agent\.md$/, 'public', (req) => sendDoc(req, docs.guide)],
     ['GET', /^\/auth\/session$/, 'public', (req) => ok(sessionBody(sessionId(req)))],
     ['POST', /^\/auth\/setup$/, 'setup', (req) => {
       const b = req.body as { username?: string; password?: string }
@@ -1308,7 +1317,7 @@ export function createMock(opts: MockOptions = {}) {
     const hit = routes.find(([method, re]) => method === req.method && re.test(req.path))
     if (!hit) {
       const known = routes.some(([, re]) => re.test(req.path))
-      return known ? err(405, 'method_not_allowed', `${req.method} is not allowed here`) : err(404, 'not_found', `No route for ${req.method} ${req.path}`)
+      return known ? err(405, 'method_not_allowed', `${req.method} is not allowed here`) : unknownPath(`${req.method} ${req.path}`) // a path the API doesn't have, not a missing id
     }
     const [, re, role, fn] = hit
     const sid = sessionId(req)
@@ -1324,8 +1333,9 @@ export function createMock(opts: MockOptions = {}) {
       return err(403, 'csrf_failed', 'Cross-site request refused')
     }
     if (role === 'token' || role === 'admin') {
-      if (!adminCreated) return err(401, 'unauthenticated', 'Finish first-run setup first') // like the hub: setup_required is only a session field
-      if (!sid) return err(401, 'unauthenticated', 'Sign in to continue')
+      // Like the hub, a request with no credentials is pointed at the agent guide (a wrong password isn't).
+      if (!adminCreated) return err(401, 'unauthenticated', 'Finish first-run setup first', { docs: GUIDE_PATH }) // like the hub: setup_required is only a session field
+      if (!sid) return err(401, 'unauthenticated', 'Sign in to continue', { docs: GUIDE_PATH })
     }
     // Config state: a blocked config refuses every edit (and switching, since nothing is compiled);
     // unwritable storage refuses edits. Restore and reset are the way out.
