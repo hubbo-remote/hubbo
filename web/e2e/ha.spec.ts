@@ -10,6 +10,9 @@ const T = SIM_URL
 
 test.beforeEach(async ({ page }) => connectHa(page))
 
+/** The HA settings form on Integrations (the MQTT form has its own Save). */
+const haForm = (page: Page) => page.locator('form').filter({ has: page.getByLabel('Access token') })
+
 async function openAddHa(page: Page) {
   await open(page, '/devices')
   await page.getByRole('button', { name: 'Add device' }).click()
@@ -47,7 +50,7 @@ test('saving waits for the connection: a stall says so after a while, then a goo
   await open(page, '/integrations')
   const conn = page.getByTestId('ha-connection')
   const token = page.getByLabel('Access token')
-  const save = page.getByRole('button', { name: 'Save', exact: true })
+  const save = haForm(page).getByRole('button', { name: 'Save', exact: true })
   await fakeHaNextConnect(page, 'stall')
   await token.fill(FAKE_HA.token)
   await save.click()
@@ -74,7 +77,7 @@ test('saving a wrong token while connected never shows the old connection as the
   })
   await fakeHaNextConnect(page, 'reject')
   await page.getByLabel('Access token').fill('e2e-wrong-token')
-  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await haForm(page).getByRole('button', { name: 'Save', exact: true }).click()
   await letHaConnect(page) // hub-sim: the HA task applies the settings as sim time runs
   await expect(conn).toContainText('The token was rejected')
   expect((await page.evaluate(() => (window as unknown as { seen: string[] }).seen)).filter((t) => t.includes('Saved and connected'))).toEqual([])
@@ -82,7 +85,7 @@ test('saving a wrong token while connected never shows the old connection as the
 
 test('the token is write-only, and changing the URL says it clears the token', async ({ page }) => {
   await open(page, '/integrations')
-  const form = page.locator('form').filter({ has: page.getByLabel('URL', { exact: true }) })
+  const form = haForm(page)
   await expect(form.getByLabel('Access token')).toHaveValue('') // never filled from the hub
   await expect(form).toContainText('Leave blank to keep the saved token')
 
@@ -156,7 +159,10 @@ test('the add flow previews integration services, leaves out what it can’t use
 
 test('picking an entity loads its actions; a failed load says why and can be retried', async ({ page }) => {
   const dialog = await openAddHa(page)
+  // The search is debounced, and the previous list shows meanwhile: wait for this search's own result.
+  const searched = page.waitForResponse((r) => r.request().method() === 'GET' && r.url().includes('/discover?') && new URL(r.url()).searchParams.get('q') === T.free)
   await dialog.getByLabel('Search devices').fill(T.free)
+  await searched
   const entity = dialog.getByRole('button', { name: new RegExp(T.free.replace('.', '\\.')) })
   await expect(entity).toBeVisible()
   // HA forgets it after the list was read: its details can't load.

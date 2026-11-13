@@ -96,16 +96,15 @@ export async function ensureAdmin(page: Page) {
 /** hub-sim's in-process fake Home Assistant (never a real one): its URL and the only token it accepts. */
 export const FAKE_HA = { url: 'http://homeassistant.local:8123', token: 'fake-ha-token' }
 
-/** The HA client's state as /status reports it. */
-const haState = async (page: Page) => ((await (await page.request.get(`${API_BASE}/status`)).json()).integrations as { id: string; state: string }[]).find((i) => i.id === 'ha_main')?.state
+/** An integration's state as /status reports it. */
+const integrationState = async (page: Page, id: string) => ((await (await page.request.get(`${API_BASE}/status`)).json()).integrations as { id: string; state: string }[]).find((i) => i.id === id)?.state
 
 /**
- * hub-sim runs on simulated time: after a settings change or a reconnect the HA client waits out
- * its backoff (1 s, doubling) only as sim time passes. Nudge it, then wait for `state`.
+ * hub-sim runs on simulated time: after a settings change or a reconnect a client (HA, MQTT) waits
+ * out its backoff only as sim time passes. Nudge it on each read until it reaches `state`.
  */
-async function settleHa(page: Page, state: string) {
-  await advance(page, 2_000)
-  await expect.poll(() => haState(page), { message: `HA client -> ${state}` }).toBe(state)
+export async function settleIntegration(page: Page, id: string, state: string) {
+  await expect.poll(async () => (await advance(page, 2_000), integrationState(page, id)), { message: `${id} -> ${state}` }).toBe(state)
 }
 
 /** Point ha_main at the fake HA with its token (hub-sim seeds no token). The mock starts connected. */
@@ -115,7 +114,7 @@ export async function connectHa(page: Page, token = FAKE_HA.token) {
   const cfg = await hub.get('/admin/integrations/ha_main')
   const r = await hub.put('/admin/integrations/ha_main', { revision: cfg.revision, settings: { type: 'home_assistant', url: FAKE_HA.url, access_token: token } })
   expect(r.ok(), `configure HA -> ${r.status()}`).toBeTruthy()
-  await settleHa(page, token === FAKE_HA.token ? 'connected' : 'auth_failed')
+  await settleIntegration(page, 'ha_main', token === FAKE_HA.token ? 'connected' : 'auth_failed')
 }
 
 /** POST a test control: hub-sim's /sim/<path> or the mock's /__mock/<path>. */
@@ -140,7 +139,7 @@ export async function setHaState(page: Page, state: HaState) {
   const fakeHa = SIM_HA_STATE[state]
   expect(fakeHa, `hub-sim can’t hold HA in ${state}`).toBeDefined()
   await control(page, `ha?${fakeHa}`)
-  await settleHa(page, state)
+  await settleIntegration(page, 'ha_main', state)
 }
 
 /**
