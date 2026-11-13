@@ -59,6 +59,10 @@ struct CapabilitySnapshot {
     int32_t maxColorTempKelvin = 0;
     std::vector<std::string> presetModes;  // fan
     int32_t percentageStep = 0;            // fan: HA's percentage_step rounded down, 1..100; 0 = none
+    int32_t minHumidity = 0;      // humidifier: whole percent (humidityRange()); both 0 = not reported
+    int32_t maxHumidity = 0;
+    std::vector<std::string> availableModes;  // humidifier
+    std::vector<std::string> options;         // select
     std::vector<SnapshotService> services;
 
     bool operator==(const CapabilitySnapshot &other) const;

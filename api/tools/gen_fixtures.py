@@ -226,12 +226,75 @@ def switch_commands():
     return [cmd("switch.turn_on", "Turn on"), cmd("switch.turn_off", "Turn off")]
 
 
+COVER = {"OPEN": 1, "CLOSE": 2, "SET_POSITION": 4, "STOP": 8,
+         "OPEN_TILT": 16, "CLOSE_TILT": 32, "STOP_TILT": 64, "SET_TILT_POSITION": 128}
+HUMIDIFIER_MODES = 1
+
+
+def percent(name, lo=0, hi=100):
+    return dict(p_num(name, "int", lo, hi), unit="%")
+
+
+def cover_commands(features):
+    has = lambda *names: all(features & COVER[n] for n in names)
+    out = []
+    if has("OPEN"):
+        out.append(cmd("cover.open_cover", "Open"))
+    if has("CLOSE"):
+        out.append(cmd("cover.close_cover", "Close"))
+    if has("STOP"):
+        out.append(cmd("cover.stop_cover", "Stop"))
+    if has("OPEN", "CLOSE"):
+        out.append(cmd("cover.toggle", "Toggle"))
+    if has("SET_POSITION"):
+        out.append(cmd("cover.set_cover_position", "Set position", [percent("position")]))
+    if has("OPEN_TILT"):
+        out.append(cmd("cover.open_cover_tilt", "Open tilt"))
+    if has("CLOSE_TILT"):
+        out.append(cmd("cover.close_cover_tilt", "Close tilt"))
+    if has("STOP_TILT"):
+        out.append(cmd("cover.stop_cover_tilt", "Stop tilt"))
+    if has("SET_TILT_POSITION"):
+        out.append(cmd("cover.set_cover_tilt_position", "Set tilt", [percent("tilt_position")]))
+    return out
+
+
+def humidifier_commands(features, attrs):
+    lo, hi = attrs.get("min_humidity", 0), attrs.get("max_humidity", 100)
+    out = [cmd("humidifier.turn_on", "Turn on"), cmd("humidifier.turn_off", "Turn off"),
+           cmd("humidifier.toggle", "Toggle"), cmd("humidifier.set_humidity", "Set humidity", [percent("humidity", lo, hi)])]
+    if features & HUMIDIFIER_MODES and attrs.get("available_modes"):
+        out.append(cmd("humidifier.set_mode", "Set mode", [p_enum("mode", attrs["available_modes"])]))
+    return out
+
+
+def select_commands(attrs):
+    if not attrs.get("options"):
+        return []
+    return [cmd("select.select_option", "Choose", [p_enum("option", attrs["options"])]),
+            cmd("select.select_next", "Next"), cmd("select.select_previous", "Previous")]
+
+
+def suggested_kind(domain, platform, device_class):
+    """Mirrors ha::suggestedKind (core/src/ha/capabilities.cpp)."""
+    fixed = {"light": "light", "switch": "switch", "fan": "fan", "scene": "scene", "script": "script",
+             "cover": "cover", "humidifier": "climate"}
+    if domain != "media_player":
+        return fixed.get(domain, "other")
+    if device_class == "receiver":
+        return "receiver"
+    if device_class == "speaker" or platform in ("alexa_media", "group"):
+        return "speaker"
+    return "streamer" if platform == "apple_tv" else "tv"
+
+
 # ---------------------------------------------------------------- devices
 
 HA_ENTITIES = {
     "dev_denon": {
         "entity_id": "media_player.family_room_denon", "unique_id": "c5a1e0b2f3d44c1aa1b2c3d4e5f60718",
         "name": "Family Room Denon", "kind": "receiver", "domain": "media_player", "state": "off",
+        "device_class": "receiver",
         "supported_features": 69004,  # denonavr SUPPORT_DENON | SELECT_SOUND_MODE
         "attributes": {
             "source_list": ["Blu-ray", "CBL/SAT", "DVD", "Game", "Media Player", "TV Audio", "Tuner", "Bluetooth"],
@@ -241,6 +304,7 @@ HA_ENTITIES = {
     "dev_sonos": {
         "entity_id": "media_player.family_room_sonos", "unique_id": "RINCON_48A6B8000000001400",
         "name": "Family Room Sonos", "kind": "speaker", "domain": "media_player", "state": "idle",
+        "device_class": "speaker",
         "revision": 3,  # renamed twice
         "supported_features": 8321599,  # sonos _attr_supported_features | SELECT_SOURCE (Arc)
         "attributes": {"source_list": ["TV"]},
@@ -248,6 +312,7 @@ HA_ENTITIES = {
     "dev_lg_tv": {
         "entity_id": "media_player.family_room_lg_tv", "unique_id": "1b2e6c3a-9f4d-4a7e-b1c2-d3e4f5a6b7c8",
         "name": "Family Room LG TV", "kind": "tv", "domain": "media_player", "state": "off",
+        "device_class": "tv",
         # webostv SUPPORT_WEBOSTV | MUTE | VOLUME_STEP (external speaker) | TURN_ON (turn-on trigger)
         "supported_features": 24505,
         "attributes": {"source_list": ["HDMI 1", "HDMI 2", "HDMI 3", "Live TV", "Netflix", "YouTube"]},
@@ -266,6 +331,30 @@ HA_ENTITIES = {
                        "min_color_temp_kelvin": 2000, "max_color_temp_kelvin": 6535},
     },
 }
+
+
+# Made-up entities of the newer domains (never a real home's names): discovery
+# candidates, not registered, each with the capabilities registering it
+# gives (integrations/ha_main.entities/<entity_id>.capabilities.json, for
+# the web mock). Platform "demo"; humidifier MODES = 1, cover 15 = OPEN |
+# CLOSE | SET_POSITION | STOP.
+NEW_DOMAIN_ENTITIES = [
+    {"entity_id": "scene.movie_night", "name": "Movie Night", "domain": "scene", "state": "unknown",
+     "supported_features": 0, "attributes": {}},
+    {"entity_id": "script.goodnight", "name": "Goodnight", "domain": "script", "state": "off",
+     "supported_features": 0, "attributes": {}},
+    {"entity_id": "cover.office_blinds", "name": "Office Blinds", "domain": "cover", "state": "open",
+     "device_class": "blind", "supported_features": 15, "attributes": {}},
+    {"entity_id": "button.restart_router", "name": "Restart Router", "domain": "button", "state": "unknown",
+     "device_class": "restart", "supported_features": 0, "attributes": {}},
+    {"entity_id": "input_boolean.guest_mode", "name": "Guest Mode", "domain": "input_boolean", "state": "off",
+     "supported_features": 0, "attributes": {}},
+    {"entity_id": "humidifier.bedroom_humidifier", "name": "Bedroom Humidifier", "domain": "humidifier",
+     "state": "on", "device_class": "humidifier", "supported_features": 1,
+     "attributes": {"available_modes": ["normal", "eco", "sleep"], "min_humidity": 30, "max_humidity": 80}},
+    {"entity_id": "select.dryer_cycle", "name": "Dryer Cycle", "domain": "select", "state": "normal",
+     "supported_features": 0, "attributes": {"options": ["normal", "delicate", "towels"]}},
+]
 
 
 def ha_provider(entity_id, unique_id=None):
@@ -287,7 +376,8 @@ def ha_snapshot(e):
     """The stored `ha_capabilities` (backups only; never in a Device response)."""
     snap = {"platform": e.get("platform", "demo"), "supported_features": e["supported_features"]}
     for key in ("source_list", "sound_mode_list", "supported_color_modes",
-                "min_color_temp_kelvin", "max_color_temp_kelvin"):
+                "min_color_temp_kelvin", "max_color_temp_kelvin", "min_humidity", "max_humidity",
+                "available_modes", "options"):
         if key in e["attributes"]:
             snap[key] = e["attributes"][key]
     snap["services"] = []
@@ -310,6 +400,19 @@ def ha_commands(e):
         return light_commands(e["supported_features"], e["attributes"])
     if e["domain"] == "switch":
         return switch_commands()
+    simple = {"scene": [cmd("scene.turn_on", "Activate")],
+              "script": [cmd("script.turn_on", "Run"), cmd("script.turn_off", "Stop")],
+              "button": [cmd("button.press", "Press")],
+              "input_boolean": [cmd("input_boolean.turn_on", "Turn on"), cmd("input_boolean.turn_off", "Turn off"),
+                                cmd("input_boolean.toggle", "Toggle")]}
+    if e["domain"] in simple:
+        return simple[e["domain"]]
+    if e["domain"] == "cover":
+        return cover_commands(e["supported_features"])
+    if e["domain"] == "humidifier":
+        return humidifier_commands(e["supported_features"], e["attributes"])
+    if e["domain"] == "select":
+        return select_commands(e["attributes"])
     return []
 
 
@@ -621,23 +724,30 @@ fx("integrations/ha_main.configure.request.json", "configureIntegration", "reque
     "revision": 2})
 # Discovery candidates: domain commands only (a preview), no unique_id; the
 # details add the integration's services and the unique_id.
-cands = []
-for dev_id, e in HA_ENTITIES.items():
-    cands.append({"provider": ha_provider(e["entity_id"]),
-                  "name": e["name"], "domain": e["domain"], "platform": e.get("platform", "demo"),
-                  "supported": True, "command_ids": [c["command_id"] for c in ha_commands(e)],
-                  "dropped_options": 0, "registered_device_id": dev_id})
-cands.append({"provider": ha_provider("switch.tv_backlight"),
-              "name": "TV Backlight", "domain": "switch", "platform": "zha", "supported": True,
-              "command_ids": [c["command_id"] for c in switch_commands()], "dropped_options": 0,
-              "registered_device_id": None})
-cands.append({"provider": ha_provider("switch.porch_light"),  # YAML-only: no registry entry, no platform
-              "name": "Porch Light", "domain": "switch", "supported": True,
-              "command_ids": [c["command_id"] for c in switch_commands()], "dropped_options": 0,
-              "registered_device_id": None})
-cands.append({"provider": ha_provider("media_player.kitchen_display"),
-              "name": "Kitchen Display", "domain": "media_player", "platform": "cast", "supported": False,
-              "command_ids": [], "dropped_options": 0, "registered_device_id": None})
+def candidate(entity_id, name, domain, platform, commands, registered=None, state=None, device_class=""):
+    """A discovery candidate; platform None for a YAML-only entity (no registry entry)."""
+    c = {"provider": ha_provider(entity_id), "name": name, "domain": domain}
+    if platform is not None:
+        c["platform"] = platform
+    if state is not None:
+        c["state"] = state
+    c.update({"supported": bool(commands), "command_ids": [x["command_id"] for x in commands],
+              "dropped_options": 0, "registered_device_id": registered,
+              "suggested_kind": suggested_kind(domain, platform or "", device_class)})
+    return c
+
+
+cands = [candidate(e["entity_id"], e["name"], e["domain"], e.get("platform", "demo"), ha_commands(e), dev_id,
+                   device_class=e.get("device_class", "")) for dev_id, e in HA_ENTITIES.items()]
+for e in NEW_DOMAIN_ENTITIES:
+    cands.append(candidate(e["entity_id"], e["name"], e["domain"], "demo", ha_commands(e), state=e["state"],
+                           device_class=e.get("device_class", "")))
+    fx(f"integrations/ha_main.entities/{e['entity_id']}.capabilities.json", "getDeviceCapabilities", "200",
+       {"device_id": "dev_" + e["entity_id"].split(".", 1)[1], "integration_id": "ha_main",
+        "commands": ha_commands(e)})
+cands.append(candidate("switch.tv_backlight", "TV Backlight", "switch", "zha", switch_commands()))
+cands.append(candidate("switch.porch_light", "Porch Light", "switch", None, switch_commands()))  # YAML-only
+cands.append(candidate("media_player.kitchen_display", "Kitchen Display", "media_player", "cast", []))
 fx("integrations/ha_main.discover.json", "discoverIntegration", "202", {"state": "running"})
 fx("integrations/ha_main.discovery.json", "getDiscovery", "200",
    {"state": "done", "total": len(cands), "truncated": 0, "elapsed_ms": 1840, "candidates": cands, "next_cursor": None})

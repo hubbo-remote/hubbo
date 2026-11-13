@@ -1,0 +1,46 @@
+{
+  "device_id": "dev_office_blinds",
+  "integration_id": "ha_main",
+  "commands": [
+    {
+      "command_id": "cover.open_cover",
+      "label": "Open",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "cover.close_cover",
+      "label": "Close",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "cover.stop_cover",
+      "label": "Stop",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "cover.toggle",
+      "label": "Toggle",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "cover.set_cover_position",
+      "label": "Set position",
+      "effect": "momentary",
+      "params": [
+        {
+          "name": "position",
+          "type": "int",
+          "required": true,
+          "minimum": 0,
+          "maximum": 100,
+          "step": 1,
+          "unit": "%"
+        }
+      ]
+    }
+  ]
+}

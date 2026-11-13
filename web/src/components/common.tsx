@@ -2,13 +2,19 @@ import { ArrowLeft, Construction, type LucideIcon } from 'lucide-react'
 import { Link } from 'wouter'
 import type { ReactNode } from 'react'
 import type { IntegrationState } from '@/api/types'
-import { HEALTH } from '@/lib/health'
+import { HEALTH, providerRef } from '@/lib/health'
 import { ApiError, errorMessage, isNotImplemented } from '@/api/client'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+
+/** A Home Assistant device's entity id (`select.hue_office_scene`), a small mono line under its name; nothing for others. */
+export function EntityId({ provider }: { provider: { type: string; entity_id?: string } }) {
+  const ref = providerRef(provider)
+  return ref ? <span className="block truncate font-mono text-xs text-muted-foreground">{ref}</span> : null
+}
 
 export function PageHeader({ title, description, actions, back }: { title: ReactNode; description?: ReactNode; actions?: ReactNode; back?: { href: string; label: string } }) {
   return (

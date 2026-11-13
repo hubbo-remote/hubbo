@@ -1229,8 +1229,9 @@ export interface components {
                 /** @description Present with `revision_conflict`. */
                 current_revision?: components["schemas"]["Revision"];
                 /**
-                 * @description Where to read how the API works. Present on every `401` and on
-                 *     the `404` for a path the API doesn't have.
+                 * @description Where to read how the API works. Present when a request is
+                 *     refused for having no valid credentials (`401 unauthenticated`), and
+                 *     on the `404` for a path the API doesn't have.
                  * @constant
                  */
                 docs?: "/api/v1/agent.md";
@@ -1601,7 +1602,7 @@ export interface components {
          *     profile spec's kinds.json. Anything else is `unknown_kind`.
          * @enum {string}
          */
-        DeviceKind: "tv" | "tv_vcr" | "tv_dvd" | "tv_dvd_vcr" | "tv_dvr" | "projector" | "streamer" | "set_top_box" | "cable_box" | "cable_dvr" | "satellite_box" | "console" | "computer" | "disc_player" | "dvd_recorder" | "dvd_vcr" | "dvd_recorder_vcr" | "vcr" | "laserdisc" | "home_theater" | "home_theater_vcr" | "receiver" | "amplifier" | "speaker" | "mini_system" | "tuner" | "cd_player" | "cd_changer" | "tape_deck" | "dat_deck" | "minidisc" | "portable_audio" | "hdmi_switch" | "climate" | "light" | "switch" | "smart_home_hub" | "accessory" | "other";
+        DeviceKind: "tv" | "tv_vcr" | "tv_dvd" | "tv_dvd_vcr" | "tv_dvr" | "projector" | "streamer" | "set_top_box" | "cable_box" | "cable_dvr" | "satellite_box" | "console" | "computer" | "disc_player" | "dvd_recorder" | "dvd_vcr" | "dvd_recorder_vcr" | "vcr" | "laserdisc" | "home_theater" | "home_theater_vcr" | "receiver" | "amplifier" | "speaker" | "mini_system" | "tuner" | "cd_player" | "cd_changer" | "tape_deck" | "dat_deck" | "minidisc" | "portable_audio" | "hdmi_switch" | "climate" | "fan" | "cover" | "light" | "switch" | "smart_home_hub" | "scene" | "script" | "accessory" | "other";
         HomeAssistantProvider: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -1683,7 +1684,18 @@ export interface components {
             preset_modes?: components["schemas"]["HaOptionList"];
             /** @description A fan's percentage per speed (HA's 100 / speeds), rounded down. */
             percentage_step?: number;
-            /** @description Integration-specific services offered for the entity, already typed. */
+            /**
+             * @description A humidifier's target humidity range, whole percent: both or
+             *     neither, with `min_humidity` below `max_humidity`. Neither: 0..100.
+             */
+            min_humidity?: number;
+            max_humidity?: components["schemas"]["HaCapabilitySnapshot"]["min_humidity"];
+            available_modes?: components["schemas"]["HaOptionList"];
+            options?: components["schemas"]["HaOptionList"];
+            /**
+             * @description Integration-specific services offered for the entity, already
+             *     typed. Media players, lights, switches and fans only.
+             */
             services: components["schemas"]["HaServiceSnapshot"][];
         };
         HaOptionList: string[];
@@ -1950,6 +1962,14 @@ export interface components {
         };
         DiscoverCandidate: {
             provider: components["schemas"]["HomeAssistantProvider"];
+            /**
+             * @description The kind a new device of this entity starts with: by domain
+             *     (light, switch, fan, cover, scene and script are their own kinds,
+             *     `humidifier` is `climate`, `button`, `input_boolean` and `select`
+             *     are `other`), and for a media player by its device class or
+             *     integration (`apple_tv` is `streamer`).
+             */
+            suggested_kind: components["schemas"]["DeviceKind"];
             name: string;
             domain: string;
             /** @description The HA integration that provides the entity (e.g. `sonos`), from the entity registry. Absent for YAML-only entities. */
@@ -3173,7 +3193,7 @@ export interface operations {
             query?: {
                 /** @description Case-insensitive substring of entity_id or name. */
                 q?: string;
-                domain?: "media_player" | "light" | "switch" | "fan";
+                domain?: "media_player" | "light" | "switch" | "fan" | "scene" | "script" | "cover" | "button" | "input_boolean" | "humidifier" | "select";
                 /**
                  * @description `true`: only candidates that can be registered (`supported`, with
                  *     no `registered_device_id`). Applied before paging, like `q` and

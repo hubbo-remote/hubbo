@@ -126,6 +126,10 @@ describe('params as people see them', () => {
     expect(defaultParams([level], 'media_player.volume_set')).toEqual({ level: 0.35 })
     expect(defaultParams([step, { name: 'transition', type: 'number', required: false, default: 1 }], 'light.brightness_step')).toEqual({ step: 26 })
   })
+  it('starts a humidity at 45%', () => {
+    expect(defaultParams([{ name: 'humidity', type: 'int', required: true, minimum: 30, maximum: 80, unit: '%' }], 'humidifier.set_humidity')).toEqual({ humidity: 45 })
+    expect(defaultParams([{ name: 'humidity', type: 'int', required: true, minimum: 50, maximum: 60, unit: '%' }], 'humidifier.set_humidity')).toEqual({ humidity: 50 }) // a narrow range: the nearest it allows
+  })
 
   it('keeps optional params in the drawer, unless one is a command’s only param with no default', () => {
     const queue: ParamSpec = { name: 'queue_position', type: 'int', required: false }

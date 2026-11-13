@@ -3,8 +3,9 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'wouter'
 import { api, errorMessage, toApiError } from '@/api/client'
 import { invalidate } from '@/api/hooks'
-import type { Device, DeviceKind, DiscoverCandidate, HomeAssistantProvider, ProfileSummary } from '@/api/types'
+import type { Device, DeviceKind, HomeAssistantProvider, ProfileSummary } from '@/api/types'
 import { EntityPreview, HaCandidates } from '@/components/admin/HaCandidates'
+import { EntityId } from '@/components/common'
 import { haDeviceError, loadEntityDetails, type EntityDetails } from '@/lib/ha'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -12,8 +13,7 @@ import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, Select } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { useDevices, useIntegrations, useKinds, useProfiles } from '@/hooks/data'
-import { INTEGRATION_ICON, providerRef } from '@/lib/health'
-const guessKind = (c: DiscoverCandidate): DeviceKind => (c.domain === 'light' ? 'light' : c.domain === 'switch' ? 'switch' : /tv|oled|bravia|webos/i.test(c.name) ? 'tv' : /denon|marantz|yamaha|onkyo|receiver|avr/i.test(c.name) ? 'receiver' : /sonos|speaker/i.test(c.name) ? 'speaker' : 'other')
+import { INTEGRATION_ICON } from '@/lib/health'
 
 /** What's being added: a built-in profile, or a Home Assistant entity (with its details, which registering needs). */
 type Pick =
@@ -141,7 +141,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
           ))}
           {query && offered.length > 0 && shown.length === 0 && <p className="px-1 text-sm text-muted-foreground">No matches.</p>}
           {ha.map((i) => (
-            <Choice key={i.id} icon={INTEGRATION_ICON.home_assistant} title={ha.length > 1 ? `From ${i.name}` : 'From Home Assistant'} subtitle="Media players, lights and switches" onClick={() => setIntegration(i.id)} />
+            <Choice key={i.id} icon={INTEGRATION_ICON.home_assistant} title={ha.length > 1 ? `From ${i.name}` : 'From Home Assistant'} subtitle="Media players, lights, covers, scenes and more" onClick={() => setIntegration(i.id)} />
           ))}
           {integrations.data && profiles.data && offered.length === 0 && ha.length === 0 && <p className="text-sm text-muted-foreground">Turn on an integration first.</p>}
         </div>
@@ -152,7 +152,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
           onPick={(c) => {
             setPick({ provider: c.provider, label: c.name })
             setName(c.name.slice(0, 64))
-            setKind(guessKind(c))
+            setKind(c.suggested_kind)
             void loadDetails(c.provider.entity_id)
           }}
         />
@@ -168,7 +168,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
             ) : (
               <>
                 <p className="font-medium">{pick.label}</p>
-                <p className="font-mono text-xs text-muted-foreground">{providerRef(pick.provider)}</p>
+                <EntityId provider={pick.provider} />
               </>
             )}
           </div>

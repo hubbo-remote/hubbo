@@ -23,14 +23,16 @@ namespace hubbo::sim {
 struct FakeHaEntity {
     ha::EntityInfo info;
     std::string friendlyName;
+    std::string deviceClass;  // the state's device_class, "" for none
     // Entity registry entry (registered = false: the entity has no entry).
     bool registered = true;
     std::string uniqueId;
     std::string platform = "demo";
     std::string name;
     bool disabled = false;
-    // A captured state (the showcase): served as is instead of one built
-    // from `info` ("" = build it).
+    // The state ("" = "on" for a media player, else "off"), and captured
+    // attributes (the showcase), served as is instead of ones built from
+    // `info` ("" = build them).
     std::string state;
     std::string attributesJson;
 };

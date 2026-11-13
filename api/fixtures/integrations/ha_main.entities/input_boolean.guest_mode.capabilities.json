@@ -1,0 +1,24 @@
+{
+  "device_id": "dev_guest_mode",
+  "integration_id": "ha_main",
+  "commands": [
+    {
+      "command_id": "input_boolean.turn_on",
+      "label": "Turn on",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "input_boolean.turn_off",
+      "label": "Turn off",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "input_boolean.toggle",
+      "label": "Toggle",
+      "effect": "momentary",
+      "params": []
+    }
+  ]
+}

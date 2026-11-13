@@ -178,8 +178,14 @@ case "$cmd" in
         [ $# -eq 0 ] && set -- dev
         if [ "$1" = e2e ]; then
             shift
-            run_in web exec true  # install/update node_modules first
+            # Install/update node_modules first, unless the gate already did.
+            [ -n "${HUBBO_WEB_READY:-}" ] || run_in web exec true
+            # In the gate's parallel e2e, keep the two web-e2e starts a few
+            # seconds apart: on this host, two `docker compose run`s of one
+            # service starting together sometimes lose their exit code (254).
+            stagger() { [ -z "${HUBBO_WEB_READY:-}" ] || flock build/web-e2e-start.lock sleep 4; }
             if [ "${1:-}" != --sim ]; then
+                stagger
                 run_in web-e2e "$@"
                 exit
             fi
@@ -199,6 +205,7 @@ case "$cmd" in
                 curl -s -m 1 -o /dev/null http://127.0.0.1:8780/api/v1/auth/session && break
                 sleep 0.5
             done
+            stagger
             HUBBO_API_TARGET=http://127.0.0.1:8780 run_in web-e2e "$@"
         else
             [ "$1" = build ] && lock 8 build/web-dist.lock
@@ -227,9 +234,23 @@ case "$cmd" in
         # once per phase; while working, run only what a change touches.
         gate_core() { "$self" test && "$self" tsan && "$self" asan; }
         gate_api() { api/lint.sh && api/contract.sh; }
+        # The mock e2e and the hub-sim e2e use separate ports, output dirs and
+        # caches, so they run side by side. The hub-sim branch logs to its own
+        # file (printed after) so the two reporters don't interleave.
         gate_web() {
-            "$self" web check && "$self" web build && "$self" web e2e &&
+            "$self" web exec true || return 1  # install once, for both branches
+            mkdir -p build
+            local sim_log=build/gate-web-sim.log rc=0 sim
+            (
+                export HUBBO_WEB_READY=1
                 "$self" web e2e --sim --auth && "$self" web e2e --sim --project=noauth
+            ) >"$sim_log" 2>&1 &
+            sim=$!
+            "$self" web check && "$self" web build && HUBBO_WEB_READY=1 "$self" web e2e || rc=1
+            wait "$sim" || rc=1
+            echo "--- hub-sim e2e"
+            cat "$sim_log"
+            return $rc
         }
         gate_fw() { "$self" fw run && "$self" fw run -e waveshare_esp32_s3_eth_ota; }
         case "${1:-}" in

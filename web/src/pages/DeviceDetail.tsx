@@ -7,7 +7,7 @@ import type { Command, Device, DiscoverCandidate } from '@/api/types'
 import { HaCandidates } from '@/components/admin/HaCandidates'
 import { TestButton, TestResultText, type TestResult } from '@/components/actions/ActionPicker'
 import { ParamForm } from '@/components/actions/ParamForm'
-import { ErrorState, PageHeader } from '@/components/common'
+import { EntityId, ErrorState, PageHeader } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -35,6 +35,7 @@ export default function DeviceDetail({ id }: { id: string }) {
       <PageHeader
         back={{ href: '/devices', label: 'Devices' }}
         title={d?.name ?? <Skeleton className="h-8 w-56" />}
+        description={d?.provider.type === 'home_assistant' && <EntityId provider={d.provider} />}
       />
       {d?.availability === 'stale' && (
         <Alert variant="error" title="Device not found" className="mb-4" action={d.provider.type === 'home_assistant' ? <HaRelink device={d} label="Fix" /> : undefined}>

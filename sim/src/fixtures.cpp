@@ -213,35 +213,56 @@ std::vector<FixtureHaEntity> fixtureHaEntities() {
     };
 
     std::vector<FixtureHaEntity> out;
-    out.push_back({entity("media_player.family_room_lg_tv",
-                          power | mp::kVolumeStep | mp::kVolumeMute | transport | mp::kStop | mp::kSelectSource,
-                          {"HDMI 1", "HDMI 2", "HDMI 3", "Live TV", "Netflix", "YouTube"}),
-                   "Family Room LG TV", "webostv"});
-    out.push_back({entity("media_player.xbox", power | mp::kVolumeStep | mp::kVolumeMute | transport), "Xbox", "xbox"});
+    const auto add = [&](ha::EntityInfo info, const char *name, const char *platform, const char *state = "",
+                         const char *deviceClass = "") {
+        out.push_back(FixtureHaEntity{std::move(info), name, platform, state, deviceClass});
+    };
+    add(entity("media_player.family_room_lg_tv",
+               power | mp::kVolumeStep | mp::kVolumeMute | transport | mp::kStop | mp::kSelectSource,
+               {"HDMI 1", "HDMI 2", "HDMI 3", "Live TV", "Netflix", "YouTube"}),
+        "Family Room LG TV", "webostv", "", "tv");
+    add(entity("media_player.xbox", power | mp::kVolumeStep | mp::kVolumeMute | transport), "Xbox", "xbox");
     // fixtureConfig()'s receiver.
-    out.push_back({entity("media_player.denon",
-                          power | mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | mp::kSelectSource,
-                          {"Media Player", "Game", "TV Audio"}),
-                   "Denon AVR-X3700H", "denonavr"});
+    add(entity("media_player.denon",
+               power | mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | mp::kSelectSource,
+               {"Media Player", "Game", "TV Audio"}),
+        "Denon AVR-X3700H", "denonavr");
     // The API dataset's receiver and speaker.
     ha::EntityInfo denon = entity("media_player.family_room_denon",
                                   power | mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | mp::kSelectSource |
                                       mp::kSelectSoundMode,
                                   {"Blu-ray", "CBL/SAT", "DVD", "Game", "Media Player", "TV Audio", "Tuner", "Bluetooth"});
     denon.soundModeList = {"MUSIC", "MOVIE", "GAME", "AUTO", "STEREO", "DIRECT"};
-    out.push_back({denon, "Family Room Denon", "denonavr"});
-    out.push_back({entity("media_player.family_room_sonos",
-                          mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | transport | mp::kStop |
-                              mp::kSelectSource | mp::kShuffleSet | mp::kRepeatSet,
-                          {"TV"}),
-                   "Family Room Sonos", "sonos"});
+    add(denon, "Family Room Denon", "denonavr", "", "receiver");
+    add(entity("media_player.family_room_sonos",
+               mp::kVolumeSet | mp::kVolumeStep | mp::kVolumeMute | transport | mp::kStop |
+                   mp::kSelectSource | mp::kShuffleSet | mp::kRepeatSet,
+               {"TV"}),
+        "Family Room Sonos", "sonos", "", "speaker");
     // Only used by limit tests: an enum option of the maximum length.
-    out.push_back({entity("media_player.limits_test", power | mp::kSelectSource,
-                          {std::string(limits::kMaxParamStringLength, 's'), "Short"}),
-                   "Limits Test", "demo"});
+    add(entity("media_player.limits_test", power | mp::kSelectSource,
+               {std::string(limits::kMaxParamStringLength, 's'), "Short"}),
+        "Limits Test", "demo");
     ha::EntityInfo lights = entity("light.family_room", ha::light_feature::kTransition);
     lights.supportedColorModes = {"color_temp"};
-    out.push_back({lights, "Family Room Lights", "hue"});
+    add(lights, "Family Room Lights", "hue");
+
+    // One per domain added in the ha-domains pass, matching api's fixtures
+    // (api/tools/gen_fixtures.py NEW_DOMAIN_ENTITIES): the contract registers
+    // each and checks its capabilities and suggested kind against them.
+    add(entity("scene.movie_night", 0), "Movie Night", "demo", "unknown");
+    add(entity("script.goodnight", 0), "Goodnight", "demo", "off");
+    add(entity("cover.office_blinds", 15), "Office Blinds", "demo", "open", "blind");
+    add(entity("button.restart_router", 0), "Restart Router", "demo", "unknown", "restart");
+    add(entity("input_boolean.guest_mode", 0), "Guest Mode", "demo", "off");
+    ha::EntityInfo humidifier = entity("humidifier.bedroom_humidifier", ha::humidifier_feature::kModes);
+    humidifier.availableModes = {"normal", "eco", "sleep"};
+    humidifier.minHumidity = 30;
+    humidifier.maxHumidity = 80;
+    add(humidifier, "Bedroom Humidifier", "demo", "on", "humidifier");
+    ha::EntityInfo dryer = entity("select.dryer_cycle", 0);
+    dryer.options = {"normal", "delicate", "towels"};
+    add(dryer, "Dryer Cycle", "demo", "normal");
     return out;
 }
 

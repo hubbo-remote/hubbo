@@ -224,8 +224,9 @@ test('closing the duplicate dialog while it saves stays on the list', async ({ p
   await expect(dialog).toBeHidden()
   release()
   await expect(page.getByText('Activity duplicated')).toBeVisible()
-  await expect(page.getByText('Watch Apple TV copy')).toBeVisible()
+  // Still on the list, and the list has the copy (the refetch after the save, never an older one).
   await expect(page).toHaveURL(/#\/$/)
+  await expect(page.getByText('Watch Apple TV copy')).toBeVisible()
 })
 
 test('with a single activity, a global button switches to it: the picker sets it, Save works, and pressing it starts it', async ({ page }) => {

@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -43,7 +44,6 @@ JsonDocument readFixture(const char *path) {
 struct Sample {
     std::vector<FakeHaEntity> entities;
     std::string services;  // get_services' shape
-    std::vector<std::string> deviceClasses;  // per entity, "" if none
 };
 
 const Sample &sample() {
@@ -60,7 +60,7 @@ const Sample &sample() {
             entity.registered = !e["platform"].isNull();
             entity.platform = e["platform"] | "";
             entity.uniqueId = entity.registered ? "uid_" + entity.info.entityId : "";
-            s.deviceClasses.emplace_back(attrs["device_class"] | "");
+            entity.deviceClass = attrs["device_class"] | "";
             s.entities.push_back(std::move(entity));
         }
         JsonDocument services;
@@ -114,21 +114,6 @@ private:
     uint64_t nowMs_ = 1;
 };
 
-// A device kind for a captured entity: its domain, and for a media player
-// its device_class or platform.
-const char *kindFor(const FakeHaEntity &e, const std::string &deviceClass) {
-    switch (ha::entityDomain(e.info.entityId)) {
-        case ha::EntityDomain::Light: return "light";
-        case ha::EntityDomain::Switch: return "switch";
-        case ha::EntityDomain::Fan: return "climate";  // no "fan" kind; fans and purifiers
-        default: break;
-    }
-    if (deviceClass == "receiver") return "receiver";
-    if (deviceClass == "speaker" || e.platform == "alexa_media" || e.platform == "group") return "speaker";
-    if (e.platform == "apple_tv") return "streamer";
-    return "tv";
-}
-
 std::string trimmed(std::string s) {
     while (!s.empty() && s.back() == ' ') s.pop_back();
     return s.substr(0, limits::kMaxNameLength);
@@ -163,25 +148,42 @@ ConfigSpec showcaseConfig() {
     server.enableShowcase();
     const Sample &real = sample();
 
-    // The fixture's HA devices stay unless the capture has their entity.
-    const auto captured = [&](const std::string &entityId) {
-        return std::any_of(real.entities.begin(), real.entities.end(),
-                           [&](const FakeHaEntity &e) { return e.info.entityId == entityId; });
-    };
+    // Only the fixture's Bluetooth Apple TV stays: the HA devices are the
+    // captured house's (a whole house barely fits under the device cap).
     c.devices.erase(std::remove_if(c.devices.begin(), c.devices.end(),
-                                   [&](const DeviceSpec &d) { return captured(d.provider.entityId); }),
+                                   [](const DeviceSpec &d) { return d.provider.type == kHomeAssistantType; }),
                     c.devices.end());
-    for (size_t i = 0; i < real.entities.size(); i++) {
-        const FakeHaEntity &e = real.entities[i];
-        const std::string objectId = e.info.entityId.substr(e.info.entityId.find('.') + 1);
+    const auto addDevice = [&](const FakeHaEntity &e) {
+        const size_t dot = e.info.entityId.find('.');
+        const std::string objectId = e.info.entityId.substr(dot + 1);
         std::string id = ("dev_" + objectId).substr(0, limits::kMaxIdLength);
         while (!id.empty() && id.back() == '_') id.pop_back();
         if (indexOfId(c.devices, id) >= 0) id = id.substr(0, limits::kMaxIdLength - 2) + "_2";
         const std::string name = e.friendlyName.empty() ? objectId : e.friendlyName;
-        c.devices.push_back(haDevice(id, trimmed(name), kindFor(e, real.deviceClasses[i]), e.info.entityId));
+        const char *kind = ha::suggestedKind(e.info.entityId.substr(0, dot), e.platform, e.deviceClass);
+        c.devices.push_back(haDevice(id, trimmed(name), kind, e.info.entityId));
+    };
+    std::set<ha::EntityDomain> capturedDomains;
+    for (const FakeHaEntity &e : real.entities) {
+        const ha::EntityDomain domain = ha::entityDomain(e.info.entityId);
+        if (domain == ha::EntityDomain::Unsupported) continue;
+        capturedDomains.insert(domain);
+        addDevice(e);
+    }
+    // A domain the captured house lacks (a humidifier) is shown with the
+    // fake's made-up entity, so its editor can be reviewed too.
+    for (const FixtureHaEntity &e : fixtureHaEntities()) {
+        if (capturedDomains.insert(ha::entityDomain(e.info.entityId)).second) {
+            addDevice(*std::find_if(server.entities().begin(), server.entities().end(),
+                                    [&](const FakeHaEntity &x) { return x.info.entityId == e.info.entityId; }));
+        }
     }
     c.devices.push_back(bleDevice("dev_fire_tv_stick", "Fire TV Stick", "streamer", "hubbo:fire-tv"));
     c.devices.push_back(bleDevice("dev_shield", "SHIELD TV", "streamer", "hubbo:android-tv"));
+    if (c.devices.size() > limits::kMaxDevices) {
+        fail(std::to_string(c.devices.size()) + " devices, over the hub's " + std::to_string(limits::kMaxDevices) +
+             ": trim the capture");
+    }
 
     // Every HA device's snapshot, as registration would build it.
     Fetcher fetcher(server);
@@ -189,15 +191,19 @@ ConfigSpec showcaseConfig() {
         if (d.provider.type == kHomeAssistantType) d.haCapabilities = fetcher.snapshot(d.provider.entityId);
     }
 
-    // One activity, on the first captured player with sources (none: no activity).
-    c.globalBindings = {
-        bind("off:tap", {offAction()}),
-        bind("light_1:down", {haAction("dev_lights", "light.turn_on")}),
-        bind("light_2:down", {haAction("dev_lights", "light.turn_off")}),
-    };
+    // The light buttons on the first captured light, and one activity on
+    // the first captured player with sources (none: no binding, no activity).
+    c.globalBindings = {bind("off:tap", {offAction()})};
+    const auto light = std::find_if(c.devices.begin(), c.devices.end(), [](const DeviceSpec &d) {
+        return ha::entityDomain(d.provider.entityId) == ha::EntityDomain::Light;
+    });
+    if (light != c.devices.end()) {
+        c.globalBindings.push_back(bind("light_1:down", {haAction(light->id.c_str(), "light.turn_on")}));
+        c.globalBindings.push_back(bind("light_2:down", {haAction(light->id.c_str(), "light.turn_off")}));
+    }
     c.activities.clear();
-    const auto tv = std::find_if(c.devices.begin(), c.devices.end(), [&](const DeviceSpec &d) {
-        return captured(d.provider.entityId) && d.haCapabilities && !d.haCapabilities->sourceList.empty() &&
+    const auto tv = std::find_if(c.devices.begin(), c.devices.end(), [](const DeviceSpec &d) {
+        return d.haCapabilities && !d.haCapabilities->sourceList.empty() &&
                ha::entityDomain(d.provider.entityId) == ha::EntityDomain::MediaPlayer;
     });
     if (tv != c.devices.end()) {

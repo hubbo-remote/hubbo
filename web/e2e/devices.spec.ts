@@ -12,9 +12,13 @@ test('devices list and command tests with typed params', async ({ page }) => {
   await expect(page.locator('a[href="#/devices/dev_apple_tv"]').getByRole('img', { name: 'Bluetooth, connected' })).toBeVisible()
   await expect(page.locator('a[href="#/devices/dev_denon"]').getByRole('img', { name: 'Home Assistant, available' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Home Assistant' })).toHaveCount(0)
+  // An HA device shows its entity id under its name; a Bluetooth one has nothing there.
+  await expect(page.locator('a[href="#/devices/dev_denon"]')).toContainText(/media_player\.\w+/)
+  await expect(page.locator('a[href="#/devices/dev_apple_tv"] .font-mono')).toHaveCount(0)
 
   await page.getByRole('link', { name: /Family Room Denon/ }).click()
   await expect(page.getByRole('heading', { name: 'Family Room Denon' })).toBeVisible()
+  await expect(page.locator('main header')).toContainText(/media_player\.\w+/)
   // Each command is a row: its name, what it needs (volume as a percent), Test.
   const volume = page.getByRole('group', { name: 'Set volume', exact: true })
   await expect(volume.getByLabel('Level', { exact: true })).toHaveValue('0.35')

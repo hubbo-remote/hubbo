@@ -428,6 +428,15 @@ TEST(HaSnapshot, DecodeIsStrict) {
             << bad;
         EXPECT_EQ(issue, "param_out_of_range /d/percentage_step") << bad;
     }
+    // A humidifier's range: both bounds or neither, min below max.
+    const std::string base = R"({"platform":"","supported_features":1,"services":[],)";
+    EXPECT_TRUE(decode(base + R"("min_humidity":30,"max_humidity":80})", &issue));
+    EXPECT_FALSE(decode(base + R"("min_humidity":30})", &issue));
+    EXPECT_EQ(issue, "required /d/max_humidity");
+    EXPECT_FALSE(decode(base + R"("max_humidity":80})", &issue));
+    EXPECT_EQ(issue, "required /d/min_humidity");
+    EXPECT_FALSE(decode(base + R"("min_humidity":80,"max_humidity":80})", &issue));
+    EXPECT_EQ(issue, "param_out_of_range /d/max_humidity");
 }
 
 TEST(HaSnapshot, FanRoundTripsAndBuildsItsCommands) {
@@ -446,6 +455,57 @@ TEST(HaSnapshot, FanRoundTripsAndBuildsItsCommands) {
     ASSERT_GE(catalog.find("fan.set_preset_mode"), 0);
     EXPECT_EQ(catalog.items[catalog.find("fan.set_percentage")].params[0].step, 14.0f);
     EXPECT_GE(catalog.find("fan.set_direction"), 0);
+}
+
+TEST(HaSnapshot, NewerDomainsRoundTripAndBuildTheirCommands) {
+    EntityInfo humidifier;
+    humidifier.entityId = "humidifier.bedroom_humidifier";
+    humidifier.supportedFeatures = humidifier_feature::kModes;
+    humidifier.availableModes = {"normal", "eco", "eco", ""};
+    humidifier.minHumidity = 30.5;  // whole percent inside the range
+    humidifier.maxHumidity = 80;
+    ServiceDirectory::Offer offered;
+    const CapabilitySnapshot hs = makeSnapshot(humidifier, "", ServiceDirectory::parse("{}", {}), &offered);
+    EXPECT_EQ(offered.droppedOptions, 2u);
+    EXPECT_EQ(hs.minHumidity, 31);
+    EXPECT_EQ(hs.maxHumidity, 80);
+    CapabilitySnapshot decoded;
+    ASSERT_TRUE(roundTrip(hs, &decoded));
+    EXPECT_EQ(decoded.availableModes, (std::vector<std::string>{"normal", "eco"}));
+    const EntityCapabilities hc = EntityCapabilities::fromSnapshot(humidifier.entityId, decoded);
+    const CommandCatalog h = hc.catalog();
+    ASSERT_GE(h.find("humidifier.set_humidity"), 0);
+    EXPECT_EQ(h.items[h.find("humidifier.set_humidity")].params[0].minInt, 31);
+    EXPECT_GE(h.find("humidifier.set_mode"), 0);
+
+    humidifier.minHumidity = 90;  // inverted: not stored, HA's 0..100 applies
+    humidifier.maxHumidity = 10;
+    const CapabilitySnapshot inverted = makeSnapshot(humidifier, "", ServiceDirectory::parse("{}", {}));
+    EXPECT_EQ(inverted.minHumidity, 0);
+    EXPECT_EQ(inverted.maxHumidity, 0);
+    CapabilitySnapshot again;
+    ASSERT_TRUE(roundTrip(inverted, &again));
+
+    EntityInfo select;
+    select.entityId = "select.dryer_cycle";
+    select.options = {"normal", "delicate"};
+    CapabilitySnapshot options;
+    ASSERT_TRUE(roundTrip(makeSnapshot(select, "", ServiceDirectory::parse("{}", {})), &options));
+    EXPECT_EQ(options.options, select.options);
+    EXPECT_GE(EntityCapabilities::fromSnapshot(select.entityId, options).catalog().find("select.select_option"), 0);
+}
+
+TEST(HaSnapshot, NewerDomainsGetNoIntegrationServices) {
+    const ServiceDirectory dir = ServiceDirectory::parse(kServices, {"sonos"});
+    EntityInfo cover;
+    cover.entityId = "cover.office_blinds";
+    cover.supportedFeatures = 0xFFFFFFFF;
+    EXPECT_TRUE(makeSnapshot(cover, "sonos", dir).services.empty());
+    CapabilitySnapshot s;
+    s.platform = "sonos";
+    s.services = {SnapshotService{"sonos.z", "", {}}};
+    EXPECT_LT(EntityCapabilities::fromSnapshot("cover.office_blinds", s).catalog().find("sonos.z"), 0);
+    EXPECT_GE(EntityCapabilities::fromSnapshot("switch.kitchen", s).catalog().find("sonos.z"), 0);
 }
 
 TEST(HaSnapshot, CommandsAreRecheckedWhenBuilt) {

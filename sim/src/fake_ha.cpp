@@ -57,6 +57,8 @@ void FakeHaServer::reset() {
         e.info = std::move(fixture.info);
         e.friendlyName = std::move(fixture.name);
         e.platform = std::move(fixture.platform);
+        e.state = std::move(fixture.state);
+        e.deviceClass = std::move(fixture.deviceClass);
         addEntity(std::move(e));
     }
     // A template switch from configuration.yaml: a state, no registry entry.
@@ -183,7 +185,7 @@ std::string FakeHaServer::compressedStates(const std::vector<std::string> &ids) 
             continue;
         }
         const bool player = ha::entityDomain(e.info.entityId) == ha::EntityDomain::MediaPlayer;
-        s["s"] = player ? "on" : "off";
+        s["s"] = !e.state.empty() ? e.state : player ? "on" : "off";
         JsonObject a = s["a"].to<JsonObject>();
         a["friendly_name"] = e.friendlyName;
         if (player) {
@@ -204,6 +206,13 @@ std::string FakeHaServer::compressedStates(const std::vector<std::string> &ids) 
         if (e.info.maxColorTempKelvin != 0) a["max_color_temp_kelvin"] = e.info.maxColorTempKelvin;
         list("preset_modes", e.info.presetModes);
         if (e.info.percentageStep != 0.0) a["percentage_step"] = e.info.percentageStep;
+        if (!e.deviceClass.empty()) a["device_class"] = e.deviceClass;
+        list("available_modes", e.info.availableModes);
+        list("options", e.info.options);
+        if (e.info.minHumidity < e.info.maxHumidity) {  // else not reported
+            a["min_humidity"] = e.info.minHumidity;
+            a["max_humidity"] = e.info.maxHumidity;
+        }
     }
     for (size_t i = 0; i < fillerEntities; i++) {
         const std::string entityId = "sensor.filler_" + std::to_string(i);

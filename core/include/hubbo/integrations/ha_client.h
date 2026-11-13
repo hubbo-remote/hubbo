@@ -67,6 +67,7 @@ struct HaCandidate {
     std::string domain;    // "media_player"
     std::string platform;  // the integration behind it ("sonos"); "" for a YAML-only entity
     std::string state;     // "on", "playing", "unavailable"...
+    std::string deviceClass;  // the state's device_class ("tv", "blind"), "" if none
     ha::EntityInfo info;   // supported_features and the attributes that shape params
 };
 

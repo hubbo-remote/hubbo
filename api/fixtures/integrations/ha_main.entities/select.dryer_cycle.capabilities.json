@@ -1,0 +1,35 @@
+{
+  "device_id": "dev_dryer_cycle",
+  "integration_id": "ha_main",
+  "commands": [
+    {
+      "command_id": "select.select_option",
+      "label": "Choose",
+      "effect": "momentary",
+      "params": [
+        {
+          "name": "option",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "normal",
+            "delicate",
+            "towels"
+          ]
+        }
+      ]
+    },
+    {
+      "command_id": "select.select_next",
+      "label": "Next",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "select.select_previous",
+      "label": "Previous",
+      "effect": "momentary",
+      "params": []
+    }
+  ]
+}

@@ -277,7 +277,7 @@ TEST(SimShowcase, EveryCapturedEntityIsADevice) {
         // A fan's preset_modes and percentage_step come through the client.
         JsonDocument attrs;
         ASSERT_EQ(deserializeJson(attrs, e.attributesJson), DeserializationError::Ok);
-        EXPECT_EQ(d->kind, "climate");
+        EXPECT_EQ(d->kind, "fan");
         EXPECT_EQ(d->haCapabilities->presetModes.empty(), attrs["preset_modes"].as<JsonArrayConst>().size() == 0)
             << e.info.entityId;
         EXPECT_EQ(d->haCapabilities->percentageStep > 0, (attrs["percentage_step"] | 0.0) >= 1) << e.info.entityId;

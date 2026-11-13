@@ -2,7 +2,7 @@ import { ChevronRight, Plus, Tv2 } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useLocation } from 'wouter'
 import { AddDeviceDialog } from '@/components/admin/AddDeviceDialog'
-import { EmptyState, ErrorState, PageHeader } from '@/components/common'
+import { EmptyState, EntityId, ErrorState, PageHeader } from '@/components/common'
 import type { Device } from '@/api/types'
 import { bluetoothLabel, INTEGRATION_ICON } from '@/lib/health'
 import { Button } from '@/components/ui/button'
@@ -49,6 +49,7 @@ export default function Devices() {
                 <PlatformIcon device={d} source={source.get(d.integration_id) ?? d.integration_id} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{d.name}</p>
+                  <EntityId provider={d.provider} />
                   {action && <p className={cn('text-xs', d.availability === 'stale' ? 'text-destructive' : 'text-muted-foreground')}>{action}</p>}
                 </div>
                 <ChevronRight className="size-4 text-muted-foreground" aria-hidden />

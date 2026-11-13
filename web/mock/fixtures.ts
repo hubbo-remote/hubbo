@@ -1,7 +1,7 @@
 // Seeds the mock from api/fixtures, the contract's example data. The mock
 // never invents its own devices or activities, so the UI is developed
 // against exactly what the spec documents (and what hub-sim must return).
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type {
@@ -48,6 +48,8 @@ export interface Seed {
   tokens: TokenSummary[]
   /** The entities a discovery finds (fixture: integrations/ha_main.discovery.json). */
   discover: { candidates: DiscoverCandidate[] }
+  /** What registering a discovered entity stores, by entity id (fixtures: integrations/ha_main.entities/). */
+  entityCapabilities: Map<string, Capabilities>
   firmware: FirmwareStatus
   backup: Backup
   /** The remote radio at boot (GET /admin/remote). */
@@ -59,6 +61,9 @@ export interface Seed {
   /** Non-accepted execute results; the mock returns them for their device + command. */
   executeResults: ExecuteResult[]
 }
+
+const ENTITIES = 'integrations/ha_main.entities'
+const CAPS = '.capabilities.json'
 
 export function loadSeed(): Seed {
   const devices = fixture<{ devices: { id: string }[] }>('devices/list.json').devices.map((d) => fixture<DeviceDetail>(`devices/${d.id}.json`))
@@ -82,6 +87,11 @@ export function loadSeed(): Seed {
     globalBindings: fixture('activities/global_bindings.json'),
     tokens: fixture<{ tokens: TokenSummary[] }>('admin/tokens.json').tokens,
     discover: fixture('integrations/ha_main.discovery.json'),
+    entityCapabilities: new Map(
+      readdirSync(join(FIXTURES_DIR, ENTITIES))
+        .filter((f) => f.endsWith(CAPS))
+        .map((f) => [f.slice(0, -CAPS.length), fixture<Capabilities>(`${ENTITIES}/${f}`)]),
+    ),
     firmware: fixture('admin/firmware.json'),
     backup: fixture('admin/backup.json'),
     remote: fixture('admin/remote.json'),

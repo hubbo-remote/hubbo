@@ -297,7 +297,7 @@ ServiceDirectory::Offer ServiceDirectory::offerFor(std::string_view entityId, st
                                                    uint32_t supportedFeatures) const {
     Offer offer;
     const size_t dot = entityId.find('.');
-    if (dot == std::string_view::npos || platform.empty()) return offer;
+    if (dot == std::string_view::npos || platform.empty() || !offersIntegrationServices(entityId)) return offer;
     const std::string_view domain = entityId.substr(0, dot);
     if (platform == domain) return offer;  // the domain's own services are the curated allowlist
 

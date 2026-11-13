@@ -2,6 +2,7 @@
 // seeded from api/fixtures. Includes auth, the Origin check, optimistic concurrency,
 // validation errors and slow/failing adapters. NOT behavioural truth: that
 // is hub-sim running the real C++ core.
+import type { operations } from '../src/api/schema.gen.ts'
 import type {
   Action,
   Activity,
@@ -123,7 +124,10 @@ const MAX_JSON_DEPTH = 8
 const MAX_FILE_DEPTH = 12
 const depth = (v: unknown): number => (v !== null && typeof v === 'object' ? 1 + Math.max(0, ...Object.values(v).map(depth)) : 0)
 /** The HA entity domains Hubbo offers (api/openapi.yaml), and how the hub's messages list them. */
-const HA_DOMAINS: readonly string[] = ['media_player', 'light', 'switch', 'fan']
+type HaDomain = NonNullable<NonNullable<operations['getDiscovery']['parameters']['query']>['domain']>
+// Every domain of the spec's list, once (the compiler says when they drift).
+const DOMAINS: Record<HaDomain, true> = { media_player: true, light: true, switch: true, fan: true, scene: true, script: true, cover: true, button: true, input_boolean: true, humidifier: true, select: true }
+const HA_DOMAINS: readonly string[] = Object.keys(DOMAINS)
 const DOMAIN_LIST = `${HA_DOMAINS.slice(0, -1).join(', ')} or ${HA_DOMAINS.at(-1)}`
 /** Entity → platform, the integration services Hubbo would offer, and the ones it skips. */
 type Skipped = NonNullable<EntityDetailsStatus['skipped_services']>[number]
@@ -268,17 +272,21 @@ export function createMock(opts: MockOptions = {}) {
     renamedFrom = new Map()
     details = null
     // A free Denon with integration services, the same entity hub-sim's fake HA has.
-    if (!haCandidate('media_player.denon')) db.discover.candidates.push({ provider: { type: 'home_assistant', entity_id: 'media_player.denon' }, name: 'Denon AVR-X3700H', domain: 'media_player', supported: true, command_ids: ['media_player.turn_on', 'media_player.turn_off', 'media_player.volume_set', 'media_player.select_source'], dropped_options: 0, registered_device_id: null })
+    if (!haCandidate('media_player.denon')) db.discover.candidates.push({ provider: { type: 'home_assistant', entity_id: 'media_player.denon' }, name: 'Denon AVR-X3700H', domain: 'media_player', suggested_kind: 'receiver', supported: true, command_ids: ['media_player.turn_on', 'media_player.turn_off', 'media_player.volume_set', 'media_player.select_source'], dropped_options: 0, registered_device_id: null })
     for (const c of db.discover.candidates) {
-      const [, platform = 'unknown', services = [], skipped = []] = PLATFORMS.find(([re]) => re.test(c.provider.entity_id)) ?? []
+      const [, platform = c.platform ?? 'unknown', services = [], skipped = []] = PLATFORMS.find(([re]) => re.test(c.provider.entity_id)) ?? []
       entityExtras.set(c.provider.entity_id, { services: services.map((s) => s.command_id), skipped, uniqueId: c.provider.unique_id ?? `${platform}-${c.provider.entity_id.split('.')[1]}` })
       delete c.provider.unique_id // details carry it
       Object.assign(c, { platform, dropped_options: 0 })
     }
     // A YAML-only entity (no registry entry, so no platform or unique_id), like hub-sim's fake HA.
-    if (!haCandidate('switch.patio_fountain')) db.discover.candidates.push({ provider: { type: 'home_assistant', entity_id: 'switch.patio_fountain' }, name: 'Patio Fountain', domain: 'switch', supported: true, command_ids: ['switch.turn_on', 'switch.turn_off'], dropped_options: 0, registered_device_id: null })
+    if (!haCandidate('switch.patio_fountain')) db.discover.candidates.push({ provider: { type: 'home_assistant', entity_id: 'switch.patio_fountain' }, name: 'Patio Fountain', domain: 'switch', suggested_kind: 'switch', supported: true, command_ids: ['switch.turn_on', 'switch.turn_off'], dropped_options: 0, registered_device_id: null })
     removedEntities = new Set()
-    entityCommands = new Map(db.discover.candidates.flatMap((c) => (c.registered_device_id ? [[c.provider.entity_id, db.capabilities.get(c.registered_device_id)?.commands ?? []]] : [])))
+    // A registered entity's commands are its device's; a free one's come from its fixture, when it has one.
+    entityCommands = new Map(db.discover.candidates.flatMap((c) => {
+      const caps = c.registered_device_id ? db.capabilities.get(c.registered_device_id) : db.entityCapabilities.get(c.provider.entity_id)
+      return caps ? [[c.provider.entity_id, caps.commands] as const] : []
+    }))
     transitions = 17
     lastEventAt = Date.now() - 5230
     lastEvent = null

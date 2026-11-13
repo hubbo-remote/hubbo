@@ -3,11 +3,13 @@
 // fake HA server.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
 #include "fake_ha.h"
 #include "fixtures.h"
+#include "hubbo/config/json.h"
 #include "hubbo/engine/compiler.h"
 #include "hubbo/engine/engine.h"
 #include "hubbo/integrations/ha_adapter.h"
@@ -175,4 +177,85 @@ TEST_F(AdapterTest, AnActivityDrivesHaThroughTheEngine) {
     EXPECT_TRUE(engine.executor().idle());
     EXPECT_EQ(engine.executor().stats().completed, 1u);
     EXPECT_EQ(server.calls(), (std::vector<std::string>{"light.turn_on light.family_room"}));
+}
+
+// Each new domain end to end (the fake's made-up entities): the snapshot
+// registration stores, through a saved config and back, then a command with
+// params to the right HA service with the right data.
+TEST_F(AdapterTest, TheNewDomainsRoundTripAndCallTheRightServices) {
+    ASSERT_EQ(client.state(), HaState::Connected);
+    ConfigSpec cfg;
+    cfg.revision = 1;
+    cfg.globalBindingsRevision = 1;
+    cfg.integrations = {sim::integration("ha_main", kHomeAssistantType, "Home Assistant")};
+    struct Case {
+        const char *entityId;
+        const char *command;
+        std::vector<ParamInput> params;
+        const char *call;  // what HA was asked
+    };
+    const auto text = [](const char *name, const char *value) { return ParamInput{name, ParamLiteral::ofString(value)}; };
+    const auto number = [](const char *name, double value) { return ParamInput{name, ParamLiteral::ofNumber(value)}; };
+    const std::vector<Case> cases = {
+        {"scene.movie_night", "scene.turn_on", {}, "scene.turn_on scene.movie_night"},
+        {"script.goodnight", "script.turn_on", {}, "script.turn_on script.goodnight"},
+        {"script.goodnight", "script.turn_off", {}, "script.turn_off script.goodnight"},
+        {"cover.office_blinds", "cover.stop_cover", {}, "cover.stop_cover cover.office_blinds"},
+        {"cover.office_blinds", "cover.set_cover_position", {number("position", 40)},
+         "cover.set_cover_position cover.office_blinds position=40"},
+        {"button.restart_router", "button.press", {}, "button.press button.restart_router"},
+        {"input_boolean.guest_mode", "input_boolean.toggle", {}, "input_boolean.toggle input_boolean.guest_mode"},
+        {"humidifier.bedroom_humidifier", "humidifier.set_humidity", {number("humidity", 45)},
+         "humidifier.set_humidity humidifier.bedroom_humidifier humidity=45"},
+        {"humidifier.bedroom_humidifier", "humidifier.set_mode", {text("mode", "eco")},
+         "humidifier.set_mode humidifier.bedroom_humidifier mode=eco"},
+        {"select.dryer_cycle", "select.select_option", {text("option", "towels")},
+         "select.select_option select.dryer_cycle option=towels"},
+        {"select.dryer_cycle", "select.select_next", {}, "select.select_next select.dryer_cycle"},
+    };
+    for (const Case &c : cases) {
+        if (std::any_of(cfg.devices.begin(), cfg.devices.end(),
+                        [&](const DeviceSpec &d) { return d.provider.entityId == c.entityId; }))
+            continue;
+        const std::string id = c.entityId;
+        cfg.devices.push_back(sim::haDevice("dev_" + id.substr(id.find('.') + 1), "Test", "other", id));
+    }
+    ASSERT_EQ(cfg.devices.size(), 7u);  // one per new domain
+    sim::addFakeHaSnapshots(&cfg, server);
+
+    ConfigSpec loaded;
+    const std::string saved = config::serializeConfig(cfg);
+    const config::ParseResult parsed = config::parseConfig(saved, &loaded);
+    ASSERT_EQ(parsed.code, ErrorCode::Ok)
+        << (parsed.report.ok() ? "" : parsed.report.issues()[0].path + " " + errorCodeName(parsed.report.issues()[0].code));
+    ASSERT_EQ(loaded.devices.size(), cfg.devices.size());
+    for (size_t i = 0; i < cfg.devices.size(); i++) {
+        ASSERT_TRUE(loaded.devices[i].haCapabilities) << cfg.devices[i].id;
+        EXPECT_EQ(*loaded.devices[i].haCapabilities, *cfg.devices[i].haCapabilities) << cfg.devices[i].id;
+    }
+
+    Ticket ticket = 100;
+    for (const Case &c : cases) {
+        SCOPED_TRACE(c.command);
+        const auto device = std::find_if(loaded.devices.begin(), loaded.devices.end(),
+                                         [&](const DeviceSpec &d) { return d.provider.entityId == c.entityId; });
+        ASSERT_NE(device, loaded.devices.end());
+        const CommandCatalog catalog = adapter.commandsFor(*device);
+        const int index = catalog.find(c.command);
+        ASSERT_GE(index, 0);
+        ParamValue values[limits::kMaxParams];
+        std::string bad;
+        uint8_t present = 0;
+        ASSERT_EQ(resolveParams(catalog.items[index], c.params, values, &bad, nullptr, &present), ErrorCode::Ok) << bad;
+        const ExecRequest request{&catalog.items[index], static_cast<uint16_t>(index), values, present,
+                                  device->id.c_str(), c.entityId, ++ticket, 0, false};
+        ASSERT_EQ(adapter.execute(request).status, ExecStatus::Pending);
+        integrationTask();
+        adapter.poll(0, sink);
+        ASSERT_FALSE(sink.results.empty());
+        EXPECT_EQ(sink.results.back().first, ticket);
+        EXPECT_EQ(sink.results.back().second.status, ExecStatus::Accepted);
+        ASSERT_FALSE(server.calls().empty());
+        EXPECT_EQ(server.calls().back(), c.call);
+    }
 }

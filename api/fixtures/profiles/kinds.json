@@ -137,6 +137,14 @@
       "label": "Climate"
     },
     {
+      "id": "fan",
+      "label": "Fan"
+    },
+    {
+      "id": "cover",
+      "label": "Cover"
+    },
+    {
       "id": "light",
       "label": "Light"
     },
@@ -147,6 +155,14 @@
     {
       "id": "smart_home_hub",
       "label": "Smart home hub"
+    },
+    {
+      "id": "scene",
+      "label": "Scene"
+    },
+    {
+      "id": "script",
+      "label": "Script"
     },
     {
       "id": "accessory",

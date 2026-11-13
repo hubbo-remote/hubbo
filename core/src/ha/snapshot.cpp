@@ -19,7 +19,9 @@ bool CapabilitySnapshot::operator==(const CapabilitySnapshot &o) const {
     return platform == o.platform && supportedFeatures == o.supportedFeatures && sourceList == o.sourceList &&
            soundModeList == o.soundModeList && supportedColorModes == o.supportedColorModes &&
            minColorTempKelvin == o.minColorTempKelvin && maxColorTempKelvin == o.maxColorTempKelvin &&
-           presetModes == o.presetModes && percentageStep == o.percentageStep && services == o.services;
+           presetModes == o.presetModes && percentageStep == o.percentageStep && minHumidity == o.minHumidity &&
+           maxHumidity == o.maxHumidity && availableModes == o.availableModes && options == o.options &&
+           services == o.services;
 }
 
 namespace {
@@ -50,6 +52,11 @@ CapabilitySnapshot makeSnapshot(const EntityInfo &entity, const std::string &pla
     s.presetModes = entity.presetModes;
     filterEnumOptions(s.presetModes, &dropped);
     s.percentageStep = fanSpeedStep(entity.percentageStep);
+    s.availableModes = entity.availableModes;
+    s.options = entity.options;
+    filterEnumOptions(s.availableModes, &dropped);
+    filterEnumOptions(s.options, &dropped);
+    humidityRange(entity.minHumidity, entity.maxHumidity, &s.minHumidity, &s.maxHumidity);
     s.minColorTempKelvin = kelvin(entity.minColorTempKelvin);
     s.maxColorTempKelvin = kelvin(entity.maxColorTempKelvin);
     ServiceDirectory::Offer offer = services.offerFor(entity.entityId, s.platform, entity.supportedFeatures);

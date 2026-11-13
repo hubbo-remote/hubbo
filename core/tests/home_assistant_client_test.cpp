@@ -589,3 +589,28 @@ TEST_F(ClientTest, ABigHomeFitsAndOverTheCapIsReportedNotSilent) {
         EXPECT_FALSE(client.entityStale(e.info.entityId)) << e.info.entityId;
     }
 }
+
+// The attributes the new domains' commands need, read from HA's states, and
+// the device_class for the suggested kind.
+TEST_F(ClientTest, TheNewDomainsAttributesAreRead) {
+    connect();  // the fake's made-up entities, one per new domain
+    HaDiscovery found;
+    ASSERT_EQ(discoverNow(&found), ErrorCode::Ok);
+    const auto candidate = [&](const char *id) {
+        const auto it = std::find_if(found.candidates.begin(), found.candidates.end(),
+                                     [&](const HaCandidate &c) { return c.entityId == id; });
+        EXPECT_NE(it, found.candidates.end()) << id;
+        return it != found.candidates.end() ? *it : HaCandidate{};
+    };
+    EXPECT_EQ(candidate("cover.office_blinds").domain, "cover");
+    EXPECT_EQ(candidate("cover.office_blinds").deviceClass, "blind");
+    EXPECT_EQ(candidate("cover.office_blinds").state, "open");
+    EXPECT_EQ(candidate("scene.movie_night").domain, "scene");
+    EXPECT_EQ(candidate("scene.movie_night").deviceClass, "");
+    const HaCandidate h = candidate("humidifier.bedroom_humidifier");
+    EXPECT_EQ(h.info.availableModes, (std::vector<std::string>{"normal", "eco", "sleep"}));
+    EXPECT_EQ(h.info.minHumidity, 30);
+    EXPECT_EQ(h.info.maxHumidity, 80);
+    EXPECT_EQ(candidate("select.dryer_cycle").info.options,
+              (std::vector<std::string>{"normal", "delicate", "towels"}));
+}

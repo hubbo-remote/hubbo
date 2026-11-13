@@ -890,7 +890,7 @@ paths:
         - name: domain
           in: query
           required: false
-          schema: {type: string, enum: [media_player, light, switch, fan]}
+          schema: {type: string, enum: [media_player, light, switch, fan, scene, script, cover, button, input_boolean, humidifier, select]}
         - name: available
           in: query
           required: false
@@ -2445,7 +2445,7 @@ components:
         The list (with display labels) is `GET /kinds`, from the device
         profile spec's kinds.json. Anything else is `unknown_kind`.
       type: string
-      enum: [tv, tv_vcr, tv_dvd, tv_dvd_vcr, tv_dvr, projector, streamer, set_top_box, cable_box, cable_dvr, satellite_box, console, computer, disc_player, dvd_recorder, dvd_vcr, dvd_recorder_vcr, vcr, laserdisc, home_theater, home_theater_vcr, receiver, amplifier, speaker, mini_system, tuner, cd_player, cd_changer, tape_deck, dat_deck, minidisc, portable_audio, hdmi_switch, climate, light, switch, smart_home_hub, accessory, other]
+      enum: [tv, tv_vcr, tv_dvd, tv_dvd_vcr, tv_dvr, projector, streamer, set_top_box, cable_box, cable_dvr, satellite_box, console, computer, disc_player, dvd_recorder, dvd_vcr, dvd_recorder_vcr, vcr, laserdisc, home_theater, home_theater_vcr, receiver, amplifier, speaker, mini_system, tuner, cd_player, cd_changer, tape_deck, dat_deck, minidisc, portable_audio, hdmi_switch, climate, fan, cover, light, switch, smart_home_hub, scene, script, accessory, other]
     HomeAssistantProvider:
       type: object
       additionalProperties: false
@@ -2559,8 +2559,20 @@ components:
           type: integer
           minimum: 1
           maximum: 100
+        min_humidity:
+          description: |
+            A humidifier's target humidity range, whole percent: both or
+            neither, with `min_humidity` below `max_humidity`. Neither: 0..100.
+          type: integer
+          minimum: 0
+          maximum: 100
+        max_humidity: {$ref: '#/components/schemas/HaCapabilitySnapshot/properties/min_humidity'}
+        available_modes: {$ref: '#/components/schemas/HaOptionList'}
+        options: {$ref: '#/components/schemas/HaOptionList'}
         services:
-          description: Integration-specific services offered for the entity, already typed.
+          description: |
+            Integration-specific services offered for the entity, already
+            typed. Media players, lights, switches and fans only.
           type: array
           maxItems: 32
           items: {$ref: '#/components/schemas/HaServiceSnapshot'}
@@ -2970,9 +2982,17 @@ components:
     DiscoverCandidate:
       type: object
       additionalProperties: false
-      required: [provider, name, domain, supported, registered_device_id]
+      required: [provider, name, domain, supported, registered_device_id, suggested_kind]
       properties:
         provider: {$ref: '#/components/schemas/HomeAssistantProvider'}
+        suggested_kind:
+          description: |
+            The kind a new device of this entity starts with: by domain
+            (light, switch, fan, cover, scene and script are their own kinds,
+            `humidifier` is `climate`, `button`, `input_boolean` and `select`
+            are `other`), and for a media player by its device class or
+            integration (`apple_tv` is `streamer`).
+          $ref: '#/components/schemas/DeviceKind'
         name: {type: string, maxLength: 100}
         domain: {type: string, maxLength: 32}
         platform:

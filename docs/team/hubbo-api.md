@@ -1,6 +1,6 @@
 # hubbo-api: working notes
 
-Current as of the agent-docs branch (discovery endpoints, the agent guide; uncommitted). Not a log: rewrite sections as they change.
+Current as of the ha-domains branch (seven more HA domains). Not a log: rewrite sections as they change.
 
 ## State
 
@@ -72,9 +72,26 @@ Current as of the agent-docs branch (discovery endpoints, the agent guide; uncom
   `fan_feature` bits (checked against HA's fan/ const.py, services.py and services.yaml). EntityInfo and
   the snapshot have `presetModes` and `percentageStep`. The snapshot stores the step as an int,
   rounded down: ArduinoJson doesn't round-trip 33.333… exactly, and the slider step is an int
-  anyway. Core parses the attributes (ha_client, fake_ha). Showcase fans get the "climate" kind,
-  because kinds.json has no fan kind.
+  anyway. Core parses the attributes (ha_client, fake_ha). Fans get the `fan` kind.
   `fanSpeedStep()` (capabilities.h) is the one rounding rule, used by the snapshot and the commands.
+- **Newer domains** (ha-domains, docs/design/ha-domains.md; HA dev checked 2026-11-13):
+  scene, script, cover, button, input_boolean, humidifier, select. Remote and climate were
+  dropped by the user mid-pass (no send_command: it needs free text). `cover_feature` and
+  `humidifier_feature` bits are in capabilities.h. EntityInfo/snapshot add `availableModes`,
+  `options` and `minHumidity`/`maxHumidity` (snapshot: whole percent via `humidityRange()`, the
+  one rule; 0/0 = not reported, HA's 0..100). Every new id is `<domain>.<service>`. Toggle is
+  offered for cover, humidifier and input_boolean. `offersIntegrationServices()` keeps platform
+  services to media_player/light/switch/fan (offerFor and fromSnapshot both check). Per-domain
+  facts (suggested kind, integration services) are one `kDomainTraits` table in EntityDomain
+  order, beside `kEntityDomains` (which stays a plain name array: validate.py parses it).
+- **`suggestedKind(domain, platform, deviceClass)`** (capabilities.h) is the one kind rule:
+  candidates carry `suggested_kind` (required, DeviceKind; candidates only, not details),
+  hub-sim's showcase calls it, and gen_fixtures.py `suggested_kind()` mirrors it.
+  Core's `HaCandidate::deviceClass` feeds it.
+- Fixtures: `integrations/ha_main.entities/<entity_id>.capabilities.json` holds the catalog that
+  registering each made-up newer-domain entity gives (NEW_DOMAIN_ENTITIES; the web mock serves
+  these). Fake HA has the same 7 entities, and contract `new_domains_flow` (sim only) registers
+  each, compares its capabilities and suggested_kind with the fixtures, then deletes it.
 - One default rule: `applyDefault()` (snapshot_json.h) serves both `parse()` (which drops a default
   that doesn't fit) and `decodeSnapshot()` (which refuses it). contract.py's `HA_DOMAINS` comes
   from the spec's discovery `domain` enum.
@@ -287,7 +304,13 @@ Current as of the agent-docs branch (discovery endpoints, the agent guide; uncom
 
 ## Open items
 
-- **Stack (agent-docs branch, not committed):** done and simplified; gate passed. Board: adding
+- **ha-domains:** DeviceKind follows profiles/kinds.json (43 kinds, adds cover, scene and script);
+  lint checks the order. Every cover suggests `cover` (the user renamed `shade`; garage doors and
+  gates too). A snapshot's humidity bounds are both or neither, min < max (decode refuses
+  otherwise). `bin/hubbo gate api` passed in all four modes after /simplify and the lead's
+  review fixes (2026-11-13).
+  Not done: option labels for enum params (ParamSpec has none).
+- **Stack (merged with agent-docs):** done and simplified; gate passed. Board: adding
   a Sonos peaked near 6 KB of 16 KB. Xtensa frames now: create 336, update 352, execute 496,
   decodeSnapshot 496, fromSnapshot 400. Not done (each under 900 B): `syncDetails` 800,
   `mediaPlayer` 592, ConfigureIntegration 672, `status_routes` 752. Suggested to core:
