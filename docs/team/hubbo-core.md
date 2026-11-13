@@ -7,6 +7,33 @@ traps only.
 
 ## State
 
+- Hub name and restart (hub-name, uncommitted). `config/hub.h`:
+  - Storage: `HubSettings` keeps the name in the StateStore under `kHubNameKey` ("hub_name"),
+    never in the activity config or backups. On the board that's the RecordStateStore on
+    LittleFS (firmware main.cpp), and in hub-sim the record store. `HubSettings::forget()`
+    removes it (`StateStore::remove`, which uses `RecordStore::remove`) and goes back to the
+    default. Every hub-sim reset path calls it: the pinned reset (`serve --reset`, `/sim/reset`),
+    `wipe()` (factory reset) and the unpinned scenario reset. A sim reset also drops a pending
+    restart (`SimulatedRestart::reset()`). `/status hubbo.name` is always present, as the
+    default without HubSettings.
+  - Limits: `kHubNameMaxChars` 32 code points, `kHubNameMaxBytes` 128. `kMaxStateValueLength`
+    was raised to 128 for it.
+  - `trimHubName` / `checkHubName` (Required, TooLong, or InvalidName for non-UTF-8, C0/C1/DEL or
+    untrimmed) and `hostnameFor` (`kHostnameMaxLength` 63, default "hubbo").
+  - `load()` reads the saved name. On Ok it's used. On NotFound, or an unreadable or invalid
+    value, the hub uses the default, and nothing is written over what's saved.
+  - `rename()`: trim, check, save, then `onChanged` on the caller's task (httpd). Renaming to the
+    same name is Ok with no save and no `onChanged`, but only when the in-memory name is known to
+    match the store (`matchesStore_`). After an unreadable load it still saves.
+  - Restart: `api/restart_port.h` (`RestartPort`, `SimulatedRestart`). In hub-sim a restart
+    clears the sessions.
+  - Routes (assigned to core by the lead, though core/src/api is hubbo-api's): `hub_routes.cpp`.
+    GET/PUT `/admin/hub` returns `{name, hostname}`; an invalid name is 422 at /name.
+    POST `/admin/restart` returns 202 `{}`, 409 during a firmware update, 503 when the port
+    refuses or is missing.
+  - `/status` reports `hubbo.name`, and `network.hostname` is live from HubSettings, its only
+    source (`HubInfo.hostname` was removed).
+  - Tests: HubName.*, HubSettings.*, ApiTest.HubNameAndRestart, SimApi factory reset.
 - Binding fallback is per BUTTON (button-press). If the active activity binds any
   trigger of a button to at least one action, none of that button's global bindings apply (an
   unbound kind is simply unbound). Globals apply only to buttons the activity leaves alone, so a
