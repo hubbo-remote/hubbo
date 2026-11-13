@@ -66,10 +66,12 @@ A device's capabilities list its commands and their params
   or `wait` (pauses a startup or shutdown).
 
 **Home Assistant devices** (`integration_id: "ha_main"`) offer their domain's commands
-(`media_player.turn_on`, `media_player.select_source {source}`, `light.turn_on`...) and, often,
-their integration's own services (`webostv.button {button}`, `sonos.set_sleep_timer`). Each is
-typed from HA's metadata (labels, units, defaults, descriptions). Response-only services, ones
-Hubbo can't type, toggles and `play_media` aren't offered. A device whose entity disappeared
+(`media_player.turn_on`, `media_player.select_source {source}`, `light.turn_on`,
+`cover.set_cover_position {position}`, `scene.turn_on`...). The domains are media_player, light,
+switch, fan, scene, script, cover, button, input_boolean, humidifier and select. Media players,
+lights, switches and fans often add their integration's own services (`webostv.button {button}`,
+`sonos.set_sleep_timer`), typed from HA's metadata (labels, units, defaults, descriptions).
+Response-only services, ones Hubbo can't type and `play_media` aren't offered. A device whose entity disappeared
 shows `availability: stale`; its commands fail until an admin re-links it.
 
 **Bluetooth devices** (`integration_id: "ble"`, an Apple TV, a Fire TV...) were added from a

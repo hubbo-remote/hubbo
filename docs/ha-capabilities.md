@@ -17,6 +17,11 @@ Every feature bit and service rule below was checked against Home Assistant's ow
 - `homeassistant/components/fan/const.py`, `services.py`, `services.yaml` and `entity.py`
   (checked 2026-11-12): `FanEntityFeature`, each service's required features and schema
   (percentages are `Coerce(int)` 0–100), `percentage_step` = 100 / speeds.
+- `homeassistant/components/{scene,script,cover,button,input_boolean,humidifier,select}/const.py`
+  and `services.py` (dev, checked 2026-11-13): `CoverEntityFeature`, `HumidifierEntityFeature`,
+  each service's required features and schema (cover positions and humidity are `Coerce(int)` +
+  `Percentage()`; humidifier `min_humidity`/`max_humidity` default 0/100; select
+  `select_next`/`select_previous` take an optional `cycle`, default true).
 - `homeassistant/helpers/service.py`: how `required_features` is applied.
 - The fixture masks come from the integrations themselves: `denonavr/media_player.py`
   (`SUPPORT_DENON`), `sonos/media_player.py`, `webostv/media_player.py` (`SUPPORT_WEBOSTV`,
@@ -57,6 +62,12 @@ means both. Hubbo uses the same test, so it never offers a command HA would reje
 the `supported_color_modes` attribute, not from feature bits.
 
 `FanEntityFeature`: SET_SPEED 1, OSCILLATE 2, DIRECTION 4, PRESET_MODE 8, TURN_OFF 16, TURN_ON 32.
+
+`CoverEntityFeature`: OPEN 1, CLOSE 2, SET_POSITION 4, STOP 8, OPEN_TILT 16, CLOSE_TILT 32,
+STOP_TILT 64, SET_TILT_POSITION 128 (SPEED 256 is unused).
+
+`HumidifierEntityFeature`: MODES 1. Scene, script, button, input_boolean and select have no
+feature bits.
 
 ## The allowlist
 
@@ -124,10 +135,65 @@ snapshot as an integer, 1–100. Below 1 there's no step.
 
 Typical masks: 49 for speed only, 57 with presets, and 61 with presets and direction.
 
+### scene, script, button, input_boolean
+
+No feature bits and no params; HA registers these services for every entity.
+
+| Command | HA service |
+|---|---|
+| `scene.turn_on` (Activate) | `scene.turn_on` |
+| `script.turn_on` (Run), `script.turn_off` (Stop) | `script.turn_on`, `script.turn_off` |
+| `button.press` (Press) | `button.press` |
+| `input_boolean.turn_on`, `.turn_off`, `.toggle` | the same |
+
+A script's own fields (`variables`) aren't offered: Run and Stop only.
+
+### cover
+
+Positions are int 0–100 with unit `%`. Gating mirrors `cover/services.py`.
+
+| Command | HA service | Needs | Params |
+|---|---|---|---|
+| `cover.open_cover` (Open) | `open_cover` | OPEN | |
+| `cover.close_cover` (Close) | `close_cover` | CLOSE | |
+| `cover.stop_cover` (Stop) | `stop_cover` | STOP | |
+| `cover.toggle` (Toggle) | `toggle` | OPEN and CLOSE | |
+| `cover.set_cover_position` (Set position) | `set_cover_position` | SET_POSITION | `position` |
+| `cover.open_cover_tilt`, `.close_cover_tilt`, `.stop_cover_tilt` | the same | OPEN_TILT, CLOSE_TILT, STOP_TILT | |
+| `cover.set_cover_tilt_position` (Set tilt) | `set_cover_tilt_position` | SET_TILT_POSITION | `tilt_position` |
+
+The open/close `speed` field isn't offered (free text).
+
+### humidifier
+
+| Command | HA service | Needs | Params |
+|---|---|---|---|
+| `humidifier.turn_on`, `.turn_off`, `.toggle` | the same | | |
+| `humidifier.set_humidity` (Set humidity) | `set_humidity` | | `humidity` int, unit `%`, the entity's `min_humidity`..`max_humidity` (whole percent inside it; 0–100 if not reported) |
+| `humidifier.set_mode` (Set mode) | `set_mode` | MODES, and a non-empty `available_modes` | `mode` enum |
+
+`humidityRange()` is the one rule for the snapshot and the command.
+
+### select
+
+`select.select_option` (Choose, `option` enum of `options`), `select.select_next` (Next),
+`select.select_previous` (Previous). A select with no options gets nothing. `cycle` is left to
+HA's default (true).
+
+### Suggested kind
+
+Discovery candidates carry `suggested_kind`, from `ha::suggestedKind(domain, platform,
+device_class)`: light, switch, fan, cover, scene and script are their own kinds (garage doors and
+gates too are `cover`); humidifier is `climate`; button, input_boolean and select
+are `other`. A media player is `receiver` or `speaker` by its device class (or `speaker` for the alexa_media and group
+platforms), `streamer` for apple_tv, and otherwise `tv`. hub-sim's showcase uses the same
+function.
+
 ## Deliberately not offered
 
-- **toggle** (media_player, light, switch, fan): the architecture prefers explicit on/off. Toggles
-  break as soon as the hub and the device disagree.
+- **toggle** (media_player, light, switch, fan, script): the architecture prefers explicit
+  on/off. Toggles break as soon as the hub and the device disagree. Covers, humidifiers and input
+  booleans get one too, as HA's own UI does.
 - **play_media, browse/search, announce, enqueue**: take free-form content IDs or URLs.
 - **join / unjoin** (GROUPING): take other entity IDs.
 - **media_seek, clear_playlist**: no remote use, and clear_playlist is destructive.
@@ -135,15 +201,13 @@ Typical masks: 49 for speed only, 57 with presets, and 61 with presets and direc
   `effect_list`; colours need array params, which the param model doesn't have.
 - **Integration-specific services** (`webostv.button`, `sonos.*`, `denonavr.*`): not hand-curated.
   They're resolved from HA's own service metadata; see below.
-- **Domains** remote, scene, script, cover, button, input_*, group, automation and
-  everything else: no commands until added here with tests.
+- **Domains** remote, climate, lock, alarm_control_panel, camera, vacuum, valve, water_heater,
+  the other input_*, group, automation and everything else: no commands until added here with
+  tests. Remote and climate were dropped from the 2026-11-13 pass.
   - `remote.send_command` takes arbitrary command strings. If it's ever added it needs a
     per-device allowlist of command names chosen by the admin.
-  - `scene.turn_on` and `script.turn_on` are entity-specific, but a scene or script can do
-    anything in the house, so registering one should be a deliberate admin choice. They're the
-    likely next additions.
-  - `cover` (OPEN 1, CLOSE 2, SET_POSITION 4, STOP 8, ...) is straightforward when needed.
-    Verify its bits against HA's source at that time.
+- **Integration services for the newer domains** (scene through select): only media players,
+  lights, switches and fans get them (`offersIntegrationServices()`).
 
 ## Safety rules (enforced in code)
 
@@ -254,7 +318,7 @@ that as a fallback, but HA's metadata covers the need.
 - **The capabilities snapshot comes from the entity's details.** Picking an entity loads its
   details (`POST`/`GET /admin/integrations/ha_main/entities/{entity_id}/details`, about 2 s):
   fresh attributes (supported features, source and sound mode lists, colour modes, kelvin
-  range), platform, `unique_id` and `get_services`, normalized into the snapshot with the offered
+  range, preset modes, available modes, options, humidity range), platform, `unique_id` and `get_services`, normalized into the snapshot with the offered
   services (at most 32). Registering (`POST /admin/devices`) or re-linking/refreshing (`PUT
   /admin/devices/{id}` with a `provider`) copies that snapshot into the device
   (`DeviceSpec.haCapabilities`, stored and backed up as `ha_capabilities`); without finished
