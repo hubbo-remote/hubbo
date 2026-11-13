@@ -413,7 +413,7 @@ were deferred while iterating and are now caught up.
 - **Dev server**: :5180 proxies to a local hub-sim, not the board (`bin/hubbo sim serve --port
   8790 --data build/sim-dev --auth`, then `HUBBO_API_TARGET=http://127.0.0.1:8790 bin/hubbo web
   dev`). Never start another on 5180; port 8780 is reserved for the e2e sim; e2e uses its own Vite
-  on :5181. Use the board only when hardware is truly needed.
+  on :5181 (:5182 against hub-sim). Use the board only when hardware is truly needed.
 
 ## Mock controls (never in the real API)
 
@@ -439,17 +439,19 @@ were deferred while iterating and are now caught up.
   `connectHa`, `setHaState`, `fakeHaNextConnect`, `letHaConnect`, `setBle`, `hubAnswersScan`,
   `advance`, `setStorage`, `registerHa`, `removeHaEntity`, `discoverHa`, `api(page)`, all over
   `control(page, path)` (`/sim/<path>` or `/__mock/<path>`).
-- Projects: first-run → seeded → app and phone (both depend on seeded; phone on the mock only).
-  `phone` (390×844, touch) runs activate, status, remote, ble and a11y.
-  `workers: 1` (one shared hub). `board` is read-only against a real board (`HUBBO_E2E_BASE_URL`),
+- Projects: on hub-sim first-run → seeded → app (one shared hub, `workers: 1`). On the mock no
+  dependencies, `fullyParallel`, 4 workers: each worker sends `x-hubbo-mock-hub: <parallelIndex>`
+  (hub.ts overrides `extraHTTPHeaders`) and `mock/node.ts` keeps one mock per header value (none
+  = the dev mock). `phone` (390×844, touch, mock only) runs activate, status, remote, ble and a11y.
+  `board` is read-only against a real board (`HUBBO_E2E_BASE_URL`),
   keeps no trace/screenshot/video, and **the normal projects must never point at a board**.
 - A file filter is a substring (`ble` matches `unavailable.spec.ts`; use `ble.spec`). Project
   regexes are anchored (`board` once matched `dashboard.spec.ts`).
 - **One whole pass per command** (foreground, `timeout` 600000; see "Testing without waiting
   around" in CLAUDE.md). While working, run only the specs a change touches. The phase gate is
   `bin/hubbo gate web`: check, build, then
-  - mock, desktop and phone (~4.2 min): `bin/hubbo web e2e`
-  - hub-sim `--auth`, desktop (~2.6 min): `bin/hubbo web e2e --sim --auth`
+  - mock, desktop and phone (~100 s, 4 workers): `bin/hubbo web e2e`
+  - hub-sim `--auth`, desktop (~3.8 min, the floor): `bin/hubbo web e2e --sim --auth`
   - hub-sim no-auth, only the `noauth` project (~15 s): `bin/hubbo web e2e --sim --project=noauth`
   If a long run moves to the background, wait for its completion notice; don't split it.
   `--sim` builds hub-sim, starts it on fresh data on :8780, sets `HUBBO_API_TARGET` and removes
@@ -458,9 +460,20 @@ were deferred while iterating and are now caught up.
   dependencies) matches the specs that behave differently without auth: firmware (no sign-in
   after the reboot) and tokens (the no-auth sim has no admin until `ensureAdmin`). Under `--auth`
   its tests skip themselves (`hub` fixture). Add a spec there when its no-auth behaviour differs.
-- Why a pass is slow: `workers: 1` (one shared hub, reset per test) and real-time polls (1–3 s)
-  and HA/BLE waits inside tests. Backlog: one hub per worker (a mock per worker, or a hub-sim port
-  per worker) for `workers > 1` or sharding.
+- A mock run and a hub-sim run can go at once: Vite on :5181 (mock) / :5182 (sim), output in
+  `test-results/<mock|sim>` and `playwright-report/<mock|sim>`, Vite cache
+  `node_modules/.vite-e2e-<target>` (`HUBBO_VITE_CACHE_DIR`). Skipped tests cost ~1–2 s a run.
+  Gotcha: two `docker compose run` of the same service starting at the same moment lose the exit
+  code (254, compose v2.21, ~20%), so parallel branches must not start the same service together.
+- hub-sim is still slow (`workers: 1`, real-time polls, HA/BLE waits). Backlog: a hub-sim port per
+  worker.
+- Flake seen once in the concurrent gate (hub-sim, activity.spec "closing the duplicate dialog
+  while it saves"): toast shown, copy missing from the list. Not reproduced in ~75 runs under load.
+  Ruled out: the dialog's close event (it fires right after cancel), hub-sim (commits before the
+  201), browser caching, proxy errors. Fixed the one hole that fits: `invalidate()` during an
+  in-flight fetch reused that fetch (older than the write) and nothing refetched; now it fetches
+  again after (api/hooks.test.ts). The spec checks the URL before the copy, so a recurrence says
+  which way it failed.
 - Under `--auth`, first-run tests factory-reset hub-sim themselves (hub.ts `factoryResetSim`), so
   setup.spec runs whole in a gate pass. hub-sim starts paired, so the resume test opens
   `#/setup/remote` by URL there.
