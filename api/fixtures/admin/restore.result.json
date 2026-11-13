@@ -2,10 +2,11 @@
   "dry_run": false,
   "devices": 6,
   "activities": 2,
-  "integrations": 3,
+  "integrations": 4,
   "migrated_from": null,
   "requires": [
     "home_assistant_token",
+    "mqtt_password",
     "ble_pairing",
     "api_tokens"
   ],

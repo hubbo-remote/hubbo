@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "settings": {
+    "type": "mqtt",
+    "host": "192.0.2.10",
+    "port": 1883,
+    "username": "hubbo",
+    "password": "example-not-a-real-password"
+  },
+  "revision": 3
+}

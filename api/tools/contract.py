@@ -47,6 +47,9 @@ PASSWORD = "correct horse battery"
 # every secret-named field the contract sends (remember_secrets), it may then
 # appear in no response (any operation, any status, the backup included).
 HA_TOKEN = "fake-ha-token"
+# hub-sim's fake broker takes any login (sim/src/fake_mqtt.h); the same
+# no-echo rule applies.
+MQTT_PASSWORD = "fake-broker-password"
 GUIDE_PATH = os.path.join(v.ROOT, "docs", "agent-api.md")  # served as GET /api/v1/agent.md
 LLMS_PATH = os.path.join(v.ROOT, "docs", "llms.txt")  # served as GET /llms.txt
 GUIDE = SPEC_LINK = None  # the guide's and the spec's paths, read from the spec in main()
@@ -874,10 +877,10 @@ def until(fn, seconds=5):
         time.sleep(0.05)
 
 
-def ha_state(c):
-    """The HA client's state as /status reports it."""
-    _, status, _ = c.call("getStatus", "GET", "/status", expect=200, label="ha state")
-    return next((i["state"] for i in (status or {}).get("integrations", []) if i["id"] == "ha_main"), None)
+def integration_state(c, integration_id):
+    """An integration's state as /status reports it."""
+    _, status, _ = c.call("getStatus", "GET", "/status", expect=200, label=f"{integration_id} state")
+    return next((i["state"] for i in (status or {}).get("integrations", []) if i["id"] == integration_id), None)
 
 
 def ha_flow(c):
@@ -904,7 +907,7 @@ def ha_flow(c):
            expect=409, label="stale integration revision")
     _, again, _ = c.call("getIntegrationConfig", "GET", "/admin/integrations/ha_main", expect=200)
     expect(again and again["settings"]["has_access_token"] is True, "token kept")
-    expect(until(lambda: ha_state(c) == "connected"), "fake HA never connected with the stored token")
+    expect(until(lambda: integration_state(c, "ha_main") == "connected"), "fake HA never connected with the stored token")
 
     # The token is in no backup.
     c.call("downloadBackup", "GET", "/admin/backup", expect=200, label="backup after HA token")
@@ -991,6 +994,110 @@ def ha_flow(c):
     return pick_candidate(done, registered_too=True)
 
 
+def mqtt_put(c, revision, settings, expect=200, label=None, **fields):
+    _, cfg, _ = c.call("configureIntegration", "PUT", "/admin/integrations/mqtt_main",
+                       {"settings": {"type": "mqtt", **settings}, "revision": revision, **fields},
+                       expect=expect, label=label)
+    return cfg
+
+
+def mqtt_flow(c):
+    """The MQTT broker settings (the password is write-only, a new host
+    forgets it), the status entry, and on hub-sim the fake broker: the hub
+    connects, reports auth_failed and unreachable, and an activity chosen in
+    Home Assistant runs."""
+    _, cfg, _ = c.call("getIntegrationConfig", "GET", "/admin/integrations/mqtt_main", expect=200)
+    if not cfg:
+        return
+    if cfg.get("type") != "mqtt" or (cfg.get("settings") or {}).get("type") != "mqtt":
+        return expect(False, f"mqtt_main: {cfg}")
+    # (Earlier flows restored a backup, so the built-in's defaults are gone.)
+    cfg = mqtt_put(c, cfg["revision"], {}, label="disable MQTT", enabled=False)
+    expect(integration_state(c, "mqtt_main") == "disabled", "a disabled mqtt_main reports disabled")
+    if not cfg:
+        return
+
+    broker = {"host": "192.0.2.10", "port": 1883, "username": "hubbo"}
+    cfg = mqtt_put(c, cfg["revision"], {**broker, "password": MQTT_PASSWORD}, label="set MQTT broker",
+                   enabled=True)
+    expect(cfg and cfg["settings"]["has_password"] is True, f"has_password after set: {cfg}")
+    if not cfg:
+        return
+    e = mqtt_put(c, cfg["revision"], {"host": "192.168.1.5:1883"}, expect=422, label="MQTT host with a port")
+    expect([d["path"] for d in error_details(e)] == ["/settings/host"], f"host:port is a host error: {e}")
+    for bad, label in (({"port": 0}, "port 0"), ({"host": "a b"}, "host with a space"),
+                       ({"password": ""}, "empty password"), ({"access_token": "x"}, "HA's field")):
+        mqtt_put(c, cfg["revision"], bad, expect=422, label=f"MQTT {label}")
+    mqtt_put(c, cfg["revision"], {"type": "home_assistant", "url": ""}, expect=422, label="HA settings on mqtt_main")
+    _, again, _ = c.call("getIntegrationConfig", "GET", "/admin/integrations/mqtt_main", expect=200)
+    expect(again and again["settings"]["has_password"] is True and again["settings"]["host"] == broker["host"],
+           f"password kept: {again}")
+    c.call("downloadBackup", "GET", "/admin/backup", expect=200, label="backup after MQTT password")
+
+    if MOCK:
+        skip("MQTT broker connection, auth_failed, unreachable, activity from HA", "the mock has no broker")
+    else:
+        mqtt_broker_flow(c)
+
+    # A new host (IPv6 is fine) forgets the password; null clears it.
+    cfg = mqtt_put(c, cfg["revision"], {"host": "fd00::11"}, label="MQTT new IPv6 host")
+    expect(cfg and cfg["settings"]["has_password"] is False, f"a new host clears the password: {cfg}")
+    if not cfg:
+        return
+    cfg = mqtt_put(c, cfg["revision"], {"password": MQTT_PASSWORD}, label="MQTT password again")
+    cfg = cfg and mqtt_put(c, cfg["revision"], {"password": None}, label="MQTT clear password")
+    expect(cfg and cfg["settings"]["has_password"] is False, f"null clears the password: {cfg}")
+    if cfg:
+        cfg = mqtt_put(c, cfg["revision"], {"host": ""}, label="MQTT off", enabled=False)
+    expect(integration_state(c, "mqtt_main") == "disabled", "disabled again")
+
+
+def mqtt_broker_flow(c):
+    """hub-sim's fake broker (GET/POST /sim/mqtt, POST /sim/mqtt/publish)."""
+    expect(until(lambda: integration_state(c, "mqtt_main") == "connected"), "never connected to the fake broker")
+    status, broker = c.host_call("GET", "/sim/mqtt")
+    expect(status == 200 and broker and broker["connected"], f"/sim/mqtt: {status} {broker}")
+    if not broker:
+        return
+    node = broker["client_id"]
+    expect(node.startswith("hubbo_") and len(node) == 18, f"client id: {node}")
+    expect(MQTT_PASSWORD not in json.dumps(broker), "the password reached nothing the broker stores")
+    expect(f"homeassistant/device/{node}/config" in broker["retained"], f"no discovery: {list(broker['retained'])}")
+    expect(broker["retained"].get(f"hubbo/{node}/availability") == "online", "availability online")
+
+    if c.control("mqtt?auth=reject"):
+        expect(until(lambda: integration_state(c, "mqtt_main") == "auth_failed"), "a refused login reports auth_failed")
+        c.control("mqtt?auth=ok")
+    if c.control("mqtt?reachable=0"):
+        expect(until(lambda: integration_state(c, "mqtt_main") == "unreachable"), "a broker gone reports unreachable")
+        c.control("mqtt?reachable=1")
+    expect(until(lambda: integration_state(c, "mqtt_main") == "connected"), "reconnected")
+
+    # Home Assistant chooses an activity, then PowerOff (api::runTransition).
+    _, listed, _ = c.call("listActivities", "GET", "/activities", expect=200, label="activities for MQTT")
+    names = [a["name"] for a in (listed or {}).get("activities", [])]
+    target = next((a for a in (listed or {}).get("activities", [])
+                   if names.count(a["name"]) == 1 and not a["name"].startswith("PowerOff")), None)
+    if target is None:
+        skip("activity from HA", "no activity with a unique name")
+        return
+
+    def active():
+        _, now, _ = c.call("listActivities", "GET", "/activities", expect=200, label="active after MQTT")
+        return (now or {}).get("active_activity_id", "?")
+
+    def choose(label):  # what Home Assistant's Activity select sends
+        query = urllib.parse.urlencode({"topic": f"hubbo/{node}/cmd/activity", "payload": label, "retain": 0})
+        return c.control("mqtt/publish?" + query)
+
+    if choose(target["name"]):
+        expect(until(lambda: active() == target["id"]), f"HA's {target['name']!r} didn't start {target['id']}")
+        expect(until(lambda: ((c.host_call("GET", "/sim/mqtt")[1] or {}).get("retained") or {})
+                     .get(f"hubbo/{node}/activity") == target["name"]), "the activity state follows")
+    if choose("PowerOff"):
+        expect(until(lambda: active() is None), "HA's PowerOff didn't turn the hub off")
+
+
 def wait_discovery(c):
     """Polls GET .../discover until it's done or failed; the last body, or {}."""
     def finished():
@@ -1043,7 +1150,7 @@ def discover_candidate(c):
     c.call("configureIntegration", "PUT", "/admin/integrations/ha_main",
            {"settings": {"type": "home_assistant", "access_token": HA_TOKEN}, "revision": cfg["revision"]},
            expect=200, label="token for discovery")
-    expect(until(lambda: ha_state(c) == "connected"), "fake HA never connected")
+    expect(until(lambda: integration_state(c, "ha_main") == "connected"), "fake HA never connected")
     c.call("discoverIntegration", "POST", "/admin/integrations/ha_main/discover", expect=202)
 
     return pick_candidate(wait_discovery(c))
@@ -1066,7 +1173,7 @@ def fresh_ha_setup(c):
                                                       "access_token": HA_TOKEN},
                         "revision": cfg["revision"]}, expect=200, label="set up HA on a fresh hub")
     expect(cfg and cfg["settings"]["has_access_token"] is True, f"fresh setup: {cfg}")
-    expect(until(lambda: ha_state(c) == "connected"), "fresh ha_main never connected")
+    expect(until(lambda: integration_state(c, "ha_main") == "connected"), "fresh ha_main never connected")
     c.call("discoverIntegration", "POST", "/admin/integrations/ha_main/discover", expect=202,
            label="discover on a fresh hub")
 
@@ -1157,7 +1264,7 @@ def ha_unlink_flow(c):
         c.call("configureIntegration", "PUT", "/admin/integrations/ha_main",
                {"settings": {"type": "home_assistant", "url": url}, "revision": moved["revision"]},
                expect=200, label="HA URL back")
-    expect(until(lambda: ha_state(c) == "not_configured"), "without a token HA is not_configured")
+    expect(until(lambda: integration_state(c, "ha_main") == "not_configured"), "without a token HA is not_configured")
     c.call("discoverIntegration", "POST", "/admin/integrations/ha_main/discover", expect=503,
            label="discover without HA")
 
@@ -1321,6 +1428,7 @@ def noauth(c, checker):
     integration_param_flow(c)
     new_domains_flow(c)
     ha_unlink_flow(c)
+    mqtt_flow(c)
     factory_reset_flow(c)
 
 
@@ -1601,7 +1709,7 @@ def persistence_flow(c, hub, relogin=None):
     # Setting up Home Assistant on that fresh hub: ha_main is built in.
     fresh_ha_setup(c)
     survives_restart(c, hub, "HA set up on a fresh hub", relogin)
-    expect(until(lambda: ha_state(c) == "connected"), "the stored HA settings didn't reconnect after a restart")
+    expect(until(lambda: integration_state(c, "ha_main") == "connected"), "the stored HA settings didn't reconnect after a restart")
 
     # Default seed.
     restart_with("--reset")

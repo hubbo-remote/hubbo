@@ -570,6 +570,8 @@ INTEGRATIONS = [
      "device_count": 1},
     {"id": "ha_main", "type": "home_assistant", "name": "Home Assistant", "enabled": True,
      "state": "connected", "detail": "Home Assistant 2026.11.1", "device_count": 5},
+    {"id": "mqtt_main", "type": "mqtt", "name": "MQTT", "enabled": True, "state": "connected",
+     "detail": "Connected to the broker", "device_count": 0},
 ]
 
 HUB = {"name": "Living Room", "hostname": "living-room", "hostname_conflict": False}
@@ -719,6 +721,16 @@ fx("integrations/ble.config.json", "getIntegrationConfig", "200", {
     "id": "ble", "type": "ble_hid", "name": "Bluetooth", "enabled": True,
     "settings": {"type": "ble_hid", "device_name": "Family Room Hubbo"},
     "revision": 1})
+fx("integrations/mqtt_main.config.json", "getIntegrationConfig", "200", {
+    "id": "mqtt_main", "type": "mqtt", "name": "MQTT", "enabled": True,
+    "settings": {"type": "mqtt", "host": "192.0.2.10", "port": 1883, "username": "hubbo",
+                 "has_password": True},
+    "revision": 3})
+fx("integrations/mqtt_main.configure.request.json", "configureIntegration", "request", {
+    "enabled": True,
+    "settings": {"type": "mqtt", "host": "192.0.2.10", "port": 1883, "username": "hubbo",
+                 "password": "example-not-a-real-password"},
+    "revision": 3})
 fx("integrations/ha_main.configure.request.json", "configureIntegration", "request", {
     "settings": {"type": "home_assistant", "url": "https://homeassistant.local:8123",
                  "verify_tls": True, "access_token": "eyJhbGciOiJIUzI1NiJ9.example-not-a-real-token"},
@@ -828,6 +840,8 @@ BACKUP = {
          "settings": {"device_name": "Family Room Hubbo"}},
         {"id": "ha_main", "type": "home_assistant", "name": "Home Assistant", "enabled": True,
          "settings": {"url": "https://homeassistant.local:8123", "verify_tls": True}},
+        {"id": "mqtt_main", "type": "mqtt", "name": "MQTT", "enabled": True,
+         "settings": {"host": "192.0.2.10", "port": 1883, "username": "hubbo"}},
     ],
     "devices": [stored_device(d) for d in DEVICES],
     "global_bindings": GLOBAL_BINDINGS, "activities": ACTIVITIES,
@@ -858,8 +872,8 @@ fx("errors/backup_storage_unavailable.json", "downloadBackup", "503",
 fx("errors/backup_blocked_damaged.json", "downloadBackup", "409",
    err("config_blocked", "The saved configuration is damaged; no intact copy to back up"))
 fx("admin/restore.result.json", "restoreBackup", "200", {
-    "dry_run": False, "devices": len(DEVICES), "activities": len(ACTIVITIES), "integrations": 3,
-    "migrated_from": None, "requires": ["home_assistant_token", "ble_pairing", "api_tokens"], "warnings": []})
+    "dry_run": False, "devices": len(DEVICES), "activities": len(ACTIVITIES), "integrations": len(BACKUP["integrations"]),
+    "migrated_from": None, "requires": ["home_assistant_token", "mqtt_password", "ble_pairing", "api_tokens"], "warnings": []})
 fx("admin/reset.json", "resetConfiguration", "200", {"state": "ok", "generation": 58})
 fx("errors/config_blocked.json", "createActivity", "409",
    err("config_blocked", "The saved configuration can't be used; restore a backup or reset"))

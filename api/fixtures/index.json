@@ -267,6 +267,16 @@
       "kind": "200"
     },
     {
+      "file": "integrations/mqtt_main.config.json",
+      "operation": "getIntegrationConfig",
+      "kind": "200"
+    },
+    {
+      "file": "integrations/mqtt_main.configure.request.json",
+      "operation": "configureIntegration",
+      "kind": "request"
+    },
+    {
       "file": "integrations/ha_main.configure.request.json",
       "operation": "configureIntegration",
       "kind": "request"

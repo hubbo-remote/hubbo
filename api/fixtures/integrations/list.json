@@ -59,6 +59,15 @@
       "state": "connected",
       "detail": "Home Assistant 2026.11.1",
       "device_count": 5
+    },
+    {
+      "id": "mqtt_main",
+      "type": "mqtt",
+      "name": "MQTT",
+      "enabled": true,
+      "state": "connected",
+      "detail": "Connected to the broker",
+      "device_count": 0
     }
   ]
 }

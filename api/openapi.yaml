@@ -766,7 +766,8 @@ paths:
         Omit a secret field to keep the stored value; send `null` to clear it.
         Changing the Home Assistant URL clears the stored token unless a new
         one is sent in the same request (stops a token being sent to a
-        different host).
+        different host). Likewise, changing the MQTT broker's `host` clears
+        its stored password.
 
         The Home Assistant token is write-only: it goes to the hub's secret
         store and is never returned, logged or put in a backup. Responses
@@ -774,6 +775,12 @@ paths:
         settings; `GET /integrations` shows its `state`. The hub connects to
         `<url>/api/websocket`: `ws://` for an `http://` URL, `wss://` for
         `https://`. An empty `url` unsets it (and clears the token).
+
+        MQTT (`mqtt_main`): the hub shows up in Home Assistant through MQTT
+        discovery as one device with an Activity select, a Power switch and a
+        Restart button. The password is write-only like the HA token
+        (`has_password`). Anyone who can publish to the broker can switch
+        activities and restart the hub.
       requestBody:
         required: true
         content:
@@ -1769,7 +1776,7 @@ components:
       examples: [ha_main, ble, system]
     IntegrationType:
       type: string
-      enum: [system, ble_hid, home_assistant]
+      enum: [system, ble_hid, home_assistant, mqtt]
     CommandId:
       description: |
         Hubbo command identifier. HA commands are namespaced by entity domain
@@ -1930,7 +1937,10 @@ components:
         `authenticating`, `connected`, `auth_failed` (the token was refused;
         no retry until the settings change) or `unreachable` (retrying with
         backoff, 1 s doubling to 60 s). BLE: `connected` / `disconnected`.
-        Any integration: `disabled`, `error`.
+        MQTT: `not_configured` (no host), `connecting`, `connected`,
+        `auth_failed` (the broker refused the username or password; it keeps
+        retrying) or `unreachable` (retrying). Any integration: `disabled`,
+        `error`.
       type: string
       enum: [not_configured, disabled, connecting, authenticating, connected, auth_failed, unreachable, disconnected, error]
     Status:
@@ -2914,6 +2924,29 @@ components:
           type: string
           minLength: 1
           maxLength: 29
+    MqttSettings:
+      type: object
+      additionalProperties: false
+      required: [type, host, port, username, has_password]
+      properties:
+        type: {const: mqtt}
+        host:
+          description: |
+            The broker: an IPv4 address, a hostname or an IPv6 address
+            (plain MQTT on the LAN, no TLS). No port: that's `port`
+            (`192.168.1.5:1883` is refused). Use an IP if `.local` names
+            don't resolve on your network. `""`: not set up yet (the built-in
+            `mqtt_main` starts so, and reports `not_configured`).
+          type: string
+          pattern: '^([A-Za-z0-9._-]*|[A-Za-z0-9._-]*:[A-Za-z0-9._:-]*:[A-Za-z0-9._:-]*)$'
+          maxLength: 253
+        port: {type: integer, minimum: 1, maximum: 65535, default: 1883}
+        username:
+          description: '`""`: none (an anonymous broker).'
+          type: string
+          maxLength: 64
+          pattern: '^[^\x00-\x1f\x7f]*$'
+        has_password: {type: boolean, readOnly: true}
     SystemSettings:
       type: object
       additionalProperties: false
@@ -2933,12 +2966,14 @@ components:
           oneOf:
             - $ref: '#/components/schemas/HomeAssistantSettings'
             - $ref: '#/components/schemas/BleHidSettings'
+            - $ref: '#/components/schemas/MqttSettings'
             - $ref: '#/components/schemas/SystemSettings'
           discriminator:
             propertyName: type
             mapping:
               home_assistant: '#/components/schemas/HomeAssistantSettings'
               ble_hid: '#/components/schemas/BleHidSettings'
+              mqtt: '#/components/schemas/MqttSettings'
               system: '#/components/schemas/SystemSettings'
         revision: {$ref: '#/components/schemas/Revision'}
     IntegrationConfigUpdate:
@@ -2952,11 +2987,13 @@ components:
           oneOf:
             - $ref: '#/components/schemas/HomeAssistantSettingsUpdate'
             - $ref: '#/components/schemas/BleHidSettingsUpdate'
+            - $ref: '#/components/schemas/MqttSettingsUpdate'
           discriminator:
             propertyName: type
             mapping:
               home_assistant: '#/components/schemas/HomeAssistantSettingsUpdate'
               ble_hid: '#/components/schemas/BleHidSettingsUpdate'
+              mqtt: '#/components/schemas/MqttSettingsUpdate'
         revision: {$ref: '#/components/schemas/Revision'}
     HomeAssistantSettingsUpdate:
       type: object
@@ -2979,6 +3016,21 @@ components:
       properties:
         type: {const: ble_hid}
         device_name: {$ref: '#/components/schemas/BleHidSettings/properties/device_name'}
+    MqttSettingsUpdate:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {const: mqtt}
+        host: {$ref: '#/components/schemas/MqttSettings/properties/host'}
+        port: {$ref: '#/components/schemas/MqttSettings/properties/port'}
+        username: {$ref: '#/components/schemas/MqttSettings/properties/username'}
+        password:
+          description: The broker password. Write-only; omit to keep, null to clear.
+          type: [string, 'null']
+          writeOnly: true
+          minLength: 1
+          maxLength: 512
     DiscoverCandidate:
       type: object
       additionalProperties: false
@@ -3197,6 +3249,9 @@ components:
             url: {$ref: '#/components/schemas/HomeAssistantSettings/properties/url'}
             verify_tls: {type: boolean}
             device_name: {$ref: '#/components/schemas/BleHidSettings/properties/device_name'}
+            host: {$ref: '#/components/schemas/MqttSettings/properties/host'}
+            port: {$ref: '#/components/schemas/MqttSettings/properties/port'}
+            username: {$ref: '#/components/schemas/MqttSettings/properties/username'}
     Backup:
       type: object
       additionalProperties: false
@@ -3268,7 +3323,7 @@ components:
           type: array
           items:
             type: string
-            enum: [home_assistant_token, ble_pairing, api_tokens]
+            enum: [home_assistant_token, mqtt_password, ble_pairing, api_tokens]
         warnings:
           type: array
           maxItems: 32
