@@ -63,7 +63,9 @@ TEST(AuthPolicy, RoleMatrix) {
         "getHub", "updateHub", "restartHub",
     };
     // setupAdmin's handler refuses it unless the credentials are fresh.
-    const char *publicOps[] = {"setupAdmin", "login", "logout", "getSession"};
+    // The API's own description (index, spec, guide) reveals nothing about the home.
+    const char *publicOps[] = {"setupAdmin", "login", "logout", "getSession", "getApiIndex", "getOpenApi",
+                               "getAgentGuide"};
 
     size_t covered = 0;
     for (const char *id : tokenAllowed) {

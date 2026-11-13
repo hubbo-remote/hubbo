@@ -84,6 +84,9 @@ constexpr OperationInfo kOperations[] = {
     {Operation::GetHub, "getHub", Method::Get, Requirement::AdminOnly, 0},
     {Operation::UpdateHub, "updateHub", Method::Put, Requirement::AdminOnly, 1024},
     {Operation::RestartHub, "restartHub", Method::Post, Requirement::AdminOnly, 0},
+    {Operation::GetApiIndex, "getApiIndex", Method::Get, Requirement::Public, 0},
+    {Operation::GetOpenApi, "getOpenApi", Method::Get, Requirement::Public, 0},
+    {Operation::GetAgentGuide, "getAgentGuide", Method::Get, Requirement::Public, 0},
 };
 
 static_assert(sizeof(kOperations) / sizeof(kOperations[0]) == kOperationCount,

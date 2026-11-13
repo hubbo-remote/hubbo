@@ -98,6 +98,9 @@ enum class Operation : uint8_t {
     GetHub,
     UpdateHub,
     RestartHub,
+    GetApiIndex,
+    GetOpenApi,
+    GetAgentGuide,
     Count
 };
 
