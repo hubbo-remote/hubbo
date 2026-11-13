@@ -37,10 +37,11 @@ const std::string &showcaseServicesJson();
 // the sample's integrations: "component.<platform>.services.<...>" -> text.
 const std::vector<std::pair<std::string, std::string>> &realHaTranslations();
 
-// The fixture's Bluetooth Apple TV and its HA devices that don't clash with
-// the capture, a device per captured entity (snapshots included), the Fire
-// TV Stick and SHIELD as Bluetooth devices, and one activity on the first
-// captured player with sources.
+// The fixture's Bluetooth Apple TV, a device per captured entity of an
+// allowlisted domain plus the fake's made-up entity for each domain the
+// capture lacks (snapshots included, kinds from ha::suggestedKind), the Fire TV Stick and SHIELD as Bluetooth
+// devices, the light buttons on the first captured light, and one activity
+// on the first captured player with sources.
 ConfigSpec showcaseConfig();
 
 }  // namespace hubbo::sim
