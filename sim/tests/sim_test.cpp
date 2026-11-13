@@ -283,6 +283,86 @@ TEST(SimSeed, ServeRestartKeepsConfig) {
     EXPECT_EQ(second.hub().configService().findActivity("act_reboot_test"), nullptr);
 }
 
+// The hub's name is kept across a restart, and a reset (`serve --reset`,
+// POST /sim/reset) takes it back to "Hubbo", saved that way.
+TEST(SimSeed, AResetForgetsTheHubName) {
+    storage::MemoryStorage disk;  // stands in for --data DIR
+    {
+        ScenarioRunner first(nullptr, &disk, /*pinned=*/true);
+        ASSERT_EQ(first.hub().hubSettings().rename("Den Hub"), ErrorCode::Ok);
+    }
+    ScenarioRunner second(nullptr, &disk, /*pinned=*/true);  // "restart"
+    EXPECT_EQ(second.hub().hubSettings().identity().name, "Den Hub");
+    second.runLine("reset");
+    EXPECT_EQ(second.hub().hubSettings().identity().name, "Hubbo");
+    ScenarioRunner third(nullptr, &disk, /*pinned=*/true);
+    EXPECT_EQ(third.hub().hubSettings().identity().name, "Hubbo");
+}
+
+// Every reset path forgets the name, whatever StateStore the hub uses: a
+// pinned hub's reset and wipe with an injected store, and a scenario
+// (unpinned) reset, which builds a new hub on the same storage.
+TEST(SimSeed, EveryResetPathForgetsTheHubName) {
+    storage::MemoryStateStore state;
+    SimHub hub(nullptr, &state);
+    ASSERT_EQ(hub.hubSettings().rename("Den Hub"), ErrorCode::Ok);
+    (void)hub.factoryReset(fixtureConfig());
+    EXPECT_EQ(hub.hubSettings().identity().name, "Hubbo");
+    std::string saved;
+    EXPECT_EQ(state.get(config::kHubNameKey, &saved), ErrorCode::NotFound);
+    ASSERT_EQ(hub.hubSettings().rename("Den Hub"), ErrorCode::Ok);
+    hub.wipe(nullptr);
+    EXPECT_EQ(hub.hubSettings().identity().name, "Hubbo");
+    EXPECT_EQ(state.get(config::kHubNameKey, &saved), ErrorCode::NotFound);
+
+    storage::MemoryStorage disk;
+    ScenarioRunner runner(nullptr, &disk, /*pinned=*/false);
+    ASSERT_EQ(runner.hub().hubSettings().rename("Den Hub"), ErrorCode::Ok);
+    ASSERT_TRUE(runner.runLine("reset"));
+    EXPECT_EQ(runner.hub().hubSettings().identity().name, "Hubbo");
+    ScenarioRunner after(nullptr, &disk, /*pinned=*/false);
+    EXPECT_EQ(after.hub().hubSettings().identity().name, "Hubbo");
+}
+
+// A restart asked for before POST /sim/reset never fires after it.
+TEST(SimApi, AResetDropsAPendingRestart) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, /*authEnabled=*/false, a.credentials, nullptr, &a.secrets);
+    ASSERT_EQ(call(api, http::Method::Post, "/api/v1/admin/restart").status, 202);
+    EXPECT_TRUE(runner.hub().restartPort().pending());
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/reset").status, 200);
+    EXPECT_FALSE(runner.hub().restartPort().pending());
+    runner.hub().advance(api::SimulatedRestart::kRestartMs);
+    EXPECT_EQ(runner.hub().restartPort().restarts(), 0);
+    // The callback is kept: a new restart still lands.
+    ASSERT_EQ(call(api, http::Method::Post, "/api/v1/admin/restart").status, 202);
+    runner.hub().advance(api::SimulatedRestart::kRestartMs);
+    EXPECT_EQ(runner.hub().restartPort().restarts(), 1);
+}
+
+// No-auth hub-sim: an admin set up there survives POST /sim/reset, and a
+// factory reset the hub refuses erases nothing. Only an accepted one leaves
+// the credentials fresh, until an admin is set up again.
+TEST(SimApi, NoAuthKeepsTheAdminUnlessAFactoryResetRuns) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, /*authEnabled=*/false, a.credentials, nullptr, &a.secrets);
+    ASSERT_EQ(a.credentials.setupAdmin("hubbo-owner", "correct horse battery"), auth::CredentialResult::Ok);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/reset").status, 200);
+    EXPECT_EQ(a.credentials.state(), auth::CredentialState::Ok);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/factory-reset", "ready=0").status, 200);
+    EXPECT_EQ(call(api, http::Method::Post, "/api/v1/admin/factory-reset").status, 503);
+    runner.hub().advance(api::SimulatedFactoryReset::kRestartMs);
+    EXPECT_EQ(a.credentials.state(), auth::CredentialState::Ok);  // nothing erased
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/factory-reset", "ready=1").status, 200);
+    EXPECT_EQ(call(api, http::Method::Post, "/api/v1/admin/factory-reset").status, 202);
+    runner.hub().advance(api::SimulatedFactoryReset::kRestartMs);
+    EXPECT_EQ(a.credentials.state(), auth::CredentialState::Fresh);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/reset").status, 200);
+    EXPECT_EQ(a.credentials.state(), auth::CredentialState::Fresh);  // a reset doesn't bring an admin back
+}
+
 TEST(HttpServer, LoopbackOnlyByDefault) {
     EXPECT_TRUE(isLoopbackAddress("127.0.0.1"));
     EXPECT_TRUE(isLoopbackAddress("127.1.2.3"));
@@ -710,6 +790,8 @@ TEST(SimApi, FactoryResetErasesEverythingAfterTheRestart) {
     ASSERT_EQ(hub.remote().setEndpoint({76, 0xE7E7E7E7E7}), api::RemoteResult::Accepted);
     hub.activate("act_watch_apple_tv");
     ASSERT_FALSE(hub.config().devices.empty());
+    ASSERT_EQ(call(api, http::Method::Put, "/api/v1/admin/hub", "", R"({"name":"Den"})", &headers).status, 200);
+    ASSERT_EQ(hub.hubSettings().identity().name, "Den");
 
     // Not now: 503, nothing pending.
     EXPECT_EQ(as(http::Method::Post, "/sim/factory-reset", "ready=0").status, 200);
@@ -732,6 +814,7 @@ TEST(SimApi, FactoryResetErasesEverythingAfterTheRestart) {
     EXPECT_FALSE(hub.remote().status().hasEndpoint);
     EXPECT_FALSE(hub.bleHosts().status(SimHub::kBondedDevice).bonded);
     EXPECT_FALSE(hub.engine().hasActiveActivity());
+    EXPECT_EQ(hub.hubSettings().identity().name, "Hubbo");  // the name goes too
     // The board's first boot, through bootHub(): its defaults (only the
     // built-ins), saved as generation 1, nothing saved active.
     EXPECT_EQ(hub.lastBoot().config.state, config::ConfigState::Fresh);

@@ -34,6 +34,8 @@
 #include "hubbo/api/factory_reset_port.h"
 #include "hubbo/api/firmware_update_port.h"
 #include "hubbo/api/remote_port.h"
+#include "hubbo/api/restart_port.h"
+#include "hubbo/config/hub.h"
 #include "hubbo/engine/engine.h"
 #include "hubbo/integrations/ha_adapter.h"
 #include "hubbo/integrations/ha_client.h"
@@ -134,6 +136,8 @@ public:
     // after the request and calls onFactoryReset (SimApi: erase everything).
     // /sim/reset gives a fresh port (ready, nothing pending).
     api::SimulatedFactoryReset &factoryResetPort() { return factoryReset_; }
+    config::HubSettings &hubSettings() { return hubSettings_; }
+    api::SimulatedRestart &restartPort() { return restart_; }
     std::function<void()> onFactoryReset;
     // One turn of the integration task (transport, client, adapter) at the
     // current time, repeated while the client has work (discovery parse
@@ -198,6 +202,8 @@ private:
     storage::RecordStateStore recordState_;
     storage::StateStore &state_;
     ActivePersister persister_;
+    config::HubSettings hubSettings_{state_};
+    api::SimulatedRestart restart_;
     BootReport boot_;
 
     uint32_t nowMs_ = 0;

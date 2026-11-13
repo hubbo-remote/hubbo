@@ -98,6 +98,7 @@ void ScenarioRunner::reset() {
     } else {
         newHub();
         hub_->forgetActive();  // a reset starts with nothing active
+        (void)hub_->hubSettings().forget();  // and the default name
         report = hub_->load(seed_);
     }
     if (!report.ok() && trace_ != nullptr) {

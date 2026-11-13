@@ -26,7 +26,6 @@ api::HubInfo hubInfo(bool authEnabled) {
     info.version = "0.0.0-sim";
     info.build = "hub-sim";
     info.board = "simulator";
-    info.hostname = "hub-sim";
     info.simulatorNoAuth = !authEnabled;
     return info;
 }
@@ -46,7 +45,9 @@ api::ApiContext context(auth::Credentials &credentials, auth::SessionStore &sess
                            nullptr,
                            &hub.bleHosts(),
                            &hub.firmware(),
-                           &hub.factoryResetPort()};
+                           &hub.factoryResetPort(),
+                           &hub.hubSettings(),
+                           &hub.restartPort()};
 }
 
 // "channel=76&address=e7e7e7e7e7" (hex, 40 bits).
@@ -76,6 +77,7 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
       api_(context(credentials_, sessions_, clock_, runtime_, authEnabled, runner.hub(), secrets)),
       productionAuth_(credentials_, sessions_, clock_) {
     runner.hub().onFirmwareRebooted = [this] { sessions_.clear(); };  // as the board's restart
+    runner.hub().restartPort().restarted = [this] { sessions_.clear(); };  // nothing else reboots
     runner.hub().onFactoryReset = [this] { eraseEverything(); };
     api::registerApiRoutes(router_, api_);
 
