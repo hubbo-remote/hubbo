@@ -84,7 +84,7 @@ void addStatusRoutes(RouteSink &sink, ApiContext &ctx) {
         JsonObject network = doc["network"].to<JsonObject>();
         network["link"] = snap.linkUp ? "up" : "down";
         if (!snap.ip.empty()) network["ip"] = snap.ip;
-        if (ctx.hub != nullptr) network["hostname"] = identity.hostname;  // live: mDNS follows a rename
+        if (ctx.hub != nullptr) network["hostname"] = identity.shownHostname();  // what mDNS advertises (live)
         putRemote(doc["remote"].to<JsonObject>(), snap.remote);
 
         JsonArray integrations = doc["integrations"].to<JsonArray>();

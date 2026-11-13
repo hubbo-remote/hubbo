@@ -1127,7 +1127,8 @@ export interface paths {
          * Rename the hub
          * @description Spaces at either end are dropped, then the rest must be a `HubName`;
          *     otherwise `422 validation_failed` at `/name` (`required`, `too_long`
-         *     or `invalid_name`). `hostname` follows the name (see `Hub`).
+         *     or `invalid_name`). `hostname` follows the name (see `Hub`), and
+         *     `hostname_conflict` is false until the network is checked again.
          */
         put: operations["updateHub"];
         post?: never;
@@ -1301,7 +1302,7 @@ export interface components {
                 link: "up" | "down";
                 /** Format: ipv4 */
                 ip?: string;
-                /** @description The hub's hostname, as `GET /admin/hub` shows it. */
+                /** @description The `.local` hostname the hub advertises, as `GET /admin/hub` shows it. */
                 hostname?: string;
             };
             remote: components["schemas"]["RemoteStatus"];
@@ -2173,22 +2174,34 @@ export interface components {
         Empty: Record<string, never>;
         /**
          * @description What the hub is called: 1 to 32 characters, no control characters,
-         *     no space at either end.
-         * @example Hubbo
+         *     no space at either end. A new hub is called "Hubbo XXXX", XXXX
+         *     being the end of its network MAC in hex (e.g. "Hubbo 3F2A"), until
+         *     it's renamed. A reset or wipe brings that name back; a saved name is
+         *     never changed.
+         * @example Hubbo 3F2A
          * @example Living Room
          */
         HubName: string;
         Hub: {
             name: components["schemas"]["HubName"];
             /**
-             * @description Read-only, derived from the name: lowercased, each run of
-             *     characters other than `a-z` and `0-9` becomes one `-`, with none at
-             *     either end; `hubbo` when nothing is left. "Living Room" is
-             *     `living-room`.
-             * @example hubbo
+             * @description Read-only: the `.local` hostname the hub advertises. It comes
+             *     from the name: lowercased, each run of characters other than
+             *     `a-z` and `0-9` becomes one `-`, with none at either end;
+             *     `hubbo` when nothing is left ("Living Room" is `living-room`).
+             *     If another device on the network already has that hostname,
+             *     this is the one the hub took instead, e.g. `living-room-2`.
+             * @example hubbo-3f2a
              * @example living-room
+             * @example living-room-2
              */
             readonly hostname: string;
+            /**
+             * @description Read-only: true when another device on the network has the
+             *     name's hostname, so `hostname` is a different one. A rename
+             *     clears it until the network is checked again.
+             */
+            readonly hostname_conflict: boolean;
         };
         HubUpdate: {
             /** @example Living Room */

@@ -43,6 +43,10 @@
 
 namespace hubbo::sim {
 
+// hub-sim's MAC, for its default name: "Hubbo 534D" (hostname hubbo-534d),
+// fixed so tests stay stable. Locally administered.
+inline constexpr uint8_t kSimMac[6] = {0x02, 0x00, 0x00, 0x00, 0x53, 0x4D};
+
 struct LogLine {
     uint32_t atMs;
     std::string text;
@@ -202,7 +206,7 @@ private:
     storage::RecordStateStore recordState_;
     storage::StateStore &state_;
     ActivePersister persister_;
-    config::HubSettings hubSettings_{state_};
+    config::HubSettings hubSettings_{state_, config::defaultHubName(kSimMac)};
     api::SimulatedRestart restart_;
     BootReport boot_;
 

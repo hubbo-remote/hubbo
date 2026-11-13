@@ -29,7 +29,7 @@ test('first-run setup: admin, name, network, remote, Home Assistant (save shows 
   // 2. Name: the default to start with; spaces at the ends go; blank isn't a name.
   await expect(page.getByText('Step 2 of 6')).toBeVisible()
   const name = page.getByLabel('Hub name')
-  await expect(name).toHaveValue('Hubbo')
+  await expect(name).toHaveValue('Hubbo 534D') // hub-sim's default, and the mock's
   await expect(name).toHaveAttribute('data-1p-ignore', '') // not a login, though it follows one
   await name.fill('   ')
   await page.getByRole('button', { name: 'Continue', exact: true }).click()
@@ -103,7 +103,7 @@ test('the wizard resumes from hub state after a reload, and keeps nothing in the
   await step(2, 'Name')
   await page.getByRole('button', { name: 'Continue', exact: true }).click() // the default, kept
   await step(3, 'Network')
-  expect((await api(page).get('/admin/hub')).name).toBe('Hubbo')
+  expect(await api(page).get('/admin/hub')).toMatchObject({ name: 'Hubbo 534D', hostname: 'hubbo-534d' })
   await expect(page).toHaveURL(/#\/setup\/network$/)
   await page.reload()
   await step(3, 'Network')

@@ -174,6 +174,18 @@ describe('hub name, like core', () => {
     expect((await put(m, { name: 'Living Room' })).body).toMatchObject({ hostname: 'living-room' })
     expect((await put(m, { name: '\u212A' })).body).toMatchObject({ hostname: 'hubbo' }) // Kelvin sign: not a 'k'
   })
+
+  it('a new hub is called as hub-sim’s; a hostname clash shows until a rename', async () => {
+    const m = createMock({ firstRun: true })
+    const setup = await m.handle(req('POST', '/auth/setup', fixture('auth/setup.request.json'), {})) // an admin, to read it
+    const as = { cookie: setup.headers!['set-cookie']!.split(';')[0]! }
+    const hub = async () => (await m.handle(req('GET', '/admin/hub', undefined, as))).body
+    expect(await hub()).toEqual({ name: 'Hubbo 534D', hostname: 'hubbo-534d', hostname_conflict: false })
+    await m.handle(req('POST', '/__mock/hub?conflict=1'))
+    expect(await hub()).toEqual({ name: 'Hubbo 534D', hostname: 'hubbo-534d-2', hostname_conflict: true })
+    expect(((await m.handle(req('GET', '/status', undefined, as))).body as Status).network.hostname).toBe('hubbo-534d-2')
+    expect((await m.handle(req('PUT', '/admin/hub', { name: 'Den' }, as))).body).toEqual({ name: 'Den', hostname: 'den', hostname_conflict: false })
+  })
 })
 
 describe('mock behaviour', () => {

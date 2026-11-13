@@ -26,10 +26,11 @@ export function HubSettings() {
 function HubName() {
   const hub = useQuery('hub', () => api.hub())
   if (hub.error && !hub.data) return <ErrorState error={hub.error} retry={hub.refetch} />
-  return <Section title="Name">{hub.data ? <NameForm saved={hub.data.name} /> : <Skeleton className="h-9 w-72" />}</Section>
+  return <Section title="Name">{hub.data ? <NameForm saved={hub.data.name} taken={hub.data.hostname_conflict ? hub.data.hostname : null} /> : <Skeleton className="h-9 w-72" />}</Section>
 }
 
-function NameForm({ saved }: { saved: string }) {
+/** `taken`: the hostname this hub advertises instead, since another hub on the network has the name's. */
+function NameForm({ saved, taken }: { saved: string; taken: string | null }) {
   const [name, setName] = useState(saved)
   const [busy, setBusy] = useState(false)
   const [attempted, setAttempted] = useState(false)
@@ -60,7 +61,7 @@ function NameForm({ saved }: { saved: string }) {
   return (
     <ShowErrors.Provider value={attempted || !!serverError}>
       <form onSubmit={submit} className="grid max-w-sm gap-3" noValidate>
-        <Field label="Name" htmlFor="hub-name" error={error}>
+        <Field label="Name" htmlFor="hub-name" error={error} hint={taken && `Another hub on your network already uses this name, so this one is at ${taken}.local.`}>
           <Input
             id="hub-name"
             value={name}

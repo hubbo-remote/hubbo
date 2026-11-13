@@ -2,7 +2,9 @@
 
 #include <Arduino.h>
 #include <ETH.h>
+#include <esp_mac.h>
 
+#include <algorithm>
 #include <cstdio>
 
 #include "board.h"
@@ -12,6 +14,12 @@ namespace hubbo::fw {
 
 namespace {
 constexpr uint32_t kCheckIntervalMs = 250;
+}
+
+void EthernetLink::mac(uint8_t out[6]) {
+    if (esp_read_mac(out, ESP_MAC_ETH) != ESP_OK) {
+        std::fill(out, out + 6, 0);
+    }
 }
 
 bool EthernetLink::begin(const char *hostname) {

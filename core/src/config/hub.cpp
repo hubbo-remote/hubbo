@@ -1,6 +1,7 @@
 #include "hubbo/config/hub.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <utility>
 
 namespace hubbo::config {
@@ -47,6 +48,14 @@ bool nextCodePoint(std::string_view text, size_t *i, uint32_t *out) {
 
 bool isControl(uint32_t cp) { return cp < 0x20 || (cp >= 0x7F && cp <= 0x9F); }
 
+// A name's identity before the platform reports what mDNS advertises.
+HubIdentity identityFor(std::string name) {
+    HubIdentity identity;
+    identity.hostname = hostnameFor(name);
+    identity.name = std::move(name);
+    return identity;
+}
+
 }  // namespace
 
 std::string trimHubName(std::string_view requested) {
@@ -88,6 +97,15 @@ std::string hostnameFor(std::string_view name) {
     return out.empty() ? kDefaultHostname : out;
 }
 
+std::string defaultHubName(const uint8_t mac[6]) {
+    char name[16];
+    std::snprintf(name, sizeof name, "%s %02X%02X", kDefaultHubName, mac[4], mac[5]);
+    return name;
+}
+
+HubSettings::HubSettings(storage::StateStore &store, std::string defaultName)
+    : store_(store), defaultName_(std::move(defaultName)), identity_(identityFor(defaultName_)) {}
+
 ErrorCode HubSettings::load() {
     std::string saved;
     ErrorCode read = store_.get(kHubNameKey, &saved);
@@ -95,11 +113,10 @@ ErrorCode HubSettings::load() {
     std::lock_guard<std::mutex> lock(mutex_);
     matchesStore_ = read == ErrorCode::Ok || read == ErrorCode::NotFound;
     if (read != ErrorCode::Ok) {
-        identity_ = HubIdentity();  // the default; nothing is written over what's saved
+        identity_ = identityFor(defaultName_);  // nothing is written over what's saved
         return read;
     }
-    identity_.hostname = hostnameFor(saved);
-    identity_.name = std::move(saved);
+    identity_ = identityFor(std::move(saved));
     return ErrorCode::Ok;
 }
 
@@ -109,21 +126,18 @@ HubIdentity HubSettings::identity() const {
 }
 
 ErrorCode HubSettings::rename(std::string_view requested, HubIdentity *out) {
-    HubIdentity next;
-    next.name = trimHubName(requested);
-    const ErrorCode checked = checkHubName(next.name);
+    std::string name = trimHubName(requested);
+    const ErrorCode checked = checkHubName(name);
     if (checked != ErrorCode::Ok) return checked;
-    next.hostname = hostnameFor(next.name);
+    HubIdentity next = identityFor(std::move(name));
 
     std::lock_guard<std::mutex> renaming(renameMutex_);
-    bool unchanged = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        unchanged = matchesStore_ && identity_.name == next.name;
-    }
-    if (unchanged) {  // no flash write, nothing to re-apply
-        if (out != nullptr) *out = std::move(next);
-        return ErrorCode::Ok;
+        if (matchesStore_ && identity_.name == next.name) {  // no flash write, nothing to re-apply
+            if (out != nullptr) *out = identity_;  // the advertised hostname still holds
+            return ErrorCode::Ok;
+        }
     }
     if (!store_.set(kHubNameKey, next.name)) return ErrorCode::StorageFailed;
     {
@@ -140,9 +154,14 @@ ErrorCode HubSettings::forget() {
     std::lock_guard<std::mutex> renaming(renameMutex_);
     const bool removed = store_.remove(kHubNameKey);
     std::lock_guard<std::mutex> lock(mutex_);
-    identity_ = HubIdentity();
+    identity_ = identityFor(defaultName_);
     matchesStore_ = removed;
     return removed ? ErrorCode::Ok : ErrorCode::StorageFailed;
+}
+
+void HubSettings::setAdvertisedHostname(std::string_view hostname) {
+    std::lock_guard<std::mutex> lock(mutex_);  // never renameMutex_ (see hub.h)
+    identity_.advertisedHostname.assign(hostname.data(), hostname.size());
 }
 
 void HubSettings::onChanged(Changed changed) { changed_ = std::move(changed); }

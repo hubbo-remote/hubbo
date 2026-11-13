@@ -24,6 +24,8 @@ using namespace hubbo::sim;
 
 namespace {
 
+const std::string kSimDefaultName = config::defaultHubName(kSimMac);  // "Hubbo 534D"
+
 // Credentials as hub-sim wires them: loaded by the runner's boot (bootHub()).
 struct SimAuth {
     auth::MemorySecretStore secrets;
@@ -301,7 +303,7 @@ TEST(SimSeed, ServeRestartKeepsConfig) {
 }
 
 // The hub's name is kept across a restart, and a reset (`serve --reset`,
-// POST /sim/reset) takes it back to "Hubbo", saved that way.
+// POST /sim/reset) takes it back to the default, "Hubbo 534D" (kSimMac).
 TEST(SimSeed, AResetForgetsTheHubName) {
     storage::MemoryStorage disk;  // stands in for --data DIR
     {
@@ -311,9 +313,9 @@ TEST(SimSeed, AResetForgetsTheHubName) {
     ScenarioRunner second(nullptr, &disk, /*pinned=*/true);  // "restart"
     EXPECT_EQ(second.hub().hubSettings().identity().name, "Den Hub");
     second.runLine("reset");
-    EXPECT_EQ(second.hub().hubSettings().identity().name, "Hubbo");
+    EXPECT_EQ(second.hub().hubSettings().identity().name, kSimDefaultName);
     ScenarioRunner third(nullptr, &disk, /*pinned=*/true);
-    EXPECT_EQ(third.hub().hubSettings().identity().name, "Hubbo");
+    EXPECT_EQ(third.hub().hubSettings().identity().name, kSimDefaultName);
 }
 
 // Every reset path forgets the name, whatever StateStore the hub uses: a
@@ -324,21 +326,21 @@ TEST(SimSeed, EveryResetPathForgetsTheHubName) {
     SimHub hub(nullptr, &state);
     ASSERT_EQ(hub.hubSettings().rename("Den Hub"), ErrorCode::Ok);
     (void)hub.factoryReset(fixtureConfig());
-    EXPECT_EQ(hub.hubSettings().identity().name, "Hubbo");
+    EXPECT_EQ(hub.hubSettings().identity().name, kSimDefaultName);
     std::string saved;
     EXPECT_EQ(state.get(config::kHubNameKey, &saved), ErrorCode::NotFound);
     ASSERT_EQ(hub.hubSettings().rename("Den Hub"), ErrorCode::Ok);
     hub.wipe(nullptr);
-    EXPECT_EQ(hub.hubSettings().identity().name, "Hubbo");
+    EXPECT_EQ(hub.hubSettings().identity().name, kSimDefaultName);
     EXPECT_EQ(state.get(config::kHubNameKey, &saved), ErrorCode::NotFound);
 
     storage::MemoryStorage disk;
     ScenarioRunner runner(nullptr, &disk, /*pinned=*/false);
     ASSERT_EQ(runner.hub().hubSettings().rename("Den Hub"), ErrorCode::Ok);
     ASSERT_TRUE(runner.runLine("reset"));
-    EXPECT_EQ(runner.hub().hubSettings().identity().name, "Hubbo");
+    EXPECT_EQ(runner.hub().hubSettings().identity().name, kSimDefaultName);
     ScenarioRunner after(nullptr, &disk, /*pinned=*/false);
-    EXPECT_EQ(after.hub().hubSettings().identity().name, "Hubbo");
+    EXPECT_EQ(after.hub().hubSettings().identity().name, kSimDefaultName);
 }
 
 // A restart asked for before POST /sim/reset never fires after it.
@@ -831,7 +833,7 @@ TEST(SimApi, FactoryResetErasesEverythingAfterTheRestart) {
     EXPECT_FALSE(hub.remote().status().hasEndpoint);
     EXPECT_FALSE(hub.bleHosts().status(SimHub::kBondedDevice).bonded);
     EXPECT_FALSE(hub.engine().hasActiveActivity());
-    EXPECT_EQ(hub.hubSettings().identity().name, "Hubbo");  // the name goes too
+    EXPECT_EQ(hub.hubSettings().identity().name, kSimDefaultName);  // the name goes too
     // The board's first boot, through bootHub(): its defaults (only the
     // built-ins), saved as generation 1, nothing saved active.
     EXPECT_EQ(hub.lastBoot().config.state, config::ConfigState::Fresh);

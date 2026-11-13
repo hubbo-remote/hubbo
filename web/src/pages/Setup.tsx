@@ -8,6 +8,7 @@ import { NetworkInfo } from '@/components/admin/NetworkInfo'
 import { PairRemote } from '@/components/admin/PairRemote'
 import { RemoteEndpoint } from '@/components/admin/RemoteEndpoint'
 import { ThemeToggle } from '@/components/AppShell'
+import { ErrorState } from '@/components/common'
 import { ConfigBanner } from '@/components/ConfigBanner'
 import { Logo } from '@/components/Logo'
 import { Alert } from '@/components/ui/alert'
@@ -81,7 +82,7 @@ export default function Setup({ onDone, start }: { onDone: () => void; start?: s
   const onName = current === stepIndex('hub')
   const hub = useQuery(current !== null && current > 0 ? 'hub' : null, () => api.hub()) // needs the admin's session
   const [hubName, setHubName] = useState<string | null>(null)
-  const name = hubName ?? hub.data?.name ?? (hub.error ? 'Hubbo' : undefined) // can't read it: the default, saved only if changed
+  const name = hubName ?? hub.data?.name // until it's read, Continue waits (Skip keeps the hub's own)
   const [nameTried, setNameTried] = useState(false)
   const [busy, setBusy] = useState(false)
   const next = async () => {
@@ -137,7 +138,7 @@ export default function Setup({ onDone, start }: { onDone: () => void; start?: s
               {
                 {
                   admin: <AdminStep onCreated={adminCreated} />,
-                  hub: <HubStep name={name} onChange={setHubName} error={nameTried && name !== undefined ? hubNameProblem(name) : null} />,
+                  hub: <HubStep name={name} onChange={setHubName} error={nameTried && name !== undefined ? hubNameProblem(name) : null} loadError={hub.data ? null : hub.error} retry={hub.refetch} />,
                   network: <NetworkStep />,
                   remote: <RemoteStep />,
                   ha: <HaStep />,
@@ -222,8 +223,8 @@ function AdminStep({ onCreated }: { onCreated: () => void }) {
 }
 
 /** The hub's name (Setup saves it on Continue); a placeholder until the hub's own name has loaded. */
-function HubStep({ name, onChange, error }: { name: string | undefined; onChange: (name: string) => void; error: string | null }) {
-  if (name === undefined) return <Skeleton className="h-16 max-w-sm" />
+function HubStep({ name, onChange, error, loadError, retry }: { name: string | undefined; onChange: (name: string) => void; error: string | null; loadError: unknown; retry: () => void }) {
+  if (name === undefined) return loadError ? <ErrorState error={loadError} retry={retry} /> : <Skeleton className="h-16 max-w-sm" />
   return (
     <ShowErrors.Provider value={!!error}>
       <div className="grid max-w-sm gap-4">

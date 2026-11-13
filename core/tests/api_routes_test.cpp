@@ -194,7 +194,7 @@ protected:
     api::SimulatedFirmwareUpdate firmware;
     api::SimulatedFactoryReset factoryReset;
     storage::MemoryStateStore hubState;
-    config::HubSettings hubSettings{hubState};
+    config::HubSettings hubSettings{hubState, "Hubbo 534D"};
     api::SimulatedRestart restart;
     api::Api api{api::ApiContext{creds, sessions, clock, hub.configService(), runtime, {}, nullptr, &remote,
                                  &haClient, &secrets, nullptr, &ble, &firmware, &factoryReset, &hubSettings,
@@ -520,7 +520,7 @@ TEST_F(ApiTest, AuthFlowAndRoleMatrix) {
     EXPECT_FALSE(factoryReset.pending()) << "a token can't factory reset";
     EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/hub").status, 403);
     EXPECT_EQ(call(http::Method::Put, "/api/v1/admin/hub", R"({"name":"Den"})").status, 403);
-    EXPECT_EQ(hubSettings.identity().name, "Hubbo") << "a token can't rename the hub";
+    EXPECT_EQ(hubSettings.identity().name, "Hubbo 534D") << "a token can't rename the hub";
     EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/restart").status, 403);
     EXPECT_FALSE(restart.pending()) << "a token can't restart the hub";
 
@@ -790,8 +790,16 @@ TEST_F(ApiTest, FirmwareUpdate) {
 TEST_F(ApiTest, HubNameAndRestart) {
     Reply r = call(http::Method::Get, "/api/v1/admin/hub");
     ASSERT_EQ(r.status, 200) << dump(r);
-    EXPECT_EQ(r.json["name"], "Hubbo");
-    EXPECT_EQ(r.json["hostname"], "hubbo");
+    EXPECT_EQ(r.json["name"], "Hubbo 534D");  // the platform's default
+    EXPECT_EQ(r.json["hostname"], "hubbo-534d");
+    EXPECT_EQ(r.json["hostname_conflict"], false);
+
+    // A clash on the network: both routes show what mDNS really advertises.
+    hubSettings.setAdvertisedHostname("hubbo-534d-2");
+    r = call(http::Method::Get, "/api/v1/admin/hub");
+    EXPECT_EQ(r.json["hostname"], "hubbo-534d-2");
+    EXPECT_EQ(r.json["hostname_conflict"], true);
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/status").json["network"]["hostname"], "hubbo-534d-2");
 
     std::vector<config::HubIdentity> applied;
     hubSettings.onChanged([&](const config::HubIdentity &identity) { applied.push_back(identity); });
@@ -799,6 +807,7 @@ TEST_F(ApiTest, HubNameAndRestart) {
     ASSERT_EQ(r.status, 200) << dump(r);
     EXPECT_EQ(r.json["name"], "Living Room");  // trimmed
     EXPECT_EQ(r.json["hostname"], "living-room");
+    EXPECT_EQ(r.json["hostname_conflict"], false) << "a rename clears the advertised hostname";
     ASSERT_EQ(applied.size(), 1u);
     EXPECT_EQ(applied[0].hostname, "living-room");
     std::string saved;

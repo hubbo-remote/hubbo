@@ -220,7 +220,14 @@ hubbo::api::Authenticator authenticator(credentials, sessions, apiClock);
 LittleFsStorage fsStorage;
 hubbo::storage::SlotRecordStore records(fsStorage, hubbo::config::kMaxConfigFileBytes);
 hubbo::storage::RecordStateStore stateStore(records);
-hubbo::config::HubSettings hubSettings(stateStore);  // the hub's name ("hub_name")
+// The hub's name ("hub_name"). A hub never renamed is "Hubbo XXXX", from the
+// last two bytes of the Ethernet MAC.
+std::string defaultHubName() {
+    uint8_t mac[6];
+    EthernetLink::mac(mac);
+    return hubbo::config::defaultHubName(mac);
+}
+hubbo::config::HubSettings hubSettings(stateStore, defaultHubName());
 std::unique_ptr<hubbo::config::ConfigService> configService;
 hubbo::ActivePersister activePersister(stateStore);
 hubbo::config::LoadReport bootConfig;  // for the console; the API reads live state
@@ -589,7 +596,7 @@ void startApi() {
 // renames run there too); OTA here (cheap, and its handle() runs on this
 // task).
 void onAddressChanged() {
-    httpServer.post([] { hubName.startMdns(hubSettings.identity(), HttpServer::kPort); });
+    httpServer.post([] { hubName.startMdns(hubSettings, HttpServer::kPort); });
     ota::begin(hubName.bootHostname(), &releaseOutputs, &onOtaWritten);  // no-op if disabled or already started
 }
 

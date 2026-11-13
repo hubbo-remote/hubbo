@@ -11,6 +11,8 @@
 namespace hubbo::config {
 namespace {
 
+constexpr const char *kDefault = "Hubbo 3F2A";
+
 TEST(HubName, HostnameIsADnsSafeSlug) {
     EXPECT_EQ(hostnameFor("Hubbo"), "hubbo");
     EXPECT_EQ(hostnameFor("Living Room"), "living-room");
@@ -54,10 +56,10 @@ TEST(HubName, NamesAreTrimmedAndChecked) {
 
 TEST(HubSettings, LoadsRenamesAndTellsThePlatform) {
     storage::MemoryStateStore store;
-    HubSettings hub(store);
+    HubSettings hub(store, kDefault);
     EXPECT_EQ(hub.load(), ErrorCode::NotFound);
-    EXPECT_EQ(hub.identity().name, "Hubbo");
-    EXPECT_EQ(hub.identity().hostname, "hubbo");
+    EXPECT_EQ(hub.identity().name, kDefault);
+    EXPECT_EQ(hub.identity().hostname, "hubbo-3f2a");
 
     std::vector<HubIdentity> applied;
     hub.onChanged([&](const HubIdentity &identity) { applied.push_back(identity); });
@@ -84,7 +86,7 @@ TEST(HubSettings, LoadsRenamesAndTellsThePlatform) {
     EXPECT_EQ(applied.size(), 1u);
 
     // The next boot reads it back.
-    HubSettings again(store);
+    HubSettings again(store, kDefault);
     EXPECT_EQ(again.load(), ErrorCode::Ok);
     EXPECT_EQ(again.identity().hostname, "living-room");
 }
@@ -93,21 +95,21 @@ TEST(HubSettings, AnUnreadableNameIsTheDefaultAndStaysSaved) {
     storage::MemoryStateStore store;
     ASSERT_TRUE(store.set(kHubNameKey, "Den"));
     store.failReads = true;
-    HubSettings hub(store);
+    HubSettings hub(store, kDefault);
     EXPECT_EQ(hub.load(), ErrorCode::StorageFailed);
-    EXPECT_EQ(hub.identity().name, "Hubbo");
+    EXPECT_EQ(hub.identity().name, kDefault);
     store.failReads = false;
     std::string saved;
     EXPECT_EQ(store.get(kHubNameKey, &saved), ErrorCode::Ok);
     EXPECT_EQ(saved, "Den");  // nothing written over it
     // Asking for the default it shows still saves it: what's saved is "Den".
-    EXPECT_EQ(hub.rename("Hubbo"), ErrorCode::Ok);
+    EXPECT_EQ(hub.rename(kDefault), ErrorCode::Ok);
     EXPECT_EQ(store.get(kHubNameKey, &saved), ErrorCode::Ok);
-    EXPECT_EQ(saved, "Hubbo");
+    EXPECT_EQ(saved, kDefault);
 
     ASSERT_TRUE(store.set(kHubNameKey, "bad\x01"));
     EXPECT_EQ(hub.load(), ErrorCode::Corrupt);
-    EXPECT_EQ(hub.identity().name, "Hubbo");
+    EXPECT_EQ(hub.identity().name, kDefault);
 }
 
 TEST(HubSettings, ForgetRemovesTheSavedName) {
@@ -117,19 +119,19 @@ TEST(HubSettings, ForgetRemovesTheSavedName) {
     storage::MemoryStateStore memoryStore;
     for (storage::StateStore *store : {static_cast<storage::StateStore *>(&recordStore),
                                        static_cast<storage::StateStore *>(&memoryStore)}) {
-        HubSettings hub(*store);
+        HubSettings hub(*store, kDefault);
         ASSERT_EQ(hub.rename("Den"), ErrorCode::Ok);
         EXPECT_EQ(hub.forget(), ErrorCode::Ok);
-        EXPECT_EQ(hub.identity().name, "Hubbo");
+        EXPECT_EQ(hub.identity().name, kDefault);
         std::string saved;
         EXPECT_EQ(store->get(kHubNameKey, &saved), ErrorCode::NotFound);
         EXPECT_EQ(hub.forget(), ErrorCode::Ok);  // nothing saved: still Ok
-        HubSettings again(*store);
+        HubSettings again(*store, kDefault);
         EXPECT_EQ(again.load(), ErrorCode::NotFound);
     }
     EXPECT_EQ(disk.files().count("hub_name.a") + disk.files().count("hub_name.b"), 0u);
     memoryStore.failWrites = true;
-    HubSettings failing(memoryStore);
+    HubSettings failing(memoryStore, kDefault);
     EXPECT_EQ(failing.forget(), ErrorCode::StorageFailed);
 }
 
@@ -137,13 +139,71 @@ TEST(HubSettings, TheNameFitsTheRecordStateStore) {
     storage::MemoryStorage disk;
     storage::SlotRecordStore records(disk, 4096);
     storage::RecordStateStore store(records);
-    HubSettings hub(store);
+    HubSettings hub(store, kDefault);
     std::string emoji;
     for (int i = 0; i < 32; i++) emoji += "\xF0\x9F\x93\xBA";
     ASSERT_EQ(hub.rename(emoji), ErrorCode::Ok);
-    HubSettings again(store);
+    HubSettings again(store, kDefault);
     EXPECT_EQ(again.load(), ErrorCode::Ok);
     EXPECT_EQ(again.identity().name, emoji);
+}
+
+TEST(HubSettings, TheDefaultNameComesFromTheMac) {
+    const uint8_t mac[6] = {0x24, 0x0a, 0xc4, 0x12, 0x3f, 0x2a};
+    EXPECT_EQ(defaultHubName(mac), "Hubbo 3F2A");
+    const uint8_t low[6] = {0, 0, 0, 0, 0x00, 0x0b};
+    EXPECT_EQ(defaultHubName(low), "Hubbo 000B");
+    EXPECT_EQ(checkHubName(defaultHubName(mac)), ErrorCode::Ok);
+    EXPECT_EQ(hostnameFor(defaultHubName(mac)), "hubbo-3f2a");
+    // A hub that kept plain "Hubbo" saved keeps it: no migration.
+    storage::MemoryStateStore store;
+    ASSERT_TRUE(store.set(kHubNameKey, "Hubbo"));
+    HubSettings hub(store, defaultHubName(mac));
+    EXPECT_EQ(hub.load(), ErrorCode::Ok);
+    EXPECT_EQ(hub.identity().name, "Hubbo");
+}
+
+// What mDNS really advertises is shown; a clash shows as a conflict. It's
+// runtime only, and a rename or a reload clears it (the platform reports again).
+TEST(HubSettings, TheAdvertisedHostnameIsShownUntilTheNameChanges) {
+    storage::MemoryStateStore store;
+    HubSettings hub(store, kDefault);
+    ASSERT_EQ(hub.rename("Living Room"), ErrorCode::Ok);
+    EXPECT_EQ(hub.identity().shownHostname(), "living-room");  // not reported yet
+    EXPECT_FALSE(hub.identity().hostnameConflict());
+    hub.setAdvertisedHostname("living-room");
+    EXPECT_FALSE(hub.identity().hostnameConflict());
+    hub.setAdvertisedHostname("living-room-2");
+    EXPECT_EQ(hub.identity().hostname, "living-room");
+    EXPECT_EQ(hub.identity().shownHostname(), "living-room-2");
+    EXPECT_TRUE(hub.identity().hostnameConflict());
+    const int writes = store.writes();
+    hub.setAdvertisedHostname("living-room-3");
+    EXPECT_EQ(store.writes(), writes);  // never saved
+    // Renaming to the same name changes nothing: the answer keeps the clash.
+    HubIdentity same;
+    ASSERT_EQ(hub.rename("Living Room ", &same), ErrorCode::Ok);
+    EXPECT_EQ(same.shownHostname(), "living-room-3");
+    EXPECT_TRUE(same.hostnameConflict());
+    EXPECT_EQ(hub.identity().advertisedHostname, "living-room-3");
+
+    // The board's mDNS reports during the rename's `changed` (it waits on the
+    // mDNS task): that report stays, and a report never waits on a rename.
+    std::vector<HubIdentity> applied;
+    hub.onChanged([&](const HubIdentity &identity) {
+        applied.push_back(identity);
+        hub.setAdvertisedHostname("den-2");
+    });
+    ASSERT_EQ(hub.rename("Den"), ErrorCode::Ok);
+    ASSERT_EQ(applied.size(), 1u);
+    EXPECT_EQ(applied[0].advertisedHostname, "");
+    EXPECT_EQ(hub.identity().shownHostname(), "den-2");
+    EXPECT_EQ(hub.load(), ErrorCode::Ok);
+    EXPECT_EQ(hub.identity().advertisedHostname, "");
+    hub.setAdvertisedHostname("den-2");
+    EXPECT_EQ(hub.forget(), ErrorCode::Ok);
+    EXPECT_EQ(hub.identity().advertisedHostname, "");
+    EXPECT_EQ(hub.identity().shownHostname(), "hubbo-3f2a");
 }
 
 }  // namespace

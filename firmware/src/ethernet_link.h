@@ -23,6 +23,11 @@ public:
         Up,      // link up with an address
     };
 
+    // The MAC begin() gives the W5500, readable before it (efuse): Arduino's
+    // SPI ETH derives it from ESP_MAC_ETH with esp_derive_local_mac, which
+    // changes only the first byte, so only bytes 1-5 are exact. Any task.
+    static void mac(uint8_t out[6]);
+
     bool begin(const char *hostname);
     void loop(uint32_t nowMs);
 

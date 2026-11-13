@@ -25,7 +25,7 @@ pointers given here, e.g. `#/components/schemas/Activity`. Neither needs a token
 ## Connecting
 
 ```sh
-export HUBBO=http://hubbo.local/api/v1     # the hub's address, as you were given it
+export HUBBO=http://hubbo-3f2a.local/api/v1     # the hub's address, as you were given it
 export HUBBO_TOKEN=hbt_k3x9q2mf_...
 curl -s -H "Authorization: Bearer $HUBBO_TOKEN" $HUBBO/status
 ```

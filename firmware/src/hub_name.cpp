@@ -10,11 +10,25 @@ namespace {
 
 constexpr size_t kMdnsNameMaxBytes = 63;  // a DNS label; mdns.h's MDNS_NAME_MAX_LEN
 
+// mDNS task, whenever the hostname changes: our own mdns_hostname_set, and
+// the component's rename after a clash, which adds or bumps a numeric
+// suffix ("hubbo-3f2a" -> "hubbo-3f2a-2", "room-2" -> "room-3"). No
+// mDNS calls in here; HubSettings takes only its identity mutex, which no
+// one holds while waiting on the mDNS task.
+void onMdnsHostnameChanged(const char *hostname, void *arg) {
+    static_cast<hubbo::config::HubSettings *>(arg)->setAdvertisedHostname(hostname);
+    con.print("mdns: advertising ");  // plain writes: 4 KB stack
+    con.print(hostname);
+    con.println(".local");
+}
+
 // The hostname first (mdns_instance_name_set refuses, ESP_ERR_INVALID_ARG,
 // while none is set), then the instance: each sends goodbyes for the old
 // records and probes and announces the new ones. mdns_hostname_set waits for
 // the mDNS task (core 0, priority 1) to take it. Core keeps the hostname
-// within a label; only the instance name may need cutting.
+// within a label; only the instance name may need cutting. The callback
+// reports the hostname (no mdns_hostname_get here: it would race a clash
+// rename).
 void registerMdns(const hubbo::config::HubIdentity &identity) {
     const std::string instance = identity.name.substr(0, utf8Prefix(identity.name, kMdnsNameMaxBytes));
     const esp_err_t hostResult = mdns_hostname_set(identity.hostname.c_str());
@@ -42,7 +56,7 @@ size_t utf8Prefix(std::string_view text, size_t maxBytes) {
     return length;
 }
 
-void HubName::startMdns(const hubbo::config::HubIdentity &identity, uint16_t httpPort) {
+void HubName::startMdns(hubbo::config::HubSettings &settings, uint16_t httpPort) {
     if (mdnsStarted_) {
         return;
     }
@@ -51,7 +65,10 @@ void HubName::startMdns(const hubbo::config::HubIdentity &identity, uint16_t htt
         return;
     }
     mdnsStarted_ = true;
-    registerMdns(identity);
+    if (mdns_register_hostname_changed_callback(&onMdnsHostnameChanged, &settings) != ESP_OK) {
+        con.println("mdns: no hostname callback; a clash won't show in /status");
+    }
+    registerMdns(settings.identity());
     // No instance of its own: it follows the global instance name.
     if (mdns_service_add(nullptr, "_http", "_tcp", httpPort, nullptr, 0) != ESP_OK) {
         con.println("mdns: couldn't add _http._tcp");

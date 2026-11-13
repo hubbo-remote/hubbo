@@ -55,6 +55,18 @@ traps only.
     on `:down`. Hubbo's own actions (Off, activate) go on `:tap`, and a Long press on `:hold`.
   - On the board, /llms.txt must be registered with httpd before the web admin's `/*` (firmware's).
 - Hub name and restart (committed on hub-name, PR #11). `config/hub.h`:
+  - Default name (hub-name branch, uncommitted; docs/design/hub-name.md):
+    `HubSettings(store, defaultName)`, where the platform passes `defaultHubName(mac)` ("Hubbo 3F2A",
+    the last two MAC bytes). The board uses the Ethernet MAC; hub-sim uses `sim::kSimMac`, so its
+    name is "Hubbo 534D". load() with nothing saved or with an unreadable value, and forget(), use
+    it. A saved plain "Hubbo" is kept. kDefaultHubName/kDefaultHostname are only HubIdentity's bare
+    default (no HubSettings) and hostnameFor's fallback.
+  - Advertised hostname: `HubIdentity::advertisedHostname` ("" = unknown; never set on hub-sim),
+    `shownHostname()` (advertised, else hostname) and `hostnameConflict()`.
+    `setAdvertisedHostname()` (any task) takes only the identity mutex, never renameMutex_: the
+    board's onChanged waits on the mDNS task, whose callback calls it. rename() clears it before
+    onChanged, so a report made during onChanged stays. load() and forget() clear it.
+    GET/PUT /admin/hub (hub_routes.cpp) send `{name, hostname: shownHostname(), hostname_conflict}`.
   - Storage: `HubSettings` keeps the name in the StateStore under `kHubNameKey` ("hub_name"),
     never in the activity config or backups. On the board that's the RecordStateStore on
     LittleFS (firmware main.cpp), and in hub-sim the record store. `HubSettings::forget()`

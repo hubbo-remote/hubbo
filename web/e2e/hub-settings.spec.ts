@@ -1,5 +1,5 @@
 // Settings → Hub: the hub's name and a restart.
-import { advance, api, expect, loginHeading, open, session, test } from './hub.ts'
+import { advance, api, control, expect, loginHeading, open, session, SIM_URL, test } from './hub.ts'
 
 test('Settings opens on Hub; the name saves trimmed, and a refused one says why', async ({ page }) => {
   await open(page, '/settings')
@@ -27,6 +27,18 @@ test('Settings opens on Hub; the name saves trimmed, and a refused one says why'
   await expect(page.getByText('Paired devices may show the old name until they reconnect.')).toBeVisible()
   await expect(name).toHaveValue('Den Hub')
   expect(await api(page).get('/admin/hub')).toMatchObject({ name: 'Den Hub', hostname: 'den-hub' })
+})
+
+test('when another hub has the name’s hostname, Settings says where this one is; a rename clears it', async ({ page }) => {
+  test.skip(!!SIM_URL, 'hub-sim has no mDNS, so its hostname never clashes')
+  await control(page, 'hub?conflict=1')
+  await open(page, '/settings/hub')
+  const { hostname } = await api(page).get('/admin/hub')
+  await expect(page.getByText(`Another hub on your network already uses this name, so this one is at ${hostname}.local.`)).toBeVisible()
+  await page.getByLabel('Name', { exact: true }).fill('Den Hub')
+  await page.getByRole('button', { name: 'Save' }).click()
+  await expect(page.getByText('Paired devices may show the old name until they reconnect.')).toBeVisible()
+  await expect(page.getByText(/Another hub on your network/)).toHaveCount(0)
 })
 
 test('restart asks first, then waits for the hub and opens the app afresh', async ({ page }) => {
