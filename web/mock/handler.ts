@@ -23,6 +23,7 @@ import type {
   ButtonId,
   ExecuteResult,
   GlobalBindings,
+  Hub,
   IntegrationConfig,
   IntegrationConfigUpdate,
   IntegrationState,
@@ -109,6 +110,8 @@ const FW_REBOOT_MS = 1000
 const FW_SLOT_BYTES = 6_553_600
 /** A restart (POST /admin/restart, or a factory reset's), like hub-sim's: the mock's hub is down for all of it. */
 const RESTART_MS = 1000
+/** A new hub's name, as hub-sim's (its fixed MAC suffix; the board's is its own MAC's). */
+const DEFAULT_HUB_NAME = 'Hubbo 534D'
 /** The hostname the hub derives from its name (api/openapi.yaml Hub.hostname): ASCII A–Z lowercased only, like core's hostnameFor. */
 const hostnameOf = (name: string) => name.replace(/[A-Z]/g, (c) => c.toLowerCase()).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'hubbo'
 /** api/openapi.yaml HubName: trimmed, 1–32 characters, no control characters. */
@@ -262,8 +265,8 @@ export function createMock(opts: MockOptions = {}) {
     fwRevert = false
     eraseReady = true
     restart = null
-    // A new hub is called Hubbo; a set-up one has the fixture's name (status.json, admin/hub.json).
-    if (mode.firstRun) setHubName('Hubbo')
+    // A new hub has hub-sim's default name; a set-up one has the fixture's name (status.json, admin/hub.json).
+    if (mode.firstRun) setHubName(DEFAULT_HUB_NAME)
     discovery = { state: 'idle' }
     // The fixture's entities come from HA's `demo` platform, which has no services of its own. Give them
     // realistic platforms, with integration services and skipped ones, so the UI shows those too.
@@ -604,10 +607,19 @@ export function createMock(opts: MockOptions = {}) {
   }
   const startRestart = (onBack: () => void) => (restart = { startedAt: Date.now(), advancedMs: 0, onBack })
 
-  const hub = () => ({ name: db.status.hubbo.name, hostname: db.status.network.hostname ?? hostnameOf(db.status.hubbo.name) })
+  const hub = (): Hub => {
+    const own = hostnameOf(db.status.hubbo.name)
+    const hostname = db.status.network.hostname ?? own
+    return { name: db.status.hubbo.name, hostname, hostname_conflict: hostname !== own }
+  }
+  /** A rename (or a fresh hub) advertises the name's own hostname. */
   function setHubName(name: string) {
     db.status.hubbo.name = name
-    db.status.network.hostname = hostnameOf(name)
+    setHostnameConflict(false)
+  }
+  /** Mock only (`/__mock/hub?conflict=1`): mDNS found another hub on the name's hostname, so this one advertises another. */
+  function setHostnameConflict(on: boolean) {
+    db.status.network.hostname = `${hostnameOf(db.status.hubbo.name)}${on ? '-2' : ''}`
   }
 
   /**
@@ -1196,6 +1208,10 @@ export function createMock(opts: MockOptions = {}) {
     // Mock-only controls (never in the real API).
     // Like hub-sim's POST /sim/firmware: writes fail (?fail=1) or the hub can't take an update (?ready=0).
     // Mock-only ?revert=1: the reboot comes back on the old image (a reset mid-write, or a new image that crashes).
+    ['POST', /^\/__mock\/hub$/, 'public', (req) => {
+      if (req.query.has('conflict')) setHostnameConflict(req.query.get('conflict') === '1')
+      return ok(hub())
+    }],
     ['POST', /^\/__mock\/factory-reset$/, 'public', (req) => {
       if (req.query.has('ready')) eraseReady = req.query.get('ready') === '1'
       return ok({ ready: eraseReady })

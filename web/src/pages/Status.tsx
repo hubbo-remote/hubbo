@@ -32,7 +32,7 @@ export default function Status({ tab = 'overview' }: { tab?: string }) {
   if (!TABS.some((t) => t.id === tab)) return <NotFound />
   return (
     <>
-      <PageHeader title="Status" description={s ? `${s.network.hostname ?? 'hubbo'} · up ${formatDuration(s.uptime_s)}` : undefined} />
+      <PageHeader title="Status" description={s ? [s.network.hostname, `up ${formatDuration(s.uptime_s)}`].filter(Boolean).join(' · ') : undefined} />
       <Tabs tabs={TABS} value={tab} onChange={(t) => navigate(`/status/${t}`, { replace: true })}>
         {tab === 'overview' && (status.error && !s ? <ErrorState error={status.error} retry={status.refetch} /> : <Overview status={s} />)}
         {tab === 'backups' && <Backups />}
