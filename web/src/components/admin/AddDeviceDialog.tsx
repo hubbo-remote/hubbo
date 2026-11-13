@@ -13,7 +13,17 @@ import { Field, Input, Select } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { useDevices, useIntegrations, useKinds, useProfiles } from '@/hooks/data'
 import { INTEGRATION_ICON, providerRef } from '@/lib/health'
-const guessKind = (c: DiscoverCandidate): DeviceKind => (c.domain === 'light' ? 'light' : c.domain === 'switch' ? 'switch' : /tv|oled|bravia|webos/i.test(c.name) ? 'tv' : /denon|marantz|yamaha|onkyo|receiver|avr/i.test(c.name) ? 'receiver' : /sonos|speaker/i.test(c.name) ? 'speaker' : 'other')
+/** HA domains whose name is the kind; otherwise guess from the entity's name. */
+const DOMAIN_KINDS = ['light', 'switch', 'fan'] as const satisfies readonly DeviceKind[]
+const guessKind = (c: DiscoverCandidate): DeviceKind =>
+  DOMAIN_KINDS.find((d) => d === c.domain) ??
+  (/tv|oled|bravia|webos/i.test(c.name)
+    ? 'tv'
+    : /denon|marantz|yamaha|onkyo|receiver|avr/i.test(c.name)
+      ? 'receiver'
+      : /sonos|speaker/i.test(c.name)
+        ? 'speaker'
+        : 'other')
 
 /** What's being added: a built-in profile, or a Home Assistant entity (with its details, which registering needs). */
 type Pick =
