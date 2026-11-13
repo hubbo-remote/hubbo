@@ -254,8 +254,7 @@ of remote lag during the write are accepted.
   starts with a 100 ms `vTaskDelay` so lwIP sends the response.
 - Lead review fix: a factory reset whose NVS save fails releases `Owner::Reboot` only if it took it
   (`ota::holds()` before the claim), so a pending restart keeps the flag. Only httpd claims Reboot.
-- Two unrenamed hubs both want `hubbo.local`; mDNS renames one, /status wouldn't know. Left as is
-  (one hub). If needed: `mdns_register_hostname_changed_callback` / `mdns_hostname_get` exist.
+- Default name and the advertised hostname: see "Unique default name" below.
 - /simplify done. Skipped: `utf8Prefix` into core (beside checkHubName, testable; core's call),
   folding Restart and FactoryReset into one class (5 lines). Core's `rename()` already skips a
   same-name rename (no save, no onChanged).
@@ -265,6 +264,40 @@ of remote lag during the write are accepted.
   hosts still work), a 32-emoji name (GAP read, shortened scan name), DHCP name after a reboot,
   POST /admin/restart answers before the reboot, loop max gap during a rename (HCI stop/start on
   the loop, as `updateAdvertising` already does).
+
+## Unique default name (branch `hub-name`, /simplify done, gate passed, board checked)
+
+- Design: `docs/design/hub-name.md`. `HubSettings(stateStore, defaultHubName())` in main.cpp. The
+  default is core's `config::defaultHubName(mac)` on `EthernetLink::mac()`, which wraps
+  `esp_read_mac(ESP_MAC_ETH)` (efuse, so it's readable in a static constructor, before ETH starts). Arduino's SPI ETH
+  puts `esp_derive_local_mac(ESP_MAC_ETH)` on the wire, which changes only byte 0, so the suffix
+  matches the "eth: W5500 started, MAC" boot line.
+- mDNS is espressif/mdns 1.13.1 (`versions.txt` in the esp32s3-libs; source at tag mdns-v1.13.1).
+  An A/AAAA collision while probing, or on the re-probe after a later conflict, mangles the
+  global hostname itself. It adds or bumps a numeric suffix after the last `-`: `hubbo-3f2a` becomes `hubbo-3f2a-2`, but
+  `hubbo-1234` becomes `hubbo-1235` and `room-2` becomes `room-3`. It never reverts. An SRV
+  collision mangles the instance name the same way (out of scope, not reported).
+- `mdns_register_hostname_changed_callback` fires on the mDNS task every time the hostname
+  changes: our `mdns_hostname_set` (inside the action, before probing) and every mangle. It
+  doesn't fire when the name is unchanged. `HubName` registers it after `mdns_init`, and it calls
+  `HubSettings::setAdvertisedHostname` (`startMdns(hubSettings, port)` passes it as the arg; the
+  log line uses plain `con.print`s, since the mDNS task has a 4 KB stack). Core takes only `mutex_`, never `renameMutex_`, since
+  onChanged runs under renameMutex_ and waits on the mDNS task). A rename clears the advertised
+  name before onChanged, so a same-slug rename (no callback) correctly shows `identity.hostname`.
+  There's no `mdns_hostname_get` after registering: it would race a mangle and could undo it.
+  There's no new task or timer.
+- /status `network.hostname` and GET /admin/hub `hostname`: the firmware never filled them.
+  Core/api serve `shownHostname()` and `hostname_conflict`.
+- Board test to do: the dev board has a saved name ("Guest Room Hubbo"), so the default only shows
+  after a user reset (it should be "Hubbo XXXX" and match the ETH MAC). With the saved name: the
+  boot log shows `mdns: advertising guest-room-hubbo.local`, and `/status` hostname matches it. A clash can be tested by
+  running `dns-sd -P` (or avahi-publish) with the same hostname from a Mac before the boot or the
+  rename: expect a numeric suffix added or bumped in /status, and `hostname_conflict` true. Measure the loop gap.
+- Gate (fw) passed: serial RAM 88,336 B, flash 2,187,363 B; OTA RAM 96,560 B, flash 2,214,727 B.
+- Board (1436f35-dirty): `mdns: advertising guest-room-hubbo.local` fired once at boot, and
+  /status and /admin/hub match it (no conflict). MAC BE:1F:3F:BC:7F:8D, so the default would be
+  "Hubbo 7F8D" (unseen: the name is saved). Loop max gap 2,086 us, 0 over 5 ms. Still open: the
+  default after a user name reset, and an optional clash test.
 
 ## Agent docs (branch `agent-docs`, built, not on the board yet)
 
