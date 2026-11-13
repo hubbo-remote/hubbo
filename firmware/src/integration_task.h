@@ -1,11 +1,12 @@
 #pragma once
 
-// The Home Assistant integration task: pinned to core 0 at priority 4
+// An integration task: pinned to core 0 at priority 4
 // (below httpd at 5: a TLS handshake is seconds of CPU and must not stall
 // the API; W5500 RX is at 15 and lwIP at 18), with an 8 KB
-// stack in PSRAM (it never touches flash: the token reaches it from
-// httpd/boot). It owns the HA WebSocket connection. The RF loop on core 1
-// never waits on it.
+// stack in PSRAM (it never touches flash: secrets reach it from httpd/boot).
+// Two run on it: "ha" owns the Home Assistant WebSocket connection, and
+// "mqtt" the MQTT bridge (mqtt_transport.h). The RF loop on core 1 never
+// waits on either.
 //
 // Each pass: run posted jobs, then the service callback (transport.poll(),
 // client.poll(), adapter.service()). The service's socket wait is the pass's
@@ -18,7 +19,7 @@
 
 namespace hubbo::fw {
 
-class HaTask {
+class IntegrationTask {
 public:
     static constexpr int kCore = 0;
     static constexpr unsigned kPriority = 4;
@@ -29,9 +30,9 @@ public:
     // Returns true while there's work the next pass should do at once. It
     // reads the clock itself: its own waits make a time taken before it stale.
     using Service = std::function<bool()>;
-    bool start(Service service);
+    bool start(const char *name, Service service);
 
-    // Any task: run `job` once on the HA task. False if not running or the
+    // Any task: run `job` once on this task. False if not running or the
     // queue is full.
     bool post(std::function<void()> job);
 
