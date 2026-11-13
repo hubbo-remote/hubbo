@@ -192,8 +192,12 @@ protected:
     integrations::HomeAssistantClient haClient{haTransport};
     api::SimulatedFirmwareUpdate firmware;
     api::SimulatedFactoryReset factoryReset;
+    storage::MemoryStateStore hubState;
+    config::HubSettings hubSettings{hubState};
+    api::SimulatedRestart restart;
     api::Api api{api::ApiContext{creds, sessions, clock, hub.configService(), runtime, {}, nullptr, &remote,
-                                 &haClient, &secrets, nullptr, &ble, &firmware, &factoryReset}};
+                                 &haClient, &secrets, nullptr, &ble, &firmware, &factoryReset, &hubSettings,
+                                 &restart}};
     http::Router router;
 
     bool noAuth = true;  // simulated admin unless a test logs in
@@ -513,6 +517,11 @@ TEST_F(ApiTest, AuthFlowAndRoleMatrix) {
     EXPECT_EQ(firmware.status().state, api::FirmwareUpdateState::Idle) << "a token can't update firmware";
     EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/factory-reset").status, 403);
     EXPECT_FALSE(factoryReset.pending()) << "a token can't factory reset";
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/hub").status, 403);
+    EXPECT_EQ(call(http::Method::Put, "/api/v1/admin/hub", R"({"name":"Den"})").status, 403);
+    EXPECT_EQ(hubSettings.identity().name, "Hubbo") << "a token can't rename the hub";
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/restart").status, 403);
+    EXPECT_FALSE(restart.pending()) << "a token can't restart the hub";
 
     // Revoke and logout.
     token.clear();
@@ -775,6 +784,85 @@ TEST_F(ApiTest, FirmwareUpdate) {
     EXPECT_EQ(r.json["update"]["error"], "write_failed");
     firmware.ready = false;
     EXPECT_EQ(upload(image()).status, 503);
+}
+
+TEST_F(ApiTest, HubNameAndRestart) {
+    Reply r = call(http::Method::Get, "/api/v1/admin/hub");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["name"], "Hubbo");
+    EXPECT_EQ(r.json["hostname"], "hubbo");
+
+    std::vector<config::HubIdentity> applied;
+    hubSettings.onChanged([&](const config::HubIdentity &identity) { applied.push_back(identity); });
+    r = call(http::Method::Put, "/api/v1/admin/hub", R"({"name":"  Living Room  "})");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["name"], "Living Room");  // trimmed
+    EXPECT_EQ(r.json["hostname"], "living-room");
+    ASSERT_EQ(applied.size(), 1u);
+    EXPECT_EQ(applied[0].hostname, "living-room");
+    std::string saved;
+    EXPECT_EQ(hubState.get(config::kHubNameKey, &saved), ErrorCode::Ok);
+    EXPECT_EQ(saved, "Living Room");
+    r = call(http::Method::Put, "/api/v1/admin/hub", R"({"name":"Living Room"})");  // unchanged
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["hostname"], "living-room");
+    EXPECT_EQ(applied.size(), 1u);  // nothing re-applied
+    r = call(http::Method::Get, "/api/v1/status");
+    EXPECT_EQ(r.json["hubbo"]["name"], "Living Room");
+    EXPECT_EQ(r.json["network"]["hostname"], "living-room");  // live
+
+    // Invalid: 422 at /name, nothing changes.
+    for (const char *body : {R"({"name":"   "})", R"({"name":"a\u0007b"})",
+                             R"({"name":"123456789012345678901234567890123"})"}) {
+        r = call(http::Method::Put, "/api/v1/admin/hub", body);
+        EXPECT_EQ(r.status, 422) << body;
+        EXPECT_EQ(r.code(), "validation_failed") << body;
+        EXPECT_EQ(r.json["error"]["details"][0]["path"], "/name") << body;
+    }
+    for (const char *body : {R"({"name":7})", R"({"name":"Den","color":"red"})", R"({})"}) {
+        EXPECT_EQ(call(http::Method::Put, "/api/v1/admin/hub", body).status, 422) << body;
+    }
+    EXPECT_EQ(call(http::Method::Put, "/api/v1/admin/hub", "{").status, 400);
+    hubState.failWrites = true;
+    EXPECT_EQ(call(http::Method::Put, "/api/v1/admin/hub", R"({"name":"Den"})").status, 503);
+    hubState.failWrites = false;
+    EXPECT_EQ(hubSettings.identity().name, "Living Room");
+    EXPECT_EQ(applied.size(), 1u);
+
+    // Restart: refused during a firmware update and when the platform can't.
+    ASSERT_EQ(call(http::Method::Post, "/api/v1/admin/firmware/update", hubbo::test::image(),
+                   {{"content-type", "application/octet-stream"},
+                    {"content-length", std::to_string(hubbo::test::image().size())}})
+                  .status,
+              202);
+    r = call(http::Method::Post, "/api/v1/admin/restart");
+    EXPECT_EQ(r.status, 409);
+    EXPECT_EQ(r.code(), "update_in_progress");
+    firmware.advance(api::SimulatedFirmwareUpdate::kWriteMs + api::SimulatedFirmwareUpdate::kRebootMs);
+    restart.ready = false;
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/restart").status, 503);
+    restart.ready = true;
+    r = call(http::Method::Post, "/api/v1/admin/restart");
+    ASSERT_EQ(r.status, 202) << dump(r);
+    EXPECT_EQ(r.body, "{}");
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/restart").status, 202);  // again while pending
+    restart.advance(api::SimulatedRestart::kRestartMs);
+    EXPECT_EQ(restart.restarts(), 1);
+}
+
+// Without HubSettings the name routes answer 503 and /status still names
+// the hub (hubbo.name is required): the default.
+TEST_F(ApiTest, StatusNamesAHubWithoutSettings) {
+    api::Api bare{api::ApiContext{creds, sessions, clock, hub.configService(), runtime, {}, nullptr, nullptr,
+                                  nullptr, nullptr, nullptr}};
+    http::Router bareRouter;
+    bare.registerRoutes(bareRouter);
+    std::swap(router, bareRouter);
+    Reply r = call(http::Method::Get, "/api/v1/status");
+    std::swap(router, bareRouter);
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["hubbo"]["name"], "Hubbo");
+    EXPECT_TRUE(r.json["network"]["hostname"].isNull());
 }
 
 TEST_F(ApiTest, FactoryReset) {

@@ -69,7 +69,9 @@ void addStatusRoutes(RouteSink &sink, ApiContext &ctx) {
         const RuntimeSnapshot snap = ctx.runtime.snapshot();
         JsonDocument doc;
         JsonObject root = doc.to<JsonObject>();
+        const config::HubIdentity identity = ctx.hub != nullptr ? ctx.hub->identity() : config::HubIdentity();
         JsonObject hubbo = doc["hubbo"].to<JsonObject>();
+        hubbo["name"] = identity.name;  // the default without HubSettings
         hubbo["version"] = ctx.info.version;
         if (!ctx.info.build.empty()) hubbo["build"] = ctx.info.build;
         hubbo["board"] = ctx.info.board;
@@ -82,7 +84,7 @@ void addStatusRoutes(RouteSink &sink, ApiContext &ctx) {
         JsonObject network = doc["network"].to<JsonObject>();
         network["link"] = snap.linkUp ? "up" : "down";
         if (!snap.ip.empty()) network["ip"] = snap.ip;
-        if (!ctx.info.hostname.empty()) network["hostname"] = ctx.info.hostname;
+        if (ctx.hub != nullptr) network["hostname"] = identity.hostname;  // live: mDNS follows a rename
         putRemote(doc["remote"].to<JsonObject>(), snap.remote);
 
         JsonArray integrations = doc["integrations"].to<JsonArray>();

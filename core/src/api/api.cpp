@@ -22,6 +22,7 @@ void Api::registerRoutes(http::Router &router) {
     addRemoteRoutes(sink, ctx_);
     addBleRoutes(sink, ctx_);
     addFirmwareRoutes(sink, ctx_);
+    addHubRoutes(sink, ctx_);
 }
 
 }  // namespace hubbo::api

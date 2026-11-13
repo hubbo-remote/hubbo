@@ -128,5 +128,6 @@ void addActivityRoutes(RouteSink &sink, ApiContext &ctx);  // activities, global
 void addStatusRoutes(RouteSink &sink, ApiContext &ctx);    // status, remote status/buttons
 void addBackupRoutes(RouteSink &sink, ApiContext &ctx);    // backup download, restore
 void addFirmwareRoutes(RouteSink &sink, ApiContext &ctx);  // firmware status and update, factory reset
+void addHubRoutes(RouteSink &sink, ApiContext &ctx);       // the hub's name, restart
 
 }  // namespace hubbo::api
