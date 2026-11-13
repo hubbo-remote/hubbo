@@ -203,7 +203,7 @@ of remote lag during the write are accepted.
   `limits::kHidKeyboardUsageMax` (0x65) and `kHidConsumerUsageMax` (0x3FF), used in the map's
   bytes, and the sends refuse anything above them. Core's action shape ("a page plus a usage") maps page 0x07 to a key slot and
   page 0x0C to `sendConsumer`; nothing else in firmware needed.
-- Built-in profiles: `scripts/builtin_profiles.py` (pre) runs core's `core/tools/embed_profiles.py`
+- Built-in profiles: `scripts/core_embeds.py` (pre; was builtin_profiles.py, now also the agent docs) runs core's `core/tools/embed_profiles.py`
   on `../profiles` into `$BUILD_DIR/profiles_gen/builtin_profiles.cpp` (replaced only on a
   change) and compiles it; core's `builtinProfiles()` reads `kBuiltinProfileFiles`. The script
   adds `core/include` to CPPPATH (the generated source is built before the library finder adds it).
@@ -266,6 +266,40 @@ of remote lag during the write are accepted.
   POST /admin/restart answers before the reboot, loop max gap during a rename (HCI stop/start on
   the loop, as `updateAdvertising` already does).
 
+## Agent docs (branch `agent-docs`, built, not on the board yet)
+
+- `scripts/core_embeds.py` runs core's embed_profiles.py and embed_docs.py (spec, guide, llms.txt; PyYAML)
+  into `$BUILD_DIR/{profiles,docs}_gen` and builds them; unchanged output doesn't recompile.
+- http_server: `registerUri()` for every handler; the API is `/api/?*` (httpd's wildcard: also bare
+  `/api`, not `/apix`); GET `/llms.txt` → the router, registered before the web admin's `/*`. Status lines come from core's `http::statusLine()` (firmware's copy gone).
+- Docs in rodata about 170 KB (OpenAPI 117 KB raw / 25 KB gz, guide 20 KB / 7.6 KB). Each 200
+  copies the doc into a PSRAM std::string (skipped: a flash string_view body in core).
+- Gate (fw) passed: serial RAM 88,192 B, .bin 2,236,240 B; OTA RAM 96,416 B, .bin 2,264,112 B (34.5% of the
+  slot). Board test: plain and gzip GETs incl. the 117 KB body, heap, httpd stack, loop gap.
+
+## httpd stack overflow (agent-docs branch; board test passed)
+
+- Crash adding an HA media_player (Sonos): reset reason panic. The core dump (decoded with
+  `.pio/coredump/py`'s esp_coredump plus `tool-xtensa-esp-elf-gdb`; keep dumps and decodes in the
+  session scratchpad) showed httpd's end-of-stack watchpoint (DebugException) at 8,144 of 8,192
+  bytes in use. The path: POST /admin/devices → createDevice → commit → parseConfig →
+  decodeDevice → ha::decodeSnapshot. It isn't recursion, just big frames: the route lambda about
+  1.5 KB, createDevice, the decode lambdas and decodeSnapshot. Core and api are moving those
+  locals off the stack.
+- Fix: `HttpServer::kStackBytes` is 16 KB (internal RAM, since httpd writes flash: about 8 KB more
+  internal heap in use). After every request, `noteStackLow()` logs
+  `http: stack low N of 16384 bytes free` to /debug/log at each new low (uxTaskGetStackHighWaterMark,
+  posted jobs included). Read it after the Sonos add to confirm the margin.
+- Hub-name bug fixed: `mdns_instance_name_set` returns INVALID_ARG until a hostname is set, so
+  registerMdns now sets the hostname first. Until now the board advertised with no instance name
+  until the first rename.
+- Board: the Sonos added fine. The stack low was 10,368 B free during the add (10,288 after the
+  edits that followed), so the add used about 6 KB. Heap min free 35,712 B. The mDNS boot line is clean.
+- Loop: max gap 11.4 ms, 1 iteration over 5 ms, in the window of config saves 42-44 (the device add
+  and activity edits): the known flash-erase stall (both cores, up to 10 ms per erase; accepted).
+  Outside it, 2.6 ms.
+- Gate (fw) passed: serial RAM 88,208 B, flash 2,175,635 B; OTA RAM 96,432 B, flash 2,203,099 B.
+
 ## Task layout (priorities)
 
 | task | core | prio | notes |
@@ -273,7 +307,7 @@ of remote lag during the write are accepted.
 | loopTask (RF + engine) | 1 | 16 | busy loop; above every unpinned task |
 | tiT (lwIP) | 0 | 18 | |
 | w5500_tsk | any | 15 | ends up on core 0 because the loop outranks it |
-| httpd | 0 | 5 | API plus dev endpoints; single-threaded |
+| httpd | 0 | 5 | API plus dev endpoints; single-threaded; 16 KB internal stack |
 | ha | 0 | 4 | **below httpd**: a TLS handshake is seconds of CPU |
 | IDLE0 | 0 | 0 | watched by the 5 s task watchdog. Never weaken it. |
 
@@ -342,7 +376,8 @@ of remote lag during the write are accepted.
   first.
 - W5500 RX at priority 1 used to take core 1 for 10–17 ms. Keep the loop at 16, above every
   unpinned task.
-- `max_uri_handlers = 12`: the API uses 4 (one per method), the dev console 6 and the web admin 1.
+- `max_uri_handlers = 13`: the API uses 4 (one per method), `/llms.txt` 1, the dev console 6 and
+  the web admin 1.
   Raise it before adding more. The web admin's `/*` must be registered last.
 
 ## Open items
