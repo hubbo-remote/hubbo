@@ -449,9 +449,11 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Bindings that apply whatever activity is active
-         * @description Used when the active activity (or no activity) does not bind the
-         *     trigger. This is where activity buttons live, e.g.
+         * Bindings for buttons the active activity doesn't bind
+         * @description Applied per button, not per trigger: if the active activity binds any
+         *     trigger of a button (down, up, tap or hold), none of that button's
+         *     global bindings apply. With no activity, all of them apply. This is
+         *     where activity buttons live, e.g.
          *     `"tv:tap": [system/activate {activity_id}]` and `"off:tap": [system/off]`.
          */
         get: operations["getGlobalBindings"];
@@ -1048,6 +1050,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/hub": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The hub's name and hostname
+         * @description API tokens read the name from `/status` `hubbo.name` instead.
+         */
+        get: operations["getHub"];
+        /**
+         * Rename the hub
+         * @description Spaces at either end are dropped. What's left must be 1 to 32
+         *     characters with no control characters; otherwise `422
+         *     validation_failed` at `/name` (`required`, `too_long` or
+         *     `invalid_name`). `hostname` follows the name and can't be set: see
+         *     `Hub`.
+         */
+        put: operations["updateHub"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restart the hub
+         * @description Answers `202` first; the hub then stops answering for a few seconds
+         *     and comes back with everything it had saved. Sessions don't survive
+         *     a restart: log in again. API tokens keep working. Refused while a
+         *     firmware update is running.
+         */
+        post: operations["restartHub"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1166,6 +1219,7 @@ export interface components {
         IntegrationState: "not_configured" | "disabled" | "connecting" | "authenticating" | "connected" | "auth_failed" | "unreachable" | "disconnected" | "error";
         Status: {
             hubbo: {
+                name: components["schemas"]["HubName"];
                 version: string;
                 build?: string;
                 board: string;
@@ -1181,6 +1235,7 @@ export interface components {
                 link: "up" | "down";
                 /** Format: ipv4 */
                 ip?: string;
+                /** @description The hub's hostname, as `GET /admin/hub` shows it. */
                 hostname?: string;
             };
             remote: components["schemas"]["RemoteStatus"];
@@ -2008,6 +2063,33 @@ export interface components {
             /** @description Follow-up the admin must do. */
             requires: ("home_assistant_token" | "ble_pairing" | "api_tokens")[];
             warnings?: components["schemas"]["ErrorDetail"][];
+        };
+        Empty: Record<string, never>;
+        /**
+         * @description What the hub is called: 1 to 32 characters, no control characters,
+         *     no space at either end.
+         * @example Hubbo
+         * @example Living Room
+         */
+        HubName: string;
+        Hub: {
+            name: components["schemas"]["HubName"];
+            /**
+             * @description Read-only, derived from the name: lowercased, each run of
+             *     characters other than `a-z` and `0-9` becomes one `-`, with none at
+             *     either end; `hubbo` when nothing is left. "Living Room" is
+             *     `living-room`.
+             * @example hubbo
+             * @example living-room
+             */
+            readonly hostname: string;
+        };
+        HubUpdate: {
+            /**
+             * @description The new name; spaces at either end are dropped (see `HubName`).
+             * @example Living Room
+             */
+            name: string;
         };
         FirmwareStatus: {
             /** @description The running firmware's version (`git describe`). */
@@ -3696,6 +3778,94 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    getHub: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The hub */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Hub"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    updateHub: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HubUpdate"];
+            };
+        };
+        responses: {
+            /** @description Renamed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Hub"];
+                };
+            };
+            400: components["responses"]["MalformedJson"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["ValidationFailed"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    restartHub: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The restart will start once this response is sent */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Empty"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            /** @description A firmware update is running (`update_in_progress`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["Unavailable"];
         };
     };
 }

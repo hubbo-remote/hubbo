@@ -5,6 +5,7 @@ import { api, errorMessage } from '@/api/client'
 import { invalidate, invalidateAll, useQuery } from '@/api/hooks'
 import type { TokenCreated } from '@/api/types'
 import { FactoryReset } from '@/components/admin/FactoryReset'
+import { HubSettings } from '@/components/admin/HubSettings'
 import { NetworkInfo } from '@/components/admin/NetworkInfo'
 import { PairRemote } from '@/components/admin/PairRemote'
 import { RemoteEndpoint } from '@/components/admin/RemoteEndpoint'
@@ -22,6 +23,7 @@ import { timeAgo, typedMatches } from '@/lib/utils'
 import { NotFound } from './NotFound'
 
 const TABS = [
+  { id: 'hub', label: 'Hub' },
   { id: 'account', label: 'Account' },
   { id: 'tokens', label: 'API tokens' },
   { id: 'remote', label: 'Remote' },
@@ -29,13 +31,14 @@ const TABS = [
   { id: 'reset', label: 'Reset' },
 ]
 
-export default function Settings({ tab = 'account' }: { tab?: string }) {
+export default function Settings({ tab = 'hub' }: { tab?: string }) {
   const [, navigate] = useLocation()
   if (!TABS.some((t) => t.id === tab)) return <NotFound />
   return (
     <>
       <PageHeader title="Settings" />
       <Tabs tabs={TABS} value={tab} onChange={(t) => navigate(`/settings/${t}`, { replace: true })}>
+        {tab === 'hub' && <HubSettings />}
         {tab === 'account' && <Account />}
         {tab === 'tokens' && <Tokens />}
         {tab === 'remote' && <RemoteTab />}

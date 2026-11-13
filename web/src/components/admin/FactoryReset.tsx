@@ -5,16 +5,16 @@ import { Section, TypedWordField } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { sleep, typedMatches } from '@/lib/utils'
+import { followRestart, NOT_BACK } from '@/lib/restart'
+import { typedMatches } from '@/lib/utils'
 
 /** The word typed to confirm a factory reset (not "reset": that's the configuration reset). */
 const ERASE_WORD = 'erase'
-const POLL_MS = 1000
 
 /**
  * Erases everything (POST /admin/factory-reset), then waits for the hub to come back fresh and
- * reloads into the setup wizard. Polls the public session, not /status: every session is gone, and
- * a 401 elsewhere already sends the app to its session check (which lands on setup too).
+ * reloads into the setup wizard (a 401 elsewhere already sends the app to its session check, which
+ * lands on setup too).
  */
 export function FactoryReset() {
   const [confirm, setConfirm] = useState(false)
@@ -22,21 +22,8 @@ export function FactoryReset() {
   const [state, setState] = useState<'idle' | 'sending' | 'erasing'>('idle')
   const [error, setError] = useState<unknown>(null)
   // Erasing: wait for the hub to come back fresh, then reload into setup. Stops on unmount.
-  useEffect(() => {
-    if (state !== 'erasing') return
-    let live = true
-    void (async () => {
-      while (live) {
-        await sleep(POLL_MS)
-        const s = await api.session().catch(() => null) // not answering yet: still restarting
-        if (live && s?.auth_state === 'fresh') {
-          window.location.hash = '#/'
-          return window.location.reload()
-        }
-      }
-    })()
-    return () => void (live = false)
-  }, [state])
+  const [slow, setSlow] = useState(false)
+  useEffect(() => (state === 'erasing' ? followRestart((s) => s.auth_state === 'fresh', () => setSlow(true)) : undefined), [state])
 
   const close = () => {
     if (state !== 'idle') return
@@ -85,7 +72,7 @@ export function FactoryReset() {
       >
         {state === 'erasing' ? (
           <p className="inline-flex items-center gap-2 text-sm" role="status">
-            <Loader2 className="size-4 animate-spin text-primary" /> Erasing… Setup opens when Hubbo restarts.
+            <Loader2 className="size-4 animate-spin text-primary" /> {slow ? NOT_BACK : 'Erasing… Setup opens when Hubbo restarts.'}
           </p>
         ) : (
           <div className="grid gap-4">

@@ -127,6 +127,25 @@ describe('mock matches hub-sim', () => {
   })
 })
 
+describe('hub name, like core', () => {
+  const put = (m: ReturnType<typeof createMock>, body: unknown) => m.handle(req('PUT', '/admin/hub', body))
+  it('trims spaces, then checks control characters before length', async () => {
+    const m = createMock()
+    expect((await put(m, { name: '  Den  ' })).body).toMatchObject({ name: 'Den', hostname: 'den' })
+    expect((await put(m, { name: ` ${'x'.repeat(32)} ` })).status).toBe(200)
+    expect(errorOf(await put(m, { name: '   ' })).details?.[0]?.code).toBe('required')
+    expect(errorOf(await put(m, { name: 'x'.repeat(33) })).details?.[0]?.code).toBe('too_long')
+    expect(errorOf(await put(m, { name: `\t${'x'.repeat(40)}` })).details?.[0]?.code).toBe('invalid_name') // both wrong: control first
+    expect(errorOf(await put(m, { name: 'Den', hostname: 'den' })).details?.[0]?.code).toBe('unknown_field')
+  })
+
+  it('derives the hostname lowercasing ASCII only', async () => {
+    const m = createMock()
+    expect((await put(m, { name: 'Living Room' })).body).toMatchObject({ hostname: 'living-room' })
+    expect((await put(m, { name: '\u212A' })).body).toMatchObject({ hostname: 'hubbo' }) // Kelvin sign: not a 'k'
+  })
+})
+
 describe('mock behaviour', () => {
   it('requires login when configured', async () => {
     const m = createMock({ requireAuth: true })

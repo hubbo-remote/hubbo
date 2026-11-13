@@ -2,6 +2,7 @@ import { Check, ChevronRight, Loader2 } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
 import { useLocation } from 'wouter'
 import { api, errorMessage } from '@/api/client'
+import { useQuery } from '@/api/hooks'
 import { HomeAssistantSettings } from '@/components/admin/HomeAssistantForm'
 import { NetworkInfo } from '@/components/admin/NetworkInfo'
 import { PairRemote } from '@/components/admin/PairRemote'
@@ -13,12 +14,15 @@ import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Field, Input, ShowErrors } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
+import { toastError } from '@/components/ui/toast'
 import { useIntegrations, useSession, useStatus } from '@/hooks/data'
 import { healthLabel } from '@/lib/health'
+import { HUB_NAME_MAX, hubNameProblem, saveHubName, trimHubName } from '@/lib/hub'
 import { cn } from '@/lib/utils'
 
 const STEPS = [
   { id: 'admin', title: 'Account', blurb: null },
+  { id: 'hub', title: 'Name', blurb: 'What to call this hub.' },
   { id: 'network', title: 'Network', blurb: null },
   { id: 'remote', title: 'Remote', blurb: null },
   { id: 'ha', title: 'Home Assistant', blurb: 'Optional.' },
@@ -64,13 +68,33 @@ export default function Setup({ onDone, start }: { onDone: () => void; start?: s
   // the dashboard. Network is in the URL because resuming from hub state never picks it; after it,
   // `#/setup` resumes from the hub.
   const adminCreated = () => {
-    navigate('/setup/network')
-    setStep(stepIndex('network'))
+    navigate('/setup/hub')
+    setStep(stepIndex('hub'))
   }
-  const next = () => {
+  const advance = () => {
+    if (current === stepIndex('hub')) navigate('/setup/network')
     if (current === stepIndex('network')) navigate('/setup')
     if (current !== null && current < STEPS.length - 1) setStep(current + 1)
     else finish()
+  }
+  // The name step saves on Continue, only a changed name; a refused one doesn't hold up setup.
+  const onName = current === stepIndex('hub')
+  const hub = useQuery(current !== null && current > 0 ? 'hub' : null, () => api.hub()) // needs the admin's session
+  const [hubName, setHubName] = useState<string | null>(null)
+  const name = hubName ?? hub.data?.name ?? (hub.error ? 'Hubbo' : undefined) // can't read it: the default, saved only if changed
+  const [nameTried, setNameTried] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const next = async () => {
+    if (onName) {
+      setNameTried(true)
+      if (name === undefined || hubNameProblem(name)) return
+      if (trimHubName(name) !== hub.data?.name) {
+        setBusy(true)
+        await saveHubName(name).catch((e: unknown) => toastError('The name wasn’t saved. Change it in Settings → Hub.', e))
+        setBusy(false)
+      }
+    }
+    advance()
   }
 
   return (
@@ -113,6 +137,7 @@ export default function Setup({ onDone, start }: { onDone: () => void; start?: s
               {
                 {
                   admin: <AdminStep onCreated={adminCreated} />,
+                  hub: <HubStep name={name} onChange={setHubName} error={nameTried && name !== undefined ? hubNameProblem(name) : null} />,
                   network: <NetworkStep />,
                   remote: <RemoteStep />,
                   ha: <HaStep />,
@@ -130,13 +155,13 @@ export default function Setup({ onDone, start }: { onDone: () => void; start?: s
             </Button>
             <div className="flex gap-2">
               {current < STEPS.length - 1 && (
-                <Button variant="ghost" onClick={next}>
+                <Button variant="ghost" onClick={advance} disabled={busy}>
                   Skip
                 </Button>
               )}
-              <Button onClick={next}>
+              <Button onClick={() => void next()} disabled={busy || (onName && name === undefined)}>
                 {current === STEPS.length - 1 ? 'Finish' : 'Continue'}
-                <ChevronRight />
+                {busy ? <Loader2 className="animate-spin" /> : <ChevronRight />}
               </Button>
             </div>
           </div>
@@ -196,6 +221,20 @@ function AdminStep({ onCreated }: { onCreated: () => void }) {
   )
 }
 
+/** The hub's name (Setup saves it on Continue); a placeholder until the hub's own name has loaded. */
+function HubStep({ name, onChange, error }: { name: string | undefined; onChange: (name: string) => void; error: string | null }) {
+  if (name === undefined) return <Skeleton className="h-16 max-w-sm" />
+  return (
+    <ShowErrors.Provider value={!!error}>
+      <div className="grid max-w-sm gap-4">
+        <Field label="Hub name" htmlFor="hub-name" error={error}>
+          <Input id="hub-name" value={name} maxLength={HUB_NAME_MAX * 2} onChange={(e) => onChange(e.target.value)} aria-invalid={!!error} autoFocus />
+        </Field>
+      </div>
+    </ShowErrors.Provider>
+  )
+}
+
 function NetworkStep() {
   return <NetworkInfo bare />
 }
@@ -228,6 +267,7 @@ function DoneStep() {
   if (!status) return <Skeleton className="h-24" />
   const rows: [string, string][] = [
     ['Account', 'Created'],
+    ['Name', status.hubbo.name],
     ['Remote', status.remote.paired ? 'Paired' : 'Not paired'],
     ['Home Assistant', ha ? healthLabel(ha.state) : 'Not available'],
   ]

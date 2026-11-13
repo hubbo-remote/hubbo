@@ -45,6 +45,7 @@ export type Command = S['Command']
 export type ParamSpec = S['ParamSpec']
 export type Capabilities = S['DeviceCapabilities']
 export type ExecuteResult = S['ExecuteResult']
+export type Hub = S['Hub']
 
 export type IntegrationType = S['IntegrationType']
 export type IntegrationState = S['IntegrationState']
