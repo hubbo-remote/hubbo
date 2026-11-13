@@ -109,7 +109,7 @@
         }
       }
     ],
-    "play:tap": [
+    "play:down": [
       {
         "integration_id": "ha_main",
         "device_id": "dev_xbox",
@@ -117,7 +117,7 @@
         "params": {}
       }
     ],
-    "pause:tap": [
+    "pause:down": [
       {
         "integration_id": "ha_main",
         "device_id": "dev_xbox",
@@ -125,7 +125,7 @@
         "params": {}
       }
     ],
-    "skip_forward:tap": [
+    "skip_forward:down": [
       {
         "integration_id": "ha_main",
         "device_id": "dev_xbox",
@@ -133,7 +133,7 @@
         "params": {}
       }
     ],
-    "skip_backward:tap": [
+    "skip_backward:down": [
       {
         "integration_id": "ha_main",
         "device_id": "dev_xbox",
@@ -141,7 +141,7 @@
         "params": {}
       }
     ],
-    "light_1:tap": [
+    "light_1:down": [
       {
         "integration_id": "ha_main",
         "device_id": "dev_family_room_lights",
@@ -151,7 +151,7 @@
         }
       }
     ],
-    "light_2:tap": [
+    "light_2:down": [
       {
         "integration_id": "ha_main",
         "device_id": "dev_family_room_lights",
@@ -159,7 +159,7 @@
         "params": {}
       }
     ],
-    "red:tap": [
+    "red:down": [
       {
         "integration_id": "ha_main",
         "device_id": "dev_denon",

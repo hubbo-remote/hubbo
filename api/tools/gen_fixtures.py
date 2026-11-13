@@ -334,31 +334,33 @@ def wait(ms):
     return a(None, "wait", duration_ms=ms)
 
 
-def press_bindings(button, command):
-    return {f"{button}:down": [a("dev_apple_tv", "press_down", command=command)],
-            f"{button}:up": [a("dev_apple_tv", "press_up", command=command)]}
+# Buttons as the web admin writes them (docs/agent-api.md "Buttons"): a Press passes through
+# (Bluetooth as a down/up pair, an HA command on down); with a Long press, Press is the tap;
+# Hubbo's own (activate, off) on tap.
+def passthrough(button, family, device="dev_apple_tv", **params):
+    return {f"{button}:down": [a(device, f"{family}_down", **params)],
+            f"{button}:up": [a(device, f"{family}_up", **params)]}
 
 
 watch_bindings = {}
 for b, k in [("up", "DirectionUp"), ("down", "DirectionDown"), ("left", "DirectionLeft"),
-             ("right", "DirectionRight"), ("select", "Select"), ("menu", "Home"),
-             ("back", "Back"), ("exit", "Back"), ("skip_forward", "NextTrack"),
-             ("skip_backward", "PreviousTrack")]:
-    watch_bindings.update(press_bindings(b, k))
+             ("right", "DirectionRight"), ("select", "Select"), ("back", "Back"), ("exit", "Back"),
+             ("skip_forward", "NextTrack"), ("skip_backward", "PreviousTrack"), ("play", "PlayPause"),
+             ("pause", "PlayPause")]:
+    watch_bindings.update(passthrough(b, "press", command=k))
+watch_bindings.update(passthrough("record", "usage", usage=0xB2))
+watch_bindings.update(passthrough("blue", "key", key="F1"))
 watch_bindings.update({
-    "play:tap": [a("dev_apple_tv", "press", command="PlayPause")],
-    "pause:tap": [a("dev_apple_tv", "press", command="PlayPause")],
+    "menu:tap": [a("dev_apple_tv", "press", command="Home")],
     "menu:hold": [a("dev_apple_tv", "press", command="ControlCenter")],
     "info:hold": [a("dev_apple_tv", "key_tap", key="KEY_I")],
-    "record:tap": [a("dev_apple_tv", "usage_tap", usage=0xB2)],
     "volume_up:down": [a("dev_sonos", "media_player.volume_up")],
     "volume_down:down": [a("dev_sonos", "media_player.volume_down")],
-    "mute:tap": [a("dev_sonos", "media_player.volume_mute", muted=True)],
-    "plus:tap": [a("dev_family_room_lights", "light.brightness_step", step=32)],
-    "minus:tap": [a("dev_family_room_lights", "light.brightness_step", step=-32)],
-    "light_1:tap": [a("dev_family_room_lights", "light.turn_on", brightness=255, transition=1)],
-    "light_2:tap": [a("dev_family_room_lights", "light.turn_off", transition=1)],
-    "blue:tap": [a("dev_apple_tv", "key_tap", key="F1")],
+    "mute:down": [a("dev_sonos", "media_player.volume_mute", muted=True)],
+    "plus:down": [a("dev_family_room_lights", "light.brightness_step", step=32)],
+    "minus:down": [a("dev_family_room_lights", "light.brightness_step", step=-32)],
+    "light_1:down": [a("dev_family_room_lights", "light.turn_on", brightness=255, transition=1)],
+    "light_2:down": [a("dev_family_room_lights", "light.turn_off", transition=1)],
 })
 
 WATCH = {
@@ -402,13 +404,13 @@ PLAY_XBOX = {
         "volume_down:down": [a("dev_denon", "media_player.volume_down")],
         "mute:tap": [a("dev_denon", "media_player.volume_mute", muted=True)],
         "mute:hold": [a("dev_denon", "media_player.volume_mute", muted=False)],
-        "play:tap": [a("dev_xbox", "media_player.media_play_pause")],
-        "pause:tap": [a("dev_xbox", "media_player.media_play_pause")],
-        "skip_forward:tap": [a("dev_xbox", "media_player.media_next_track")],
-        "skip_backward:tap": [a("dev_xbox", "media_player.media_previous_track")],
-        "light_1:tap": [a("dev_family_room_lights", "light.turn_on", brightness=255)],
-        "light_2:tap": [a("dev_family_room_lights", "light.turn_off")],
-        "red:tap": [a("dev_denon", "media_player.volume_set", level=0.35)],
+        "play:down": [a("dev_xbox", "media_player.media_play_pause")],
+        "pause:down": [a("dev_xbox", "media_player.media_play_pause")],
+        "skip_forward:down": [a("dev_xbox", "media_player.media_next_track")],
+        "skip_backward:down": [a("dev_xbox", "media_player.media_previous_track")],
+        "light_1:down": [a("dev_family_room_lights", "light.turn_on", brightness=255)],
+        "light_2:down": [a("dev_family_room_lights", "light.turn_off")],
+        "red:down": [a("dev_denon", "media_player.volume_set", level=0.35)],
     },
     "schema_version": 1, "revision": 2,
 }
@@ -497,6 +499,8 @@ def err(code, message, details=None, **extra):
 TOKEN_SECRET = "hbt_k3x9q2mf_" + "Zq7Lr2Vb9Xc4Nt6Hs8Jd1Kf3Gm5Pw0Ya7Ue2Ri4To9A"
 assert len(TOKEN_SECRET.split("_", 2)[2]) == 43
 
+GUIDE = "/api/v1/agent.md"  # the agent guide, linked from the index and error hints
+
 # (file, operation, kind, content). kind: HTTP status as string, or "request".
 FIXTURES = []
 
@@ -505,6 +509,13 @@ def fx(name, op, kind, content):
     FIXTURES.append((name, op, kind, content))
 
 
+fx("discovery/index.json", "getApiIndex", "200", {
+    "name": "Hubbo API", "version": STATUS["hubbo"]["version"],
+    "about": "Read docs (the agent guide) first: it covers everyday tasks. openapi is the full reference "
+             "(large): use it to look up an exact schema or error.",
+    "docs": GUIDE,
+    "openapi": "/api/v1/openapi.json",
+    "auth": "Authorization: Bearer <token>. An admin creates tokens in Settings → API tokens."})
 fx("status.json", "getStatus", "200", STATUS)
 fx("status.blocked.json", "getStatus", "200",
    dict(copy.deepcopy(STATUS), active_activity_id=None,
@@ -569,7 +580,7 @@ create = input_of(PLAY_XBOX)
 create["name"] = "Play Xbox (copy)"
 fx("activities/create.request.json", "createActivity", "request", create)
 replace = copy.deepcopy(WATCH)
-replace["bindings"]["green:tap"] = [a("dev_apple_tv", "key_tap", key="F3")]
+replace["bindings"].update(passthrough("green", "key", key="F3"))
 fx("activities/replace.request.json", "replaceActivity", "request", replace)
 fx("activities/global_bindings.json", "getGlobalBindings", "200", GLOBAL_BINDINGS)
 fx("activities/validate.valid.json", "validateActivity", "200", {"valid": True, "errors": []})
@@ -577,7 +588,7 @@ fx("activities/validate.invalid.json", "validateActivity", "200", {"valid": Fals
     {"path": "/bindings/volume_up:down/0/params/level", "code": "param_out_of_range",
      "message": "level must be between 0 and 1"},
     {"path": "/startup/2/device_id", "code": "unknown_device", "message": "dev_projector is not registered"},
-    {"path": "/bindings/play:tap/0/integration_id", "code": "integration_mismatch",
+    {"path": "/bindings/play:down/0/integration_id", "code": "integration_mismatch",
      "message": "dev_apple_tv belongs to integration ble, not ha_main"},
 ]})
 NO_PHASE = {"status": "none", "queued_actions": 0}
@@ -782,7 +793,7 @@ fx("errors/restart_during_update.json", "restartHub", "409",
 
 # Errors
 fx("errors/unauthenticated.json", "listDevices", "401",
-   err("unauthenticated", "Log in or send an API token"))
+   err("unauthenticated", "Log in or send an API token", docs=GUIDE))
 fx("errors/invalid_credentials.json", "login", "401",
    err("invalid_credentials", "Wrong username or password"))
 fx("errors/forbidden_token_admin.json", "registerDevice", "403",
@@ -802,7 +813,7 @@ fx("errors/validation_nested_target.json", "createActivity", "422", err(
     "validation_failed", "Activity is invalid", [
         ("/startup/0/params/entity_id", "forbidden_param", "entity_id is never accepted; target the registered device"),
         ("/bindings/volume_up:down/0/params/level", "invalid_param_type", "level must be a number"),
-        ("/bindings/light_1:tap/0/params/target", "forbidden_param", "target is never accepted"),
+        ("/bindings/light_1:down/0/params/target", "forbidden_param", "target is never accepted"),
     ]))
 fx("errors/validation_execute.json", "executeCommand", "422", err(
     "validation_failed", "Invalid params for media_player.select_source", [
@@ -819,7 +830,7 @@ MALICIOUS = {
     "nested_entity_id.json": dict(input_of(WATCH), startup=[
         {"integration_id": "ha_main", "device_id": "dev_lg_tv", "command_id": "media_player.turn_on",
          "params": {"entity_id": "all"}}]),
-    "nested_target_object.json": dict(input_of(WATCH), bindings={"light_1:tap": [
+    "nested_target_object.json": dict(input_of(WATCH), bindings={"light_1:down": [
         {"integration_id": "ha_main", "device_id": "dev_family_room_lights", "command_id": "light.turn_on",
          "params": {"brightness": {"target": {"area_id": "house"}}}}]}),
     "raw_service_call.json": dict(input_of(WATCH), startup=[

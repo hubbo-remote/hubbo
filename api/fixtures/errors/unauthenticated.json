@@ -1,6 +1,7 @@
 {
   "error": {
     "code": "unauthenticated",
-    "message": "Log in or send an API token"
+    "message": "Log in or send an API token",
+    "docs": "/api/v1/agent.md"
   }
 }

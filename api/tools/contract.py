@@ -26,6 +26,7 @@ Every `revision` in every response must be >= 1. Run via api/contract.sh.
 """
 import argparse
 import contextlib
+import gzip
 import http.client
 import http.cookies
 import json
@@ -45,6 +46,9 @@ PASSWORD = "correct horse battery"
 # every secret-named field the contract sends (remember_secrets), it may then
 # appear in no response (any operation, any status, the backup included).
 HA_TOKEN = "fake-ha-token"
+GUIDE_PATH = os.path.join(v.ROOT, "docs", "agent-api.md")  # served as GET /api/v1/agent.md
+LLMS_PATH = os.path.join(v.ROOT, "docs", "llms.txt")  # served as GET /llms.txt
+GUIDE = SPEC_LINK = None  # the guide's and the spec's paths, read from the spec in main()
 TRANSPORT_ERRORS = (405,)  # any request may get these (api/openapi.yaml conventions)
 ADMIN = "hubbo-owner"  # setup takes the user's own username (there's no default)
 
@@ -84,30 +88,38 @@ class Client:
         self.cookie = None
         self.token = None
 
-    def call(self, op_id, method, path, body=None, expect=None, headers=None, raw=None, label=None):
-        """One request. Validates the response against op_id's spec; checks the status if given."""
-        global checked
-        url = self.base + "/api/v1" + path
-        remember_secrets(body)
-        data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+    def _send(self, method, path, data=None, headers=None, json_body=False):
+        """One request with this client's credentials: (status, headers, raw bytes, error).
+        status is 0 (and error says why) when nothing answered."""
         h = {"Host": "127.0.0.1"}
-        if data is not None and raw is None:
+        if json_body:
             h["Content-Type"] = "application/json"
         if self.token:
             h["Authorization"] = "Bearer " + self.token
         elif self.cookie:
             h["Cookie"] = "hubbo_session=" + self.cookie
         h.update(headers or {})
-        req = urllib.request.Request(url, data=data, method=method, headers=h)
+        req = urllib.request.Request(self.base + path, data=data, method=method, headers=h)
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
-                status, text, resp_headers = r.status, r.read().decode(), r.headers
+                return r.status, r.headers, r.read(), None
         except urllib.error.HTTPError as e:
-            status, text, resp_headers = e.code, e.read().decode(), e.headers
-        except (urllib.error.URLError, OSError) as e:  # no answer at all: a failure, not a crash
+            return e.code, e.headers, e.read(), None
+        except (urllib.error.URLError, OSError) as e:
+            return 0, http.client.HTTPMessage(), b"", e
+
+    def call(self, op_id, method, path, body=None, expect=None, headers=None, raw=None, label=None):
+        """One request. Validates the response against op_id's spec; checks the status if given."""
+        global checked
+        remember_secrets(body)
+        data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+        status, resp_headers, raw_body, error = self._send(method, "/api/v1" + path, data, headers,
+                                                           json_body=data is not None and raw is None)
+        if error:  # no answer at all: a failure, not a crash
             checked += 1
-            failures.append(f"{label or op_id} {method} {path}: no response ({e})")
-            return 0, None, http.client.HTTPMessage()
+            failures.append(f"{label or op_id} {method} {path}: no response ({error})")
+            return 0, None, resp_headers
+        text = raw_body.decode()
         where = f"{label or op_id} {method} {path} -> {status}"
         checked += 1
         for secret in sent_secrets:
@@ -147,10 +159,12 @@ class Client:
             else:
                 for p in self.checker.errors(op_id, str(status), body_json)[:5]:
                     failures.append(f"{where}: {p}")
-        for path_, value in revisions(body_json):
+        describes_api = op.get("x-hubbo-describes-api", False)
+        for path_, value in [] if describes_api else revisions(body_json):
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 failures.append(f"{where}: {path_} = {value!r}; revisions start at 1")
-        if body_json is not None and status < 300 and op_id != "createToken":
+        scan_secrets = not (describes_api or op.get("x-hubbo-returns-secret", False))
+        if body_json is not None and status < 300 and scan_secrets:
             for path_ in v.find_secrets(body_json):
                 failures.append(f"{where}: secret field {path_} in response")
         cookie = resp_headers.get("Set-Cookie")
@@ -162,28 +176,36 @@ class Client:
         return status, body_json, resp_headers
 
     def host_call(self, method, path, body=None):
-        """A test-control route outside the spec (e.g. /sim/storage); returns (status, json)."""
-        h = {"Host": "127.0.0.1"}
-        if self.token:
-            h["Authorization"] = "Bearer " + self.token
-        elif self.cookie:
-            h["Cookie"] = "hubbo_session=" + self.cookie
-        data = None
-        if body is not None:
-            data = json.dumps(body).encode()
-            h["Content-Type"] = "application/json"
-        req = urllib.request.Request(self.base + path, data=data, method=method, headers=h)
+        """A route outside the spec (e.g. /sim/storage), by its full path; returns (status, json)."""
+        data = json.dumps(body).encode() if body is not None else None
+        status, _, raw, error = self._send(method, path, data, json_body=data is not None)
+        if error:
+            return 0, {"error": str(error)}
         try:
-            with urllib.request.urlopen(req, timeout=10) as r:
-                status, text = r.status, r.read().decode()
-        except urllib.error.HTTPError as e:
-            status, text = e.code, e.read().decode()
-        except (urllib.error.URLError, OSError) as e:
-            return 0, {"error": str(e)}
-        try:
-            return status, json.loads(text) if text else None
+            return status, json.loads(raw) if raw else None
         except ValueError:
             return status, None
+
+    def fetch(self, path, compressed=False):
+        """A GET by full path, undecoded: (status, headers, wire bytes, body bytes). `compressed`
+        asks for gzip and requires it; otherwise the answer must not be encoded."""
+        global checked
+        checked += 1
+        status, headers, raw, error = self._send("GET", path, headers={"Accept-Encoding": "gzip"} if compressed else None)
+        if error:
+            failures.append(f"GET {path}: no response ({error})")
+            return 0, headers, b"", b""
+        encoding = (headers.get("Content-Encoding") or "").lower()
+        if compressed:
+            expect(encoding == "gzip", f"GET {path} with Accept-Encoding gzip: Content-Encoding {encoding!r}")
+            expect("accept-encoding" in (headers.get("Vary") or "").lower(), f"GET {path}: no Vary: Accept-Encoding")
+        else:
+            expect(encoding in ("", "identity"), f"GET {path} without Accept-Encoding: Content-Encoding {encoding!r}")
+        try:
+            return status, headers, raw, gzip.decompress(raw) if encoding == "gzip" else raw
+        except OSError:
+            failures.append(f"GET {path}: not gzip")
+            return status, headers, raw, b""
 
     def control(self, path, body=None):
         """POST a test control: hub-sim's /sim/<path> (200) or the mock's /api/v1/__mock/<path>
@@ -728,6 +750,48 @@ def factory_reset_flow(c):
     expect(hub == DEFAULT_HUB, f"the hub's name survived a factory reset: {hub}")
 
 
+# ---------------------------------------------------------------- discovery
+
+def error_docs(body):
+    return (body or {}).get("error", {}).get("docs")
+
+
+def discovery_flow(c):
+    """With no credentials: the index, the served spec (equal to api/openapi.yaml)
+    and guide (equal to docs/agent-api.md), plain and gzipped, /llms.txt, and the
+    docs hint on an unknown path but not on a missing id."""
+    with c.acting_as():
+        _, index, _ = c.call("getApiIndex", "GET", "/", expect=200, label="API index")
+        index = index or {}
+        expect("hub" not in index, "the index names the hub")
+        _, spec, _ = c.call("getOpenApi", "GET", "/openapi.json", expect=200, label="served spec")
+        expect(spec == json.loads(json.dumps(c.checker.spec, default=str)),
+               "GET /openapi.json differs from api/openapi.yaml")
+        _, guide, _ = c.call("getAgentGuide", "GET", "/agent.md", expect=200, label="served guide")
+        with open(GUIDE_PATH, encoding="utf-8") as f:
+            expect(guide == f.read(), "GET /agent.md differs from docs/agent-api.md")
+        # The index's links (the spec fixes them) resolve, plain and gzipped alike.
+        for link in (GUIDE, SPEC_LINK):
+            status, _, _, identity = c.fetch(link)
+            zstatus, _, raw, body = c.fetch(link, compressed=True)
+            expect(status == zstatus == 200 and body == identity and len(raw) < len(identity),
+                   f"GET {link}: {status}, gzipped {zstatus}, {len(raw)} bytes for {len(identity)}")
+        status, headers, _, llms = c.fetch("/llms.txt")
+        expect(status == 200 and (headers.get("Content-Type") or "").startswith("text/"), f"/llms.txt: {status}")
+        with open(LLMS_PATH, "rb") as f:
+            expect(llms == f.read(), "GET /llms.txt differs from docs/llms.txt")
+        text = llms.decode("utf-8", "replace")
+        expect(f"({GUIDE})" in text and f"({SPEC_LINK})" in text, f"/llms.txt should link the guide and the spec: {text[:200]}")
+        status, e = c.host_call("GET", "/api/v1/no-such-thing")
+        for p in c.checker.ref_errors("#/components/schemas/Error", e):
+            failures.append(f"GET /api/v1/no-such-thing: {p}")
+        expect(status == 404 and error_code(e) == "not_found" and error_docs(e) == GUIDE,
+               f"an unknown path should be 404 not_found with docs {GUIDE}: {status} {e}")
+    # A missing id under a real route is a plain 404: the hint is for paths the API doesn't have.
+    _, e, _ = c.call("getDevice", "GET", "/devices/dev_no_such_device", expect=404, label="missing device")
+    expect(error_docs(e) is None, f"a missing id's 404 has the docs hint: {e}")
+
+
 # ---------------------------------------------------------------- hub name, restart
 
 DEFAULT_HUB = {"name": "Hubbo", "hostname": "hubbo"}
@@ -1188,6 +1252,7 @@ def noauth(c, checker):
     _, s, _ = c.call("getSession", "GET", "/auth/session", expect=200)
     mode = "enforced" if MOCK else "simulator_no_auth"  # the mock: its dev admin (see main)
     expect(s and s["auth_mode"] == mode and s["role"] == "admin", f"session: {s}")
+    discovery_flow(c)
     registry_flow(c)
     execute_flow(c)
     activity_flow(c)
@@ -1257,6 +1322,7 @@ def anonymous_matrix(c, checker):
                                          label="anonymous")
                 expect(status == 401 and error_code(body) == "unauthenticated",
                        f"anonymous {op_id}: expected 401 unauthenticated, got {status}")
+                expect(error_docs(body) == GUIDE, f"anonymous {op_id}: no docs hint")
 
 
 def auth_mode(c, checker):
@@ -1266,6 +1332,7 @@ def auth_mode(c, checker):
     anonymous_matrix(c, checker)
     cookie = login
     with c.acting_as(cookie=cookie):
+        discovery_flow(c)
         _, e, _ = c.call("createToken", "POST", "/admin/tokens", {"name": "x"},
                          headers={"Origin": "http://evil.example"}, expect=403, label="cross-site request")
         expect(error_code(e) == "csrf_failed", f"a foreign Origin should be csrf_failed: {e}")
@@ -1969,6 +2036,9 @@ def main():
     MOCK = args.mode.startswith("mock")
     wait_for(args.base, 90 if MOCK else 10)  # the mock's container installs node_modules first
     checker = v.SpecValidator(v.yaml.safe_load(v.read(v.SPEC_PATH)))
+    global GUIDE, SPEC_LINK  # the index's links, as the spec fixes them
+    links = checker.spec["components"]["schemas"]["ApiIndex"]["properties"]
+    GUIDE, SPEC_LINK = links["docs"]["const"], links["openapi"]["const"]
     client = Client(args.base, checker)
     if MOCK:
         if args.mode == "mock-auth":
