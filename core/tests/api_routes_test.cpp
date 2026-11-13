@@ -15,6 +15,7 @@
 #include "fake_ha.h"
 #include "fixtures.h"
 #include "hub.h"
+#include "hubbo/api/agent_docs.h"
 #include "hubbo/api/api.h"
 #include "hubbo/config/profile.h"
 #include "hubbo/config/service.h"
@@ -863,6 +864,84 @@ TEST_F(ApiTest, StatusNamesAHubWithoutSettings) {
     ASSERT_EQ(r.status, 200) << dump(r);
     EXPECT_EQ(r.json["hubbo"]["name"], "Hubbo");
     EXPECT_TRUE(r.json["network"]["hostname"].isNull());
+}
+
+TEST_F(ApiTest, AgentDocsArePublicAndErrorsPointToThem) {
+    noAuth = false;  // no admin set up, no credentials
+
+    for (const char *path : {"/api/v1", "/api/v1/"}) {
+        Reply r = call(http::Method::Get, path);
+        ASSERT_EQ(r.status, 200) << path;
+        EXPECT_EQ(r.json["name"], "Hubbo API");
+        EXPECT_EQ(r.json["version"], "0.0.0");
+        EXPECT_EQ(r.json.size(), 6u);  // name, version, about, docs, openapi, auth
+        EXPECT_NE(r.json["about"].as<std::string>().find("agent guide"), std::string::npos);
+        EXPECT_EQ(r.json["docs"], "/api/v1/agent.md");
+        EXPECT_EQ(r.json["openapi"], "/api/v1/openapi.json");
+        EXPECT_NE(r.json["auth"].as<std::string>().find("Bearer"), std::string::npos);
+        EXPECT_TRUE(r.json["hubbo"].isNull());
+    }
+
+    // The spec: JSON (plain curl), gzip when asked, 304 on a current ETag.
+    Reply spec = call(http::Method::Get, "/api/v1/openapi.json");
+    ASSERT_EQ(spec.status, 200);
+    EXPECT_EQ(spec.contentType, "application/json");
+    EXPECT_EQ(spec.headers.count("Content-Encoding"), 0u);
+    EXPECT_EQ(spec.headers["Vary"], "Accept-Encoding");
+    JsonDocument parsed;
+    ASSERT_EQ(deserializeJson(parsed, spec.body, DeserializationOption::NestingLimit(64)), DeserializationError::Ok);
+    EXPECT_EQ(parsed["openapi"], "3.1.0");
+    EXPECT_FALSE(parsed["paths"]["/agent.md"].isNull());
+    Reply packed = call(http::Method::Get, "/api/v1/openapi.json", "", {{"accept-encoding", "gzip, deflate, br"}});
+    ASSERT_EQ(packed.status, 200);
+    EXPECT_EQ(packed.headers["Content-Encoding"], "gzip");
+    ASSERT_GT(packed.body.size(), 2u);
+    EXPECT_EQ(packed.body.substr(0, 2), "\x1f\x8b");  // gzip's magic
+    EXPECT_LT(packed.body.size(), spec.body.size());
+    const std::string etag = spec.headers["ETag"];
+    ASSERT_EQ(etag.size(), 18u) << etag;  // quoted
+    EXPECT_EQ(packed.headers["ETag"], etag);  // one version, either encoding
+    Reply cached = call(http::Method::Get, "/api/v1/openapi.json", "", {{"if-none-match", etag}});
+    EXPECT_EQ(cached.status, 304);
+    EXPECT_TRUE(cached.body.empty());
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/openapi.json", "", {{"if-none-match", "\"old\""}}).status, 200);
+
+    Reply guide = call(http::Method::Get, "/api/v1/agent.md");
+    ASSERT_EQ(guide.status, 200);
+    EXPECT_EQ(guide.contentType, "text/markdown; charset=utf-8");
+    EXPECT_EQ(guide.body.rfind("# ", 0), 0u);
+    EXPECT_NE(guide.headers["ETag"], etag);
+
+    Reply llms = call(http::Method::Get, "/llms.txt");
+    ASSERT_EQ(llms.status, 200);
+    EXPECT_EQ(llms.contentType, "text/markdown; charset=utf-8");
+    EXPECT_EQ(llms.body, api::docs::kLlmsTxt);
+    EXPECT_NE(llms.body.find("](/api/v1/agent.md)"), std::string::npos);
+    EXPECT_NE(llms.body.find("](/api/v1/openapi.json)"), std::string::npos);
+    EXPECT_EQ(call(http::Method::Post, "/llms.txt").status, 405);
+
+    // Hints: a 401, and a 404 for an unknown /api path, point to the guide.
+    Reply r = call(http::Method::Get, "/api/v1/devices");
+    EXPECT_EQ(r.status, 401);
+    EXPECT_EQ(r.json["error"]["docs"], "/api/v1/agent.md");
+    for (const char *path : {"/api", "/api/", "/api/v2", "/api/v1/nope", "/api/v1/devices/dev_1/nope"}) {
+        r = call(http::Method::Get, path);
+        EXPECT_EQ(r.status, 404) << path;
+        EXPECT_EQ(r.json["error"]["docs"], "/api/v1/agent.md") << path;
+    }
+    // Not elsewhere: outside the API, a 405, or a missing id on a known route.
+    for (const char *path : {"/nope", "/apis", "/"}) {
+        r = call(http::Method::Get, path);
+        EXPECT_EQ(r.status, 404) << path;
+        EXPECT_TRUE(r.json["error"]["docs"].isNull()) << path;
+    }
+    r = call(http::Method::Delete, "/api/v1/openapi.json");
+    EXPECT_EQ(r.status, 405);
+    EXPECT_TRUE(r.json["error"]["docs"].isNull());
+    noAuth = true;
+    r = call(http::Method::Get, "/api/v1/devices/dev_missing");
+    EXPECT_EQ(r.status, 404);
+    EXPECT_TRUE(r.json["error"]["docs"].isNull());
 }
 
 TEST_F(ApiTest, FactoryReset) {

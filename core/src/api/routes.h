@@ -129,5 +129,6 @@ void addStatusRoutes(RouteSink &sink, ApiContext &ctx);    // status, remote sta
 void addBackupRoutes(RouteSink &sink, ApiContext &ctx);    // backup download, restore
 void addFirmwareRoutes(RouteSink &sink, ApiContext &ctx);  // firmware status and update, factory reset
 void addHubRoutes(RouteSink &sink, ApiContext &ctx);       // the hub's name, restart
+void addDocsRoutes(RouteSink &sink, ApiContext &ctx);      // API index, spec, agent guide, /llms.txt
 
 }  // namespace hubbo::api
