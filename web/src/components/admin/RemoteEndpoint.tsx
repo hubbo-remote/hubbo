@@ -73,7 +73,7 @@ function EndpointForm({ current }: { current: RemoteConfig }) {
             <Input id="rf-channel" inputMode="numeric" placeholder={String(current.endpoint?.channel ?? 74)} value={channel} onChange={(e) => setChannel(e.target.value)} maxLength={3} />
           </Field>
           <Field label="Address" htmlFor="rf-address" error={addrError ?? error?.details.find((d) => d.path === '/address')?.message}>
-            <Input id="rf-address" className="font-mono" spellCheck={false} autoComplete="off" placeholder={current.endpoint ? formatAddress(current.endpoint.address) : 'FC:5C:97:55:0F'} value={address} onChange={(e) => setAddress(e.target.value)} maxLength={20} />
+            <Input id="rf-address" className="font-mono" spellCheck={false} placeholder={current.endpoint ? formatAddress(current.endpoint.address) : 'FC:5C:97:55:0F'} value={address} onChange={(e) => setAddress(e.target.value)} maxLength={20} />
           </Field>
         </div>
         {error && !error.details.some((d) => d.path === '/channel' || d.path === '/address') && <ErrorState error={error} />}

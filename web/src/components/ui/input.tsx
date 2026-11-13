@@ -14,9 +14,15 @@ const field =
 export const ShowErrors = createContext(true)
 const useShowErrors = () => useContext(ShowErrors)
 
+/** The sign-in fields: the only ones a password manager should fill or offer to save. */
+const CREDENTIALS = new Set(['username', 'current-password', 'new-password'])
+/** Everything else (names, the HA token, addresses) asks password managers to leave it alone. */
+const NOT_A_LOGIN = { autoComplete: 'off', 'data-1p-ignore': '', 'data-lpignore': 'true', 'data-form-type': 'other' }
+
 export function Input({ className, 'aria-invalid': invalid, ...props }: ComponentProps<'input'>) {
   const show = useShowErrors()
-  return <input className={cn(field, 'file:border-0 file:bg-transparent file:text-sm file:font-medium', className)} aria-invalid={show ? invalid : undefined} {...props} />
+  const login = CREDENTIALS.has(props.autoComplete ?? '')
+  return <input className={cn(field, 'file:border-0 file:bg-transparent file:text-sm file:font-medium', className)} aria-invalid={show ? invalid : undefined} {...(login ? {} : NOT_A_LOGIN)} {...props} />
 }
 
 /**
