@@ -8,7 +8,9 @@
 //              carries it too, shortened at a UTF-8 boundary past 29 bytes
 //              (BleHid::setName).
 //   mDNS       instance name = the name (cut at 63 bytes), hostname = the slug,
-//              _http._tcp on port 80.
+//              _http._tcp on port 80. The hostname it advertises (after a
+//              clash, with a numeric suffix added or bumped) goes back to
+//              HubSettings::setAdvertisedHostname.
 //   DHCP, OTA  the boot hostname, until the next boot.
 //
 // A rename (HubSettings::onChanged, on httpd) is applied live: mDNS at once
@@ -45,7 +47,7 @@ public:
 
     // httpd, once the network has an address: starts mDNS. Later calls do
     // nothing.
-    void startMdns(const hubbo::config::HubIdentity &identity, uint16_t httpPort);
+    void startMdns(hubbo::config::HubSettings &settings, uint16_t httpPort);
     // httpd, after a rename commits: mDNS now (if started), Bluetooth on the
     // loop's next takeBleName().
     void apply(const hubbo::config::HubIdentity &identity);
