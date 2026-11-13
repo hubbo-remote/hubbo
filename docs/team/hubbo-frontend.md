@@ -2,14 +2,28 @@
 
 Current state, not a log. Update when a piece of work lands.
 
-## Fan kind (branch `fan-kind`)
+## HA domains (branch `ha-domains`; docs/design/ha-domains.md)
 
-- `fan` is a DeviceKind (schema.gen.ts regenerated). AddDeviceDialog `guessKind`: an HA candidate
-  with domain `fan` defaults to Fan. Domains named like their kind (light, switch, fan) come from
-  one `DOMAIN_KINDS` list; add a domain there, not another ternary. No per-kind icons exist in
-  the UI (kinds are only a label in a select), so there's no icon to add.
-- The mock serves GET /kinds and its devices straight from api/fixtures (profiles/kinds.json,
-  devices/); fan shows up there when API's fixtures have it. No mock code holds kinds.
+- New HA domains: scene, script, cover, button, input_boolean, humidifier, select (remote and
+  climate dropped by the user; locks skipped). New kinds cover, scene, script (labels from GET /kinds).
+- Add device: the Type defaults to the candidate's `suggested_kind` (required, from the hub).
+  No name-guessing in the UI any more. Subtitle "Media players, lights, covers, scenes and more".
+  No per-kind icons exist (kinds are only a label in a select).
+- Params need nothing new: enums and ranged ints already render. Additions: a required `humidity`
+  % starts at 45 (other whole % at 35, e.g. a cover position); a number with a `unit` reads with
+  it in summaries ("Set position 50%", "Sleep timer 300 s").
+- Mock: `HA_DOMAINS` lists the 11 domains. A free candidate's registered commands come from
+  `api/fixtures/integrations/ha_main.entities/<entity_id>.capabilities.json` (`Seed.entityCapabilities`),
+  so the mock stores the hub's real params. A candidate keeps its fixture `platform` unless
+  `PLATFORMS` gives one. The mock's own candidates (Denon, Patio Fountain) carry `suggested_kind`.
+- Tests: e2e `ha-domains.spec` (mock and hub-sim: add a cover with its suggested type, position
+  field; humidifier modes and humidity 45; select options; a cover step "Set position 20%");
+  mock unit test registers each new entity; describe/activity units.
+- The wizard's HA power mapping (HA_NAMES) leaves the new domains out, by decision.
+- HA devices show their entity id under the name (Devices list, device page header) via the shared
+  `EntityId` (components/common.tsx); Add device's candidates and pick use it too. Bluetooth: nothing.
+- Gate 2026-11-13 (after /simplify, review, shade → cover): green. Unit 161; mock 137;
+  `--sim --auth` 94; `noauth` 4.
 
 ## Agent docs (branch `agent-docs`; mock parity for the contract)
 
@@ -110,7 +124,7 @@ were deferred while iterating and are now caught up.
 - **Devices**: one flat list sorted by name (no per-integration sections). Each row: platform icon
   (lit when live: Bluetooth connected / HA available; `role="img"` aria-label like "Bluetooth,
   connected"), the name, a subtitle only when action is needed (Not paired, Ready to pair, Needs
-  re-link), chevron. No entity id line, no availability badge.
+  re-link), chevron. An HA device also shows its entity id (EntityId). No availability badge.
   Specs caught up (devices, ble device-list, ha stale): rows found by href + icon aria-label.
 - **Device detail**: one column: Device pane (Name + Save, then a Type select from GET /kinds that
   saves on change via PUT kind+revision, then HA refresh/re-link, Remove), Bluetooth pairing, then
@@ -474,6 +488,8 @@ were deferred while iterating and are now caught up.
   in-flight fetch reused that fetch (older than the write) and nothing refetched; now it fetches
   again after (api/hooks.test.ts). The spec checks the URL before the copy, so a recurrence says
   which way it failed.
+  Seen again 2026-11-13 (ha-domains gate, hub-sim): the other way, it navigated to the copy after
+  Escape (so the close's `dupRequest` bump came before the submit's). Passed on rerun; not chased.
 - Under `--auth`, first-run tests factory-reset hub-sim themselves (hub.ts `factoryResetSim`), so
   setup.spec runs whole in a gate pass. hub-sim starts paired, so the resume test opens
   `#/setup/remote` by URL there.
