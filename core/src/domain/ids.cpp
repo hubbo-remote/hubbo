@@ -6,6 +6,15 @@ namespace {
 
 bool isLowerAscii(char c) { return c >= 'a' && c <= 'z'; }
 bool isDigitAscii(char c) { return c >= '0' && c <= '9'; }
+bool isAlnumAscii(char c) { return isLowerAscii(c) || (c >= 'A' && c <= 'Z') || isDigitAscii(c); }
+
+bool hasNoControlChars(std::string_view text) {
+    for (char c : text) {
+        const auto u = static_cast<unsigned char>(c);
+        if (u < 0x20 || u == 0x7F) return false;
+    }
+    return true;
+}
 
 }  // namespace
 
@@ -33,17 +42,22 @@ bool isValidCommandId(std::string_view id) {
     return isValidId(id.substr(0, dot)) && isValidId(id.substr(dot + 1));
 }
 
+bool isValidMqttHost(std::string_view host) {
+    if (host.size() > limits::kMaxHostLength) return false;
+    size_t colons = 0;
+    for (char c : host) {
+        if (!isAlnumAscii(c) && c != '.' && c != '_' && c != ':' && c != '-') return false;
+        colons += c == ':';
+    }
+    return colons != 1;
+}
+
+bool isValidMqttUsername(std::string_view username) {
+    return username.size() <= limits::kMaxUsernameLength && hasNoControlChars(username);
+}
+
 bool isValidName(std::string_view name) {
-    if (name.empty() || name.size() > limits::kMaxNameLength) {
-        return false;
-    }
-    for (char c : name) {
-        const auto u = static_cast<unsigned char>(c);
-        if (u < 0x20 || u == 0x7F) {
-            return false;
-        }
-    }
-    return true;
+    return !name.empty() && name.size() <= limits::kMaxNameLength && hasNoControlChars(name);
 }
 
 }  // namespace hubbo

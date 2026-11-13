@@ -128,6 +128,11 @@ void dropInapplicableFields(ConfigSpec *config) {
             i.verifyTls = true;
         }
         if (i.type != kBleHidType) i.deviceName.clear();
+        if (i.type != kMqttType) {
+            i.host.clear();
+            i.port = IntegrationSpec().port;
+            i.username.clear();
+        }
     }
 }
 

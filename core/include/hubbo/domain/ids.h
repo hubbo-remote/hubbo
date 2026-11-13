@@ -22,6 +22,15 @@ bool isValidId(std::string_view id);
 bool isValidCommandId(std::string_view id);
 bool isValidName(std::string_view name);  // 1..kMaxNameLength bytes, no control chars
 
+// MQTT broker settings (MqttSettings in api/openapi.yaml), shared by config
+// decode and the API's PUT. "" passes both (not configured / no username).
+//   host      ^[A-Za-z0-9._:-]*$, at most kMaxHostLength, and not exactly
+//             one ':' (that is host:port; the port is its own field). IPv6
+//             addresses have two or more.
+//   username  at most kMaxUsernameLength, no control characters.
+bool isValidMqttHost(std::string_view host);
+bool isValidMqttUsername(std::string_view username);
+
 constexpr const char *kSystemIntegrationId = "system";
 
 // Fixed-capacity, always NUL-terminated string for runtime structs that must

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -66,6 +67,19 @@ class ConfigListener {
 public:
     virtual ~ConfigListener() = default;
     virtual void configSaved(const ConfigSpec &config) = 0;
+};
+
+// Hands each saved config to several listeners, in order (the board and
+// hub-sim: the Bluetooth hosts, then MQTT's activity list).
+class ConfigFanOut : public ConfigListener {
+public:
+    ConfigFanOut(std::initializer_list<ConfigListener *> listeners) : listeners_(listeners) {}
+    void configSaved(const ConfigSpec &config) override {
+        for (ConfigListener *l : listeners_) l->configSaved(config);
+    }
+
+private:
+    std::vector<ConfigListener *> listeners_;
 };
 const char *configStateName(ConfigState state);  // "fresh", "ok", "blocked", "storage_unavailable"
 

@@ -160,7 +160,7 @@ public:
     // Integration ids valid and unique; only "system" is of type system.
     // (Whether an adapter exists is checked per device by the resolver.)
     void integrations(const std::vector<IntegrationSpec> &integrations, const std::string &prefix) {
-        if (integrations.size() > limits::kMaxAdapters + 2) {
+        if (integrationCountWithBuiltins(integrations) > limits::kMaxIntegrations) {
             report_.add(ErrorCode::TooLong, prefix);
             return;
         }

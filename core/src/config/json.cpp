@@ -17,7 +17,7 @@ namespace {
 
 constexpr const char *kFormat = "hubbo-config";
 constexpr const char *kBackupFormat = "hubbo-backup";
-constexpr const char *kIntegrationTypes[] = {kSystemType, kBleHidType, kHomeAssistantType};
+constexpr const char *kIntegrationTypes[] = {kSystemType, kBleHidType, kHomeAssistantType, kMqttType};
 constexpr size_t kMaxBindings = remote::kButtonCount * remote::kEventKindCount;
 constexpr size_t kMaxTimestampLength = 40;
 
@@ -140,6 +140,12 @@ bool decodeIntegrationAs(JsonVariantConst json, IntegrationShape shape, Integrat
         if (out->type == kBleHidType || !stored) {
             s.string("device_name", &out->deviceName, stored, limits::kMaxBleNameLength);
         }
+        if (out->type == kMqttType || !stored) {
+            s.text("host", &out->host, stored, limits::kMaxHostLength, isValidMqttHost);
+            int64_t port = out->port;
+            if (s.integer("port", 1, 65535, &port, stored)) out->port = static_cast<uint16_t>(port);
+            s.text("username", &out->username, stored, limits::kMaxUsernameLength, isValidMqttUsername);
+        }
         return s.finish();
     });
     return f.finish();
@@ -158,6 +164,10 @@ void encodeIntegrationAs(const IntegrationSpec &integration, IntegrationShape sh
         settings["verify_tls"] = integration.verifyTls;
     } else if (integration.type == kBleHidType) {
         settings["device_name"] = integration.deviceName;
+    } else if (integration.type == kMqttType) {
+        settings["host"] = integration.host;
+        settings["port"] = integration.port;
+        settings["username"] = integration.username;
     }
     if (stored) {
         out["revision"] = integration.revision;
@@ -174,10 +184,17 @@ bool decodeGlobalBindingsAs(JsonVariantConst json, bool backup, std::vector<Bind
 void decodeSections(Fields &f, IntegrationShape integrations, ConfigSpec *config, ValidationReport *r) {
     const bool backup = integrations == IntegrationShape::Backup;
     f.nested("integrations", true, [&](JsonVariantConst v, const std::string &p) {
-        return decodeList(v, limits::kMaxAdapters + 1, &config->integrations, r, p,
-                          [&](JsonVariantConst j, IntegrationSpec *o, const std::string &at) {
-                              return decodeIntegrationAs(j, integrations, o, r, at);
-                          });
+        if (!decodeList(v, limits::kMaxIntegrations, &config->integrations, r, p,
+                        [&](JsonVariantConst j, IntegrationSpec *o, const std::string &at) {
+                            return decodeIntegrationAs(j, integrations, o, r, at);
+                        })) {
+            return false;
+        }
+        if (integrationCountWithBuiltins(config->integrations) > limits::kMaxIntegrations) {
+            addIssue(r, ErrorCode::TooLong, p);  // the built-ins added at load would pass the cap
+            return false;
+        }
+        return true;
     });
     f.nested("devices", true, [&](JsonVariantConst v, const std::string &p) {
         return decodeList(v, limits::kMaxDevices, &config->devices, r, p,

@@ -226,6 +226,85 @@ TEST(ConfigJson, IntegrationSecretsAreNotAccepted) {
     EXPECT_EQ(text.find("token"), std::string::npos);
 }
 
+TEST(ConfigJson, MqttSettings) {
+    const auto decode = [](const char *settings, IntegrationSpec *out, ValidationReport *r) {
+        const std::string text = std::string(R"({"id":"mqtt_main","type":"mqtt","name":"MQTT","enabled":true,)"
+                                             R"("revision":1,"settings":)") + settings + "}";
+        JsonDocument doc;
+        EXPECT_EQ(parseJson(text.c_str(), doc, kMaxRequestBytes, kRequestNestingLimit), ErrorCode::Ok);
+        return decodeIntegration(doc.as<JsonVariantConst>(), out, r);
+    };
+    IntegrationSpec i;
+    ValidationReport r;
+    ASSERT_TRUE(decode(R"({"type":"mqtt","host":"10.0.0.2","port":1884,"username":"hubbo"})", &i, &r));
+    EXPECT_EQ(i.host, "10.0.0.2");
+    EXPECT_EQ(i.port, 1884);
+    EXPECT_EQ(i.username, "hubbo");
+
+    JsonDocument out;
+    encodeIntegration(i, out.to<JsonObject>());
+    std::string text;
+    serializeJson(out, text);
+    EXPECT_NE(text.find(R"("settings":{"type":"mqtt","host":"10.0.0.2","port":1884,"username":"hubbo"})"),
+              std::string::npos)
+        << text;
+
+    r = {};
+    EXPECT_FALSE(decode(R"({"type":"mqtt","host":"h","port":0,"username":""})", &i, &r));
+    EXPECT_TRUE(r.has(ErrorCode::ParamOutOfRange, "/settings/port"));
+    r = {};
+    EXPECT_FALSE(decode(R"({"type":"mqtt","host":"h","port":"1883","username":""})", &i, &r));
+    EXPECT_TRUE(r.has(ErrorCode::WrongType, "/settings/port"));
+    r = {};
+    EXPECT_FALSE(decode(R"({"type":"mqtt","host":"h","port":1883,"username":"","password":"x"})", &i, &r));
+    EXPECT_TRUE(r.has(ErrorCode::UnknownField, "/settings/password"));
+    // The host and username rules the API's PUT applies hold for a stored
+    // record or a backup too.
+    r = {};
+    EXPECT_FALSE(decode(R"({"type":"mqtt","host":"broker lan","port":1883,"username":""})", &i, &r));
+    EXPECT_TRUE(r.has(ErrorCode::WrongType, "/settings/host"));
+    r = {};
+    EXPECT_FALSE(decode(R"({"type":"mqtt","host":"broker.lan:1883","port":1883,"username":""})", &i, &r));
+    EXPECT_TRUE(r.has(ErrorCode::WrongType, "/settings/host"));
+    r = {};
+    EXPECT_FALSE(decode(R"({"type":"mqtt","host":"h","port":1883,"username":"a\nb"})", &i, &r));
+    EXPECT_TRUE(r.has(ErrorCode::WrongType, "/settings/username"));
+    r = {};
+    EXPECT_TRUE(decode(R"({"type":"mqtt","host":"fe80::1","port":1883,"username":""})", &i, &r));
+}
+
+// The cap counts the built-ins ensureBuiltinIntegrations() adds, so a list
+// decode accepts never grows past what the next decode (or the compiler)
+// accepts.
+TEST(ConfigJson, IntegrationsCapCountsTheBuiltins) {
+    ConfigSpec c = sim::fixtureConfig();
+    ensureBuiltinIntegrations(&c);
+    c.integrations.erase(c.integrations.begin() + indexOfId(c.integrations, kMqttIntegrationId));
+    for (int n = 2; c.integrations.size() < limits::kMaxIntegrations - 1; n++) {
+        IntegrationSpec extra = c.integrations[static_cast<size_t>(indexOfId(c.integrations, "ha_main"))];
+        extra.id = "ha_" + std::to_string(n);
+        c.integrations.push_back(extra);
+    }
+    ConfigSpec parsed;
+    ASSERT_EQ(parseConfig(serializeConfig(c), &parsed).code, ErrorCode::Ok);
+    ensureBuiltinIntegrations(&parsed);  // mqtt_main: at the cap
+    ASSERT_EQ(parsed.integrations.size(), limits::kMaxIntegrations);
+    for (IntegrationSpec &i : parsed.integrations) i.revision = 1;  // as the service stamps a load
+    ConfigSpec again;
+    const ParseResult reread = parseConfig(serializeConfig(parsed), &again);
+    EXPECT_EQ(reread.code, ErrorCode::Ok)
+        << (reread.report.ok() ? "" : reread.report.issues()[0].path + " " + errorCodeName(reread.report.issues()[0].code));
+
+    // One more, still without mqtt_main: adding it would pass the cap.
+    IntegrationSpec extra = c.integrations.back();
+    extra.id = "ha_99";
+    c.integrations.push_back(extra);
+    ASSERT_EQ(c.integrations.size(), limits::kMaxIntegrations);
+    const ParseResult over = parseConfig(serializeConfig(c), &parsed);
+    EXPECT_NE(over.code, ErrorCode::Ok);
+    EXPECT_TRUE(over.report.has(ErrorCode::TooLong, "/integrations"));
+}
+
 // No retired or runtime fields are tolerated (nothing is released yet): a
 // record or backup carrying one is unknown_field like any other.
 TEST(ConfigJson, RetiredFieldsAreUnknown) {

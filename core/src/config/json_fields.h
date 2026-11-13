@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "hubbo/config/json.h"
@@ -91,6 +92,26 @@ public:
         if (v.isUnbound()) return false;
         if (!v.is<bool>()) return failAt(ErrorCode::WrongType, key);
         *out = v.as<bool>();
+        return true;
+    }
+
+    // A string that must also pass `valid` (WrongType if not, as the API).
+    bool text(const char *key, std::string *out, bool required, size_t maxLength, bool (*valid)(std::string_view)) {
+        std::string value;
+        if (!string(key, &value, required, maxLength)) return false;
+        if (!valid(value)) return failAt(ErrorCode::WrongType, key);
+        *out = std::move(value);
+        return true;
+    }
+
+    // An integer in lo..hi (WrongType if not an integer, ParamOutOfRange
+    // outside the range).
+    bool integer(const char *key, int64_t lo, int64_t hi, int64_t *out, bool required) {
+        JsonVariantConst v = get(key, required);
+        if (v.isUnbound()) return false;
+        if (!v.is<int64_t>()) return failAt(ErrorCode::WrongType, key);
+        if (v.as<int64_t>() < lo || v.as<int64_t>() > hi) return failAt(ErrorCode::ParamOutOfRange, key);
+        *out = v.as<int64_t>();
         return true;
     }
 
