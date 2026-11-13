@@ -38,3 +38,14 @@ export function deviceName(a: Action, cat: Catalog): string {
   const d = a.device_id ? cat.devices.get(a.device_id) : undefined
   return d?.name ?? `${a.device_id} (missing)`
 }
+
+/** An action's parts as people read it: its device (none for Hubbo's own), the command, its settings. */
+export function actionParts(a: Action, cat: Catalog): { device: string | null; command: string; summary: string } {
+  return { device: isSystem(a) ? null : deviceName(a, cat), command: commandLabel(a, cat), summary: paramSummary(a, cat) }
+}
+
+/** An action as one line of text: "Device → Command settings". */
+export function actionText(a: Action, cat: Catalog): string {
+  const p = actionParts(a, cat)
+  return `${p.device ? `${p.device} → ` : ''}${p.command}${p.summary ? ` ${p.summary}` : ''}`
+}

@@ -1,22 +1,27 @@
-import { Activity, Gauge, LogOut, Monitor, Moon, Plug, Settings, Sun, Tv2, type LucideIcon } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { Activity, Gauge, Grid3x3, LogOut, Monitor, Moon, Plug, Settings, Sun, Tv2, type LucideIcon } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
 import { Link, useLocation } from 'wouter'
 import { api } from '@/api/client'
 import type { Session } from '@/api/types'
 import { Button } from '@/components/ui/button'
+import { Menu, MenuItem, MenuSeparator } from '@/components/ui/menu'
 import { useActivities, useStatus } from '@/hooks/data'
 import { useTheme, type ThemePref } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import { ConfigBanner } from './ConfigBanner'
 import { Logo } from './Logo'
 
-/** `prefix`: where the section's other pages live, when not under `href` (home's editors are under /activities). */
-const NAV: { href: string; prefix?: string; label: string; icon: LucideIcon }[] = [
+/**
+ * `prefix`: where the section's other pages live, when not under `href` (home's editors are under /activities).
+ * `desktopOnly`: left out of the phone tab bar (Settings is in the phone header's gear menu).
+ */
+const NAV: { href: string; prefix?: string; label: string; icon: LucideIcon; desktopOnly?: boolean }[] = [
   { href: '/', prefix: '/activities', label: 'Activities', icon: Activity },
   { href: '/devices', label: 'Devices', icon: Tv2 },
+  { href: '/remote', label: 'Remote', icon: Grid3x3 },
   { href: '/integrations', label: 'Integrations', icon: Plug },
   { href: '/status', label: 'Status', icon: Gauge },
-  { href: '/settings', label: 'Settings', icon: Settings },
+  { href: '/settings', label: 'Settings', icon: Settings, desktopOnly: true },
 ]
 
 function useActive() {
@@ -51,19 +56,61 @@ export function ThemeToggle({ className }: { className?: string }) {
   )
 }
 
-/** What's on, linking home. Not on the home page itself, which shows it. */
-function ActiveChip() {
-  const [loc] = useLocation()
+/** The phone header's gear: the theme (Light, Dark, System) and the way to Settings, so the tab bar stays at five. */
+function SettingsMenu({ className }: { className?: string }) {
+  const [open, setOpen] = useState(false)
+  const [theme, setTheme] = useTheme()
+  const [, navigate] = useLocation()
+  return (
+    <Menu
+      className={className}
+      label="Settings"
+      open={open}
+      onOpenChange={setOpen}
+      trigger={(p) => (
+        <Button {...p} variant="ghost" size="icon" aria-label="Settings and theme">
+          <Settings />
+        </Button>
+      )}
+    >
+      {THEMES.map((t) => (
+        <MenuItem key={t.id} icon={t.icon} checked={theme === t.id} onClick={() => setTheme(t.id)}>
+          {t.label}
+        </MenuItem>
+      ))}
+      <MenuSeparator />
+      <MenuItem icon={Settings} onClick={() => navigate('/settings')}>
+        Settings
+      </MenuItem>
+    </Menu>
+  )
+}
+
+/** What's on, quietly, under the brand: the running activity's name, or Off. Status only, no actions. */
+function NowOn() {
   const status = useStatus()
   const acts = useActivities()
-  const id = status.data?.active_activity_id
+  if (!status.data) return null
+  const id = status.data.active_activity_id
   const name = id ? (acts.data?.activities.find((a) => a.id === id)?.name ?? id) : null
-  if (!status.data || loc === '/') return null
   return (
-    <Link href="/" className="inline-flex min-w-0 items-center gap-2 rounded-full border bg-card px-3 py-1 text-xs font-medium shadow-xs hover:bg-accent">
-      <span className={cn('size-2 shrink-0 rounded-full', name ? 'bg-success' : 'bg-muted-foreground/40')} aria-hidden />
+    <span role="status" className="flex min-w-0 items-center gap-1.5 text-xs font-normal text-muted-foreground">
+      <span className={cn('size-1.5 shrink-0 rounded-full', name ? 'bg-success' : 'bg-muted-foreground/40')} aria-hidden />
       <span className="truncate">{name ?? 'Off'}</span>
-    </Link>
+    </span>
+  )
+}
+
+/** The logo, "Hubbo", and what's on under it. */
+function Brand({ small }: { small?: boolean }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <Logo className={small ? 'size-6 shrink-0' : 'size-7 shrink-0'} />
+      <div className="grid min-w-0 leading-tight">
+        <span className={cn('font-semibold', !small && 'text-lg tracking-tight')}>Hubbo</span>
+        <NowOn />
+      </div>
+    </div>
   )
 }
 
@@ -92,9 +139,8 @@ export function AppShell({ session, onSignedOut, children }: { session: Session;
       {/* Desktop sidebar */}
       <div className="hidden border-r bg-card/50 md:block">
       <aside className="sticky top-0 flex h-dvh flex-col">
-        <div className="flex h-16 items-center gap-2 px-5">
-          <Logo className="size-7" />
-          <span className="text-lg font-semibold tracking-tight">Hubbo</span>
+        <div className="flex h-16 items-center px-5">
+          <Brand />
         </div>
         <nav aria-label="Main" className="grid gap-0.5 px-3">
           {NAV.map((n) => (
@@ -135,24 +181,17 @@ export function AppShell({ session, onSignedOut, children }: { session: Session;
         <ConfigBanner admin={session.role === 'admin'} />
         {/* Mobile header */}
         <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur md:hidden">
-          <Logo className="size-6" />
-          <span className="font-semibold">Hubbo</span>
-          <div className="ml-auto flex min-w-0 items-center gap-2">
-            <ActiveChip />
-            <ThemeToggle />
-          </div>
+          <Brand small />
+          <SettingsMenu className="ml-auto shrink-0" />
         </header>
-        <div className="hidden h-16 items-center justify-end gap-3 px-8 md:flex">
-          <ActiveChip />
-        </div>
-        <main id="main" tabIndex={-1} className="outline-none mx-auto w-full max-w-6xl flex-1 px-4 pt-4 pb-28 sm:px-6 md:px-8 md:pt-0 md:pb-12">
+        <main id="main" tabIndex={-1} className="outline-none mx-auto w-full max-w-6xl flex-1 px-4 pt-4 pb-28 sm:px-6 md:px-8 md:pt-8 md:pb-12">
           {children}
         </main>
       </div>
 
       {/* Mobile tab bar */}
       <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
-        {NAV.map((n) => (
+        {NAV.filter((n) => !n.desktopOnly).map((n) => (
           <Link
             key={n.href}
             href={n.href}

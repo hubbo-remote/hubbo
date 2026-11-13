@@ -11,9 +11,17 @@ export interface RemoteSvgProps {
   onSelect?: (id: string) => void
   /** Buttons with validation errors. */
   errors?: ReadonlySet<string>
+  /** Whose bindings these are: an activity's (blue) or the global buttons' (amber). */
+  source?: BindingSource
+  /** Buttons that fall back to a global binding (this set binds none of them): its event kinds and what it does. */
+  inherited?: Readonly<Record<string, { kinds: EventKind[]; text: string }>>
   className?: string
   label?: string
 }
+
+/** Where a set of bindings lives: amber always means the global buttons. */
+export type BindingSource = 'activity' | 'global'
+const SOURCE_COLOR: Record<BindingSource, string> = { activity: 'var(--remote-bound)', global: 'var(--remote-global)' }
 
 const EV_COLOR: Record<EventKind, string> = { down: 'var(--ev-down)', up: 'var(--ev-up)', tap: 'var(--ev-tap)', hold: 'var(--ev-hold)' }
 /** How each mark reads: Press, Long press, and raw down/up triggers as they are. */
@@ -121,7 +129,7 @@ function GlyphEl({ g, cx, cy }: { g: Glyph; cx: number; cy: number }) {
  * Hubbo's clickable remote. Each key is a focusable SVG button with an
  * accessible name; arrow keys move between keys spatially, Enter/Space selects.
  */
-export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, onSelect, errors, className, label = 'Remote buttons' }: RemoteSvgProps) {
+export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, onSelect, errors, source = 'activity', inherited, className, label = 'Remote buttons' }: RemoteSvgProps) {
   const [focusId, setFocusId] = useState<string>(selected ?? 'select')
   const refs = useRef(new Map<string, SVGGElement>())
   const interactive = !!onSelect
@@ -175,11 +183,14 @@ export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, 
       </g>
 
       {KEYS.map((k) => {
-        const isBound = (bound[k.id]?.length ?? 0) > 0
+        // One mark for every bound key, own or inherited: its source decides the colour, its bindings the dots.
+        const own = bound[k.id]?.length ? bound[k.id]! : null
+        const global = own ? undefined : inherited?.[k.id]
+        const ev = own ?? global?.kinds ?? []
+        const color = own ? SOURCE_COLOR[source] : global ? SOURCE_COLOR.global : null
         const isSel = selected === k.id
         const isErr = errors?.has(k.id) ?? false
         const { cx, cy } = k.shape
-        const ev = bound[k.id] ?? []
         const name = buttonLabel(k.id)
         const [px, py] = k.shape.pip
         return (
@@ -192,14 +203,14 @@ export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, 
             data-key={k.id}
             role={interactive ? 'button' : 'img'}
             tabIndex={interactive ? (k.id === tabStop ? 0 : -1) : undefined}
-            aria-label={`${name}${ev.length ? `, bound: ${ev.map((e) => EV_LABEL[e].toLowerCase()).join(', ')}` : interactive ? ', unbound' : ''}${isErr ? ', has errors' : ''}`}
+            aria-label={`${name}${ev.length ? `, ${global ? 'global' : 'bound'}: ${ev.map((e) => EV_LABEL[e].toLowerCase()).join(', ')}` : interactive ? ', unbound' : ''}${isErr ? ', has errors' : ''}`}
             aria-pressed={interactive ? isSel : undefined}
             onClick={() => onSelect?.(k.id)}
             onFocus={() => setFocusId(k.id)}
             onKeyDown={interactive ? (e) => onKeyDown(e, k.id) : undefined}
             className={cn('group outline-none', interactive && 'cursor-pointer')}
           >
-            <title>{`${name} (${k.id})${ev.length ? ` · ${ev.join(', ')}` : ''}`}</title>
+            <title>{global ? `${name}, Global: ${global.text}` : `${name} (${k.id})${ev.length ? ` · ${ev.join(', ')}` : ''}`}</title>
             {/* An invisible minimum hit area: small keys (numbers, colours) stay tappable on a phone. */}
             {interactive && <rect x={cx - HIT / 2} y={cy - HIT / 2} width={HIT} height={HIT} fill="transparent" />}
             {/* Focus/error ring: the same shape stroked wide behind the key, whose fill hides the inner half. */}
@@ -217,12 +228,12 @@ export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, 
             <ShapeEl
               s={k.shape}
               fill="url(#rm-key)"
-              // The key's one border: pink and thick when selected (in place of the teal bound one).
-              stroke={isSel ? 'var(--remote-selected)' : isBound ? 'var(--remote-bound)' : 'oklch(1 0 0 / 0.1)'}
-              strokeWidth={isSel ? 2.6 : isBound ? 1.8 : 0.8}
+              // The key's one border: pink and thick when selected; else its source's colour.
+              stroke={isSel ? 'var(--remote-selected)' : (color ?? 'oklch(1 0 0 / 0.1)')}
+              strokeWidth={isSel ? 2.6 : color ? 1.8 : 0.8}
               className={cn('transition-[filter] duration-100', interactive && 'group-hover:brightness-125 group-active:brightness-90')}
             />
-            {isBound && <ShapeEl s={k.shape} fill="var(--remote-bound)" opacity={0.16} pointerEvents="none" />}
+            {color && <ShapeEl s={k.shape} fill={color} opacity={0.16} pointerEvents="none" />}
             <GlyphEl g={k.glyph} cx={cx} cy={cy} />
             {ev.length > 0 && (
               <g aria-hidden pointerEvents="none">
@@ -259,4 +270,20 @@ export function EventLegend({ className }: { className?: string }) {
   )
 }
 
-export { EV_COLOR }
+export { EV_COLOR, EV_LABEL }
+
+/** Where a key's binding comes from, for a set with globals behind it: blue, or amber. */
+export function SourceLegend({ className }: { className?: string }) {
+  return (
+    <ul className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground', className)} aria-label="Where bindings come from">
+      <li className="inline-flex items-center gap-1.5">
+        <span className="h-2.5 w-3.5 rounded-sm border-[1.5px] border-[var(--remote-bound)] bg-[var(--remote-bound)]/20" aria-hidden />
+        This activity
+      </li>
+      <li className="inline-flex items-center gap-1.5">
+        <span className="h-2.5 w-3.5 rounded-sm border-[1.5px] border-[var(--global)] bg-[var(--global)]/20" aria-hidden />
+        Global
+      </li>
+    </ul>
+  )
+}

@@ -13,7 +13,8 @@ async function expectNoSeriousViolations(page: Page, what: string) {
 const PAGES: [string, string][] = [
   ['/', 'Activities'],
   ['/activities/act_watch_apple_tv', 'Bound buttons'],
-  ['/activities/global', 'Global buttons'],
+  ['/remote', 'Remote'],
+  ['/remote/act_watch_apple_tv', 'This activity'],
   ['/devices', 'Devices'],
   ['/devices/dev_denon', 'Family Room Denon'],
   ['/integrations', 'Integrations'],
