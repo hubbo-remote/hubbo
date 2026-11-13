@@ -523,15 +523,12 @@ were deferred while iterating and are now caught up.
   code (254, compose v2.21, ~20%), so parallel branches must not start the same service together.
 - hub-sim is still slow (`workers: 1`, real-time polls, HA/BLE waits). Backlog: a hub-sim port per
   worker.
-- Flake seen once in the concurrent gate (hub-sim, activity.spec "closing the duplicate dialog
-  while it saves"): toast shown, copy missing from the list. Not reproduced in ~75 runs under load.
-  Ruled out: the dialog's close event (it fires right after cancel), hub-sim (commits before the
-  201), browser caching, proxy errors. Fixed the one hole that fits: `invalidate()` during an
-  in-flight fetch reused that fetch (older than the write) and nothing refetched; now it fetches
-  again after (api/hooks.test.ts). The spec checks the URL before the copy, so a recurrence says
-  which way it failed.
-  Seen again 2026-11-13 (ha-domains gate, hub-sim): the other way, it navigated to the copy after
-  Escape (so the close's `dupRequest` bump came before the submit's). Passed on rerun; not chased.
+- **Dialog closes only through `open`** (ui/dialog.tsx): Esc is the
+  `cancel` event (preventDefault, then `onClose` at once); a native `close` calls `onClose` only
+  while still `open` (a forced close). The old flake ("closing the duplicate dialog while it
+  saves", seen 3×) was the queued `close` event reaching the owner after the save's reply.
+  activity.spec reproduces it by swallowing `close`; hub-settings checks Esc can't dismiss the
+  restart dialog while it restarts (owners refuse in `onClose`). activity.spec ×30: green.
 - Under `--auth`, first-run tests factory-reset hub-sim themselves (hub.ts `factoryResetSim`), so
   setup.spec runs whole in a gate pass. hub-sim starts paired, so the resume test opens
   `#/setup/remote` by URL there.
