@@ -85,37 +85,24 @@ bool decodePath(std::string_view raw, std::string *out) {
     return true;
 }
 
-const char *statusLine(int status) {
-    switch (status) {
-        case 200: return "200 OK";
-        case 201: return "201 Created";
-        case 202: return "202 Accepted";
-        case 204: return "204 No Content";
-        case 400: return "400 Bad Request";
-        case 401: return "401 Unauthorized";
-        case 403: return "403 Forbidden";
-        case 404: return "404 Not Found";
-        case 405: return "405 Method Not Allowed";
-        case 409: return "409 Conflict";
-        case 411: return "411 Length Required";
-        case 412: return "412 Precondition Failed";
-        case 413: return "413 Payload Too Large";
-        case 415: return "415 Unsupported Media Type";
-        case 422: return "422 Unprocessable Entity";
-        case 501: return "501 Not Implemented";
-        case 503: return "503 Service Unavailable";
-        default: return "500 Internal Server Error";
-    }
-}
-
 esp_err_t send(httpd_req_t *req, const http::Response &response) {
-    httpd_resp_set_status(req, statusLine(response.status));
+    httpd_resp_set_status(req, http::statusLine(response.status));
     httpd_resp_set_type(req, response.contentType.c_str());
     // Every header string lives in `response` until httpd_resp_send returns.
     for (const auto &header : response.headers) {
         httpd_resp_set_hdr(req, header.first.c_str(), header.second.c_str());
     }
     return httpd_resp_send(req, response.body.data(), static_cast<ssize_t>(response.body.size()));
+}
+
+bool registerUri(httpd_handle_t server, const char *uri, httpd_method_t method, esp_err_t (*handler)(httpd_req_t *),
+                 void *context) {
+    httpd_uri_t route = {};
+    route.uri = uri;
+    route.method = method;
+    route.handler = handler;
+    route.user_ctx = context;
+    return httpd_register_uri_handler(server, &route) == ESP_OK;
 }
 
 esp_err_t sendError(httpd_req_t *req, int status, std::string_view code, std::string_view message) {
@@ -139,12 +126,7 @@ bool HttpServer::serveWebAdmin() {
     if (handle_ == nullptr) {
         return false;
     }
-    httpd_uri_t uri = {};
-    uri.uri = "/*";
-    uri.method = HTTP_GET;
-    uri.handler = &HttpServerAccess::onStatic;
-    uri.user_ctx = this;
-    return httpd_register_uri_handler(static_cast<httpd_handle_t>(handle_), &uri) == ESP_OK;
+    return registerUri(static_cast<httpd_handle_t>(handle_), "/*", HTTP_GET, &HttpServerAccess::onStatic, this);
 }
 
 int HttpServer::serveStatic(void *raw) {
@@ -161,7 +143,7 @@ int HttpServer::serveStatic(void *raw) {
     if (asset == nullptr) {
         // An SPA route (a page reload on /devices/...) gets the app; a
         // missing file or hashed asset doesn't. (/api/* and /debug/* never
-        // get here: their handlers are registered first.)
+        // get here, nor /llms.txt: their handlers are registered first.)
         const bool wantsHtml = headers.header("Accept").find("text/html") != std::string_view::npos;
         if (!wantsHtml || path.substr(0, 3) == "/a/") {
             return sendError(req, 404, "not_found", "Not found");
@@ -175,7 +157,7 @@ int HttpServer::serveStatic(void *raw) {
         httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
         httpd_resp_set_hdr(req, "ETag", web::kEtag);
         if (headers.header("If-None-Match") == web::kEtag) {
-            httpd_resp_set_status(req, "304 Not Modified");
+            httpd_resp_set_status(req, http::statusLine(304));
             return httpd_resp_send(req, nullptr, 0);
         }
     }
@@ -204,7 +186,8 @@ bool HttpServer::begin(const http::Router &router, http::RequestAuthenticator *a
     // dropped some mid-load. lwIP has 16 sockets: httpd adds 3 internally,
     // plus the HA WebSocket, OTA and mDNS.
     config.max_open_sockets = 7;
-    config.max_uri_handlers = 12;  // the API (one per method), the dev console and the web admin
+    // The API (one per method), /llms.txt, the dev console and the web admin.
+    config.max_uri_handlers = 13;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
@@ -214,13 +197,12 @@ bool HttpServer::begin(const http::Router &router, http::RequestAuthenticator *a
         return false;
     }
     for (const httpd_method_t method : {HTTP_GET, HTTP_POST, HTTP_PUT, HTTP_DELETE}) {
-        httpd_uri_t uri = {};
-        uri.uri = "/api/*";
-        uri.method = method;
-        uri.handler = &HttpServerAccess::onRequest;
-        uri.user_ctx = this;
-        httpd_register_uri_handler(server, &uri);
+        // "/?*": /api itself too (httpd's wildcard), not /apix.
+        registerUri(server, "/api/?*", method, &HttpServerAccess::onRequest, this);
     }
+    // The agent guide (core's route), before the web admin's "/*" so the
+    // SPA fallback doesn't answer it.
+    registerUri(server, "/llms.txt", HTTP_GET, &HttpServerAccess::onRequest, this);
     handle_ = server;
     con.printf("http: listening on port %u (core %d, priority %u)\n", kPort, kCore, kPriority);
     return true;
@@ -249,11 +231,7 @@ bool HttpServer::addDebugGet(const char *uri, DebugGet handler) {
         return false;
     }
     auto owned = std::make_unique<DebugGet>(std::move(handler));
-    httpd_uri_t route = {};
-    route.uri = uri;
-    route.method = HTTP_GET;
-    route.user_ctx = owned.get();
-    route.handler = [](httpd_req_t *req) -> esp_err_t {
+    const auto serveDebug = [](httpd_req_t *req) -> esp_err_t {
         const std::string_view full(req->uri);
         const size_t queryAt = full.find('?');
         const std::string_view query = queryAt == std::string_view::npos ? std::string_view() : full.substr(queryAt + 1);
@@ -262,7 +240,7 @@ bool HttpServer::addDebugGet(const char *uri, DebugGet handler) {
         httpd_resp_set_hdr(req, "Cache-Control", "no-store");
         return httpd_resp_send(req, body.data(), static_cast<ssize_t>(body.size()));
     };
-    if (httpd_register_uri_handler(static_cast<httpd_handle_t>(handle_), &route) != ESP_OK) {
+    if (!registerUri(static_cast<httpd_handle_t>(handle_), uri, HTTP_GET, serveDebug, owned.get())) {
         return false;
     }
     debugGets_.push_back(std::move(owned));
