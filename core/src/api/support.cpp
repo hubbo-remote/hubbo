@@ -347,9 +347,11 @@ const ActivitySpec *requireActivity(const ApiContext &ctx, std::string_view id, 
     return activity;
 }
 
+void sendEngineBusy(http::Response &out) { sendError(out, 503, "busy", "The engine queue is full; retry shortly"); }
+
 bool runEngine(ApiContext &ctx, EngineRequest &request, http::Response &out) {
     if (ctx.runtime.run(request)) return true;
-    sendError(out, 503, "busy", "The engine queue is full; retry shortly");
+    sendEngineBusy(out);
     return false;
 }
 

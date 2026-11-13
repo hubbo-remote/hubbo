@@ -100,6 +100,8 @@ bool queryRevision(const http::Request &request, http::Response &out, uint32_t *
 const DeviceSpec *requireDevice(const ApiContext &ctx, std::string_view id, http::Response &out);
 const ActivitySpec *requireActivity(const ApiContext &ctx, std::string_view id, http::Response &out);
 
+// 503 busy: the engine's mailbox is full.
+void sendEngineBusy(http::Response &out);
 // Runtime::run; false after sending 503 busy if the engine queue is full.
 bool runEngine(ApiContext &ctx, EngineRequest &request, http::Response &out);
 
