@@ -137,6 +137,10 @@
       "label": "Climate"
     },
     {
+      "id": "fan",
+      "label": "Fan"
+    },
+    {
       "id": "light",
       "label": "Light"
     },
