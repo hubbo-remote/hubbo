@@ -1,4 +1,4 @@
-import { Bluetooth, Cpu, Home, type LucideIcon } from 'lucide-react'
+import { Bluetooth, Cpu, Home, RadioTower, type LucideIcon } from 'lucide-react'
 import type { BluetoothStatus, IntegrationState, IntegrationType } from '@/api/types'
 
 export const HEALTH: Record<IntegrationState, [dotClass: string, label: string]> = {
@@ -14,14 +14,21 @@ export const HEALTH: Record<IntegrationState, [dotClass: string, label: string]>
 }
 
 /**
- * Unknown states (a newer hub) read as their raw name rather than crashing. Bluetooth's `connected`
- * means the radio works, not that a host is connected (devices show that), so it reads "Ready".
+ * Where a type's state reads differently. Bluetooth's `connected` means the radio works, not that
+ * a host is connected (devices show that); a broker rejects a password, not a token.
  */
-export const healthLabel = (s: IntegrationState, type?: IntegrationType) => (type === 'ble_hid' && s === 'connected' ? 'Ready' : (HEALTH[s]?.[1] ?? s))
+const TYPE_LABEL: Partial<Record<IntegrationType, Partial<Record<IntegrationState, string>>>> = {
+  ble_hid: { connected: 'Ready' },
+  mqtt: { auth_failed: 'Password rejected' },
+}
+
+/** Unknown states (a newer hub) read as their raw name rather than crashing. */
+export const healthLabel = (s: IntegrationState, type?: IntegrationType) => (type && TYPE_LABEL[type]?.[s]) ?? HEALTH[s]?.[1] ?? s
 
 export const INTEGRATION_ICON: Record<IntegrationType, LucideIcon> = {
   home_assistant: Home,
   ble_hid: Bluetooth,
+  mqtt: RadioTower,
   system: Cpu,
 }
 

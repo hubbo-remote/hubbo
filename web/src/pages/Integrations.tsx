@@ -3,6 +3,7 @@ import { api } from '@/api/client'
 import { getQueryData, invalidate, setQueryData } from '@/api/hooks'
 import type { Integration, IntegrationConfig } from '@/api/types'
 import { HomeAssistantSettings } from '@/components/admin/HomeAssistantForm'
+import { MqttSettings } from '@/components/admin/MqttForm'
 import { ErrorState, HealthDot, PageHeader } from '@/components/common'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/misc'
@@ -35,7 +36,8 @@ export default function Integrations() {
   )
 }
 
-const order = (i: Integration) => (i.type === 'home_assistant' ? 0 : 1)
+const ORDER: Partial<Record<Integration['type'], number>> = { home_assistant: 0, mqtt: 1 }
+const order = (i: Integration) => ORDER[i.type] ?? 2
 
 /**
  * The card's one state line. Off shows only that; Bluetooth's detail says it all ("Connected to
@@ -44,6 +46,7 @@ const order = (i: Integration) => (i.type === 'home_assistant' ? 0 : 1)
 function stateLine(i: Integration) {
   if (!i.enabled || i.state === 'disabled' || !i.detail) return healthLabel(i.state, i.type)
   if (i.type === 'ble_hid') return i.detail
+  if (i.type === 'mqtt') return healthLabel(i.state, i.type) // its detail only says the state again
   return (
     <>
       {healthLabel(i.state, i.type)} <span>· {i.detail}</span>
@@ -85,8 +88,9 @@ function IntegrationCard({ integration: i }: { integration: Integration }) {
         <Switch checked={i.enabled} onCheckedChange={toggle} disabled={toggling} aria-label={`Enable ${i.name}`} />
       </CardHeader>
       <CardContent className="grid gap-4">
-        <p className="text-sm text-muted-foreground">{plural(i.device_count, 'device')}</p>
+        {i.type !== 'mqtt' && <p className="text-sm text-muted-foreground">{plural(i.device_count, 'device')}</p>}
         {i.type === 'home_assistant' && <HomeAssistantSettings id={i.id} />}
+        {i.type === 'mqtt' && <MqttSettings id={i.id} />}
       </CardContent>
     </Card>
   )

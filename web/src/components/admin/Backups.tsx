@@ -14,6 +14,7 @@ import { plural } from '@/lib/utils'
 const REQUIRES: Record<RestoreResult['requires'][number], string> = {
   home_assistant_token: 'enter the Home Assistant token again',
   ble_pairing: 'pair Bluetooth again',
+  mqtt_password: 'enter the MQTT password again',
   api_tokens: 'create new API tokens',
 }
 
