@@ -1,0 +1,6 @@
+# Hubbo
+
+> A Hubbo hub's local REST API. Hubbo is a universal-remote hub that runs activities across TVs, receivers, streamers and Home Assistant. Read the agent guide first: it covers everyday tasks. Use the OpenAPI spec only to look up an exact schema or error.
+
+- [Agent guide (start here)](/api/v1/agent.md): devices, activities and buttons, with worked examples
+- [OpenAPI spec (reference; large)](/api/v1/openapi.json): the full contract

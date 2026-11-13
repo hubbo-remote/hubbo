@@ -1,98 +1,104 @@
 # Using the Hubbo API from an agent
 
-This is for LLM agents and scripts that configure or drive a Hubbo hub. The full contract is
-`api/openapi.yaml`; realistic request and response bodies are in `api/fixtures/`.
+Hubbo is a universal-remote hub. A handheld remote's buttons start activities ("Watch Apple
+TV"), which turn on and switch the TV, receiver, Bluetooth streamers and Home Assistant devices.
+While an activity runs, each button sends a command to one of its devices. This guide is for
+agents and scripts with the hub's address and an API token.
+
+**This guide is enough for everyday tasks; the spec is for exact schemas.** The spec,
+`GET /api/v1/openapi.json` (OpenAPI 3.1), is large: look up only the piece you need, by the
+pointers given here, e.g. `#/components/schemas/Activity`. Neither needs a token.
 
 ## Ground rules
 
-- **Only registered devices.** You can act on devices an admin has registered, using the
-  commands listed in each device's capabilities. You cannot call Home Assistant services, name
-  HA entities, or send raw payloads. Requests that try (`entity_id`, `target`, `area_id`,
-  `service`, nested objects in `params`) are rejected with `422`.
-- **IDs, not names.** Use `dev_…` and `act_…` IDs from the API. Names are for people and are
+- **Only registered devices.** You act on the devices an admin has added, with the commands
+  listed in each device's capabilities. You can't call Home Assistant services, name HA entities
+  or send raw payloads. Requests that try (`entity_id`, `target`, `area_id`, `service`, or nested
+  objects in `params`) get `422`.
+- **IDs, not names.** Use the `dev_…` and `act_…` IDs from the API. Names are for people and are
   never matched.
-- **`accepted` is not "it worked".** A command result of `accepted` means the integration took
-  the command. Hubbo doesn't track device state, so it can't tell you the TV is on.
-- **Don't guess.** Read capabilities before building actions, and validate before saving.
+- **Read, don't guess.** Read a device's capabilities before building actions, and take ranges,
+  steps and options from there. Validate before you save.
+- **`accepted` is not "it worked".** It means the integration took the command. Hubbo doesn't
+  track device state, so it can't tell you the TV is on.
 
 ## Connecting
 
-Base URL: `http://<hub>/api/v1` (or `https://` when TLS is set up). The admin creates a token in
-Settings → API tokens (`POST /admin/tokens`) and gives it to you once:
-
 ```sh
-export HUBBO=http://hubbo.local/api/v1
+export HUBBO=http://hubbo.local/api/v1     # the hub's address, as you were given it
 export HUBBO_TOKEN=hbt_k3x9q2mf_...
 curl -s -H "Authorization: Bearer $HUBBO_TOKEN" $HUBBO/status
 ```
 
-Send `Content-Type: application/json` with every body. With a token you need no cookies.
+Send `Content-Type: application/json` with every body. A token needs no cookies. The admin
+creates tokens in Settings → API tokens, and each is shown once. A `401` means the token is
+missing, wrong or revoked; its error carries `"docs": "/api/v1/agent.md"`.
 
-**Local simulator:** it runs in `SIMULATOR_NO_AUTH` mode by default. No token is needed, every
-request acts as admin, and `/status` shows `"auth_mode": "simulator_no_auth"`. Everything goes to
-fake adapters.
+A token can read everything below, run commands, and manage activities and global bindings. It
+can't add or change devices, integrations, pairing, tokens, backups or firmware (`403
+forbidden`): ask the admin for those.
 
-## What a token can and can't do
-
-Can: read status (the hub's name is `hubbo.name`), remote buttons, devices and capabilities; run registered commands; create,
-replace, delete, validate and activate activities; turn the current activity off; edit global
-bindings; list integrations.
-
-Can't (`403 forbidden`): list the built-in profiles or kinds; register, edit or delete devices;
-configure or discover integrations;
-set the remote's endpoint or pair the remote or Bluetooth; manage tokens or the password; back
-up, restore or update firmware; rename or restart the hub. Ask the admin for those.
-
-## Discover
+## Devices and their commands
 
 ```sh
-curl -s -H "Authorization: Bearer $HUBBO_TOKEN" $HUBBO/devices
-curl -s -H "Authorization: Bearer $HUBBO_TOKEN" $HUBBO/devices/dev_denon/capabilities
-curl -s -H "Authorization: Bearer $HUBBO_TOKEN" $HUBBO/remote/buttons
-curl -s -H "Authorization: Bearer $HUBBO_TOKEN" $HUBBO/integrations
+H="Authorization: Bearer $HUBBO_TOKEN"
+curl -s -H "$H" $HUBBO/devices                          # every device, short form
+curl -s -H "$H" $HUBBO/devices/dev_apple_tv             # one device, with its profile
+curl -s -H "$H" $HUBBO/devices/dev_denon/capabilities   # the commands you can send it
 ```
 
-A capability lists each command and its parameters:
+A device's capabilities list its commands and their params
+(`#/components/schemas/DeviceCapabilities`):
 
 ```json
-{"command_id": "media_player.volume_set", "label": "Set volume",
+{"command_id": "media_player.volume_set", "label": "Set volume", "effect": "momentary",
  "params": [{"name": "level", "type": "number", "required": true, "minimum": 0, "maximum": 1}]}
 ```
 
-Param types: `bool`, `int`, `number`, `enum` (pick from `options`, exact match), and
-`activity_ref` (an activity ID). Optional params can be left out. Leaving them out is different
-from sending a default; for example `light.turn_on` without `brightness` keeps the last brightness.
+- **Param types:** `bool`, `int`, `number`, `enum` (one of `options`, exact match) and
+  `activity_ref` (an activity ID). `minimum`, `maximum` and `step` are the real limits: a fan's
+  `percentage` steps by its speed (e.g. `step: 33`). Use them.
+- **Optional params** can be left out, which isn't the same as sending a value: `light.turn_on`
+  without `brightness` keeps the last brightness. A `default` is what the hub uses when you leave
+  the param out.
+- **`label`, `unit`, `description`** say what a param means.
+- **`effect`:** `momentary` (a one-shot), `hold` (leaves a key held: `press_down`, `key_down`),
+  or `wait` (pauses a startup or shutdown).
 
-Home Assistant devices can also have their integration's own services (e.g.
-`webostv.button {button: enum}`), typed from HA's metadata when the device was registered (or
-last refreshed) by an admin. Their
-labels are HA's. A device whose entity is missing from the latest discovery shows
-`availability: stale`, and its commands fail (`status: failed`, `message: entity_not_found`)
-until an admin re-links it. Until a discovery runs, a renamed or removed entity's commands are
-reported `accepted` (HA itself says success).
+**Home Assistant devices** (`integration_id: "ha_main"`) offer their domain's commands
+(`media_player.turn_on`, `media_player.select_source {source}`, `light.turn_on`...) and, often,
+their integration's own services (`webostv.button {button}`, `sonos.set_sleep_timer`). Each is
+typed from HA's metadata (labels, units, defaults, descriptions). Response-only services, ones
+Hubbo can't type, toggles and `play_media` aren't offered. A device whose entity disappeared
+shows `availability: stale`; its commands fail until an admin re-links it.
 
-A Bluetooth device was added from a profile (an Apple TV, a Fire TV...). `GET /devices/{id}`
-shows the profile's `commands` (names like `Select`, `Home`, `PlayPause`), `buttons`, `power`
-and `inputs`; `GET /devices` leaves those out. Its capabilities come in three `group`s:
+**Bluetooth devices** (`integration_id: "ble"`, an Apple TV, a Fire TV...) were added from a
+profile. `GET /devices/{id}` (`#/components/schemas/DeviceDetail`) shows it: `commands` (names
+such as `Select`, `Home`, `PlayPause`), `buttons` (which remote button usually sends which
+command, e.g. `{"menu": "Home"}`), `power`, `timing` and `inputs`. Their capabilities come in
+three groups:
 
-- `remote`: `press {command, hold_ms?}`, `press_down {command}` and `press_up {command}`, where
-  `command` is one of the profile's names. `press` holds as long as the profile says, or
-  `hold_ms` (1-10000) if you send it.
-- `keys`: `key_tap`, `key_down` and `key_up` with `key` (`KEY_A`, `ARROW_UP`, `F1`...), on
-  every Bluetooth device whatever its profile.
-- `custom`: `usage_tap`, `usage_down` and `usage_up` with a raw consumer `usage` (1-1023).
+| Group | Commands | Param |
+|---|---|---|
+| `remote` | `press`, `press_down`, `press_up` | `command`: a profile command name |
+| `keys` | `key_tap`, `key_down`, `key_up` | `key`: `KEY_A`, `ARROW_UP`, `F1`... |
+| `custom` | `usage_tap`, `usage_down`, `usage_up` | `usage`: a raw consumer code, 1-1023 |
 
-Prefer `remote`: the same name sends the right code for that device. `wait_connected
-{timeout_ms?}` (1000-60000, default 15000) waits for the device's Bluetooth link, then the
-sequence goes on; if the time runs out, it goes on anyway. It works only in a startup or
-shutdown.
+Prefer `remote`: the same name sends the right code for that device. `press` holds the key as long
+as the profile says; a profile command with its own `hold_ms` (Apple TV's `ControlCenter` is held
+1 s) is a timed press. `press {command, hold_ms}` (1-10000) holds any command that long.
+`wait_connected {timeout_ms}` waits for the device's Bluetooth link (see Steps).
 
-Deviceless commands come from the `system` integration in `GET /integrations` (`commands`):
-`wait {duration_ms}`, `activate {activity_id}`, `off {}`. Use them with `"device_id": null`.
+Bluetooth commands work only while the device is `bluetooth.state: connected`; otherwise they
+fail and nothing is sent.
+
+**Hubbo's own commands** come from the `system` integration (`GET /integrations`, its
+`commands`), with `"device_id": null`: `wait {duration_ms}`, `activate {activity_id}` and
+`off {}`.
 
 ## Actions
 
-Every action has the same four fields:
+Every action has the same four fields (`#/components/schemas/Action`):
 
 ```json
 {"integration_id": "ha_main", "device_id": "dev_denon", "command_id": "media_player.volume_set", "params": {"level": 0.35}}
@@ -100,99 +106,242 @@ Every action has the same four fields:
 {"integration_id": "system", "device_id": null, "command_id": "wait", "params": {"duration_ms": 1500}}
 ```
 
-`integration_id` must be the device's own `integration_id`. `params` is always present (`{}` if
-there are none), holds at most 4 scalar values, and nothing else.
+`integration_id` must be the device's own. `params` is always present (`{}` when there are none)
+and holds at most 4 scalar values.
 
-## Try a command
+**Try one** before you put it in an activity:
 
 ```sh
-curl -s -X POST -H "Authorization: Bearer $HUBBO_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"params":{"level":0.35}}' \
+curl -s -X POST -H "$H" -H 'Content-Type: application/json' -d '{"params":{"level":0.35}}' \
   $HUBBO/devices/dev_denon/commands/media_player.volume_set/execute
 # {"status":"accepted","device_id":"dev_denon","command_id":"media_player.volume_set","elapsed_ms":84}
 ```
 
-`200` comes back with `status` `accepted`, `failed` or `timeout`, all meaning it was sent. A
-`4xx` means nothing was sent: read `error.details`.
-
-Only `momentary` commands can be executed (each command's `effect` in capabilities says which).
-A `hold` command such as `press_down` would leave a key held with nothing to release it, so
-execute answers `422` with detail code `hold_not_allowed`: send `press` instead. Holds belong in
-bindings, as a `down`/`up` pair (`up:down` → `press_down`, `up:up` → `press_up`). A `wait`
-command (`wait_connected`) answers `422` `sequence_only`, and a binding can't use it either.
-
-A Bluetooth device's key goes to that device's own host (an Apple TV, a Shield), never another.
-Each Bluetooth device in `/devices` has `bluetooth.state`: `connected`, `not_connected`,
-`not_paired` or `pairing`. Its commands work only while it's `connected` (`availability:
-available`); otherwise they fail and nothing is sent. Pairing is admin-only.
+`200` comes back with `status` `accepted`, `failed` or `timeout`; all three mean it was sent. A
+`4xx` means nothing was sent: read `error.details`. Only `momentary` commands can be executed:
+`press_down` would leave a key held, so it gets `422 hold_not_allowed` (send `press`), and
+`wait_connected` gets `422 sequence_only`.
 
 ## Activities
 
-An activity is a startup sequence, a shutdown sequence, and bindings from remote triggers to
-actions:
+```json
+{"name": "Watch Apple TV",
+ "startup":  [ ...actions... ],
+ "shutdown": [ ...actions... ],
+ "bindings": {"<button>:<event>": [ ...actions... ]}}
+```
 
-- **Startup** runs when the activity is activated. Switching from A to B runs only B's startup,
-  never A's shutdown. So startup should set every input it relies on explicitly (e.g. TV source
-  and receiver source), and use explicit power-on commands, never toggles.
-- **Shutdown** runs only on Off (the remote's Off, or `POST /activities/off`).
-- **Bindings** map `"<button>:<event>"` to actions. Events are `down`, `up`, `tap` (released
-  before 800 ms) and `hold` (still held at 800 ms, fires once). Use `down` + `up` for key-like
-  behaviour (Bluetooth `press_down`/`press_up`, so holding a remote arrow holds the key). Use `tap` +
-  `hold` for click-or-hold. Unbound triggers do nothing.
-- `system/activate` and `system/off` may appear only as the last action of a binding, never in
-  startup or shutdown.
+`GET /activities` lists them, with `active_activity_id`. `GET /activities/{id}` adds `id`,
+`schema_version` and `revision` (`#/components/schemas/Activity`).
 
-Global bindings (`GET/PUT /global-bindings`) apply per button, not per trigger: if the active
-activity binds any trigger of a button (`down`, `up`, `tap` or `hold`), none of that button's
-global bindings apply. Globals cover only the buttons the activity doesn't bind at all. That's
-where activity buttons go, e.g. `"tv:tap"` → `activate act_watch_apple_tv`, and `"off:tap"` →
-`off`.
+### Steps: startup and shutdown
 
-### 1. Validate (dry run)
+- **Startup** runs when the activity starts. **Shutdown** runs only on Off (the remote's Off,
+  or `POST /activities/off`).
+- **Switching from A to B runs only B's startup**, never A's shutdown. So a startup must leave
+  every device the way the activity needs it, whatever was on before: power each device on with
+  a discrete on command (`media_player.turn_on`, a profile's `power.on`), never a toggle, and set
+  every input explicitly (the TV's source and the receiver's).
+- **`wait {duration_ms}`** (0-60000) pauses the sequence. Devices need time after power-on
+  (a profile's `power.on_delay_ms`) and after an input change (`timing.input_delay_ms`). A TV
+  often ignores an input change while it's waking: put a wait of about 3 s between its
+  `turn_on` and its `select_source`.
+- **`wait_connected {timeout_ms}`** (1000-60000, default 15000) waits until a Bluetooth device is
+  connected, then the sequence goes on. If the time runs out, it goes on anyway. Put it before a
+  Bluetooth device's first command in a startup. Only startup and shutdown can use it.
+- **Inputs:** HA devices use `select_source {source}`, picking from its `options`. A profile's
+  `inputs` list named steps.
+- **Power from a profile:** `power.type` is `discrete` (`on`/`off` steps), `toggle` (one
+  `toggle` step: leave it out of startup, since repeating it turns the device off) or `none` (no
+  steps; an Apple TV wakes on any key and sleeps on its own). Each profile step is
+  `{"command": X}` (send `press {command: X}`) or `{"delay_ms": N}` (send `wait`).
+- `activate` and `off` can't be used in startup or shutdown.
+
+A typical startup:
+
+```json
+[{"integration_id": "ha_main", "device_id": "dev_lg_tv", "command_id": "media_player.turn_on", "params": {}},
+ {"integration_id": "ha_main", "device_id": "dev_denon", "command_id": "media_player.turn_on", "params": {}},
+ {"integration_id": "system", "device_id": null, "command_id": "wait", "params": {"duration_ms": 3000}},
+ {"integration_id": "ha_main", "device_id": "dev_lg_tv", "command_id": "media_player.select_source", "params": {"source": "HDMI 1"}},
+ {"integration_id": "ha_main", "device_id": "dev_denon", "command_id": "media_player.select_source", "params": {"source": "TV Audio"}},
+ {"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "wait_connected", "params": {"timeout_ms": 15000}},
+ {"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "press", "params": {"command": "Home"}}]
+```
+
+### Buttons
+
+The remote's button ids come from `GET /remote/buttons`: `up`, `down`, `left`, `right`,
+`select`, `menu`, `back`, `volume_up`, `volume_down`, `mute`, `play`, `pause`, `number_1`... It
+also gives `hold_ms`, the long-press time (800).
+
+**Triggers.** `bindings` maps `"<button>:<event>"` to a list of actions, run in order:
+
+| Event | Fires |
+|---|---|
+| `down` | as soon as the button goes down |
+| `up` | when it's released |
+| `tap` | on release, if it was held less than 800 ms |
+| `hold` | once, when it has been held 800 ms (then `tap` doesn't fire) |
+
+A trigger that isn't in `bindings` does nothing. A binding's list has at least one action:
+there are no empty lists.
+
+**How to write a button.** Think of each button as a **Press** and, optionally, a **Long
+press**. Write them the way the web admin does, so the admin sees them as you meant:
+
+1. **Press, with no Long press:** the button passes straight through. A Bluetooth command goes
+   on `down` as its hold form and on `up` as its release, with the same params, so holding the
+   remote's button holds the key (the d-pad scrolls, fast-forward keeps going):
+
+   ```json
+   "up:down": [{"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "press_down", "params": {"command": "DirectionUp"}}],
+   "up:up":   [{"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "press_up",   "params": {"command": "DirectionUp"}}]
+   ```
+
+   The same goes for `key_down`/`key_up` (`{"key": ...}`) and `usage_down`/`usage_up`
+   (`{"usage": ...}`).
+
+2. **Press, with a Long press:** Press becomes a `tap` (send `press`, the one-shot form), and
+   Long press goes on `hold`. A `down` would fire on every press before the hub knows whether
+   it's long, so don't use `down`/`up` on a button that has a `hold`:
+
+   ```json
+   "menu:tap":  [{"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "press", "params": {"command": "Home"}}],
+   "menu:hold": [{"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "press", "params": {"command": "ControlCenter"}}]
+   ```
+
+3. **Exceptions to rule 1:**
+   - **A timed profile command** (one with its own `hold_ms` in `GET /devices/{id}` `commands`)
+     always goes on `tap` as `press`: the hub holds it for exactly that long.
+   - **Home Assistant commands** have no down/up form. Press goes on `down` (sent on press) or
+     `tap` (sent on release); both are valid, prefer `down`, which is what the web admin writes.
+     With a Long press, Press goes on `tap` as in rule 2.
+   - **Hubbo's own commands** (`activate`, `off`) always go on `tap`, and must be the last
+     action in their list.
+
+**Holding never repeats.** Each trigger fires once per press: holding Volume up sends one HA
+`volume_up`, not a stream. Only a Bluetooth `*_down`/`*_up` pair is held as a key for as long as
+the button is.
+
+**Long press on an HA device.** HA devices have no `buttons` map: pick commands from their
+capabilities. E.g. Mute on a receiver, press to mute and long-press to unmute:
+
+```json
+"mute:tap":  [{"integration_id": "ha_main", "device_id": "dev_denon", "command_id": "media_player.volume_mute", "params": {"muted": true}}],
+"mute:hold": [{"integration_id": "ha_main", "device_id": "dev_denon", "command_id": "media_player.volume_mute", "params": {"muted": false}}]
+```
+
+**Bind only devices the startup prepares.** If a button drives a device the startup doesn't turn
+on (a receiver, say), add that device's power-on and input to the startup, or the button may do
+nothing.
+
+**Enforced vs advice.** Validate and save refuse (`422`): unknown buttons or events, a `*_down` off
+`down` or without its matching `*_up` (`hold_not_allowed`, `unpaired_hold`), `activate`/`off` not
+last or in a sequence, `wait_connected` in a binding, and every param check. The rest of this
+section is how the web admin writes buttons, so it shows them as Press and Long press: the hub
+accepts `down` with `tap` on one button, or several actions on `hold` (the web then lists that
+button's triggers raw).
+
+**Global bindings** (`GET /global-bindings`, `PUT /global-bindings` with `{bindings, revision}`)
+hold the buttons that work in every activity: activity buttons (`"tv:tap"` → `activate
+act_watch_apple_tv`), Off (`"off:tap"` → `off`), lights. They apply **per button**: if the active
+activity binds any trigger of a button (`down`, `up`, `tap` or `hold`, with at least one action),
+none of that button's globals apply. A button the activity doesn't bind at all gets its globals.
+To see what an activity inherits, read both and take the global buttons the activity doesn't
+mention:
 
 ```sh
-curl -s -X POST -H "Authorization: Bearer $HUBBO_TOKEN" -H 'Content-Type: application/json' \
-  -d @activity.json $HUBBO/activities/validate
+curl -s -H "$H" $HUBBO/global-bindings > g.json
+curl -s -H "$H" $HUBBO/activities/act_watch_apple_tv > a.json
+jq -n --slurpfile g g.json --slurpfile a a.json '
+  ($a[0].bindings | keys | map(split(":")[0]) | unique) as $bound
+  | $g[0].bindings | with_entries(select((.key | split(":")[0]) as $b | $bound | index($b) | not))'
+```
+
+So binding just `tv:hold` in an activity also hides the global `tv:tap`.
+
+### Recipes
+
+Each recipe edits `a.json` (from `GET /activities/{id}`) with `jq`, for brevity (any JSON edit
+does), then validates and saves it as in "Saving" below. `+=` keeps a button's other triggers:
+when you change how a button works, remove its old triggers first (see "Remove a button").
+
+**Bind the d-pad and Select to an Apple TV** (pass-through, so holding scrolls):
+
+```sh
+jq '.bindings += ([["up","DirectionUp"],["down","DirectionDown"],["left","DirectionLeft"],
+                   ["right","DirectionRight"],["select","Select"]]
+  | map(. as [$b,$c] | {
+      ($b+":down"): [{integration_id:"ble",device_id:"dev_apple_tv",command_id:"press_down",params:{command:$c}}],
+      ($b+":up"):   [{integration_id:"ble",device_id:"dev_apple_tv",command_id:"press_up",params:{command:$c}}]})
+  | add)' a.json > b.json
+```
+
+**Send volume to the receiver in this activity** (HA: once per press, on `down`):
+
+```sh
+jq '.bindings += {
+  "volume_up:down":   [{"integration_id":"ha_main","device_id":"dev_denon","command_id":"media_player.volume_up","params":{}}],
+  "volume_down:down": [{"integration_id":"ha_main","device_id":"dev_denon","command_id":"media_player.volume_down","params":{}}],
+  "mute:down":        [{"integration_id":"ha_main","device_id":"dev_denon","command_id":"media_player.volume_mute","params":{"muted":true}}]}' a.json > b.json
+```
+
+**Put a Long press on Menu** (Press moves from `down`/`up` to `tap`):
+
+```sh
+jq 'del(.bindings["menu:down"], .bindings["menu:up"]) | .bindings += {
+  "menu:tap":  [{"integration_id":"ble","device_id":"dev_apple_tv","command_id":"press","params":{"command":"Home"}}],
+  "menu:hold": [{"integration_id":"ble","device_id":"dev_apple_tv","command_id":"press","params":{"command":"ControlCenter"}}]}' a.json > b.json
+```
+
+To take the Long press off, delete `menu:hold` and turn `menu:tap` back into the
+`press_down`/`press_up` pair.
+
+**Remove a button** from the activity (its globals, if any, then apply again):
+
+```sh
+jq '.bindings |= with_entries(select(.key | startswith("menu:") | not))' a.json > b.json
+```
+
+### Saving
+
+**Validate** (a dry run, always `200`). `path` is a JSON Pointer into what you sent:
+
+```sh
+curl -s -X POST -H "$H" -H 'Content-Type: application/json' -d @b.json $HUBBO/activities/validate
 # {"valid":false,"errors":[{"path":"/bindings/volume_up:down/0/params/level","code":"param_out_of_range","message":"..."}]}
 ```
 
-It always returns `200`. `path` is a JSON Pointer into what you sent. Fix and repeat until
-`"valid": true`.
+Fix and repeat until `"valid": true`. Then:
 
-### 2. Create in one request
-
-```sh
-curl -s -X POST -H "Authorization: Bearer $HUBBO_TOKEN" -H 'Content-Type: application/json' \
-  -d @activity.json $HUBBO/activities
-```
-
-Body: `{name, startup, shutdown, bindings}`. Response `201` is the stored activity with its `id`
-and `revision: 1`. See `api/fixtures/activities/create.request.json` and
-`act_watch_apple_tv.json`.
-
-### 3. Edit: GET, change, PUT
+- **Create:** `POST /activities` with exactly `{name, startup, shutdown, bindings}` → `201`, the
+  stored activity with its `id` and `revision`.
+- **Replace:** `PUT /activities/{id}` with the activity as you read it, changed. `revision` is
+  required (the one you read); `id` and `schema_version` may be echoed back and are ignored. It
+  replaces the whole activity at once. `validate` takes the same body and ignores `id` and
+  `revision`, so it can't catch a stale revision. If someone changed it since your GET, you
+  get `409 revision_conflict` with `current_revision`: GET again and redo your change; don't just
+  bump the number.
+- **Delete:** `DELETE /activities/{id}?revision=N`. An activity another binding activates gets
+  `409 activity_in_use` (`details` says where): remove that binding first.
 
 ```sh
-curl -s -H "Authorization: Bearer $HUBBO_TOKEN" $HUBBO/activities/act_watch_apple_tv > a.json
-# edit a.json, keep "revision" as it was
-curl -s -X PUT -H "Authorization: Bearer $HUBBO_TOKEN" -H 'Content-Type: application/json' \
-  -d @a.json $HUBBO/activities/act_watch_apple_tv
+curl -s -X PUT -H "$H" -H 'Content-Type: application/json' -d @b.json $HUBBO/activities/act_watch_apple_tv
 ```
 
-PUT replaces the whole activity atomically, so either all of it is saved or none of it. If someone
-changed it since your GET you get `409 revision_conflict` with `current_revision`. GET again and
-reapply your change; don't just bump the number. To delete, send
-`DELETE /activities/{id}?revision=N`.
+`PUT /global-bindings` takes `{bindings, revision}` the same way. It has no dry run: a mistake
+gets `422` with the same `details`, and nothing is saved.
 
-### 4. Activate and turn off
+### Start and stop
 
 ```sh
-curl -s -X POST -H "Authorization: Bearer $HUBBO_TOKEN" $HUBBO/activities/act_watch_apple_tv/activate
-curl -s -X POST -H "Authorization: Bearer $HUBBO_TOKEN" $HUBBO/activities/off
+curl -s -X POST -H "$H" $HUBBO/activities/act_watch_apple_tv/activate
+curl -s -X POST -H "$H" $HUBBO/activities/off
 ```
 
-Both return `200` once the engine has handled the request; the sequences run in the
-background. The body says what happened, phase by phase:
+Both return `200` once the hub has switched; the sequences run in the background
+(`#/components/schemas/TransitionResult`):
 
 ```json
 {"switched": true, "active_activity_id": "act_watch_apple_tv", "previous_activity_id": null,
@@ -200,34 +349,22 @@ background. The body says what happened, phase by phase:
  "shutdown": {"status": "none", "queued_actions": 0}}
 ```
 
-- `switched: true` means the hub changed activity. **Never retry it**, even when
-  `startup.status` is `rejected` (the sequence queue was full, `reason: "queue_full"`): a retry
-  would run a second full transition. Send the missing commands individually if needed.
-- Off with nothing active is a no-op: `switched: false`, `shutdown.status: none`.
-- `503 busy` means the request never reached the engine; nothing changed and a retry is safe.
+- `switched: true` means the hub switched. **Never retry it**, even when `startup.status` is
+  `rejected` (`queue_full`): a retry runs a second full switch.
+- Activating the active activity runs its startup again. Off with nothing active does nothing
+  (`switched: false`).
+- `503 busy` means nothing changed; retrying is safe.
 
-## Configuration state
+## The hub's state
 
-`GET /status` has `config: {state, generation, reason}`:
+`GET /status` shows the hub's name (`hubbo.name`), the active activity, and `config.state`:
 
-- `ok`: running the saved configuration. `fresh`: nothing saved yet (first boot), defaults
-  running.
-- `blocked`: the saved configuration can't be used (from newer firmware, a failed migration,
-  it doesn't compile, or every saved copy is damaged; `reason` says which). Nothing is active
-  and every edit gets `409 config_blocked`. Only an admin can fix it: `POST /admin/restore` with a backup, or
-  `POST /admin/reset` (reset configuration to the defaults). Don't keep retrying edits. A backup taken while
-  blocked is the saved record's raw bytes, marked `X-Hubbo-Backup: blocked-raw`
-  (`application/octet-stream`, `hubbo-backup-BLOCKED-<date>.json`), not a `Backup` document.
-  Keep it before a reset; restore accepts it once the firmware can read it.
-- `storage_unavailable`: the store can't be written; edits get `503 storage_unavailable`.
-  `GET /admin/backup` still exports the running config if it loaded fine before the store
-  failed; it's 503 only when the hub booted without being able to read it.
+- `ok` (or `fresh`, nothing saved yet): normal.
+- `blocked`: the saved configuration can't be used. Nothing is active and every edit gets
+  `409 config_blocked`. Only the admin can fix it (restore a backup, or reset); don't retry.
+- `storage_unavailable`: the hub can't save; edits get `503 storage_unavailable`.
 
-Every change bumps `generation`, and each object's `revision` is the generation of its last
-change. A restore or reset stamps everything with a new generation, so any revision you read
-before it gets `409 revision_conflict`: GET again. A restore or reset never runs startup or
-shutdown commands: the active activity stays active if its id still exists, otherwise nothing
-is active.
+After the admin restores or resets, every `revision` you hold is stale: GET again.
 
 ## Errors
 
@@ -236,101 +373,21 @@ is active.
            "details": [{"path": "/startup/0/params/entity_id", "code": "forbidden_param", "message": "..."}]}}
 ```
 
-| HTTP | `code` | What to do |
-|---|---|---|
-| 400 | `malformed_json` | Fix the JSON. |
-| 401 | `unauthenticated` | Token missing, wrong or revoked. Ask the admin. |
-| 403 | `forbidden` | Admin-only operation. Ask the admin. |
-| 404 | `not_found` | Wrong ID. List again. |
-| 409 | `revision_conflict` | GET, reapply, PUT. |
-| 409 | `device_in_use`, `limit_reached`, `busy` | Read the message; `busy` can be retried shortly. |
-| 413 | `payload_too_large` | Activity bodies max 32 KiB. |
-| 415 | `unsupported_media_type` | Send `Content-Type: application/json`. |
-| 409 | `activity_in_use` | Another binding activates it; remove that first (see `details`). |
-| 409 | `config_blocked` | The saved config can't be used; ask the admin to restore or reset. |
-| 503 | `storage_unavailable` | The hub can't save right now; nothing changed. |
-| 501 | `not_implemented` | Not available yet. |
-| 422 | `validation_failed` | Read `details[].path` and `code`. |
-| 503 | `integration_unavailable` | HA or Bluetooth is down. Check `/integrations`. |
+- `400 malformed_json`, `415`: fix the JSON or send `Content-Type: application/json`.
+- `401`: token missing, wrong or revoked. `403 forbidden`: admin-only. Ask the admin.
+- `404 not_found`: a wrong ID (list again), or a path the API doesn't have (see `docs`).
+- `409 revision_conflict`: GET, redo the change, PUT. `409 activity_in_use`: another binding
+  activates it (`details` says where). `409 config_blocked`: ask the admin.
+- `422 validation_failed`: read `details[].path` and `code`; the codes are listed at
+  `#/components/schemas/ErrorDetail`.
+- `503 busy`: retry shortly. `503 storage_unavailable`: nothing was saved.
+  `503 integration_unavailable`: HA or Bluetooth is down (`GET /integrations`).
 
-Detail codes include `unknown_device`, `integration_mismatch`, `unknown_command`,
-`unknown_param`, `missing_param`, `invalid_param_type`, `param_out_of_range`,
-`invalid_enum_value`, `invalid_trigger`, `misplaced_transition` and `forbidden_param`. The full
-list is in `ErrorDetail` in the spec.
-
-## Walkthrough on the simulator (the Phase 2 gate)
-
-Create, edit, activate and turn off an activity with curl against hub-sim, then restart it and
-see the config survive. Start the simulator with a state directory (in another terminal):
-
-```sh
-bin/hubbo sim serve --port 8780 --data build/sim-state
-```
-
-No-auth mode needs no token:
-
-```sh
-H=http://127.0.0.1:8780/api/v1
-J='Content-Type: application/json'
-
-curl -s $H/devices | jq '.devices[].id'
-curl -s $H/devices/dev_denon/capabilities | jq '.commands[].command_id'
-
-# Validate, then create in one request.
-cat > /tmp/act.json <<'JSON'
-{"name": "Movie Night",
- "startup": [{"integration_id": "ha_main", "device_id": "dev_lg_tv", "command_id": "media_player.turn_on", "params": {}},
-             {"integration_id": "system", "device_id": null, "command_id": "wait", "params": {"duration_ms": 1000}}],
- "shutdown": [{"integration_id": "ha_main", "device_id": "dev_lg_tv", "command_id": "media_player.turn_off", "params": {}}],
- "bindings": {"volume_up:down": [{"integration_id": "ha_main", "device_id": "dev_denon",
-                                  "command_id": "media_player.volume_up", "params": {}}]}}
-JSON
-curl -s -X POST -H "$J" -d @/tmp/act.json $H/activities/validate     # {"valid":true,"errors":[]}
-curl -s -X POST -H "$J" -d @/tmp/act.json $H/activities | tee /tmp/created.json | jq '{id, revision}'
-ID=$(jq -r .id /tmp/created.json)                                     # act_movie_night
-
-# Edit: GET, change, PUT with the revision you read.
-curl -s $H/activities/$ID | jq '.name = "Movie Night (late)"' > /tmp/edit.json
-curl -s -X PUT -H "$J" -d @/tmp/edit.json $H/activities/$ID | jq .revision     # 2
-curl -s -X PUT -H "$J" -d @/tmp/edit.json $H/activities/$ID | jq .error       # revision_conflict, current_revision 2
-
-# Activate, check, turn off.
-curl -s -X POST $H/activities/$ID/activate        # 200 {"switched":true,"active_activity_id":"act_movie_night",...}
-curl -s $H/status | jq .active_activity_id
-curl -s -X POST $H/activities/off                 # 200, shutdown.queued_actions = shutdown length
-```
-
-Stop hub-sim (Ctrl-C) and start it again with the same `--data`: `GET $H/activities/$ID`
-returns the edited activity at revision 2.
-
-With `--auth` the same calls need credentials. First run:
-
-```sh
-# Pick your own username (there's no default).
-curl -s -X POST -H "$J" -d '{"username":"jon","password":"correct horse battery"}' $H/auth/setup
-# later: POST /auth/login with the same body. Both set the hubbo_session cookie (7 days).
-curl -s -c /tmp/jar -X POST -H "$J" -d '{"username":"jon","password":"correct horse battery"}' $H/auth/login
-curl -s -b /tmp/jar -X POST -H "$J" -d '{"name":"agent"}' \
-  $H/admin/tokens | jq -r .token          # hbt_..., shown once
-```
-
-Then use `Authorization: Bearer hbt_...` as above.
-
-## Troubleshooting
-
-- **A command is missing from capabilities.** Hubbo only offers commands the entity supports
-  (HA `supported_features`) and that are on its allowlist (docs/ha-capabilities.md). Toggles,
-  `play_media` are deliberately absent, and an integration service appears only if HA describes
-  every field in a way Hubbo can type (the admin's entity details list the rest as
-  `skipped_services`).
-- **A device shows `availability: stale`.** Its HA entity wasn't in the latest discovery
-  (removed or renamed). Only the admin can re-link it.
-- **`timeout` on HA commands.** Hubbo waited and gave up; the device may still have acted. Don't
-  retry volume steps blindly.
-- **Volume buttons step once per press.** Repeat-while-held isn't implemented yet.
-- **`/status` diagnostics** show recent errors and RF dispatch latency.
+An HA command's `timeout` may still have acted: don't repeat volume steps blindly. A command
+missing from capabilities isn't offered on purpose: ask the admin. `GET /status` `diagnostics`
+lists recent errors.
 
 ## Limits
 
-16 activities, 64 devices (at most 4 Bluetooth), 32 actions per sequence or binding, 4 params per action, names up to
-64 characters, enum strings up to 64, `wait` up to 60 s.
+16 activities; 64 devices, at most 4 of them Bluetooth; 32 actions per sequence or trigger;
+4 params per action; names up to 64 characters; enum strings up to 64; `wait` up to 60 s.
