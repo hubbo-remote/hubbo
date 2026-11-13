@@ -31,12 +31,21 @@ compaction. Nobody needs to ask for it or explain it.
 
 ## Testing without waiting around
 
-- **While working, run only what a change touches:** one test filter (`bin/hubbo test -R Name`),
-  one e2e spec, one contract mode.
-- **Full gates run once per phase,** after `/simplify` and the review fixes and before the board
-  test: each agent runs `bin/hubbo gate <its area>` once (core, api, web or fw), as one command.
-  If a long run moves to the background, wait for its completion notice; don't split it into
-  chunks. After the board test, only an agent whose files changed reruns its gate.
+- **While working, run only the feature's own tests:** one test filter (`bin/hubbo test -R Name`),
+  one contract mode, and for the web the feature's specs on both targets with
+  `bin/hubbo web e2e --both e2e/<feature>.spec.ts [...]`. That's enough right up to the end; don't
+  rerun changed specs just before a gate, since the gate covers them.
+- **Agents never start a gate on their own.** The lead starts the gates once per phase, when the
+  code is frozen: after `/simplify`, the review fixes and any changes from the board test, right
+  before asking me to commit. Each agent then runs `bin/hubbo gate <its area>` once (core, api,
+  web or fw), as one command. If a long run moves to the background, wait for its completion
+  notice; don't split it into chunks.
+- **A gate failure reruns only what failed.** For the web, `bin/hubbo gate web --failed` reruns
+  just the spec files the last gate saw fail. If they pass and it was a known flake, the gate
+  counts as passed. If it was a real bug, fix it, rerun that spec with `--both`, and the gate
+  counts as passed; don't rerun the whole gate.
+- **A change after the gates gets a targeted test, not another gate,** unless it's broad (shared
+  form code, the mock's core logic, a core header many areas include). The lead decides which.
 - **Log a run to a file named for your area** (e.g. `gate-core.log`), never a shared name like
   `gate.log`: agents' gates run at the same time and overwrite each other's logs. Put logs in the
   session's scratchpad directory by its absolute path, never a relative `scratchpad/` (that lands

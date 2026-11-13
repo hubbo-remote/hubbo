@@ -17,8 +17,11 @@
 #   bin/hubbo web [pnpm args] web admin (default: `dev`, e.g. `web build`)
 #   bin/hubbo web e2e [--sim [--auth]] [args]  Playwright e2e against the mock, or (--sim)
 #                             against a fresh hub-sim that it starts and stops itself
+#   bin/hubbo web e2e --both <specs>  those specs on the mock, then on hub-sim --auth
+#                             (the feature check while working)
 #   bin/hubbo profiles sync [dir]  copy the built-in profiles from hubbo-devices (default ../hubbo-devices)
 #   bin/hubbo gate <core|api|web|fw|all>  an area's full phase-end gate, as one command
+#   bin/hubbo gate web --failed  rerun only the e2e spec files the last web gate saw fail
 set -euo pipefail
 
 self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
@@ -184,6 +187,19 @@ case "$cmd" in
             # seconds apart: on this host, two `docker compose run`s of one
             # service starting together sometimes lose their exit code (254).
             stagger() { [ -z "${HUBBO_WEB_READY:-}" ] || flock build/web-e2e-start.lock sleep 4; }
+            if [ "${1:-}" = --both ]; then
+                # The same specs on the mock, then on hub-sim with sign-in: the
+                # feature check while working (e.g. `--both e2e/mqtt.spec.ts`).
+                shift
+                [ $# -gt 0 ] || { echo "usage: bin/hubbo web e2e --both <specs or playwright args>" >&2; exit 2; }
+                export HUBBO_WEB_READY=1
+                rc=0
+                echo "--- mock"
+                "$self" web e2e "$@" || rc=1
+                echo "--- hub-sim --auth"
+                "$self" web e2e --sim --auth "$@" || rc=1
+                exit $rc
+            fi
             if [ "${1:-}" != --sim ]; then
                 stagger
                 run_in web-e2e "$@"
@@ -237,24 +253,54 @@ case "$cmd" in
         # The mock e2e and the hub-sim e2e use separate ports, output dirs and
         # caches, so they run side by side. The hub-sim branch logs to its own
         # file (printed after) so the two reporters don't interleave.
+        # Every failed e2e spec file goes to build/gate-web-failed.txt, so
+        # `gate web --failed` reruns just those instead of the whole gate.
+        failed_list=build/gate-web-failed.txt
         gate_web() {
             "$self" web exec true || return 1  # install once, for both branches
             mkdir -p build
-            local sim_log=build/gate-web-sim.log rc=0 sim
+            local sim_log=build/gate-web-sim.log mock_log=build/gate-web-mock.log rc=0 sim
             (
                 export HUBBO_WEB_READY=1
                 "$self" web e2e --sim --auth && "$self" web e2e --sim --project=noauth
             ) >"$sim_log" 2>&1 &
             sim=$!
-            "$self" web check && "$self" web build && HUBBO_WEB_READY=1 "$self" web e2e || rc=1
+            { "$self" web check && "$self" web build && HUBBO_WEB_READY=1 "$self" web e2e; } 2>&1 \
+                | tee "$mock_log"
+            [ "${PIPESTATUS[0]}" -eq 0 ] || rc=1
             wait "$sim" || rc=1
             echo "--- hub-sim e2e"
             cat "$sim_log"
+            cat "$mock_log" "$sim_log" | grep '✘' | grep -oE 'e2e/[A-Za-z0-9_./-]+\.spec\.ts' \
+                | sort -u >"$failed_list" || true
+            if [ -s "$failed_list" ]; then
+                echo "--- failed specs (rerun with: bin/hubbo gate web --failed)"
+                cat "$failed_list"
+            fi
+            return $rc
+        }
+        # Rerun only the spec files the last `gate web` saw fail, on the mock and on
+        # hub-sim (and the noauth project, for its specs). Clears the list on a pass.
+        gate_web_failed() {
+            [ -s "$failed_list" ] || { echo "gate: no failed web specs recorded" >&2; return 0; }
+            local specs rc=0
+            mapfile -t specs <"$failed_list"
+            echo "--- rerunning: ${specs[*]}"
+            "$self" web e2e --both "${specs[@]}" || rc=1
+            local noauth=()
+            for s in "${specs[@]}"; do
+                case "$s" in */firmware.spec.ts | */tokens.spec.ts) noauth+=("$s") ;; esac
+            done
+            if [ ${#noauth[@]} -gt 0 ]; then
+                HUBBO_WEB_READY=1 "$self" web e2e --sim --project=noauth "${noauth[@]}" || rc=1
+            fi
+            [ $rc -eq 0 ] && : >"$failed_list"
             return $rc
         }
         gate_fw() { "$self" fw run && "$self" fw run -e waveshare_esp32_s3_eth_ota; }
         case "${1:-}" in
-            core | api | web | fw) "gate_$1" ;;
+            web) if [ "${2:-}" = --failed ]; then gate_web_failed; else gate_web; fi ;;
+            core | api | fw) "gate_$1" ;;
             all) gate_core && gate_api && gate_web && gate_fw ;;
             *) echo "usage: bin/hubbo gate <core|api|web|fw|all>" >&2; exit 2 ;;
         esac

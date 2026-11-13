@@ -24,7 +24,9 @@ the current phase's doc in `docs/design/`.
 - Keep it simple. Don't restyle existing pages unless asked; a redesign is deferred.
 - Gate: `bin/hubbo gate web`: check (with the unit tests), build, e2e on the mock (desktop and
   phone), on hub-sim with `--auth`, and the `noauth` project on hub-sim without auth (the specs
-  whose behaviour differs without auth).
+  whose behaviour differs without auth). Run it only when the lead asks. While working, use
+  `bin/hubbo web e2e --both <specs>`; after a gate failure, `bin/hubbo gate web --failed`
+  (CLAUDE.md, "Testing without waiting around").
 
 **When you finish a piece of work:** update `docs/team/hubbo-frontend.md` with the state,
 decisions, gotchas and open items. Keep it short and current.
