@@ -86,9 +86,9 @@ void addBackupRoutes(RouteSink &sink, ApiContext &ctx) {
     sink.add("/api/v1/admin/reset", auth::Operation::ResetConfiguration, [&ctx](auto &, auto &, auto &out) {
         const ConfigSpec empty;
         const ConfigSpec &defaults = ctx.factoryDefaults ? *ctx.factoryDefaults : empty;
-        if (!forgetTokenForNewHaUrl(ctx, defaults, out)) return;
+        if (!forgetSecretsForNewEndpoints(ctx, defaults, out)) return;
         const config::Outcome outcome = ctx.config.reset(defaults);
-        reapplyHomeAssistant(ctx, true);
+        reapplyIntegrations(ctx, true);
         if (!outcome.ok()) return sendOutcome(out, outcome, "configuration");
         JsonDocument doc;
         putConfigState(doc.to<JsonObject>(), ctx);
@@ -129,17 +129,15 @@ void addBackupRoutes(RouteSink &sink, ApiContext &ctx) {
         const size_t devices = restored.devices.size();
         const size_t activities = restored.activities.size();
         const size_t integrations = restored.integrations.size();
-        bool homeAssistant = false;
         bool bluetooth = false;
-        for (const auto &integration : restored.integrations) {
-            homeAssistant = homeAssistant || integration.type == "home_assistant";
-            bluetooth = bluetooth || integration.type == "ble_hid";
-        }
+        for (const auto &integration : restored.integrations) bluetooth = bluetooth || integration.type == kBleHidType;
+        JsonDocument secrets;  // the integration secrets the archive can't bring back
+        putSecretFollowUps(secrets.to<JsonArray>(), restored);
 
-        if (!dryRun && !forgetTokenForNewHaUrl(ctx, restored, out)) return;
+        if (!dryRun && !forgetSecretsForNewEndpoints(ctx, restored, out)) return;
         // One pipeline: a dry run is the real restore without the save.
         const config::Outcome outcome = ctx.config.restore(std::move(restored), dryRun);
-        if (!dryRun) reapplyHomeAssistant(ctx, true);
+        if (!dryRun) reapplyIntegrations(ctx, true);
         if (!outcome.ok()) return sendOutcome(out, outcome, "backup");
 
         JsonDocument doc;
@@ -155,7 +153,7 @@ void addBackupRoutes(RouteSink &sink, ApiContext &ctx) {
         }
         // What the archive can't bring back; the admin re-enters or re-pairs.
         JsonArray followUps = doc["requires"].to<JsonArray>();
-        if (homeAssistant) followUps.add("home_assistant_token");
+        for (JsonVariantConst secret : secrets.as<JsonArrayConst>()) followUps.add(secret);
         if (bluetooth) followUps.add("ble_pairing");
         if (ctx.credentials.tokens().empty()) followUps.add("api_tokens");
         doc["warnings"].to<JsonArray>();

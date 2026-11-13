@@ -1,9 +1,11 @@
-// GET/PUT /admin/integrations/{id} (settings; the HA token is write-only)
+// GET/PUT /admin/integrations/{id} (settings; the HA token and the MQTT
+// password are write-only)
 // and POST/GET/DELETE /admin/integrations/{id}/discover (HA candidates), and
 // POST/GET .../entities/{entity_id}/details (what registering an entity stores).
 //
-// The HA access token lives in the SecretStore under kHaTokenKey. It is
-// read here only to hand it to the client, and never put in a response.
+// The HA access token (kHaTokenKey) and the MQTT broker password
+// (kMqttPasswordKey) live in the SecretStore. They're read here only to hand
+// them to the client or bridge, and never put in a response.
 
 #include <algorithm>
 #include <cctype>
@@ -12,9 +14,11 @@
 #include "hubbo/auth/secret_store.h"
 #include "hubbo/config/json.h"
 #include "hubbo/config/service.h"
+#include "hubbo/domain/ids.h"
 #include "hubbo/domain/limits.h"
 #include "hubbo/ha/capabilities.h"
 #include "hubbo/integrations/ha_client.h"
+#include "hubbo/integrations/mqtt_bridge.h"
 #include "routes.h"
 #include "support.h"
 
@@ -86,6 +90,23 @@ auth::SecretRead applyHomeAssistantSettings(const config::ConfigService &config,
     return read;
 }
 
+auth::SecretRead applyMqttSettings(const config::ConfigService &config, const auth::SecretStore *secrets,
+                                   integrations::MqttBridge &bridge) {
+    const IntegrationSpec *integration = config.findIntegration(kMqttIntegrationId);
+    integrations::MqttSettings settings;
+    if (integration != nullptr) {
+        settings.enabled = integration->enabled;
+        settings.host = integration->host;
+        settings.port = integration->port;
+        settings.username = integration->username;
+    }
+    const auth::SecretRead read =
+        secrets != nullptr ? secrets->read(kMqttPasswordKey, &settings.password) : auth::SecretRead::NotFound;
+    if (read != auth::SecretRead::Ok) settings.password.clear();
+    bridge.configure(std::move(settings));
+    return read;
+}
+
 namespace {
 
 // ^https?://[^/@?#\s]+(:[0-9]{1,5})?/?$ (HomeAssistantSettings.url): a base
@@ -106,12 +127,39 @@ const IntegrationSpec *requireIntegration(const ApiContext &ctx, std::string_vie
     return integration;
 }
 
-// The token's presence; false (after a 503) if the store can't say.
-bool hasToken(const ApiContext &ctx, http::Response &out, bool *present) {
+// The integration type's write-only secret: its SecretStore key, the
+// settings field that sets it, the flag that reports it, what a restore
+// asks the admin for, and the setting it was entered for (a new endpoint
+// never gets the old secret).
+struct SecretSlot {
+    const char *integrationId;
+    const char *type;
+    const char *key;
+    const char *field;
+    const char *presentField;
+    const char *followUp;
+    std::string IntegrationSpec::*endpoint;
+};
+constexpr SecretSlot kSecretSlots[] = {
+    {kHaIntegrationId, kHomeAssistantType, kHaTokenKey, "access_token", "has_access_token", "home_assistant_token",
+     &IntegrationSpec::url},
+    {kMqttIntegrationId, kMqttType, kMqttPasswordKey, "password", "has_password", "mqtt_password",
+     &IntegrationSpec::host},
+};
+
+const SecretSlot *secretSlot(std::string_view type) {
+    for (const SecretSlot &slot : kSecretSlots) {
+        if (type == slot.type) return &slot;
+    }
+    return nullptr;
+}
+
+// The secret's presence; false (after a 503) if the store can't say.
+bool hasSecret(const ApiContext &ctx, const char *key, http::Response &out, bool *present) {
     *present = false;
     if (ctx.secrets == nullptr) return true;
     std::string ignored;
-    switch (ctx.secrets->read(kHaTokenKey, &ignored)) {
+    switch (ctx.secrets->read(key, &ignored)) {
         case auth::SecretRead::Ok: *present = true; return true;
         case auth::SecretRead::NotFound: return true;
         default:
@@ -125,10 +173,10 @@ void sendConfig(const ApiContext &ctx, const IntegrationSpec &integration, http:
     JsonObject body = doc.to<JsonObject>();
     config::encodeIntegration(integration, body);
     JsonObject settings = body["settings"];
-    if (integration.type == kHomeAssistantType) {
+    if (const SecretSlot *slot = secretSlot(integration.type)) {
         bool present = false;
-        if (!hasToken(ctx, out, &present)) return;
-        settings["has_access_token"] = present;
+        if (!hasSecret(ctx, slot->key, out, &present)) return;
+        settings[slot->presentField] = present;
     }
     sendJson(out, status, doc);
 }
@@ -164,11 +212,31 @@ bool readNullable(JsonVariantConst v, size_t minLength, size_t maxLength, Nullab
 struct SettingsUpdate {
     std::optional<std::string> url;
     std::optional<bool> verifyTls;
-    Nullable accessToken;
+    Nullable secret;  // access_token / password
     std::optional<std::string> deviceName;
+    std::optional<std::string> host;
+    std::optional<uint16_t> port;
+    std::optional<std::string> username;
 };
 
-// HomeAssistantSettingsUpdate / BleHidSettingsUpdate for `type`.
+// A string `valid` accepts (TooLong past `max` bytes, else WrongType).
+bool readText(JsonVariantConst v, size_t max, bool (*valid)(std::string_view), std::optional<std::string> *out,
+              ValidationReport *report, const std::string &path) {
+    if (!v.is<const char *>()) {
+        report->add(ErrorCode::WrongType, path);
+        return false;
+    }
+    const std::string_view text = v.as<const char *>();
+    if (text.size() > max || !valid(text)) {
+        report->add(text.size() > max ? ErrorCode::TooLong : ErrorCode::WrongType, path);
+        return false;
+    }
+    *out = std::string(text);
+    return true;
+}
+
+// HomeAssistantSettingsUpdate / BleHidSettingsUpdate / MqttSettingsUpdate
+// for `type`.
 bool decodeSettings(JsonVariantConst v, const std::string &type, SettingsUpdate *out, ValidationReport *report) {
     const JsonObjectConst settings = v.as<JsonObjectConst>();
     const char *given = settings["type"] | "";
@@ -176,10 +244,11 @@ bool decodeSettings(JsonVariantConst v, const std::string &type, SettingsUpdate 
         report->add(ErrorCode::Required, "/settings/type");
         return false;
     }
-    if (type != given || (type != kHomeAssistantType && type != kBleHidType)) {
+    if (type != given || (type != kHomeAssistantType && type != kBleHidType && type != kMqttType)) {
         report->add(ErrorCode::IntegrationMismatch, "/settings/type");
         return false;
     }
+    const SecretSlot *slot = secretSlot(type);
     bool ok = true;
     for (JsonPairConst pair : settings) {
         const std::string key = pair.key().c_str();
@@ -206,8 +275,22 @@ bool decodeSettings(JsonVariantConst v, const std::string &type, SettingsUpdate 
             } else {
                 out->verifyTls = value.as<bool>();
             }
-        } else if (type == kHomeAssistantType && key == "access_token") {
-            ok = readNullable(value, 1, auth::kMaxSecretValueLength, &out->accessToken, report, path) && ok;
+        } else if (slot != nullptr && key == slot->field) {
+            ok = readNullable(value, 1, auth::kMaxSecretValueLength, &out->secret, report, path) && ok;
+        } else if (type == kMqttType && key == "host") {
+            ok = readText(value, limits::kMaxHostLength, isValidMqttHost, &out->host, report, path) && ok;
+        } else if (type == kMqttType && key == "username") {
+            ok = readText(value, limits::kMaxUsernameLength, isValidMqttUsername, &out->username, report, path) && ok;
+        } else if (type == kMqttType && key == "port") {
+            if (!value.is<int64_t>()) {
+                report->add(ErrorCode::WrongType, path);
+                ok = false;
+            } else if (value.as<int64_t>() < 1 || value.as<int64_t>() > 65535) {
+                report->add(ErrorCode::ParamOutOfRange, path);
+                ok = false;
+            } else {
+                out->port = static_cast<uint16_t>(value.as<int64_t>());
+            }
         } else if (type == kBleHidType && key == "device_name") {
             if (!value.is<const char *>()) {
                 report->add(ErrorCode::WrongType, path);
@@ -506,14 +589,31 @@ void sendDiscovery(const ApiContext &ctx, const Page &page, http::Response &out,
 
 }  // namespace
 
-bool forgetTokenForNewHaUrl(ApiContext &ctx, const ConfigSpec &next, http::Response &out) {
-    const IntegrationSpec *current = ctx.config.findIntegration(kHaIntegrationId);
-    const int index = indexOfId(next.integrations, kHaIntegrationId);
-    const std::string &nextUrl = index < 0 ? std::string() : next.integrations[static_cast<size_t>(index)].url;
-    if (current == nullptr || current->url == nextUrl || ctx.secrets == nullptr) return true;
-    if (ctx.secrets->erase(kHaTokenKey)) return true;
-    sendError(out, 503, "storage_unavailable", "The stored Home Assistant token couldn't be erased");
-    return false;
+bool forgetSecretsForNewEndpoints(ApiContext &ctx, const ConfigSpec &next, http::Response &out) {
+    if (ctx.secrets == nullptr) return true;
+    for (const SecretSlot &slot : kSecretSlots) {
+        const IntegrationSpec *current = ctx.config.findIntegration(slot.integrationId);
+        const int index = indexOfId(next.integrations, slot.integrationId);
+        const std::string_view nextEndpoint =
+            index < 0 ? std::string_view() : next.integrations[static_cast<size_t>(index)].*slot.endpoint;
+        if (current == nullptr || current->*slot.endpoint == nextEndpoint) continue;
+        if (!ctx.secrets->erase(slot.key)) {
+            // An earlier slot's secret may be gone already: the clients follow the store.
+            reapplyIntegrations(ctx, true);
+            sendError(out, 503, "storage_unavailable", "A stored integration secret couldn't be erased");
+            return false;
+        }
+    }
+    return true;
+}
+
+void putSecretFollowUps(JsonArray out, const ConfigSpec &restored) {
+    for (const SecretSlot &slot : kSecretSlots) {
+        const int index = indexOfId(restored.integrations, slot.integrationId);
+        if (index >= 0 && !(restored.integrations[static_cast<size_t>(index)].*slot.endpoint).empty()) {
+            out.add(slot.followUp);
+        }
+    }
 }
 
 const EntityDetails *completedDetails(ApiContext &ctx, std::string_view entityId) {
@@ -523,15 +623,17 @@ const EntityDetails *completedDetails(ApiContext &ctx, std::string_view entityId
     return d.state == FetchState::Done && d.entityId == entityId ? &d : nullptr;
 }
 
-void reapplyHomeAssistant(ApiContext &ctx, bool haChanged) {
-    if (ctx.homeAssistant == nullptr) return;
-    if (haChanged) {
-        ctx.homeAssistant->cancelDiscovery();
-        ctx.homeAssistant->takeDiscovery(nullptr, nullptr);  // an unread result of the old settings
-        ctx.discovery->reset(DiscoveryCache::State::Idle);
-        dropDetails(ctx);
+void reapplyIntegrations(ApiContext &ctx, bool haChanged) {
+    if (ctx.homeAssistant != nullptr) {
+        if (haChanged) {
+            ctx.homeAssistant->cancelDiscovery();
+            ctx.homeAssistant->takeDiscovery(nullptr, nullptr);  // an unread result of the old settings
+            ctx.discovery->reset(DiscoveryCache::State::Idle);
+            dropDetails(ctx);
+        }
+        applyHomeAssistantSettings(ctx.config, ctx.secrets, *ctx.homeAssistant);
     }
-    applyHomeAssistantSettings(ctx.config, ctx.secrets, *ctx.homeAssistant);
+    if (ctx.mqtt != nullptr) applyMqttSettings(ctx.config, ctx.secrets, *ctx.mqtt);
 }
 
 void addIntegrationRoutes(RouteSink &sink, ApiContext &ctx) {
@@ -570,32 +672,39 @@ void addIntegrationRoutes(RouteSink &sink, ApiContext &ctx) {
                  if (settings.url) next.url = *settings.url;
                  if (settings.verifyTls) next.verifyTls = *settings.verifyTls;
                  if (settings.deviceName) next.deviceName = *settings.deviceName;
+                 if (settings.host) next.host = *settings.host;
+                 if (settings.port) next.port = *settings.port;
+                 if (settings.username) next.username = *settings.username;
 
-                 // A new URL never gets the old token: it's erased before the
-                 // URL is saved (and stays erased if the save then fails).
-                 const bool urlChanged = next.url != current->url;
-                 const bool setToken = settings.accessToken.present && settings.accessToken.value.has_value();
-                 const bool clearToken = (settings.accessToken.present && !setToken) || urlChanged;
-                 const bool haChanged = setToken || clearToken || next.enabled != current->enabled ||
-                                        next.verifyTls != current->verifyTls;
-                 if ((setToken || clearToken) && ctx.secrets == nullptr) {
+                 // A new URL or host never gets the old secret: it's erased
+                 // before the change is saved (and stays erased if the save
+                 // then fails).
+                 const SecretSlot *slot = secretSlot(current->type);
+                 const bool setSecret = settings.secret.present && settings.secret.value.has_value();
+                 const bool clearSecret =
+                     slot != nullptr && ((settings.secret.present && !setSecret) ||
+                                         next.*slot->endpoint != current->*slot->endpoint);
+                 const bool haChanged = current->type == kHomeAssistantType &&
+                                        (setSecret || clearSecret || next.enabled != current->enabled ||
+                                         next.verifyTls != current->verifyTls);
+                 if ((setSecret || clearSecret) && ctx.secrets == nullptr) {
                      return sendError(out, 503, "storage_unavailable", "This hub has no secret store");
                  }
-                 if (clearToken && !ctx.secrets->erase(kHaTokenKey)) {
-                     return sendError(out, 503, "storage_unavailable", "The stored token couldn't be erased");
+                 if (clearSecret && !ctx.secrets->erase(slot->key)) {
+                     return sendError(out, 503, "storage_unavailable", "The stored secret couldn't be erased");
                  }
                  const std::string id = current->id;  // `current` dies with the commit
                  const config::Outcome outcome =
                      ctx.config.replaceIntegration(id, std::move(next), static_cast<uint32_t>(revision));
                  if (!outcome.ok()) {
-                     if (clearToken) reapplyHomeAssistant(ctx, true);
+                     if (clearSecret) reapplyIntegrations(ctx, haChanged);
                      return sendOutcome(out, outcome, "integration");
                  }
-                 const bool tokenSaved = !setToken || ctx.secrets->write(kHaTokenKey, *settings.accessToken.value);
-                 reapplyHomeAssistant(ctx, haChanged);
-                 if (!tokenSaved) {
+                 const bool secretSaved = !setSecret || ctx.secrets->write(slot->key, *settings.secret.value);
+                 reapplyIntegrations(ctx, haChanged);
+                 if (!secretSaved) {
                      return sendError(out, 503, "storage_unavailable",
-                                      "The settings were saved but the token couldn't be stored; send it again");
+                                      "The settings were saved but the secret couldn't be stored; send it again");
                  }
                  sendConfig(ctx, *ctx.config.findIntegration(id), out);
              });

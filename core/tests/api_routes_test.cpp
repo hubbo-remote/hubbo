@@ -13,13 +13,16 @@
 #include "auth_test_util.h"
 #include "firmware_image_util.h"
 #include "fake_ha.h"
+#include "fake_mqtt.h"
 #include "fixtures.h"
 #include "hub.h"
 #include "hubbo/api/agent_docs.h"
 #include "hubbo/api/api.h"
+#include "hubbo/api/transitions.h"
 #include "hubbo/config/profile.h"
 #include "hubbo/config/service.h"
 #include "hubbo/integrations/ha_client.h"
+#include "hubbo/integrations/mqtt_bridge.h"
 
 using namespace hubbo;
 
@@ -178,7 +181,13 @@ protected:
     ValidationReport seeded;
     uint64_t haNow = 0;
     SimRuntime runtime{hub};
-    auth::MemorySecretStore secrets;
+    // Erasing `failEraseKey` fails (one secret of several).
+    struct Secrets : auth::MemorySecretStore {
+        std::string failEraseKey;
+        bool erase(std::string_view key) override {
+            return key != failEraseKey && auth::MemorySecretStore::erase(key);
+        }
+    } secrets;
     auth::SoftwareHash hash;
     auth::test::CountingRandom random;
     auth::Credentials creds{secrets, hash, random, auth::kMinPasswordIterations};
@@ -196,9 +205,14 @@ protected:
     storage::MemoryStateStore hubState;
     config::HubSettings hubSettings{hubState, "Hubbo 534D"};
     api::SimulatedRestart restart;
+    sim::FakeMqttBroker broker;
+    sim::FakeMqttTransport mqttTransport{broker};
+    integrations::MqttBridge mqtt{mqttTransport, "hubbo_02000000534d",
+                                  {[] { return 0u; }, [] { return std::string(); },
+                                   [] { return integrations::MqttDeviceInfo{}; }, [](const std::string &) {}, [] {}}};
     api::Api api{api::ApiContext{creds, sessions, clock, hub.configService(), runtime, {}, nullptr, &remote,
                                  &haClient, &secrets, nullptr, &ble, &firmware, &factoryReset, &hubSettings,
-                                 &restart}};
+                                 &restart, &mqtt}};
     http::Router router;
 
     bool noAuth = true;  // simulated admin unless a test logs in
@@ -787,6 +801,34 @@ TEST_F(ApiTest, FirmwareUpdate) {
     EXPECT_EQ(upload(image()).status, 503);
 }
 
+// The calls MQTT shares with the routes (api/transitions.h).
+TEST_F(ApiTest, SharedTransitionAndRestart) {
+    api::TransitionOutcome t = api::runTransition(hub.configService(), runtime, "act_play_xbox");
+    ASSERT_EQ(t.status, api::TransitionStatus::Done);
+    EXPECT_TRUE(t.result.switched);
+    EXPECT_EQ(t.result.activeActivityId.view(), "act_play_xbox");
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/activities").json["active_activity_id"], "act_play_xbox");
+
+    t = api::runTransition(hub.configService(), runtime, "act_missing");
+    ASSERT_EQ(t.status, api::TransitionStatus::Done);
+    EXPECT_FALSE(t.result.switched);
+    EXPECT_EQ(t.result.error, ErrorCode::UnknownActivity);
+
+    t = api::runTransition(hub.configService(), runtime, "");  // off
+    ASSERT_EQ(t.status, api::TransitionStatus::Done);
+    EXPECT_TRUE(t.result.switched);
+    EXPECT_EQ(t.result.previousActivityId.view(), "act_play_xbox");
+    t = api::runTransition(hub.configService(), runtime, "");  // nothing active: a no-op
+    ASSERT_EQ(t.status, api::TransitionStatus::Done);
+    EXPECT_FALSE(t.result.switched);
+    EXPECT_EQ(t.result.error, ErrorCode::NoActiveActivity);
+
+    // The update and refusal rules go through POST /admin/restart (HubNameAndRestart).
+    EXPECT_EQ(api::requestHubRestart(nullptr, &firmware), api::RestartOutcome::NoPort);
+    EXPECT_EQ(api::requestHubRestart(&restart, nullptr), api::RestartOutcome::Accepted);  // no firmware port
+    EXPECT_TRUE(restart.pending());
+}
+
 TEST_F(ApiTest, HubNameAndRestart) {
     Reply r = call(http::Method::Get, "/api/v1/admin/hub");
     ASSERT_EQ(r.status, 200) << dump(r);
@@ -1246,6 +1288,104 @@ TEST_F(ApiTest, TheHomeAssistantTokenIsWriteOnly) {
                  std::to_string(revision) + "}");
     EXPECT_EQ(r.status, 503);
     EXPECT_EQ(r.body.find(token), std::string::npos);
+}
+
+TEST_F(ApiTest, TheMqttPasswordIsWriteOnly) {
+    const std::string password = "broker-pw-7c1e";
+    const auto pumpMqtt = [&] {
+        for (int i = 0; i < 3; i++) {
+            mqtt.poll(0);
+            mqttTransport.poll(0);
+        }
+    };
+    const auto put = [&](const std::string &settings, uint32_t revision, const char *more = "") {
+        return call(http::Method::Put, "/api/v1/admin/integrations/mqtt_main",
+                    R"({"settings":{"type":"mqtt")" + settings + "}" + more + R"(,"revision":)" +
+                        std::to_string(revision) + "}");
+    };
+    Reply r = call(http::Method::Get, "/api/v1/admin/integrations/mqtt_main");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["type"], "mqtt");
+    EXPECT_EQ(r.json["enabled"], false);
+    std::string settings;
+    serializeJson(r.json["settings"], settings);
+    EXPECT_EQ(settings, R"({"type":"mqtt","host":"","port":1883,"username":"","has_password":false})");
+    uint32_t revision = r.json["revision"];
+
+    r = put(R"(,"host":"192.168.1.20","port":1884,"username":"hubbo","password":")" + password + R"(")", revision,
+            R"(,"enabled":true)");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.body.find(password), std::string::npos);
+    EXPECT_EQ(r.json["settings"]["host"], "192.168.1.20");
+    EXPECT_EQ(r.json["settings"]["port"], 1884);
+    EXPECT_EQ(r.json["settings"]["username"], "hubbo");
+    EXPECT_EQ(r.json["settings"]["has_password"], true);
+    revision = r.json["revision"];
+    std::string stored;
+    ASSERT_EQ(secrets.read(api::kMqttPasswordKey, &stored), auth::SecretRead::Ok);
+    EXPECT_EQ(stored, password);
+    pumpMqtt();  // the bridge got the settings and the password
+    EXPECT_STREQ(mqtt.state(), "connected");
+    EXPECT_EQ(mqttTransport.lastOptions().host, "192.168.1.20");
+    EXPECT_EQ(mqttTransport.lastOptions().port, 1884);
+    EXPECT_EQ(mqttTransport.lastOptions().username, "hubbo");
+    EXPECT_EQ(mqttTransport.lastOptions().password, password);
+    EXPECT_EQ(mqtt.detail().find(password), std::string::npos);
+    const std::string backup = call(http::Method::Get, "/api/v1/admin/backup").body;
+    EXPECT_EQ(backup.find(password), std::string::npos);
+    EXPECT_NE(backup.find("192.168.1.20"), std::string::npos);
+
+    // Omitted: kept. null: cleared. A new host without a password: cleared.
+    r = put(R"(,"port":1883)", revision);
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["settings"]["has_password"], true);
+    r = put(R"(,"password":null)", r.json["revision"]);
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["settings"]["has_password"], false);
+    r = put(R"(,"password":")" + password + R"(")", r.json["revision"]);
+    ASSERT_EQ(r.json["settings"]["has_password"], true);
+    r = put(R"(,"host":"fd00::10")", r.json["revision"]);  // IPv6
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["settings"]["has_password"], false);
+    EXPECT_EQ(secrets.read(api::kMqttPasswordKey, &stored), auth::SecretRead::NotFound);
+    r = put(R"(,"host":"192.168.1.20","password":")" + password + R"(")", r.json["revision"]);
+    ASSERT_EQ(r.json["settings"]["has_password"], true) << "a new host with its password keeps it";
+    revision = r.json["revision"];
+
+    // Bad shapes and another integration's settings.
+    for (const char *bad : {R"(,"port":0)", R"(,"port":65536)", R"(,"port":"1883")", R"(,"host":"a b")",
+                            R"(,"host":"mqtt://x")", R"(,"host":"192.168.1.5:1883")", R"(,"username":"a\u0001")", R"(,"password":"")",
+                            R"(,"password":5)", R"(,"access_token":"x")", R"(,"url":"http://x")"}) {
+        r = put(bad, revision);
+        EXPECT_EQ(r.status, 422) << bad;
+        EXPECT_EQ(r.body.find(password), std::string::npos);
+    }
+    r = put(R"(,"username":")" + std::string(65, 'u') + R"(")", revision);
+    EXPECT_EQ(r.status, 422);
+    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/settings/username");
+    r = call(http::Method::Put, "/api/v1/admin/integrations/mqtt_main",
+             R"({"settings":{"type":"home_assistant","url":""},"revision":)" + std::to_string(revision) + "}");
+    EXPECT_EQ(r.status, 422);
+    EXPECT_EQ(r.json["error"]["details"][0]["code"], "integration_mismatch");
+
+    // A reset whose second erase fails: 503, the config stays, and the HA
+    // client follows the token already erased.
+    connectHa();
+    secrets.failEraseKey = api::kMqttPasswordKey;
+    r = call(http::Method::Post, "/api/v1/admin/reset", "");
+    EXPECT_EQ(r.status, 503) << dump(r);
+    EXPECT_EQ(secrets.read(api::kHaTokenKey, &stored), auth::SecretRead::NotFound);
+    EXPECT_EQ(secrets.read(api::kMqttPasswordKey, &stored), auth::SecretRead::Ok);
+    pumpHa();
+    EXPECT_EQ(haClient.state(), integrations::HaState::NotConfigured) << "re-applied without the erased token";
+    EXPECT_EQ(hub.configService().findIntegration(kMqttIntegrationId)->host, "192.168.1.20");
+    secrets.failEraseKey.clear();
+
+    // A reset to defaults with another host forgets the password and the
+    // bridge follows.
+    ASSERT_EQ(call(http::Method::Post, "/api/v1/admin/reset", "").status, 200);
+    EXPECT_EQ(secrets.read(api::kMqttPasswordKey, &stored), auth::SecretRead::NotFound);
+    EXPECT_STREQ(mqtt.state(), "disabled");
 }
 
 TEST_F(ApiTest, DiscoveryIsAsyncAndFiltered) {
