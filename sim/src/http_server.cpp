@@ -32,24 +32,6 @@ public:
     }
 };
 
-const char *reason(int status) {
-    switch (status) {
-        case 200: return "OK";
-        case 201: return "Created";
-        case 202: return "Accepted";
-        case 204: return "No Content";
-        case 400: return "Bad Request";
-        case 401: return "Unauthorized";
-        case 403: return "Forbidden";
-        case 404: return "Not Found";
-        case 405: return "Method Not Allowed";
-        case 409: return "Conflict";
-        case 413: return "Payload Too Large";
-        case 422: return "Unprocessable Entity";
-        default: return status >= 500 ? "Internal Server Error" : "OK";
-    }
-}
-
 void writeAll(int fd, const std::string &data) {
     size_t off = 0;
     while (off < data.size()) {
@@ -60,7 +42,7 @@ void writeAll(int fd, const std::string &data) {
 }
 
 void respond(int fd, const http::Response &r) {
-    std::string out = "HTTP/1.1 " + std::to_string(r.status) + " " + reason(r.status) + "\r\n";
+    std::string out = std::string("HTTP/1.1 ") + http::statusLine(r.status) + "\r\n";
     out += "Content-Type: " + r.contentType + "\r\n";
     out += "Content-Length: " + std::to_string(r.body.size()) + "\r\n";
     out += "Connection: close\r\n";

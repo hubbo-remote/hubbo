@@ -66,7 +66,8 @@ private:
         F f_;
     };
 
-    void host(http::Method method, const char *pattern, Fn::F f);
+    void host(http::Method method, const char *pattern, Fn::F f,
+              auth::Requirement access = auth::Requirement::AdminOnly);
     std::string simTime() const;
     void eraseEverything();
 
