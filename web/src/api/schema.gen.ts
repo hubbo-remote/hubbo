@@ -4,6 +4,70 @@
  */
 
 export interface paths {
+    "/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where to start
+         * @description Links to the agent guide and this spec, and how to authenticate.
+         *     Public: it says nothing about the home (not even the hub's name).
+         */
+        get: operations["getApiIndex"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/openapi.json": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * This spec, as JSON
+         * @description This document, as built into the firmware. Gzipped when the request's
+         *     `Accept-Encoding` allows it (`Vary: Accept-Encoding`).
+         */
+        get: operations["getOpenApi"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent.md": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The agent guide
+         * @description How to manage the hub with an API token: devices, activities, buttons
+         *     and errors, with worked examples. Markdown. Gzipped when the request's
+         *     `Accept-Encoding` allows it (`Vary: Accept-Encoding`).
+         */
+        get: operations["getAgentGuide"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/status": {
         parameters: {
             query?: never;
@@ -1057,18 +1121,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * The hub's name and hostname
-         * @description API tokens read the name from `/status` `hubbo.name` instead.
-         */
+        /** The hub's name and hostname */
         get: operations["getHub"];
         /**
          * Rename the hub
-         * @description Spaces at either end are dropped. What's left must be 1 to 32
-         *     characters with no control characters; otherwise `422
-         *     validation_failed` at `/name` (`required`, `too_long` or
-         *     `invalid_name`). `hostname` follows the name and can't be set: see
-         *     `Hub`.
+         * @description Spaces at either end are dropped, then the rest must be a `HubName`;
+         *     otherwise `422 validation_failed` at `/name` (`required`, `too_long`
+         *     or `invalid_name`). `hostname` follows the name (see `Hub`).
          */
         put: operations["updateHub"];
         post?: never;
@@ -1169,6 +1228,12 @@ export interface components {
                 details?: components["schemas"]["ErrorDetail"][];
                 /** @description Present with `revision_conflict`. */
                 current_revision?: components["schemas"]["Revision"];
+                /**
+                 * @description Where to read how the API works. Present on every `401` and on
+                 *     the `404` for a path the API doesn't have.
+                 * @constant
+                 */
+                docs?: "/api/v1/agent.md";
             };
         };
         /**
@@ -2064,6 +2129,27 @@ export interface components {
             requires: ("home_assistant_token" | "ble_pairing" | "api_tokens")[];
             warnings?: components["schemas"]["ErrorDetail"][];
         };
+        ApiIndex: {
+            /** @constant */
+            name: "Hubbo API";
+            /** @description What to read first. */
+            about: string;
+            /** @description The firmware version (as `/status` `hubbo.version`). */
+            version: string;
+            /** @constant */
+            docs: "/api/v1/agent.md";
+            /** @constant */
+            openapi: "/api/v1/openapi.json";
+            /** @description How to authenticate, in a sentence. */
+            auth: string;
+        };
+        /** @description An OpenAPI 3.1 document (this one). */
+        OpenApiDocument: {
+            /** @constant */
+            openapi: "3.1.0";
+            info: Record<string, never>;
+            paths: Record<string, never>;
+        };
         Empty: Record<string, never>;
         /**
          * @description What the hub is called: 1 to 32 characters, no control characters,
@@ -2085,10 +2171,7 @@ export interface components {
             readonly hostname: string;
         };
         HubUpdate: {
-            /**
-             * @description The new name; spaces at either end are dropped (see `HubName`).
-             * @example Living Room
-             */
+            /** @example Living Room */
             name: string;
         };
         FirmwareStatus: {
@@ -2234,6 +2317,66 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getApiIndex: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The index */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiIndex"];
+                };
+            };
+        };
+    };
+    getOpenApi: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The OpenAPI document */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenApiDocument"];
+                };
+            };
+        };
+    };
+    getAgentGuide: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The guide */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/markdown": string;
+                };
+            };
+        };
+    };
     getStatus: {
         parameters: {
             query?: never;

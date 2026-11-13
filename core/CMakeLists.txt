@@ -16,6 +16,21 @@ add_custom_command(
     COMMENT "Embedding the built-in profiles")
 list(APPEND HUBBO_CORE_SOURCES ${HUBBO_BUILTIN_PROFILES})
 
+# The agent docs (api/openapi.yaml as JSON, docs/agent-api.md, docs/llms.txt), embedded by
+# the same script the firmware's build runs.
+set(HUBBO_OPENAPI_YAML ${PROJECT_SOURCE_DIR}/api/openapi.yaml)
+set(HUBBO_AGENT_GUIDE ${PROJECT_SOURCE_DIR}/docs/agent-api.md)
+set(HUBBO_LLMS_TXT ${PROJECT_SOURCE_DIR}/docs/llms.txt)
+set(HUBBO_AGENT_DOCS ${CMAKE_CURRENT_BINARY_DIR}/agent_docs.cpp)
+add_custom_command(
+    OUTPUT ${HUBBO_AGENT_DOCS}
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_docs.py
+            ${HUBBO_OPENAPI_YAML} ${HUBBO_AGENT_GUIDE} ${HUBBO_LLMS_TXT} ${HUBBO_AGENT_DOCS}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_docs.py ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_profiles.py
+            ${HUBBO_OPENAPI_YAML} ${HUBBO_AGENT_GUIDE} ${HUBBO_LLMS_TXT}
+    COMMENT "Embedding the agent docs")
+list(APPEND HUBBO_CORE_SOURCES ${HUBBO_AGENT_DOCS})
+
 add_library(hubbo_core STATIC ${HUBBO_CORE_SOURCES})
 target_include_directories(hubbo_core PUBLIC include third_party/ArduinoJson)
 target_compile_options(hubbo_core PRIVATE -Wall -Wextra -Wpedantic -Werror)

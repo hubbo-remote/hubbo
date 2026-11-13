@@ -21,6 +21,11 @@ struct Outcome;
 
 namespace hubbo::api {
 
+// Handlers run on httpd's task, whose stack is small (16 KB on the board), and
+// a handler's helpers inline into one frame with every local live at once. So
+// a big record (a DeviceSpec, an update, an engine request) lives on the heap,
+// and decoders fill their caller's record in place rather than return a copy.
+
 // ---- responses ------------------------------------------------------------
 
 void sendJson(http::Response &out, int status, const JsonDocument &doc);

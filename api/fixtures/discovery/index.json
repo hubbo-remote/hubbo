@@ -1,0 +1,8 @@
+{
+  "name": "Hubbo API",
+  "version": "0.1.0",
+  "about": "Read docs (the agent guide) first: it covers everyday tasks. openapi is the full reference (large): use it to look up an exact schema or error.",
+  "docs": "/api/v1/agent.md",
+  "openapi": "/api/v1/openapi.json",
+  "auth": "Authorization: Bearer <token>. An admin creates tokens in Settings → API tokens."
+}

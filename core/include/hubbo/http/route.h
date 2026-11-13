@@ -27,6 +27,11 @@ namespace hubbo::http {
 using Method = auth::Method;
 
 const char *methodName(Method method);
+// The status line after "HTTP/1.1 ", e.g. "304 Not Modified". Every status
+// a route sends is a string literal (ESP-IDF's httpd keeps the pointer). Any
+// other keeps its code with its class's reason ("429 Client Error"), in a
+// per-thread buffer valid until the thread's next call.
+const char *statusLine(int status);
 // False for methods no route uses (the transport answers 405 itself).
 bool methodFromName(std::string_view name, Method *out);
 
@@ -63,8 +68,10 @@ struct Response {
 
 // JSON string literal, quotes included, with escaping.
 std::string jsonString(std::string_view text);
-// Structured error body: {"error":{"code":"...","message":"..."}}.
-void jsonError(Response &response, int status, std::string_view code, std::string_view message);
+// Structured error body: {"error":{"code":"...","message":"..."}}, plus
+// "docs" when given (a pointer to the agent guide).
+void jsonError(Response &response, int status, std::string_view code, std::string_view message,
+               std::string_view docs = {});
 // Value of `key` in a raw query string ("a=1&b=2"), percent-decoded ("+" is
 // a space, "%XX" the byte XX; a malformed escape stays as it is), or "" if
 // absent. Decodes one parameter, never the whole query, so "%26" can't split
@@ -100,15 +107,17 @@ public:
     // "/api/v1/activities/{id}/activate". `handler` must outlive the router.
     void add(std::string pattern, auth::Operation operation, RouteHandler &handler);
 
-    // A host-only tool route outside the API (e.g. hub-sim's /sim/*): admin
-    // only, Origin-checked, no body checks.
-    void addHostRoute(Method method, std::string pattern, RouteHandler &handler);
+    // A route outside the API and its policy table (hub-sim's /sim/* tools,
+    // /llms.txt): `access` decides who may call it (admin only by default),
+    // Origin-checked, no body checks.
+    void addHostRoute(Method method, std::string pattern, RouteHandler &handler,
+                      auth::Requirement access = auth::Requirement::AdminOnly);
 
     // In order: 404 (no path), 405 (path but not method), 403 csrf_failed
     // (unsafe method with a foreign Origin), the policy decision (401/403/
     // 503), and for API operations with a body 413 (over the table's
     // maxBody) and 415 (not application/json, or application/octet-stream
-    // for a Body::Binary operation). Then the handler.
+    // for a Body::Binary operation). Then the handler. See pointErrorsTo().
     void dispatch(const Request &request, Response &response) const;
 
     // The largest body the route matching (method, path) accepts, for the
@@ -118,6 +127,10 @@ public:
     // routes and host-only tools (dispatch then answers 404/405 or lets the
     // tool decide).
     size_t bodyLimit(Method method, std::string_view path) const;
+
+    // Errors a caller can learn from carry error.docs = `docs`: a 401, and
+    // a 404 for an unknown path under `/<prefix>`. Nothing else does.
+    void pointErrorsTo(std::string prefix, std::string docs);
 
 private:
     static constexpr size_t kMaxSegments = 12;
@@ -130,16 +143,18 @@ private:
     struct Route {
         Method method;
         std::vector<std::string> segments;
-        auth::Operation operation;  // Count for host-only routes
+        auth::Operation operation;  // Count for host routes
         RouteHandler *handler;
+        auth::Requirement access;   // API routes: the policy table's
     };
 
     static Segments split(std::string_view path);
-    static bool admit(const Route &route, const Request &request, Response &response);
+    bool admit(const Route &route, const Request &request, Response &response) const;
     const Route *find(Method method, const Segments &path, PathParams *params, bool *pathMatched) const;
     static bool match(const Route &route, const Segments &path, PathParams *params);
     void addRoute(Route route, std::string_view pattern);
     std::vector<Route> routes_;
+    std::string docsPrefix_, docs_;  // pointErrorsTo()
 };
 
 }  // namespace hubbo::http

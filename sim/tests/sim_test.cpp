@@ -197,6 +197,23 @@ TEST(SimApi, AuthEnabledModeUsesProductionAuth) {
     EXPECT_FALSE(runner.hub().engine().hasActiveActivity());
 }
 
+// An agent with nothing finds the guide: the docs are public on an
+// auth-enabled hub-sim, as on the board.
+TEST(SimApi, AgentDocsArePublic) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, /*authEnabled=*/true, a.credentials);
+    for (const char *path : {"/api/v1/", "/api/v1/openapi.json", "/api/v1/agent.md", "/llms.txt"}) {
+        EXPECT_EQ(call(api, http::Method::Get, path).status, 200) << path;
+    }
+    EXPECT_NE(call(api, http::Method::Get, "/llms.txt").body.find("](/api/v1/agent.md)"), std::string::npos);
+    // No web admin here: the bare URL says what /llms.txt does.
+    EXPECT_EQ(call(api, http::Method::Get, "/").body, call(api, http::Method::Get, "/llms.txt").body);
+    EXPECT_NE(call(api, http::Method::Get, "/api").body.find("\"docs\":\"/api/v1/agent.md\""), std::string::npos);
+    EXPECT_NE(call(api, http::Method::Get, "/api/v1/status").body.find("\"docs\":\"/api/v1/agent.md\""),
+              std::string::npos);
+}
+
 // No Host allowlist (any name or address reaches the hub), but a foreign
 // Origin on an unsafe method is refused, even with auth off.
 TEST(SimApi, ForeignOriginIsRefused) {

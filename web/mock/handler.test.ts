@@ -1,9 +1,11 @@
 // Contract tests: the mock must accept every request fixture in api/fixtures
 // and reject every malicious one, so UI built against the mock is built
 // against the spec.
+import { gunzipSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
 import type { Activity, ApiErrorBody, Capabilities, DiscoverStatus, ExecuteResult, EntityDetailsStatus, FirmwareStatus, Session, Status, TransitionResult } from '../src/api/types.ts'
-import { fixture } from './fixtures.ts'
+import { fixture, fixtureBytes } from './fixtures.ts'
+import { GUIDE_PATH } from './docs.ts'
 import { buildFirmwareImage } from './firmware.ts'
 import { createMock, type MockRequest, type MockResponse } from './handler.ts'
 
@@ -124,6 +126,34 @@ describe('mock matches hub-sim', () => {
     expect((await m.handle(req('DELETE', `/activities/${created.id}?revision=${created.revision}`))).status).toBe(204)
     const list = (await m.handle(req('GET', '/activities'))).body as { activities: Activity[]; active_activity_id: string }
     expect(list.active_activity_id).toBe(list.activities[0]!.id)
+  })
+})
+
+describe('agent docs, like core', () => {
+  it('serves the index, the spec as JSON and the guide with no sign-in; gzip only when asked', async () => {
+    const m = createMock({ requireAuth: true })
+    for (const p of ['', '/']) expect((await m.handle(req('GET', p))).body).toMatchObject({ docs: '/api/v1/agent.md', openapi: '/api/v1/openapi.json' })
+    const spec = await m.handle(req('GET', '/openapi.json'))
+    expect(JSON.parse(new TextDecoder().decode(spec.body as Uint8Array))).toMatchObject({ openapi: expect.any(String), paths: expect.any(Object) })
+    const guide = await m.handle(req('GET', '/agent.md'))
+    expect(guide.headers).toMatchObject({ 'content-type': 'text/markdown; charset=utf-8', vary: 'Accept-Encoding' })
+    expect(Buffer.from(guide.body as Uint8Array).equals(Buffer.from(fixtureBytes('../../docs/agent-api.md')))).toBe(true)
+    expect(guide.headers?.['content-encoding']).toBeUndefined()
+    const zipped = await m.handle(req('GET', '/agent.md', undefined, { 'accept-encoding': 'gzip, deflate' }))
+    expect(zipped.headers).toMatchObject({ 'content-encoding': 'gzip', vary: 'Accept-Encoding' })
+    expect(Buffer.from(gunzipSync(zipped.body as Uint8Array)).equals(Buffer.from(guide.body as Uint8Array))).toBe(true)
+    expect((await m.handle(req('GET', '/agent.md', undefined, { 'if-none-match': guide.headers!.etag! }))).status).toBe(304)
+  })
+
+  it('points a request with no credentials and an unknown path at the guide; not a wrong password or a missing id', async () => {
+    const m = createMock({ requireAuth: true })
+    expect(errorOf(await m.handle(req('GET', '/devices'))).docs).toBe(GUIDE_PATH)
+    expect(errorOf(await m.handle(req('GET', '/no-such-thing'))).docs).toBe(GUIDE_PATH)
+    expect(errorOf(await m.handle(req('POST', '/auth/login', { username: 'x', password: 'wrong' }))).docs).toBeUndefined()
+    const open = createMock()
+    const missing = await open.handle(req('GET', '/devices/dev_no_such_device'))
+    expect(missing.status).toBe(404)
+    expect(errorOf(missing).docs).toBeUndefined()
   })
 })
 

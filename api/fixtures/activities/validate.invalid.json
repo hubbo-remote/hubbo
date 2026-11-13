@@ -12,7 +12,7 @@
       "message": "dev_projector is not registered"
     },
     {
-      "path": "/bindings/play:tap/0/integration_id",
+      "path": "/bindings/play:down/0/integration_id",
       "code": "integration_mismatch",
       "message": "dev_apple_tv belongs to integration ble, not ha_main"
     }

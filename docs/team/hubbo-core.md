@@ -7,7 +7,34 @@ traps only.
 
 ## State
 
-- Hub name and restart (hub-name, uncommitted). `config/hub.h`:
+- Agent docs (agent-docs, uncommitted). The hub describes itself to LLM agents:
+  - `core/tools/embed_docs.py <api/openapi.yaml> <docs/agent-api.md> <docs/llms.txt> <out.cpp>`
+    (PyYAML, in the toolchain venv) generates `agent_docs.cpp`, defining
+    `hubbo::api::docs::kOpenApiJson` and `kAgentGuide` (`api/agent_docs.h`: raw and gzip bytes, a
+    quoted ETag from the raw bytes) and `kLlmsTxt` (the text, NUL-terminated).
+    CMake runs it into the build dir. The firmware runs the same script from a PlatformIO
+    pre-script. Both copies are stored (about 180 KB of flash).
+  - `api/docs_routes.cpp`: the public GET routes `/api/v1/` (an index, with no hub name),
+    `/api/v1/openapi.json` and `/api/v1/agent.md`. The two docs send gzip only when
+    Accept-Encoding has it, always with `Vary`, an ETag and a 304. `/llms.txt` is a Public
+    *host* route: `Router::addHostRoute` takes an `auth::Requirement` now (admin by default).
+    The texts of llms.txt (docs/llms.txt) and the index are hubbo-api's.
+  - Hints (http/route.cpp, done here with the lead's OK): `jsonError(..., docs)` adds
+    `error.docs`. The router stays API-agnostic: `addDocsRoutes` calls
+    `Router::pointErrorsTo("api", docs::kAgentGuidePath)`, and the router then sets it on a 401
+    unauthenticated and on a 404 for an unknown path under /api (/api included), and nowhere
+    else. The doc paths live in agent_docs.h.
+  - `http::statusLine(int)` ("304 Not Modified") is the one status table, used by hub-sim and
+    the firmware. An unknown status reads as 400 or 500 by its class.
+  - embed_docs.py emits string literals (the faster compile) through embed_profiles.py's
+    `literal()` and `write_if_changed()`, and uses libyaml's CSafeLoader when it's there.
+  - hub-sim has no web admin, so its `GET /` (a Public host route in sim_api) answers with the
+    llms.txt text (`docs::sendLlmsTxt`).
+  - The sim seeds (`fixtureConfig`, the showcase) bind the way the web admin writes a Press. A
+    device command passes straight through: BLE as a key_down/key_up pair, an HA command once
+    on `:down`. Hubbo's own actions (Off, activate) go on `:tap`, and a Long press on `:hold`.
+  - On the board, /llms.txt must be registered with httpd before the web admin's `/*` (firmware's).
+- Hub name and restart (committed on hub-name, PR #11). `config/hub.h`:
   - Storage: `HubSettings` keeps the name in the StateStore under `kHubNameKey` ("hub_name"),
     never in the activity config or backups. On the board that's the RecordStateStore on
     LittleFS (firmware main.cpp), and in hub-sim the record store. `HubSettings::forget()`
@@ -304,6 +331,20 @@ traps only.
 
 ## Gotchas
 
+- **The HTTP task's stack (8 KB, firmware raising it to 16 KB).** POST /admin/devices runs route →
+  createDevice → add → commit → parseConfig (the full config) → decodeSections → decodeDevice →
+  ha::decodeSnapshot. Keep big values off those frames: decodeList decodes into
+  `out->emplace_back()` (never a `T` local; a DeviceSpec is about 600 B on Xtensa), decodeDevice
+  decodes `ha_capabilities` in place, and createDevice, replaceIntegration, add() and replace()
+  take `&&`, as does commit(). updateDevice edits inside the `next` copy and shares
+  `commitItem()` with replace(). Paths come from `detail::child()` (std::to_chars), since
+  std::to_string inlines a 240 B frame. Measure with Xtensa `-O2 -fexceptions
+  -fstack-usage` (the firmware's flags; a host build is no guide). On 2026-11-12, createDevice went
+  688 → 112 B, decodeList<DeviceSpec> 672 → inlined, decodeSections 336 → 160 and decodeDevice
+  368 → 240. updateDevice (PUT, a re-link) was 1,248 B plus replace<DeviceSpec>'s 608 B; after
+  the /simplify pass, createDevice is 272, updateDevice 224 and replace 224. The board test
+  (a Sonos add) peaked at about 6 KB of the HTTP task's 16 KB. commit keeps its re-parse of
+  the whole config (the hub runs what's saved).
 - `buildServiceCall` needs every param typed (`value.type == spec.type`), even optional ones left
   absent. In tests, fill params with `spec.params[i].defaultValue`, as resolveParams() does.
 - FakeHaTransport delivers replies on the next `poll()`. A test's integration "tick" is:

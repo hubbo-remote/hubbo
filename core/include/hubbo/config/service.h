@@ -166,7 +166,7 @@ public:
     // (Required at /profile) and no other does (UnknownField at /profile).
     // An update never changes the provider type (IntegrationMismatch at
     // /provider/type): a device stays on its platform.
-    Outcome createDevice(DeviceSpec device);
+    Outcome createDevice(DeviceSpec &&device);
     Outcome updateDevice(std::string_view id, const DeviceUpdate &update);
     // Refused with DeviceInUse (+ referrers) while anything references it.
     Outcome deleteDevice(std::string_view id, uint32_t baseRevision);
@@ -174,7 +174,7 @@ public:
 
     // ---- integrations (admin; non-secret settings only) ----
     // `integration.id` and `.type` must match the existing one.
-    Outcome replaceIntegration(std::string_view id, IntegrationSpec integration, uint32_t baseRevision);
+    Outcome replaceIntegration(std::string_view id, IntegrationSpec &&integration, uint32_t baseRevision);
 
     // ---- direct execution ----
     // POST /devices/{id}/commands/{command_id}/execute. NotFound;
@@ -196,16 +196,19 @@ private:
     };
     // The commit pipeline (see the top). `dryRun`: stop before saving (and
     // fill `built` if given).
-    Outcome commit(ConfigSpec next, Outcome outcome, const std::string &issuePrefix,
+    Outcome commit(ConfigSpec &&next, Outcome &&outcome, const std::string &issuePrefix,
                    CommitKind kind = CommitKind::Edit, bool dryRun = false, Built *built = nullptr);
     ErrorCode editable() const;  // Ok, ConfigBlocked or StorageFailed (live state)
     std::string uniqueId(const char *prefix, const std::string &name, const char *fallback) const;
 
     template <typename T>
     Outcome add(std::vector<T> ConfigSpec::*member, size_t limit, const char *idPrefix, const char *fallbackName,
-                const char *section, T item);
+                const char *section, T &&item);  // by reference: no second T on the caller's frame
     template <typename T>
-    Outcome replace(std::vector<T> ConfigSpec::*member, size_t index, const char *section, T item);
+    Outcome replace(std::vector<T> ConfigSpec::*member, size_t index, const char *section, T &&item);
+    // Commits `next`, whose item at `index` was replaced or edited in place.
+    template <typename T>
+    Outcome commitItem(ConfigSpec &&next, std::vector<T> ConfigSpec::*member, size_t index, const char *section);
     template <typename T>
     Outcome erase(std::vector<T> ConfigSpec::*member, size_t index, CommitKind kind = CommitKind::Edit);
 

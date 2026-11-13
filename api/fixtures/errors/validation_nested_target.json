@@ -14,7 +14,7 @@
         "message": "level must be a number"
       },
       {
-        "path": "/bindings/light_1:tap/0/params/target",
+        "path": "/bindings/light_1:down/0/params/target",
         "code": "forbidden_param",
         "message": "target is never accepted"
       }

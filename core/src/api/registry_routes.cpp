@@ -2,6 +2,7 @@
 // the admin device registry.
 
 #include <cstring>
+#include <memory>
 
 #include "hubbo/config/json.h"
 #include "hubbo/config/profile.h"
@@ -173,9 +174,9 @@ bool snapshotFor(ApiContext &ctx, ProviderSpec *provider, std::string_view selfI
     return true;
 }
 
-// {profile_id, name?, kind?}: a device copied from a built-in profile. False
-// after sending 422.
-bool deviceFromBody(JsonVariantConst body, DeviceSpec *device, http::Response &out) {
+// {profile_id, name?, kind?}: a device copied from a built-in profile, or null
+// after sending 422. Built straight onto the heap (no DeviceSpec temporary).
+std::unique_ptr<DeviceSpec> deviceFromBody(JsonVariantConst body, http::Response &out) {
     ValidationReport report;
     if (!checkObject(body,
                      {{"profile_id", Field::Kind::String, true, limits::kMaxProfileIdLength},
@@ -183,16 +184,84 @@ bool deviceFromBody(JsonVariantConst body, DeviceSpec *device, http::Response &o
                       {"kind", Field::Kind::String, false, limits::kMaxTypeLength}},
                      &report)) {
         sendIssues(out, report, "Send {profile_id, name?, kind?}");
-        return false;
+        return nullptr;
     }
     const std::string_view id = body["profile_id"].as<const char *>();
     const config::BuiltinProfile *profile = config::builtinProfiles().find(id);
     if (profile == nullptr) {
         sendDetail(out, "/profile_id", "unknown_profile", "There's no profile " + std::string(id));
-        return false;
+        return nullptr;
     }
-    *device = config::deviceFromProfile(*profile, body["name"] | std::string(), body["kind"] | std::string());
-    return true;
+    std::string name = body["name"] | std::string();
+    std::string kind = body["kind"] | std::string();
+    return std::unique_ptr<DeviceSpec>(
+        new DeviceSpec(config::deviceFromProfile(*profile, std::move(name), std::move(kind))));
+}
+
+// POST /admin/devices: the new device from the body (a profile, or an
+// HA entity with its loaded details), or null after sending the error.
+std::unique_ptr<DeviceSpec> newDevice(ApiContext &ctx, const http::Request &request, http::Response &out) {
+    JsonDocument doc;
+    if (!readJson(request, out, doc)) return nullptr;
+    if (!doc["profile_id"].isNull()) return deviceFromBody(doc.as<JsonVariantConst>(), out);
+    // Bluetooth devices come from a profile; a client never sends one
+    // (checked first: the decoder would ask for the profile's fields).
+    // Any other device's decoder reports profile fields as unknown_field.
+    if (doc["provider"]["type"] == kBleHidType) {
+        sendDetail(out, "/profile_id", "required", "Add a Bluetooth device from a profile");
+        return nullptr;
+    }
+    auto device = std::make_unique<DeviceSpec>();
+    ValidationReport report;
+    if (!config::decodeDevice(doc.as<JsonVariantConst>(), config::DeviceShape::Register, device.get(), &report)) {
+        sendIssues(out, report, "The device is invalid");
+        return nullptr;
+    }
+    if (!checkProvider(device->provider, out, "/provider/entity_id")) return nullptr;
+    if (!snapshotFor(ctx, &device->provider, {}, &device->haCapabilities.emplace(), out)) return nullptr;
+    return device;
+}
+
+// PUT /admin/devices/{id}: the update from the body (an HA re-link
+// refreshes the snapshot), or null after sending the error.
+std::unique_ptr<config::DeviceUpdate> deviceUpdate(ApiContext &ctx, const http::Request &request,
+                                                   std::string_view id, http::Response &out) {
+    JsonDocument doc;
+    if (!readJson(request, out, doc)) return nullptr;
+    auto update = std::make_unique<config::DeviceUpdate>();
+    ValidationReport report;
+    if (!config::decodeDeviceUpdate(doc.as<JsonVariantConst>(), update.get(), &report)) {
+        sendIssues(out, report, "The device update is invalid");
+        return nullptr;
+    }
+    if (update->provider && !checkProvider(*update->provider, out, "/provider/entity_id")) return nullptr;
+    if (update->provider && update->provider->type == kHomeAssistantType &&  // re-link: refresh
+        !snapshotFor(ctx, &*update->provider, id, &update->haCapabilities.emplace(), out)) {
+        return nullptr;
+    }
+    return update;
+}
+
+// POST .../execute: {params}, or false after sending 422.
+bool execParams(const http::Request &request, std::vector<ParamInput> *params, http::Response &out) {
+    JsonDocument doc;
+    if (!readJson(request, out, doc)) return false;
+    ValidationReport report;
+    if (checkObject(doc.as<JsonVariantConst>(), {{"params", Field::Kind::Object, true}}, &report)) {
+        config::decodeParams(doc["params"], params, &report, "/params");
+    }
+    if (report.ok()) return true;
+    sendIssues(out, report, "Send {params: {...}}");
+    return false;
+}
+
+// A device write's answer: the saved device, or the save's error.
+void sendSavedDevice(const ApiContext &ctx, const config::Outcome &outcome, int status, http::Response &out) {
+    if (!outcome.ok()) return sendOutcome(out, outcome, "device");
+    JsonDocument body;
+    putDevice(body.to<JsonObject>(), ctx, *ctx.config.findDevice(outcome.id));
+    if (status == 201) out.headers.emplace_back("Location", "/api/v1/devices/" + outcome.id);
+    sendJson(out, status, body);
 }
 
 }  // namespace
@@ -228,23 +297,19 @@ void addRegistryRoutes(RouteSink &sink, ApiContext &ctx) {
 
     sink.add("/api/v1/devices/{device_id}/commands/{command_id}/execute", auth::Operation::ExecuteCommand,
              [&ctx](auto &request, auto &p, auto &out) {
-                 JsonDocument doc;
-                 if (!readJson(request, out, doc)) return;
-                 ValidationReport report;
                  std::vector<ParamInput> params;
-                 if (checkObject(doc.as<JsonVariantConst>(), {{"params", Field::Kind::Object, true}}, &report)) {
-                     config::decodeParams(doc["params"], &params, &report, "/params");
-                 }
-                 if (!report.ok()) return sendIssues(out, report, "Send {params: {...}}");
+                 if (!execParams(request, &params, out)) return;
                  // Checked first so a missing device isn't reported as a missing command.
                  if (requireDevice(ctx, p[0], out) == nullptr) return;
-                 CompiledCommand command;
-                 const config::Outcome compiled = ctx.config.compileCommand(p[0], p[1], params, &command);
-                 if (!compiled.ok()) return sendOutcome(out, compiled, "command");
-                 EngineRequest run;
-                 run.execute(command);
-                 if (!runEngine(ctx, run, out)) return;
-                 const CommandResult &result = run.command();
+                 const auto run = std::make_unique<EngineRequest>();
+                 {
+                     CompiledCommand command;
+                     const config::Outcome compiled = ctx.config.compileCommand(p[0], p[1], params, &command);
+                     if (!compiled.ok()) return sendOutcome(out, compiled, "command");
+                     run->execute(command);
+                 }
+                 if (!runEngine(ctx, *run, out)) return;
+                 const CommandResult &result = run->command();
                  JsonDocument body;
                  body["status"] = execStatus(result.status);
                  body["device_id"] = p[0];
@@ -284,61 +349,25 @@ void addRegistryRoutes(RouteSink &sink, ApiContext &ctx) {
 
     // ---- admin device registry ----
     sink.add("/api/v1/admin/devices", auth::Operation::RegisterDevice, [&ctx](auto &request, auto &, auto &out) {
-        JsonDocument doc;
-        if (!readJson(request, out, doc)) return;
-        DeviceSpec device;
-        if (!doc["profile_id"].isNull()) {
-            if (!deviceFromBody(doc.as<JsonVariantConst>(), &device, out)) return;
-        } else {
-            // Bluetooth devices come from a profile; a client never sends one
-            // (checked first: the decoder would ask for the profile's fields).
-            // Any other device's decoder reports profile fields as unknown_field.
-            if (doc["provider"]["type"] == kBleHidType) {
-                return sendDetail(out, "/profile_id", "required", "Add a Bluetooth device from a profile");
-            }
-            ValidationReport report;
-            if (!config::decodeDevice(doc.as<JsonVariantConst>(), config::DeviceShape::Register, &device, &report)) {
-                return sendIssues(out, report, "The device is invalid");
-            }
-            if (!checkProvider(device.provider, out, "/provider/entity_id")) return;
-            ha::CapabilitySnapshot snapshot;
-            if (!snapshotFor(ctx, &device.provider, {}, &snapshot, out)) return;
-            device.haCapabilities = std::move(snapshot);
-        }
-        const config::Outcome outcome = ctx.config.createDevice(std::move(device));
+        std::unique_ptr<DeviceSpec> device = newDevice(ctx, request, out);
+        if (!device) return;
+        const config::Outcome outcome = ctx.config.createDevice(std::move(*device));
         // The Bluetooth limit: TooManyDevices at the new device's /integration_id
         // (createDevice reroots /devices/N/...; the 64-device cap is at /devices).
         if (outcome.issues.has(ErrorCode::TooManyDevices, "/integration_id")) {
             return sendDetail(out, "/integration_id", "too_many_devices",
                               "You can add up to " + std::to_string(limits::kMaxBleDevices) + " Bluetooth devices");
         }
-        if (!outcome.ok()) return sendOutcome(out, outcome, "device");
-        JsonDocument body;
-        putDevice(body.to<JsonObject>(), ctx, *ctx.config.findDevice(outcome.id));
-        out.headers.emplace_back("Location", "/api/v1/devices/" + outcome.id);
-        sendJson(out, 201, body);
+        sendSavedDevice(ctx, outcome, 201, out);
     });
 
     sink.add("/api/v1/admin/devices/{device_id}", auth::Operation::UpdateDevice,
              [&ctx](auto &request, auto &p, auto &out) {
-                 JsonDocument doc;
-                 if (!readJson(request, out, doc)) return;
-                 ValidationReport report;
-                 config::DeviceUpdate update;
-                 if (!config::decodeDeviceUpdate(doc.as<JsonVariantConst>(), &update, &report)) {
-                     return sendIssues(out, report, "The device update is invalid");
-                 }
-                 if (update.provider && !checkProvider(*update.provider, out, "/provider/entity_id")) return;
-                 if (update.provider && update.provider->type == kHomeAssistantType) {  // re-link: refresh
-                     ha::CapabilitySnapshot snapshot;
-                     if (!snapshotFor(ctx, &*update.provider, p[0], &snapshot, out)) return;
-                     update.haCapabilities = std::move(snapshot);
-                 }
-                 const config::Outcome outcome = ctx.config.updateDevice(p[0], update);
-                 if (!outcome.ok()) return sendOutcome(out, outcome, "device");
-                 JsonDocument body;
-                 putDevice(body.to<JsonObject>(), ctx, *ctx.config.findDevice(outcome.id));
-                 sendJson(out, 200, body);
+                 std::unique_ptr<config::DeviceUpdate> update = deviceUpdate(ctx, request, p[0], out);
+                 if (!update) return;
+                 const config::Outcome outcome = ctx.config.updateDevice(p[0], *update);
+                 update.reset();
+                 sendSavedDevice(ctx, outcome, 200, out);
              });
 
     sink.add("/api/v1/admin/devices/{device_id}", auth::Operation::DeleteDevice,

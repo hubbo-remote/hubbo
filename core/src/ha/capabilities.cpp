@@ -318,8 +318,9 @@ void builtins(const EntityInfo &entity, Drafts &drafts) {
 // service must belong to the entity's platform (never its domain's curated
 // services), and every field must be a valid, non-target-like param name.
 // (Decoding already validated types and ranges; this is the safety check.)
+// Fills a fresh `draft` in place; the caller drops it on false.
 bool serviceDraft(const SnapshotService &service, const CapabilitySnapshot &snapshot, std::string_view entityId,
-                  CommandDraft *out) {
+                  CommandDraft *draft) {
     const size_t dot = service.service.find('.');
     if (dot == std::string::npos) return false;
     const std::string domain = service.service.substr(0, dot);
@@ -327,10 +328,12 @@ bool serviceDraft(const SnapshotService &service, const CapabilitySnapshot &snap
     if (domain != snapshot.platform || !isHaName(domain) || !isHaName(name)) return false;
     if (entityId.substr(0, entityId.find('.')) == domain) return false;
     if (service.fields.size() > limits::kMaxParams) return false;
-    CommandDraft draft{service.service, domain, name, {}};
+    draft->id = service.service;
+    draft->domain = domain;
+    draft->service = name;
     for (const SnapshotParam &field : service.fields) {
         if (!isHaName(field.name) || isForbiddenParamName(field.name)) return false;
-        ParamDraft param;
+        ParamDraft &param = draft->params.emplace_back();
         param.field = field.name;
         switch (field.type) {
             case SnapshotParamType::Bool:
@@ -363,9 +366,7 @@ bool serviceDraft(const SnapshotService &service, const CapabilitySnapshot &snap
         param.label = field.label;
         param.unit = field.unit;
         param.description = field.description;
-        draft.params.push_back(std::move(param));
     }
-    *out = std::move(draft);
     return true;
 }
 
@@ -392,15 +393,14 @@ EntityCapabilities EntityCapabilities::fromSnapshot(std::string_view entityId, c
     builtins(entity, drafts);
     size_t services = 0;
     for (const SnapshotService &service : snapshot.services) {
-        CommandDraft draft;
-        if (services >= kMaxSnapshotServices || findDef(service.service) != nullptr ||
-            !serviceDraft(service, snapshot, entityId, &draft)) {
+        if (services >= kMaxSnapshotServices || findDef(service.service) != nullptr) continue;
+        bool duplicate = false;
+        for (const auto &existing : drafts.items) duplicate = duplicate || existing.id == service.service;
+        if (duplicate) continue;
+        if (!serviceDraft(service, snapshot, entityId, &drafts.items.emplace_back())) {
+            drafts.items.pop_back();
             continue;
         }
-        bool duplicate = false;
-        for (const auto &existing : drafts.items) duplicate = duplicate || existing.id == draft.id;
-        if (duplicate) continue;
-        drafts.items.push_back(std::move(draft));
         services++;
     }
     return build(entityId, std::move(drafts));

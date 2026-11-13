@@ -74,8 +74,13 @@ One admin account and any number of API tokens (max 16). No other roles.
 The table is data in `core/src/auth/policy.cpp`: per operation the requirement (`Public`,
 `TokenOrAdmin` or `AdminOnly`), the method, the body limit and the body type. Every operation in
 the spec has `x-hubbo-role` (`public`, `token` or `admin`) and `api/lint.sh` fails if the two
-disagree. The router calls `authorize(operation, context)` before the handler runs. Setup is
-`Public`; its handler refuses it unless the credentials are `fresh`. `core/tests/auth_policy_test.cpp`
+disagree. Each route carries a requirement (`route.access`; an API route copies its operation's
+row) and the router calls `authorize(route.access, context)` before the handler runs. Setup is
+`Public`; its handler refuses it unless the credentials are `fresh`. The API's own description is
+`Public` too: the index (`GET /api/v1/`), the spec (`/api/v1/openapi.json`), the agent guide
+(`/api/v1/agent.md`) and `/llms.txt`. They're built into the firmware and say nothing about the
+home; the index leaves out even the hub's name. The router's `401` (no valid credentials) and
+its `404` for an unknown path point at the guide (`error.docs`). `core/tests/auth_policy_test.cpp`
 contains the full matrix written out by hand, so a table change that widens access fails a test.
 
 Registered-device restriction is enforced in validation, not by roles: an action may only name a
@@ -314,6 +319,9 @@ Covered over HTTP against hub-sim by `api/contract.sh` (both modes):
 - [x] Auth-enabled simulator: setup (bad username refused, no default `admin`), login, cookies,
       tokens, every admin operation 403 for a token (a real firmware image too), revocation,
       logout, cross-origin requests refused, wrong passwords stay 401.
+- [x] Discovery: the index, spec, guide and `/llms.txt` need no credentials; the served spec
+      and guide equal the repo's (plain and gzipped); every anonymous `401` and an unknown
+      path's `404` carry `docs`, a missing id's `404` doesn't.
 - [x] Restart and rename: anonymous 401, token 403 (the role matrix); restart refused
       mid-update, 202, then every session gone and the name kept.
 - [x] Firmware update: every refusal (411, 413, 415, 422 `wrong_board`/`invalid_image`, 409,

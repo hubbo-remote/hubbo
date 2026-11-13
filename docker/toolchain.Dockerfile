@@ -17,7 +17,7 @@ RUN apt-get update \
 # into PLATFORMIO_CORE_DIR, which is a named volume so they persist.
 ARG PLATFORMIO_VERSION=6.1.18
 RUN python3 -m venv /opt/platformio \
- && /opt/platformio/bin/pip install --no-cache-dir "platformio==${PLATFORMIO_VERSION}"
+ && /opt/platformio/bin/pip install --no-cache-dir "platformio==${PLATFORMIO_VERSION}" "PyYAML==6.0.2"
 
 ARG HOST_UID=1000
 ARG HOST_GID=1000

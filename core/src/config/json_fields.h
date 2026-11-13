@@ -3,6 +3,7 @@
 // Strict JSON readers shared by config/json.cpp and config/profile.cpp.
 // Internal to the config module.
 
+#include <charconv>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -22,11 +23,20 @@ inline bool oneOf(const std::string &value, const char *const (&options)[N]) {
     return false;
 }
 
-inline std::string child(const std::string &path, std::string_view key) {
-    return path + "/" + jsonPointerToken(std::string(key));
+inline std::string child(std::string_view path, std::string_view key) {
+    return std::string(path) + "/" + jsonPointerToken(std::string(key));
 }
 
-inline std::string child(const std::string &path, size_t index) { return path + "/" + std::to_string(index); }
+// "<path>/<index>". std::to_chars, not std::to_string: that inlines a 240 B
+// frame into its callers, and edits run on the HTTP task's stack.
+inline std::string child(std::string_view path, size_t index) {
+    char digits[20];
+    const char *end = std::to_chars(digits, digits + sizeof(digits), index).ptr;
+    std::string out;
+    out.reserve(path.size() + 1 + static_cast<size_t>(end - digits));
+    out.append(path).append(1, '/').append(digits, static_cast<size_t>(end - digits));
+    return out;
+}
 
 inline void addIssue(ValidationReport *report, ErrorCode code, const std::string &path) {
     if (report != nullptr) report->add(code, path);
@@ -173,11 +183,12 @@ bool decodeList(JsonVariantConst json, size_t maxItems, std::vector<T> *out, Val
     }
     bool ok = true;
     out->clear();
+    out->reserve(array.size());
     size_t i = 0;
     for (JsonVariantConst item : array) {
-        T value;
-        ok = decode(item, &value, child(path, i++)) && ok;
-        out->push_back(std::move(value));
+        // Decoded in place: a T on this frame (a DeviceSpec is over 600 B)
+        // would stack under each decode on the HTTP task.
+        ok = decode(item, &out->emplace_back(), child(path, i++)) && ok;
     }
     return ok;
 }

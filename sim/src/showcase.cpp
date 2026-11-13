@@ -192,8 +192,8 @@ ConfigSpec showcaseConfig() {
     // One activity, on the first captured player with sources (none: no activity).
     c.globalBindings = {
         bind("off:tap", {offAction()}),
-        bind("light_1:tap", {haAction("dev_lights", "light.turn_on")}),
-        bind("light_2:tap", {haAction("dev_lights", "light.turn_off")}),
+        bind("light_1:down", {haAction("dev_lights", "light.turn_on")}),
+        bind("light_2:down", {haAction("dev_lights", "light.turn_off")}),
     };
     c.activities.clear();
     const auto tv = std::find_if(c.devices.begin(), c.devices.end(), [&](const DeviceSpec &d) {
@@ -212,9 +212,9 @@ ConfigSpec showcaseConfig() {
         };
         watch.shutdown = {haAction(id, "media_player.turn_off")};
         watch.bindings = {
-            bind("volume_up:tap", {haAction(id, "media_player.volume_up")}),
-            bind("volume_down:tap", {haAction(id, "media_player.volume_down")}),
-            bind("mute:tap", {haAction(id, "media_player.volume_mute", {param("muted", true)})}),
+            bind("volume_up:down", {haAction(id, "media_player.volume_up")}),
+            bind("volume_down:down", {haAction(id, "media_player.volume_down")}),
+            bind("mute:down", {haAction(id, "media_player.volume_mute", {param("muted", true)})}),
         };
         c.activities.push_back(std::move(watch));
         c.globalBindings.push_back(bind("tv:tap", {activateAction(kShowcaseActivityId)}));

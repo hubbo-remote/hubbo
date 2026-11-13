@@ -88,7 +88,10 @@ IntegrationSpec integration(std::string id, std::string type, std::string name) 
 
 namespace {
 
-// Held remote button = held HID key, exactly as long as the button.
+// Held remote button = held HID key, exactly as long as the button. The
+// seeds bind the way the web admin writes a Press (docs/agent-api.md): a
+// device's command passes straight through (a key held while the button is,
+// an HA command once on down); Hubbo's own (Off, an activity) on tap.
 void holdKey(std::vector<BindingSpec> &out, const char *button, const char *key) {
     out.push_back(bind(std::string(button) + ":down", {bleKey("key_down", key)}));
     out.push_back(bind(std::string(button) + ":up", {bleKey("key_up", key)}));
@@ -115,15 +118,15 @@ ActivitySpec watchAppleTv() {
     holdKey(a.bindings, "left", "ARROW_LEFT");
     holdKey(a.bindings, "right", "ARROW_RIGHT");
     holdKey(a.bindings, "select", "SELECT");
-    a.bindings.push_back(bind("menu:tap", {bleKey("key_tap", "MENU")}));
-    a.bindings.push_back(bind("back:tap", {bleKey("key_tap", "AC_HOME")}));
-    a.bindings.push_back(bind("play:tap", {bleKey("key_tap", "PLAY_PAUSE")}));
-    a.bindings.push_back(bind("pause:tap", {bleKey("key_tap", "PLAY_PAUSE")}));
+    holdKey(a.bindings, "menu", "MENU");
+    holdKey(a.bindings, "back", "AC_HOME");
+    holdKey(a.bindings, "play", "PLAY_PAUSE");
+    holdKey(a.bindings, "pause", "PLAY_PAUSE");
     a.bindings.push_back(bind("info:hold", {bleKey("key_tap", "KEY_I")}));  // family room: Info held = i
     a.bindings.push_back(bind("volume_up:down", {haAction("dev_denon", "media_player.volume_up")}));
     a.bindings.push_back(bind("volume_down:down", {haAction("dev_denon", "media_player.volume_down")}));
     a.bindings.push_back(
-        bind("mute:tap", {haAction("dev_denon", "media_player.volume_mute", {param("muted", true)})}));
+        bind("mute:down", {haAction("dev_denon", "media_player.volume_mute", {param("muted", true)})}));
     return a;
 }
 
@@ -148,7 +151,7 @@ ActivitySpec playXbox() {
     a.bindings.push_back(bind("volume_up:down", {haAction("dev_denon", "media_player.volume_up")}));
     a.bindings.push_back(bind("volume_down:down", {haAction("dev_denon", "media_player.volume_down")}));
     a.bindings.push_back(
-        bind("mute:tap", {haAction("dev_denon", "media_player.volume_mute", {param("muted", true)})}));
+        bind("mute:down", {haAction("dev_denon", "media_player.volume_mute", {param("muted", true)})}));
     return a;
 }
 
@@ -178,8 +181,8 @@ ConfigSpec fixtureConfig() {
         bind("tv:tap", {activateAction("act_watch_apple_tv")}),
         bind("movie:tap", {activateAction("act_watch_apple_tv")}),
         bind("music:tap", {activateAction("act_play_xbox")}),
-        bind("light_1:tap", {haAction("dev_lights", "light.turn_on")}),
-        bind("light_2:tap", {haAction("dev_lights", "light.turn_off")}),
+        bind("light_1:down", {haAction("dev_lights", "light.turn_on")}),
+        bind("light_2:down", {haAction("dev_lights", "light.turn_off")}),
     };
     return c;
 }

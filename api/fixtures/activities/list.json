@@ -193,26 +193,6 @@
             }
           }
         ],
-        "menu:down": [
-          {
-            "integration_id": "ble",
-            "device_id": "dev_apple_tv",
-            "command_id": "press_down",
-            "params": {
-              "command": "Home"
-            }
-          }
-        ],
-        "menu:up": [
-          {
-            "integration_id": "ble",
-            "device_id": "dev_apple_tv",
-            "command_id": "press_up",
-            "params": {
-              "command": "Home"
-            }
-          }
-        ],
         "back:down": [
           {
             "integration_id": "ble",
@@ -293,23 +273,93 @@
             }
           }
         ],
-        "play:tap": [
+        "play:down": [
           {
             "integration_id": "ble",
             "device_id": "dev_apple_tv",
-            "command_id": "press",
+            "command_id": "press_down",
             "params": {
               "command": "PlayPause"
             }
           }
         ],
-        "pause:tap": [
+        "play:up": [
+          {
+            "integration_id": "ble",
+            "device_id": "dev_apple_tv",
+            "command_id": "press_up",
+            "params": {
+              "command": "PlayPause"
+            }
+          }
+        ],
+        "pause:down": [
+          {
+            "integration_id": "ble",
+            "device_id": "dev_apple_tv",
+            "command_id": "press_down",
+            "params": {
+              "command": "PlayPause"
+            }
+          }
+        ],
+        "pause:up": [
+          {
+            "integration_id": "ble",
+            "device_id": "dev_apple_tv",
+            "command_id": "press_up",
+            "params": {
+              "command": "PlayPause"
+            }
+          }
+        ],
+        "record:down": [
+          {
+            "integration_id": "ble",
+            "device_id": "dev_apple_tv",
+            "command_id": "usage_down",
+            "params": {
+              "usage": 178
+            }
+          }
+        ],
+        "record:up": [
+          {
+            "integration_id": "ble",
+            "device_id": "dev_apple_tv",
+            "command_id": "usage_up",
+            "params": {
+              "usage": 178
+            }
+          }
+        ],
+        "blue:down": [
+          {
+            "integration_id": "ble",
+            "device_id": "dev_apple_tv",
+            "command_id": "key_down",
+            "params": {
+              "key": "F1"
+            }
+          }
+        ],
+        "blue:up": [
+          {
+            "integration_id": "ble",
+            "device_id": "dev_apple_tv",
+            "command_id": "key_up",
+            "params": {
+              "key": "F1"
+            }
+          }
+        ],
+        "menu:tap": [
           {
             "integration_id": "ble",
             "device_id": "dev_apple_tv",
             "command_id": "press",
             "params": {
-              "command": "PlayPause"
+              "command": "Home"
             }
           }
         ],
@@ -333,16 +383,6 @@
             }
           }
         ],
-        "record:tap": [
-          {
-            "integration_id": "ble",
-            "device_id": "dev_apple_tv",
-            "command_id": "usage_tap",
-            "params": {
-              "usage": 178
-            }
-          }
-        ],
         "volume_up:down": [
           {
             "integration_id": "ha_main",
@@ -359,7 +399,7 @@
             "params": {}
           }
         ],
-        "mute:tap": [
+        "mute:down": [
           {
             "integration_id": "ha_main",
             "device_id": "dev_sonos",
@@ -369,7 +409,7 @@
             }
           }
         ],
-        "plus:tap": [
+        "plus:down": [
           {
             "integration_id": "ha_main",
             "device_id": "dev_family_room_lights",
@@ -379,7 +419,7 @@
             }
           }
         ],
-        "minus:tap": [
+        "minus:down": [
           {
             "integration_id": "ha_main",
             "device_id": "dev_family_room_lights",
@@ -389,7 +429,7 @@
             }
           }
         ],
-        "light_1:tap": [
+        "light_1:down": [
           {
             "integration_id": "ha_main",
             "device_id": "dev_family_room_lights",
@@ -400,23 +440,13 @@
             }
           }
         ],
-        "light_2:tap": [
+        "light_2:down": [
           {
             "integration_id": "ha_main",
             "device_id": "dev_family_room_lights",
             "command_id": "light.turn_off",
             "params": {
               "transition": 1
-            }
-          }
-        ],
-        "blue:tap": [
-          {
-            "integration_id": "ble",
-            "device_id": "dev_apple_tv",
-            "command_id": "key_tap",
-            "params": {
-              "key": "F1"
             }
           }
         ]
@@ -536,7 +566,7 @@
             }
           }
         ],
-        "play:tap": [
+        "play:down": [
           {
             "integration_id": "ha_main",
             "device_id": "dev_xbox",
@@ -544,7 +574,7 @@
             "params": {}
           }
         ],
-        "pause:tap": [
+        "pause:down": [
           {
             "integration_id": "ha_main",
             "device_id": "dev_xbox",
@@ -552,7 +582,7 @@
             "params": {}
           }
         ],
-        "skip_forward:tap": [
+        "skip_forward:down": [
           {
             "integration_id": "ha_main",
             "device_id": "dev_xbox",
@@ -560,7 +590,7 @@
             "params": {}
           }
         ],
-        "skip_backward:tap": [
+        "skip_backward:down": [
           {
             "integration_id": "ha_main",
             "device_id": "dev_xbox",
@@ -568,7 +598,7 @@
             "params": {}
           }
         ],
-        "light_1:tap": [
+        "light_1:down": [
           {
             "integration_id": "ha_main",
             "device_id": "dev_family_room_lights",
@@ -578,7 +608,7 @@
             }
           }
         ],
-        "light_2:tap": [
+        "light_2:down": [
           {
             "integration_id": "ha_main",
             "device_id": "dev_family_room_lights",
@@ -586,7 +616,7 @@
             "params": {}
           }
         ],
-        "red:tap": [
+        "red:down": [
           {
             "integration_id": "ha_main",
             "device_id": "dev_denon",

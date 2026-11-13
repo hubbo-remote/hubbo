@@ -35,6 +35,18 @@ def literal(data: bytes) -> str:
     return "\n        ".join(lines)
 
 
+def write_if_changed(dst: str, text: str) -> None:
+    """Leaves an unchanged file alone, so nothing rebuilds."""
+    try:
+        with open(dst, "r", encoding="utf-8") as f:
+            if f.read() == text:
+                return
+    except OSError:
+        pass
+    with open(dst, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
 def main(argv):
     if len(argv) != 3:
         sys.stderr.write(__doc__)
@@ -61,15 +73,7 @@ def main(argv):
         parts.append("const ProfileFile kBuiltinProfileFiles[1] = {{nullptr, nullptr}};")
         parts.append("const size_t kBuiltinProfileFileCount = 0;")
     parts.extend(["", "}  // namespace hubbo::config", ""])
-    text = "\n".join(parts)
-    try:
-        with open(dst, "r", encoding="utf-8") as f:
-            if f.read() == text:
-                return 0  # unchanged: don't trigger a rebuild
-    except OSError:
-        pass
-    with open(dst, "w", encoding="utf-8") as f:
-        f.write(text)
+    write_if_changed(dst, "\n".join(parts))
     return 0
 
 

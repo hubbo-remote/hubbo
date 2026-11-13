@@ -16,6 +16,39 @@ const char *methodName(Method method) {
     return "GET";
 }
 
+const char *statusLine(int status) {
+    switch (status) {
+        case 200: return "200 OK";
+        case 201: return "201 Created";
+        case 202: return "202 Accepted";
+        case 204: return "204 No Content";
+        case 304: return "304 Not Modified";
+        case 400: return "400 Bad Request";
+        case 401: return "401 Unauthorized";
+        case 403: return "403 Forbidden";
+        case 404: return "404 Not Found";
+        case 405: return "405 Method Not Allowed";
+        case 409: return "409 Conflict";
+        case 411: return "411 Length Required";
+        case 412: return "412 Precondition Failed";
+        case 413: return "413 Payload Too Large";
+        case 415: return "415 Unsupported Media Type";
+        case 422: return "422 Unprocessable Entity";
+        case 501: return "501 Not Implemented";
+        case 503: return "503 Service Unavailable";
+        default: break;
+    }
+    // Any other: its own code (never rewritten), with its class's reason.
+    thread_local char line[32];
+    const char *reason = "Informational";
+    if (status >= 500) reason = "Server Error";
+    else if (status >= 400) reason = "Client Error";
+    else if (status >= 300) reason = "Redirection";
+    else if (status >= 200) reason = "Success";
+    std::snprintf(line, sizeof(line), "%d %s", status, reason);
+    return line;
+}
+
 bool methodFromName(std::string_view name, Method *out) {
     for (Method m : {Method::Get, Method::Post, Method::Put, Method::Delete}) {
         if (name == methodName(m)) {
@@ -49,8 +82,12 @@ std::string jsonString(std::string_view text) {
     return out + "\"";
 }
 
-void jsonError(Response &response, int status, std::string_view code, std::string_view message) {
-    response.json(status, "{\"error\":{\"code\":" + jsonString(code) + ",\"message\":" + jsonString(message) + "}}");
+void jsonError(Response &response, int status, std::string_view code, std::string_view message,
+               std::string_view docs) {
+    std::string body = "{\"error\":{\"code\":" + jsonString(code) + ",\"message\":" + jsonString(message);
+    if (!docs.empty()) body += ",\"docs\":" + jsonString(docs);
+    body += "}}";
+    response.json(status, std::move(body));
 }
 
 namespace {
@@ -122,11 +159,12 @@ void Router::addRoute(Route route, std::string_view pattern) {
 }
 
 void Router::add(std::string pattern, auth::Operation operation, RouteHandler &handler) {
-    addRoute({auth::operationInfo(operation).method, {}, operation, &handler}, pattern);
+    const auth::OperationInfo &info = auth::operationInfo(operation);
+    addRoute({info.method, {}, operation, &handler, info.requirement}, pattern);
 }
 
-void Router::addHostRoute(Method method, std::string pattern, RouteHandler &handler) {
-    addRoute({method, {}, auth::Operation::Count, &handler}, pattern);
+void Router::addHostRoute(Method method, std::string pattern, RouteHandler &handler, auth::Requirement access) {
+    addRoute({method, {}, auth::Operation::Count, &handler, access}, pattern);
 }
 
 bool Router::match(const Route &route, const Segments &path, PathParams *params) {
@@ -145,7 +183,12 @@ bool Router::match(const Route &route, const Segments &path, PathParams *params)
     return true;
 }
 
-bool Router::admit(const Route &route, const Request &request, Response &response) {
+void Router::pointErrorsTo(std::string prefix, std::string docs) {
+    docsPrefix_ = std::move(prefix);
+    docs_ = std::move(docs);
+}
+
+bool Router::admit(const Route &route, const Request &request, Response &response) const {
     const bool api = route.operation != auth::Operation::Count;
     const std::string_view origin = request.headers ? request.headers->header("Origin") : std::string_view();
     const std::string_view host = request.headers ? request.headers->header("Host") : std::string_view();
@@ -153,10 +196,10 @@ bool Router::admit(const Route &route, const Request &request, Response &respons
         jsonError(response, 403, "csrf_failed", "Origin does not match this hub");
         return false;
     }
-    const auth::Decision decision = api ? auth::authorize(route.operation, request.context)
-                                        : auth::authorize(auth::Requirement::AdminOnly, request.context);
+    const auth::Decision decision = auth::authorize(route.access, request.context);
     if (decision != auth::Decision::Allow) {
-        jsonError(response, auth::httpStatus(decision), auth::decisionCode(decision), auth::decisionMessage(decision));
+        jsonError(response, auth::httpStatus(decision), auth::decisionCode(decision), auth::decisionMessage(decision),
+                  decision == auth::Decision::Unauthenticated ? std::string_view(docs_) : std::string_view());
         return false;
     }
     // Bodies of API operations: size from the policy table, then type.
@@ -199,7 +242,8 @@ size_t Router::bodyLimit(Method method, std::string_view path) const {
 void Router::dispatch(const Request &request, Response &response) const {
     PathParams params;
     bool pathMatched = false;
-    const Route *route = find(request.method, split(request.path), &params, &pathMatched);
+    const Segments path = split(request.path);
+    const Route *route = find(request.method, path, &params, &pathMatched);
     if (route != nullptr) {
         if (admit(*route, request, response)) route->handler->handle(request, params, response);
         return;
@@ -207,7 +251,8 @@ void Router::dispatch(const Request &request, Response &response) const {
     if (pathMatched) {
         jsonError(response, 405, "method_not_allowed", "method not allowed");
     } else {
-        jsonError(response, 404, "not_found", "no such route");
+        const bool hinted = path.count >= 1 && path.items[0] == docsPrefix_;
+        jsonError(response, 404, "not_found", "no such route", hinted ? std::string_view(docs_) : std::string_view());
     }
 }
 

@@ -37,8 +37,10 @@ compaction. Nobody needs to ask for it or explain it.
   test: each agent runs `bin/hubbo gate <its area>` once (core, api, web or fw), as one command.
   If a long run moves to the background, wait for its completion notice; don't split it into
   chunks. After the board test, only an agent whose files changed reruns its gate.
-- **Log a run to a file named for your area** (e.g. `scratchpad/gate-core.log`), never a shared
-  name like `gate.log`: agents' gates run at the same time and overwrite each other's logs.
+- **Log a run to a file named for your area** (e.g. `gate-core.log`), never a shared name like
+  `gate.log`: agents' gates run at the same time and overwrite each other's logs. Put logs in the
+  session's scratchpad directory by its absolute path, never a relative `scratchpad/` (that lands
+  in the repo root).
 - `bin/hubbo web e2e --sim [--auth]` starts and stops its own hub-sim; don't run one by hand.
 
 ## Rules for everyone

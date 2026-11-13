@@ -1,5 +1,7 @@
 #include "sim_api.h"
 
+#include "hubbo/api/agent_docs.h"
+
 #include <cstdlib>
 #include <sstream>
 #include <string>
@@ -223,6 +225,10 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
         out.json(200, simTime());
     });
 
+    // hub-sim has no web admin at /: an agent pointed at the bare URL gets
+    // what /llms.txt says (on the board, / is the web admin).
+    host(Method::Get, "/", [](auto &, auto &, auto &out) { api::docs::sendLlmsTxt(out); }, auth::Requirement::Public);
+
     host(Method::Get, "/sim/log", [this](auto &, auto &, auto &out) {
         SimHub &hub = runner_.hub();
         out.json(200, "{\"commands\":" + logJson(hub.commands(), 200) + ",\"events\":" + logJson(hub.events(), 200) +
@@ -275,9 +281,9 @@ http::RequestAuthenticator &SimApi::authenticator() {
     return noAuth_;
 }
 
-void SimApi::host(Method method, const char *pattern, Fn::F f) {
+void SimApi::host(Method method, const char *pattern, Fn::F f, auth::Requirement access) {
     handlers_.push_back(std::make_unique<Fn>(std::move(f)));
-    router_.addHostRoute(method, pattern, *handlers_.back());
+    router_.addHostRoute(method, pattern, *handlers_.back(), access);
 }
 
 // The board's wiped restart: every secret (the login, tokens, the HA token)

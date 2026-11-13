@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <initializer_list>
 #include <string_view>
 
@@ -45,10 +46,24 @@ public:
     }
 
     bool ok() const { return ok_; }
-    std::string at(std::string_view key) const { return path_ + "/" + std::string(key); }
+    // `path`/`key`[/`index`].
+    std::string at(std::string_view key, int index = -1) const {
+        std::string path = path_;
+        path += '/';
+        path += key;
+        if (index >= 0) {
+            char digits[12];
+            snprintf(digits, sizeof digits, "/%d", index);
+            path += digits;
+        }
+        return path;
+    }
     void fail(ErrorCode code, std::string path) {
         ok_ = false;
         report_->add(code, std::move(path));
+    }
+    void failAt(ErrorCode code, std::string_view key, int index = -1) {
+        fail(code, at(key, index));
     }
 
     void taint() { ok_ = false; }  // a nested reader already reported why
@@ -57,30 +72,30 @@ public:
         for (JsonPairConst pair : object_) {
             bool found = false;
             for (const char *k : known) found = found || std::string_view(pair.key().c_str()) == k;
-            if (!found) fail(ErrorCode::UnknownField, at(pair.key().c_str()));
+            if (!found) failAt(ErrorCode::UnknownField, pair.key().c_str());
         }
     }
 
     JsonVariantConst get(const char *key, bool required) {
         if (object_.isNull()) return {};
         JsonVariantConst v = object_[key];
-        if (v.isUnbound() && required) fail(ErrorCode::Required, at(key));
+        if (v.isUnbound() && required) failAt(ErrorCode::Required, key);
         return v;
     }
 
     bool string(const char *key, std::string *out, size_t max, bool required = false) {
         JsonVariantConst v = get(key, required);
         if (v.isUnbound()) return false;
-        if (!v.is<const char *>()) return fail(ErrorCode::WrongType, at(key)), false;
+        if (!v.is<const char *>()) return failAt(ErrorCode::WrongType, key), false;
         *out = v.as<const char *>();
-        if (out->size() > max) return fail(ErrorCode::TooLong, at(key)), false;
+        if (out->size() > max) return failAt(ErrorCode::TooLong, key), false;
         return true;
     }
 
     bool boolean(const char *key, bool *out, bool required = false) {
         JsonVariantConst v = get(key, required);
         if (v.isUnbound()) return false;
-        if (!v.is<bool>()) return fail(ErrorCode::WrongType, at(key)), false;
+        if (!v.is<bool>()) return failAt(ErrorCode::WrongType, key), false;
         *out = v.as<bool>();
         return true;
     }
@@ -89,7 +104,7 @@ public:
         JsonVariantConst v = get(key, required);
         if (v.isUnbound()) return false;
         if (!v.is<double>() || v.is<bool>() || !std::isfinite(v.as<double>())) {
-            return fail(ErrorCode::WrongType, at(key)), false;
+            return failAt(ErrorCode::WrongType, key), false;
         }
         *out = v.as<double>();
         return true;
@@ -98,9 +113,9 @@ public:
     bool integer(const char *key, int64_t lo, int64_t hi, int64_t *out, bool required = false) {
         JsonVariantConst v = get(key, required);
         if (v.isUnbound()) return false;
-        if (!v.is<int64_t>() || v.is<bool>()) return fail(ErrorCode::WrongType, at(key)), false;
+        if (!v.is<int64_t>() || v.is<bool>()) return failAt(ErrorCode::WrongType, key), false;
         *out = v.as<int64_t>();
-        if (*out < lo || *out > hi) return fail(ErrorCode::ParamOutOfRange, at(key)), false;
+        if (*out < lo || *out > hi) return failAt(ErrorCode::ParamOutOfRange, key), false;
         return true;
     }
 
@@ -108,27 +123,27 @@ public:
     bool options(const char *key, std::vector<std::string> *out, bool required = false) {
         JsonVariantConst v = get(key, required);
         if (v.isUnbound()) return false;
-        if (!v.is<JsonArrayConst>()) return fail(ErrorCode::WrongType, at(key)), false;
+        if (!v.is<JsonArrayConst>()) return failAt(ErrorCode::WrongType, key), false;
         JsonArrayConst list = v.as<JsonArrayConst>();
-        if (list.size() > kMaxListItems) return fail(ErrorCode::TooLong, at(key)), false;
-        size_t i = 0;
+        if (list.size() > kMaxListItems) return failAt(ErrorCode::TooLong, key), false;
+        int i = 0;
         bool good = true;
         for (JsonVariantConst item : list) {
-            const std::string where = at(key) + "/" + std::to_string(i++);
+            const int index = i++;
             if (!item.is<const char *>()) {
-                fail(ErrorCode::WrongType, where);
+                failAt(ErrorCode::WrongType, key, index);
                 good = false;
                 continue;
             }
             std::string text = item.as<const char *>();
             if (text.empty() || text.size() > limits::kMaxParamStringLength) {
-                fail(ErrorCode::TooLong, where);
+                failAt(ErrorCode::TooLong, key, index);
                 good = false;
                 continue;
             }
             for (const auto &seen : *out) {
                 if (seen == text) {
-                    fail(ErrorCode::DuplicateId, where);
+                    failAt(ErrorCode::DuplicateId, key, index);
                     good = false;
                 }
             }
@@ -167,14 +182,14 @@ void encodeParam(const SnapshotParam &p, JsonObject out) {
 }
 
 // `default`, checked against the param's type, range and options.
-bool decodeParam(JsonVariantConst json, SnapshotParam *out, ValidationReport *report, const std::string &path) {
-    Reader r(json, report, path);
+bool decodeParam(JsonVariantConst json, SnapshotParam *out, ValidationReport *report, std::string path) {
+    Reader r(json, report, std::move(path));
     if (!r.ok()) return false;
     r.only({"name", "label", "description", "type", "required", "minimum", "maximum", "step", "unit", "options",
             "default"});
-    SnapshotParam p;
+    SnapshotParam &p = *out;  // a fresh param, decoded in place
     if (r.string("name", &p.name, 32, true) && (!isHaName(p.name) || isForbiddenParamName(p.name))) {
-        r.fail(ErrorCode::InvalidId, r.at("name"));
+        r.failAt(ErrorCode::InvalidId, "name");
     }
     r.string("label", &p.label, kMaxSnapshotLabelLength);
     r.string("description", &p.description, kMaxSnapshotDescriptionLength);
@@ -189,7 +204,7 @@ bool decodeParam(JsonVariantConst json, SnapshotParam *out, ValidationReport *re
         } else if (type == "enum") {
             p.type = SnapshotParamType::Enum;
         } else {
-            r.fail(ErrorCode::WrongType, r.at("type"));
+            r.failAt(ErrorCode::WrongType, "type");
         }
     }
     r.boolean("required", &p.required, true);
@@ -197,33 +212,31 @@ bool decodeParam(JsonVariantConst json, SnapshotParam *out, ValidationReport *re
     if (ranged) {
         const bool lo = r.number("minimum", &p.minimum, true);
         const bool hi = r.number("maximum", &p.maximum, true);
-        if (lo && hi && p.minimum > p.maximum) r.fail(ErrorCode::ParamOutOfRange, r.at("maximum"));
+        if (lo && hi && p.minimum > p.maximum) r.failAt(ErrorCode::ParamOutOfRange, "maximum");
         if (p.type == SnapshotParamType::Int && lo && hi &&
             (std::floor(p.minimum) != p.minimum || std::floor(p.maximum) != p.maximum ||
              p.minimum < -2147483648.0 || p.maximum > 2147483647.0)) {
-            r.fail(ErrorCode::WrongType, r.at("minimum"));
+            r.failAt(ErrorCode::WrongType, "minimum");
         }
-        if (r.number("step", &p.step) && !(p.step > 0)) r.fail(ErrorCode::ParamOutOfRange, r.at("step"));
+        if (r.number("step", &p.step) && !(p.step > 0)) r.failAt(ErrorCode::ParamOutOfRange, "step");
         r.string("unit", &p.unit, kMaxSnapshotUnitLength);
     } else {
         for (const char *key : {"minimum", "maximum", "step", "unit"}) {
-            if (!r.get(key, false).isUnbound()) r.fail(ErrorCode::UnknownField, r.at(key));
+            if (!r.get(key, false).isUnbound()) r.failAt(ErrorCode::UnknownField, key);
         }
     }
     if (p.type == SnapshotParamType::Enum) {
-        if (r.options("options", &p.options, true) && p.options.empty()) r.fail(ErrorCode::Required, r.at("options"));
+        if (r.options("options", &p.options, true) && p.options.empty()) r.failAt(ErrorCode::Required, "options");
     } else if (!r.get("options", false).isUnbound()) {
-        r.fail(ErrorCode::UnknownField, r.at("options"));
+        r.failAt(ErrorCode::UnknownField, "options");
     }
     if (r.ok()) {
         const JsonVariantConst value = r.get("default", false);
         if (!value.isUnbound() && !value.isNull() && !applyDefault(value, &p)) {
-            r.fail(ErrorCode::ParamOutOfRange, r.at("default"));
+            r.failAt(ErrorCode::ParamOutOfRange, "default");
         }
     }
-    if (!r.ok()) return false;
-    *out = std::move(p);
-    return true;
+    return r.ok();
 }
 
 }  // namespace
@@ -275,15 +288,65 @@ void encodeSnapshot(const CapabilitySnapshot &s, JsonObject out) {
     }
 }
 
+namespace {
+
+// One entry of `services`, decoded in place onto the end of `services` (and
+// dropped again on false).
+bool decodeService(JsonVariantConst item, const std::string &platform, std::vector<SnapshotService> *services,
+                   ValidationReport *report, std::string where) {
+    Reader sr(item, report, std::move(where));
+    if (!sr.ok()) return false;
+    sr.only({"service", "label", "fields"});
+    SnapshotService &service = services->emplace_back();
+    if (sr.string("service", &service.service, limits::kMaxCommandIdLength, true)) {
+        const size_t dot = service.service.find('.');
+        const bool shaped = dot != std::string::npos &&
+                            isHaName(std::string_view(service.service).substr(0, dot)) &&
+                            isHaName(std::string_view(service.service).substr(dot + 1));
+        // Only the platform's own services (capabilities.cpp re-checks).
+        if (!shaped || service.service.substr(0, dot) != platform) {
+            sr.failAt(ErrorCode::InvalidCommandId, "service");
+        }
+    }
+    sr.string("label", &service.label, kMaxSnapshotLabelLength);
+    JsonVariantConst fields = sr.get("fields", true);
+    if (!fields.isUnbound()) {
+        if (!fields.is<JsonArrayConst>()) {
+            sr.failAt(ErrorCode::WrongType, "fields");
+        } else if (fields.size() > limits::kMaxParams) {
+            sr.failAt(ErrorCode::TooManyParams, "fields");
+        } else {
+            int f = 0;
+            for (JsonVariantConst field : fields.as<JsonArrayConst>()) {
+                const std::string fieldPath = sr.at("fields", f++);
+                if (!decodeParam(field, &service.fields.emplace_back(), report, fieldPath)) {
+                    service.fields.pop_back();
+                    sr.taint();
+                    continue;
+                }
+                const std::string &name = service.fields.back().name;
+                for (size_t k = 0; k + 1 < service.fields.size(); k++) {
+                    if (service.fields[k].name == name) sr.fail(ErrorCode::DuplicateParam, fieldPath + "/name");
+                }
+            }
+        }
+    }
+    if (sr.ok()) return true;
+    services->pop_back();
+    return false;
+}
+
+}  // namespace
+
 bool decodeSnapshot(JsonVariantConst json, CapabilitySnapshot *out, ValidationReport *report,
                     const std::string &path) {
     Reader r(json, report, path);
     if (!r.ok()) return false;
     r.only({"platform", "supported_features", "source_list", "sound_mode_list", "supported_color_modes",
             "min_color_temp_kelvin", "max_color_temp_kelvin", "preset_modes", "percentage_step", "services"});
-    CapabilitySnapshot s;
+    CapabilitySnapshot &s = *out;  // decoded in place: no snapshot on this frame
     if (r.string("platform", &s.platform, 32, true) && !isPlatform(s.platform)) {
-        r.fail(ErrorCode::InvalidId, r.at("platform"));
+        r.failAt(ErrorCode::InvalidId, "platform");
     }
     int64_t n = 0;
     if (r.integer("supported_features", 0, 0xFFFFFFFFLL, &n, true)) s.supportedFeatures = static_cast<uint32_t>(n);
@@ -298,64 +361,19 @@ bool decodeSnapshot(JsonVariantConst json, CapabilitySnapshot *out, ValidationRe
     JsonVariantConst services = r.get("services", true);
     if (!services.isUnbound()) {
         if (!services.is<JsonArrayConst>()) {
-            r.fail(ErrorCode::WrongType, r.at("services"));
+            r.failAt(ErrorCode::WrongType, "services");
         } else if (services.size() > kMaxSnapshotServices) {
-            r.fail(ErrorCode::TooLong, r.at("services"));
+            r.failAt(ErrorCode::TooLong, "services");
         } else {
-            size_t i = 0;
+            int i = 0;
             for (JsonVariantConst item : services.as<JsonArrayConst>()) {
-                const std::string where = r.at("services") + "/" + std::to_string(i++);
-                Reader sr(item, report, where);
-                if (!sr.ok()) {
+                if (!decodeService(item, s.platform, &s.services, report, r.at("services", i++))) {
                     r.taint();
-                    continue;
                 }
-                sr.only({"service", "label", "fields"});
-                SnapshotService service;
-                if (sr.string("service", &service.service, limits::kMaxCommandIdLength, true)) {
-                    const size_t dot = service.service.find('.');
-                    const bool shaped = dot != std::string::npos &&
-                                        isHaName(std::string_view(service.service).substr(0, dot)) &&
-                                        isHaName(std::string_view(service.service).substr(dot + 1));
-                    // Only the platform's own services (capabilities.cpp re-checks).
-                    if (!shaped || service.service.substr(0, dot) != s.platform) {
-                        sr.fail(ErrorCode::InvalidCommandId, sr.at("service"));
-                    }
-                }
-                sr.string("label", &service.label, kMaxSnapshotLabelLength);
-                JsonVariantConst fields = sr.get("fields", true);
-                if (!fields.isUnbound()) {
-                    if (!fields.is<JsonArrayConst>()) {
-                        sr.fail(ErrorCode::WrongType, sr.at("fields"));
-                    } else if (fields.size() > limits::kMaxParams) {
-                        sr.fail(ErrorCode::TooManyParams, sr.at("fields"));
-                    } else {
-                        size_t f = 0;
-                        for (JsonVariantConst field : fields.as<JsonArrayConst>()) {
-                            SnapshotParam param;
-                            const std::string fieldPath = sr.at("fields") + "/" + std::to_string(f++);
-                            if (!decodeParam(field, &param, report, fieldPath)) {
-                                sr.taint();
-                                continue;
-                            }
-                            for (const auto &seen : service.fields) {
-                                if (seen.name == param.name) sr.fail(ErrorCode::DuplicateParam, fieldPath + "/name");
-                            }
-                            service.fields.push_back(std::move(param));
-                        }
-                    }
-                }
-                if (!sr.ok()) {
-                    r.taint();
-                    continue;
-                }
-                s.services.push_back(std::move(service));
             }
         }
     }
-    if (!r.ok()) return false;
-    *out = std::move(s);
-    return true;
+    return r.ok();
 }
 
 }  // namespace hubbo::ha

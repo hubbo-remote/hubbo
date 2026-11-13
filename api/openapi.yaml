@@ -5,10 +5,11 @@ info:
   license:
     name: AGPL-3.0-or-later
     identifier: AGPL-3.0-or-later
-  summary: Local REST API of a Hubbo hub (Harmony Hub replacement).
+  summary: A Hubbo hub's local REST API. Hubbo is a universal-remote hub that runs activities across TVs, receivers, streamers and Home Assistant.
   description: |
     Source of truth for `/api/v1`. The web UI, LLM agents, the TypeScript mock
     server and the native simulator all implement or consume this contract.
+    New here? Read the agent guide, `GET /api/v1/agent.md`.
 
     ## Conventions
 
@@ -18,6 +19,10 @@ info:
       * `admin`: the admin session only. API tokens get `403 forbidden`.
       The table is mirrored in `core/src/auth/policy.cpp`; `api/lint.sh` fails if
       the two disagree.
+    * **Test markers.** `x-hubbo-returns-secret`: the response carries a secret
+      (once). `x-hubbo-describes-api`: the response is this spec, whose schemas
+      name secret and revision fields. The contract skips its body scans for
+      these.
     * **Config state.** Every edit (activities, global bindings, devices) is
       refused with `409 config_blocked` while `/status` `config.state` is
       `blocked`, and with `503 storage_unavailable` while it is
@@ -75,6 +80,7 @@ security:
   - sessionCookie: []
   - bearerToken: []
 tags:
+  - name: discovery
   - name: status
   - name: auth
   - name: remote
@@ -84,6 +90,59 @@ tags:
   - name: integrations
   - name: admin
 paths:
+  /:
+    get:
+      tags: [discovery]
+      operationId: getApiIndex
+      x-hubbo-role: public
+      security: []
+      summary: Where to start
+      description: |
+        Links to the agent guide and this spec, and how to authenticate.
+        Public: it says nothing about the home (not even the hub's name).
+      responses:
+        '200':
+          description: The index
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiIndex'}
+
+  /openapi.json:
+    get:
+      tags: [discovery]
+      operationId: getOpenApi
+      x-hubbo-role: public
+      x-hubbo-describes-api: true
+      security: []
+      summary: This spec, as JSON
+      description: |
+        This document, as built into the firmware. Gzipped when the request's
+        `Accept-Encoding` allows it (`Vary: Accept-Encoding`).
+      responses:
+        '200':
+          description: The OpenAPI document
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OpenApiDocument'}
+
+  /agent.md:
+    get:
+      tags: [discovery]
+      operationId: getAgentGuide
+      x-hubbo-role: public
+      security: []
+      summary: The agent guide
+      description: |
+        How to manage the hub with an API token: devices, activities, buttons
+        and errors, with worked examples. Markdown. Gzipped when the request's
+        `Accept-Encoding` allows it (`Vary: Accept-Encoding`).
+      responses:
+        '200':
+          description: The guide
+          content:
+            text/markdown:
+              schema: {type: string}
+
   /status:
     get:
       tags: [status]
@@ -1221,6 +1280,7 @@ paths:
       tags: [admin]
       operationId: createToken
       x-hubbo-role: admin
+      x-hubbo-returns-secret: true
       x-hubbo-max-body: 1024
       summary: Create an API token (secret shown once)
       requestBody:
@@ -1816,6 +1876,13 @@ components:
             current_revision:
               description: Present with `revision_conflict`.
               $ref: '#/components/schemas/Revision'
+            docs:
+              description: |
+                Where to read how the API works. Present when a request is
+                refused for having no valid credentials (`401 unauthenticated`), and
+                on the `404` for a path the API doesn't have.
+              type: string
+              const: /api/v1/agent.md
 
     # ---------- status ----------
     AuthState:
@@ -3186,6 +3253,32 @@ components:
           type: array
           maxItems: 32
           items: {$ref: '#/components/schemas/ErrorDetail'}
+    ApiIndex:
+      type: object
+      additionalProperties: false
+      required: [name, version, about, docs, openapi, auth]
+      properties:
+        name: {type: string, const: Hubbo API}
+        about:
+          description: What to read first.
+          type: string
+        version:
+          description: The firmware version (as `/status` `hubbo.version`).
+          type: string
+          maxLength: 32
+        docs: {type: string, const: /api/v1/agent.md}
+        openapi: {type: string, const: /api/v1/openapi.json}
+        auth:
+          description: How to authenticate, in a sentence.
+          type: string
+    OpenApiDocument:
+      description: An OpenAPI 3.1 document (this one).
+      type: object
+      required: [openapi, info, paths]
+      properties:
+        openapi: {type: string, const: 3.1.0}
+        info: {type: object}
+        paths: {type: object}
     Empty:
       type: object
       additionalProperties: false

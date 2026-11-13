@@ -163,3 +163,14 @@ TEST_F(RouterTest, BodyTypeComesFromThePolicyTable) {
     EXPECT_EQ(post("/api/v1/activities", "application/json"), 200);
     EXPECT_EQ(router.bodyLimit(Method::Post, "/api/v1/admin/firmware/update"), 0x640000u);
 }
+
+TEST(StatusLine, NamesEveryStatusARouteSends) {
+    EXPECT_STREQ(http::statusLine(200), "200 OK");
+    EXPECT_STREQ(http::statusLine(304), "304 Not Modified");
+    EXPECT_STREQ(http::statusLine(415), "415 Unsupported Media Type");
+    EXPECT_STREQ(http::statusLine(503), "503 Service Unavailable");
+    // Any other keeps its own code on the wire, with its class's reason.
+    EXPECT_STREQ(http::statusLine(429), "429 Client Error");
+    EXPECT_STREQ(http::statusLine(507), "507 Server Error");
+    EXPECT_STREQ(http::statusLine(302), "302 Redirection");
+}

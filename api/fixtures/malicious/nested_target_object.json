@@ -90,7 +90,7 @@
     }
   ],
   "bindings": {
-    "light_1:tap": [
+    "light_1:down": [
       {
         "integration_id": "ha_main",
         "device_id": "dev_family_room_lights",
