@@ -104,7 +104,7 @@ export function Section({ title, description, children, className = 'max-w-2xl' 
 export function TypedWordField({ word, id, value, onChange }: { word: string; id: string; value: string; onChange: (v: string) => void }) {
   return (
     <Field label={`Type “${word}” to confirm`} htmlFor={id}>
-      <Input id={id} autoComplete="off" autoCapitalize="none" spellCheck={false} value={value} onChange={(e) => onChange(e.target.value)} />
+      <Input id={id} autoCapitalize="none" spellCheck={false} value={value} onChange={(e) => onChange(e.target.value)} />
     </Field>
   )
 }

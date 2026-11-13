@@ -8,11 +8,10 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { readMarker, type ImageMarker } from '@/lib/firmware'
+import { NOT_BACK, RESTART_SLOW_MS } from '@/lib/restart'
 import { sleep } from '@/lib/utils'
 
 const POLL_MS = 1000
-/** Writing takes well under a minute and a reboot seconds; after this long without the hub, say so. */
-const GIVE_UP_MS = 3 * 60_000
 
 /**
  * The update in flight: the version it started from and the one the file carries. Module memory
@@ -79,7 +78,7 @@ export function FirmwareUpdate() {
         // 401: the hub restarted and every session is gone; the app has switched to the sign-in.
         if (err.status === 401) return
         if (!notAnswering(err)) return setPhase({ step: 'refused', error: err })
-        setPhase({ step: 'restarting', slow: Date.now() - started > GIVE_UP_MS })
+        setPhase({ step: 'restarting', slow: Date.now() - started > RESTART_SLOW_MS })
       }
     }
   }
@@ -163,7 +162,7 @@ function Progress({ phase }: { phase: Phase }) {
       ? ['Upload progress', Math.round(phase.fraction * 100), 'Uploading…']
       : phase.step === 'writing'
         ? ['Write progress', phase.progress, 'Installing…']
-        : [null, 100, phase.slow ? 'Hubbo hasn’t come back. Check that it’s on and connected.' : 'Restarting…']
+        : [null, 100, phase.slow ? NOT_BACK : 'Restarting…']
   return (
     <div className="grid gap-2">
       <span className="inline-flex items-center gap-2 text-sm" aria-live="polite">

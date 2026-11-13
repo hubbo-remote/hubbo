@@ -2,6 +2,41 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## Hub name and restart (branch `hub-name`; simplified, tests caught up; review next)
+
+- **Settings → Hub** is the first tab and what /settings opens to (`components/admin/HubSettings.tsx`):
+  - Name: a field + Save. `lib/hub.ts`: `trimHubName` (spaces only, like the hub: a tab is a
+    control character it refuses), `hubNameProblem` (1–32 characters), `saveHubName`. A 422 detail
+    at /name shows inline. After a save: "Paired devices may show the old name until they
+    reconnect." No preview, by request.
+  - Restart: confirm "Restart the hub?" / "You’ll need to sign in again." → POST /admin/restart →
+    "Restarting…" → the app reopens (sign-in). 409 `update_in_progress` → "An update is running.
+    Try again when it’s done."
+- **Setup step "Name"** (Setup.tsx `HubStep`, step 2 of 6, after Account; `#/setup/hub` holds it
+  like Network): "Hub name", shown once GET /admin/hub has loaded (Continue waits for it). Setup
+  holds the name and saves it on Continue, only when changed; a refused save doesn't block (toast:
+  change it in Settings → Hub). Skip moves on. Done lists the name. No config lock on the name
+  (it isn't config), in Settings or setup.
+- **Restart wait** (`lib/restart.ts`): `followRestart(back, onSlow)` polls the public session and
+  reopens the app; `backFromRestart` (went down and answers, or the session is gone, or the no-auth
+  simulator); `RESTART_SLOW_MS` + `NOT_BACK` shared with FirmwareUpdate; FactoryReset uses it too
+  (and now shows the slow line).
+- **Password managers**: the shared `Input` marks every non-sign-in field (anything but
+  `username` / `current-password` / `new-password` autocomplete) with autocomplete=off,
+  data-1p-ignore, data-lpignore, data-form-type=other. Callers don't add them.
+- **API**: `Hub` is the generated `S['Hub']`. Mock: GET/PUT /admin/hub as core (spaces trimmed,
+  `required` / `too_long` (fixture) / `invalid_name`, unknown fields 422; hostname derived from the
+  name, ASCII-only lowercasing like core; control characters checked before length; also /status
+  `network.hostname` and `hubbo.name`); first-run hub is "Hubbo". One `restart`
+  timer serves POST /admin/restart (sessions end) and the factory reset (erase), with `onBack`.
+- **Tests**: e2e `hub-settings.spec` (tab, attributes, trims, refused name inline, rename +
+  hostname; restart → sign-in, or Activities on the no-auth simulator), setup.spec (Name step:
+  rename + blank, default kept), a11y (/settings/hub). Units: lib/restart.test, lib/hub.test, menu.
+- **hub-sim**: core's sim reset now forgets the hub name. backup.spec is an `app` spec (mock and
+  `--sim --auth`); on no-auth hub-sim its factory-reset tests can't pass, and the gate never runs them
+  there. setup.spec under `--auth`: hub.ts factory-resets a set-up hub-sim for a first-run test
+  (its `--data` keeps the admin across `--reset`), so every setup test runs in one pass.
+
 ## Web polish (branch `web-polish`; review fixes in, gate after them)
 
 - **What's on**: no per-page activity chip. The nav's `Brand` shows `NowOn` (`role="status"`, dot +
@@ -400,10 +435,9 @@ were deferred while iterating and are now caught up.
 - Why a pass is slow: `workers: 1` (one shared hub, reset per test) and real-time polls (1–3 s)
   and HA/BLE waits inside tests. Backlog: one hub per worker (a mock per worker, or a hub-sim port
   per worker) for `workers > 1` or sharding.
-- Under `--auth` use a fresh `--data` dir so setup.spec sees no admin. In a full pass only the
-  first setup test runs; the others need their own fresh hub (`setup.spec.ts:83` and `:132`, each
-  alone), when setup changes. hub-sim starts paired, so
-  that test opens `#/setup/remote` by URL there.
+- Under `--auth`, first-run tests factory-reset hub-sim themselves (hub.ts `factoryResetSim`), so
+  setup.spec runs whole in a gate pass. hub-sim starts paired, so the resume test opens
+  `#/setup/remote` by URL there.
 - Blocked seeds: `bin/hubbo sim write-record --data DIR --name config --file
   sim/fixtures/config.newer-schema.json`, then `serve` without `--reset`, then `--project seeded
   --no-deps`.

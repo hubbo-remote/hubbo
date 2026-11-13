@@ -78,6 +78,10 @@ public:
     // verified; StorageFailed otherwise, with the target slot invalidated and
     // the previous record still loading. TooLong over the store's limit.
     virtual ErrorCode save(std::string_view name, uint64_t generation, std::string_view payload) = 0;
+
+    // Removes the record, so the next load is NotFound. Ok (also when there
+    // was none) or StorageFailed (the medium isn't writable).
+    virtual ErrorCode remove(std::string_view name) = 0;
 };
 
 // Slot framing, shared by all implementations (and tools such as
@@ -108,6 +112,7 @@ public:
     ErrorCode load(std::string_view name, Record *out) override;
     ErrorCode nextGeneration(std::string_view name, uint64_t *out) override;
     ErrorCode save(std::string_view name, uint64_t generation, std::string_view payload) override;
+    ErrorCode remove(std::string_view name) override;  // both slot files
 
 private:
     enum class Slot : uint8_t { Missing, Invalidated, Intact, Damaged, Unreadable };

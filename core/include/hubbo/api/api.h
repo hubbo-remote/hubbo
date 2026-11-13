@@ -9,8 +9,10 @@
 #include "hubbo/api/factory_reset_port.h"
 #include "hubbo/api/firmware_update_port.h"
 #include "hubbo/api/remote_port.h"
+#include "hubbo/api/restart_port.h"
 #include "hubbo/auth/credentials.h"
 #include "hubbo/auth/session.h"
+#include "hubbo/config/hub.h"
 #include "hubbo/domain/adapter.h"
 #include "hubbo/engine/engine.h"
 #include "hubbo/http/route.h"
@@ -107,7 +109,6 @@ struct HubInfo {
     std::string version = "0.0.0";
     std::string build;
     std::string board;
-    std::string hostname;
     bool simulatorNoAuth = false;  // reported as auth_mode simulator_no_auth
 };
 
@@ -146,6 +147,11 @@ struct ApiContext {
     FirmwareUpdatePort *firmware = nullptr;
     // The real factory reset (POST /admin/factory-reset); null answers 503.
     FactoryResetPort *factoryReset = nullptr;
+    // The hub's name (GET/PUT /admin/hub, /status hubbo.name); null: the
+    // routes answer 503 and /status reports the default name.
+    config::HubSettings *hub = nullptr;
+    // POST /admin/restart; null answers 503.
+    RestartPort *restart = nullptr;
 };
 
 // SecretStore key of the "ha_main" access token. Never in config, backups,

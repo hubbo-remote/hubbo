@@ -147,7 +147,7 @@ function HomeAssistantForm({ config, onSaved }: { config: IntegrationConfig; onS
         htmlFor="ha-token"
         hint={keepsToken ? 'Leave blank to keep the saved token.' : 'Create a long-lived token in your Home Assistant profile.'}
       >
-        <Input id="ha-token" type="password" autoComplete="off" spellCheck={false} placeholder={keepsToken ? '••••••••' : 'Paste token'} value={token} onChange={(e) => setToken(e.target.value)} maxLength={512} required={!keepsToken} />
+        <Input id="ha-token" type="password" spellCheck={false} placeholder={keepsToken ? '••••••••' : 'Paste token'} value={token} onChange={(e) => setToken(e.target.value)} maxLength={512} required={!keepsToken} />
       </Field>
       {error && !urlError && (error.code === 'revision_conflict' ? <Alert variant="error">Changed somewhere else. Reload and try again.</Alert> : <ErrorState error={error} />)}
       <div>

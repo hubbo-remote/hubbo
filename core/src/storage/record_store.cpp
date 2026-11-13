@@ -132,6 +132,14 @@ ErrorCode SlotRecordStore::load(std::string_view name, Record *out) {
     return ErrorCode::Ok;
 }
 
+ErrorCode SlotRecordStore::remove(std::string_view name) {
+    if (health() != Health::Available) return ErrorCode::StorageFailed;
+    for (const char slot : {'a', 'b'}) {
+        if (storage_.remove(slotName(name, slot)) != ErrorCode::Ok) return ErrorCode::StorageFailed;
+    }
+    return ErrorCode::Ok;
+}
+
 ErrorCode SlotRecordStore::save(std::string_view name, uint64_t generation, std::string_view payload) {
     if (health() != Health::Available) return ErrorCode::StorageFailed;
     if (payload.size() > maxPayload_) return ErrorCode::TooLong;

@@ -563,7 +563,8 @@ def admin_flow(c, checker, candidate=None):
 SIM_BOARD = "simulator"   # hub-sim's board (simulatorFirmwareTarget())
 SIM_SLOT = 64 * 1024      # and its slot
 SIM_WRITE_MS, SIM_REBOOT_MS = 2000, 1000  # SimulatedFirmwareUpdate::kWriteMs, kRebootMs
-SIM_RESTART_MS = 1000  # SimulatedFactoryReset::kRestartMs
+SIM_FACTORY_RESET_MS = 1000  # SimulatedFactoryReset::kRestartMs
+SIM_RESTART_MS = 1000  # SimulatedRestart::kRestartMs (POST /admin/restart)
 
 
 def firmware_image(board=SIM_BOARD, layout=1, version="v9.9.9-contract", magic=0xE9, chip=9, min_rev=0,
@@ -689,6 +690,8 @@ def factory_reset_flow(c):
     upload(c, firmware_image(board=(fw or {}).get("board", SIM_BOARD)), 202, "image before a factory reset")
     _, body, _ = c.call("factoryReset", "POST", "/admin/factory-reset", expect=409, label="factory reset mid-update")
     expect(error_code(body) == "update_in_progress", f"factory reset mid-update: {body}")
+    _, body, _ = c.call("restartHub", "POST", "/admin/restart", expect=409, label="restart mid-update")
+    expect(error_code(body) == "update_in_progress", f"restart mid-update: {body}")
     c.control(f"advance?ms={SIM_WRITE_MS + SIM_REBOOT_MS}")
     relogin_after_restart(c, "the firmware reboot")
     if c.control("factory-reset?ready=0"):
@@ -697,7 +700,7 @@ def factory_reset_flow(c):
         c.control("factory-reset?ready=1")
 
     c.call("factoryReset", "POST", "/admin/factory-reset", expect=202)
-    c.control(f"advance?ms={SIM_RESTART_MS}")
+    c.control(f"advance?ms={SIM_FACTORY_RESET_MS}")
     session_mode = bool(c.cookie)
     with c.acting_as():
         s = c.call("getSession", "GET", "/auth/session", expect=200, label="session after a factory reset")[1] or {}
@@ -721,6 +724,60 @@ def factory_reset_flow(c):
     c.cookie = cookie or c.cookie
     _, tokens, _ = c.call("listTokens", "GET", "/admin/tokens", expect=200, label="tokens after a factory reset")
     expect(tokens is not None and not tokens["tokens"], f"tokens survived a factory reset: {tokens}")
+    hub = get_hub(c, "hub after a factory reset")
+    expect(hub == DEFAULT_HUB, f"the hub's name survived a factory reset: {hub}")
+
+
+# ---------------------------------------------------------------- hub name, restart
+
+DEFAULT_HUB = {"name": "Hubbo", "hostname": "hubbo"}
+
+
+def get_hub(c, label):
+    return c.call("getHub", "GET", "/admin/hub", expect=200, label=label)[1] or {}
+
+
+def rename_hub(c, name, hostname, label, sent=None):
+    """PUT `sent` (default: `name`) and expect the hub to be called `name`."""
+    _, hub, _ = c.call("updateHub", "PUT", "/admin/hub", {"name": sent or name}, expect=200, label=label)
+    expect(hub == {"name": name, "hostname": hostname}, f"{label}: {hub}")
+
+
+def hub_flow(c):
+    """Naming the hub: the name, the hostname derived from it, the names
+    refused, then a restart (202, every session gone, the name kept). Ends
+    named "Living Room"."""
+    rename_hub(c, "Living Room", "living-room", "rename the hub")
+    _, st, _ = c.call("getStatus", "GET", "/status", expect=200, label="status after a rename")
+    expect(st and st["hubbo"].get("name") == "Living Room", f"status hubbo.name after a rename: {st and st['hubbo']}")
+    hostname = (st or {}).get("network", {}).get("hostname")
+    expect(hostname in (None, "living-room"), f"status network.hostname after a rename: {hostname}")
+    for name, hostname in [("Hubbo 2", "hubbo-2"), ("Den's TV!", "den-s-tv"), ("--Den--", "den"),
+                           ("***", "hubbo"), ("x" * 32, "x" * 32), ("A", "a")]:
+        rename_hub(c, name, hostname, f"hostname of {name!r}")
+    # Spaces at either end are dropped before the checks.
+    rename_hub(c, "Den", "den", "a padded name", sent="  Den  ")
+    rename_hub(c, "x" * 32, "x" * 32, "a padded 32-character name", sent=" " + "x" * 32 + " ")
+    for name, label, code in [("", "an empty name", "required"), ("   ", "a blank name", "required"),
+                              ("x" * 33, "a 33-character name", "too_long"),
+                              ("Den\x07", "a control character", "invalid_name"),
+                              ("Den\nTV", "a newline", "invalid_name"), ("\tDen", "a tab", "invalid_name"),
+                              ("Den\x7f", "DEL", "invalid_name")]:
+        _, e, _ = c.call("updateHub", "PUT", "/admin/hub", {"name": name}, expect=422, label=f"hub name: {label}")
+        got = [(d["code"], d["path"]) for d in error_details(e)]
+        expect((code, "/name") in got, f"hub name {label}: expected {code} at /name, got {got}")
+    for body, label in [({"name": 5}, "a number"), ({}, "no name"),
+                        ({"name": "Den", "hostname": "den"}, "a hostname (read-only)")]:
+        c.call("updateHub", "PUT", "/admin/hub", body, expect=422, label=f"hub name: {label}")
+    expect(get_hub(c, "hub after refused names").get("name") == "x" * 32, "a refused name changed the hub")
+    rename_hub(c, "Living Room", "living-room", "rename the hub back")
+    rename_hub(c, "Living Room", "living-room", "the same name again")
+
+    _, body, _ = c.call("restartHub", "POST", "/admin/restart", expect=202)
+    expect(body == {}, f"restart: {body}")
+    c.control(f"advance?ms={SIM_RESTART_MS}")
+    relogin_after_restart(c, "a restart")
+    expect(get_hub(c, "hub after a restart").get("name") == "Living Room", "the name didn't survive a restart")
 
 
 def until(fn, seconds=5):
@@ -1138,6 +1195,7 @@ def noauth(c, checker):
     ble_pairing_flow(c)
     candidate = ha_flow(c)
     admin_flow(c, checker, candidate)
+    hub_flow(c)
     integration_param_flow(c)
     ha_unlink_flow(c)
     factory_reset_flow(c)
@@ -1190,10 +1248,22 @@ def token_role_matrix(c, checker, token):
         expect(error_code(body) == "forbidden", f"token firmware upload: {body}")
 
 
+def anonymous_matrix(c, checker):
+    """Without credentials, every operation that isn't public is 401."""
+    with c.acting_as():
+        for role in ("token", "admin"):
+            for op_id, method, path in operations(checker, **{"x-hubbo-role": role}):
+                status, body, _ = c.call(op_id, method, concrete(path), empty_body(checker, op_id),
+                                         label="anonymous")
+                expect(status == 401 and error_code(body) == "unauthenticated",
+                       f"anonymous {op_id}: expected 401 unauthenticated, got {status}")
+
+
 def auth_mode(c, checker):
     login = setup_and_login(c)
     if login is None:
         return
+    anonymous_matrix(c, checker)
     cookie = login
     with c.acting_as(cookie=cookie):
         _, e, _ = c.call("createToken", "POST", "/admin/tokens", {"name": "x"},
@@ -1209,6 +1279,7 @@ def auth_mode(c, checker):
         ble_pairing_flow(c)
         ha_flow(c)
         ha_unlink_flow(c)
+        hub_flow(c)
         cookie = firmware_flow(c)
     if not token:
         return
@@ -1305,6 +1376,7 @@ def snapshot(c):
                                                   f"/devices/{d['id']}/capabilities", expect=200)[1]
     status = c.call("getStatus", "GET", "/status", expect=200)[1] or {}
     state["active_activity_id"] = status.get("active_activity_id")
+    state["hub_name"] = status.get("hubbo", {}).get("name")
     backup = dict(c.call("downloadBackup", "GET", "/admin/backup", expect=200)[1] or {})
     backup.pop("created_at", None)
     state["backup"] = backup
@@ -1411,6 +1483,7 @@ def persistence_flow(c, hub, relogin=None):
     survives_restart(c, hub, "default seed", relogin)
 
     # Each kind of edit, then a restart.
+    rename_hub(c, "Den", "den", "persist the hub's name")
     _, created, _ = c.call("createActivity", "POST", "/activities", fixture("activities/create.request.json"),
                            expect=201, label="persist create")
     if not created:

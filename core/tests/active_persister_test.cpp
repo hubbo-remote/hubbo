@@ -31,7 +31,7 @@ TEST(StateStore, KeysAndBackends) {
     ASSERT_EQ(state.get("active_activity", &value), ErrorCode::Ok);
     EXPECT_EQ(value, "act_watch_apple_tv");
     EXPECT_EQ(disk.files().count("active_activity.a"), 1u);
-    EXPECT_FALSE(state.set("active_activity", std::string(65, 'x')));
+    EXPECT_FALSE(state.set("active_activity", std::string(storage::kMaxStateValueLength + 1, 'x')));
 }
 
 TEST(ActivePersister, WritesOnceStableAndOnlyWhenChanged) {

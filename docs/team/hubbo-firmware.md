@@ -1,6 +1,6 @@
 # hubbo-firmware: working notes
 
-Current as of Phase 5 in progress, on branch `phase-5`; Phases 3 and 4 merged. Not a log: state,
+Current as of the hub-name work on branch `hub-name`. Not a log: state,
 numbers and traps. Design: `docs/design/phase5-appliance.md`.
 
 ## State
@@ -223,6 +223,48 @@ of remote lag during the write are accepted.
   connected but unencrypted for a few seconds, request security again, and failing that drop the
   link so the host reconnects at once (a stalled link costs ~43 s today). Bound the retries so a
   host that always fails can't loop.
+
+## Hub name and Restart (branch `hub-name`, built, not on the board yet)
+
+- Core's `config::HubSettings` (hub.h) owns the name in the StateStore (`hub_name` record on
+  LittleFS, so the factory reset's format clears it). `loadHubName()` runs right after
+  `mountFilesystem()` (no bootHub needed), feeds `HubName::begin()` and sets `onChanged` →
+  `HubName::apply()` (httpd). `ApiContext.hub` and `.restart` are set; HubInfo.hostname is dropped
+  (core reports the live hostname).
+- `hub_name.*` holds only the boot hostname, `mdnsStarted_` and the BLE mailbox (a `FixedString`
+  under a spinlock, behind an atomic flag the loop checks; the loop never takes HubSettings' mutex).
+  Names come from `hubSettings.identity()`; core guarantees their lengths, so firmware cuts only
+  for transport limits. Boot hostname for DHCP (`Network.setHostname`) and ArduinoOTA (its own mDNS is off;
+  `bin/hubbo ota` addresses by IP, nothing uses the old `hubbo-<MAC>` name). mDNS now through the
+  IDF API (no ESPmDNS): `mdns_init`, instance = name (cut at 63 bytes, UTF-8 safe), hostname = slug,
+  `_http._tcp` with a NULL instance (follows the global one). A rename calls
+  `mdns_instance_name_set` then `mdns_hostname_set` on httpd: each sends goodbyes and re-probes.
+  `mdns_hostname_set` blocks on `xQueueSemaphoreTake` until the mDNS task (core 0, prio 1) takes it
+  (checked in the .a), so never on the loop.
+- BLE: `BleHid::setName()` on the loop (mailbox): `NimBLEDevice::setDeviceName` (GAP name, whole),
+  stop advertising, `setScanName()` (boot calls only this; init() set the GAP name): scan response = the name (complete ≤ 29 bytes, else cut at a UTF-8 boundary
+  and typed "shortened"), `updateAdvertising()` restarts it. The advert itself stays flags + HID
+  appearance + 0x1812. Bonds don't involve the name: no re-pair; hosts show the new name when they
+  read it again (usually the next connection). The GAP name max is raised to 128 bytes with
+  `MYNEWT_VAL_BLE_SVC_GAP_DEVICE_NAME_MAX_LENGTH` in `include/sdkconfig.h` (nimconfig.h hard-sets
+  the CONFIG_ one to 31); ELF: `ble_svc_gap_name` is 0x81 bytes.
+- `ble.begin()` uses the saved name; it stays right after `radio.begin()`.
+- Restart: `Restart::requestRestart()` claims `ota::Owner::Reboot` (renamed from Reset; the factory
+  reset uses it too), then `requestReboot("restart")`. `flushAndRestart` (the httpd reboot job) now
+  starts with a 100 ms `vTaskDelay` so lwIP sends the response.
+- Lead review fix: a factory reset whose NVS save fails releases `Owner::Reboot` only if it took it
+  (`ota::holds()` before the claim), so a pending restart keeps the flag. Only httpd claims Reboot.
+- Two unrenamed hubs both want `hubbo.local`; mDNS renames one, /status wouldn't know. Left as is
+  (one hub). If needed: `mdns_register_hostname_changed_callback` / `mdns_hostname_get` exist.
+- /simplify done. Skipped: `utf8Prefix` into core (beside checkHubName, testable; core's call),
+  folding Restart and FactoryReset into one class (5 lines). Core's `rename()` already skips a
+  same-name rename (no save, no onChanged).
+- Gate (fw) passed: serial RAM 88,160 B, flash 2,018,847 B; OTA RAM 96,376 B, flash 2,045,851 B.
+  The "specify upload_port" line in the OTA build log is espota config noise, not a failure.
+- Board test to do: rename live (BLE scan name, `dns-sd -B _http._tcp`, `<slug>.local`, paired
+  hosts still work), a 32-emoji name (GAP read, shortened scan name), DHCP name after a reboot,
+  POST /admin/restart answers before the reboot, loop max gap during a rename (HCI stop/start on
+  the loop, as `updateAdvertising` already does).
 
 ## Task layout (priorities)
 

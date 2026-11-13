@@ -105,8 +105,13 @@ const FW_WRITE_MS = 2000
 const FW_REBOOT_MS = 1000
 /** The OTA slot (POST /admin/firmware/update x-hubbo-max-body). */
 const FW_SLOT_BYTES = 6_553_600
-/** A factory reset's restart, like hub-sim's (the mock's hub is down for all of it). */
-const ERASE_RESTART_MS = 1000
+/** A restart (POST /admin/restart, or a factory reset's), like hub-sim's: the mock's hub is down for all of it. */
+const RESTART_MS = 1000
+/** The hostname the hub derives from its name (api/openapi.yaml Hub.hostname): ASCII A–Z lowercased only, like core's hostnameFor. */
+const hostnameOf = (name: string) => name.replace(/[A-Z]/g, (c) => c.toLowerCase()).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'hubbo'
+/** api/openapi.yaml HubName: trimmed, 1–32 characters, no control characters. */
+// eslint-disable-next-line no-control-regex -- control characters are exactly what a hub name can't have
+const CONTROL = /[\x00-\x1f\x7f-\x9f]/u
 /** Sessions last 7 days, absolute (or until the hub reboots). */
 const SESSION_S = 604_800
 /** Requests refused while the config is blocked or unwritable (validate is a dry run, so it isn't one). */
@@ -189,8 +194,8 @@ export function createMock(opts: MockOptions = {}) {
   let fwFail: boolean
   let fwReady: boolean
   let fwRevert: boolean
-  /** A factory reset in progress, in hub time like `fw`. */
-  let erase: { startedAt: number; advancedMs: number } | null
+  /** A restart in progress, in hub time like `fw`; `onBack` runs as the hub comes back. */
+  let restart: { startedAt: number; advancedMs: number; onBack: () => void } | null
   /** Like hub-sim's POST /sim/factory-reset?ready=0: the hub can't erase (503). */
   let eraseReady: boolean
   /** Entities HA has forgotten (POST /__mock/ha?remove=): their devices go stale at the next discovery. */
@@ -248,8 +253,10 @@ export function createMock(opts: MockOptions = {}) {
     fwFail = false
     fwReady = true
     fwRevert = false
-    erase = null
     eraseReady = true
+    restart = null
+    // A new hub is called Hubbo; a set-up one has the fixture's name (status.json, admin/hub.json).
+    if (mode.firstRun) setHubName('Hubbo')
     discovery = { state: 'idle' }
     // The fixture's entities come from HA's `demo` platform, which has no services of its own. Give them
     // realistic platforms, with integration services and skipped ones, so the UI shows those too.
@@ -575,13 +582,21 @@ export function createMock(opts: MockOptions = {}) {
   /** Hub ms since the running update started. */
   const firmwareMs = () => (fw.state === 'writing' ? hubMs(fw) : 0)
 
-  /** True while a factory reset restarts the hub; at its end everything is gone and the hub is fresh. */
-  function erasing(): boolean {
-    if (!erase) return false
-    if (hubMs(erase) < ERASE_RESTART_MS) return true
-    reset({ firstRun: true, requireAuth: mode.requireAuth }) // no admin, sessions, tokens, remote or config
-    bleHosts = new Map() // erased with everything else
+  /** True while the hub restarts (it answers nothing); as it comes back, `onBack` runs once. */
+  function restarting(): boolean {
+    if (!restart) return false
+    if (hubMs(restart) < RESTART_MS) return true
+    const { onBack } = restart
+    restart = null
+    onBack()
     return false
+  }
+  const startRestart = (onBack: () => void) => (restart = { startedAt: Date.now(), advancedMs: 0, onBack })
+
+  const hub = () => ({ name: db.status.hubbo.name, hostname: db.status.network.hostname ?? hostnameOf(db.status.hubbo.name) })
+  function setHubName(name: string) {
+    db.status.hubbo.name = name
+    db.status.network.hostname = hostnameOf(name)
   }
 
   /**
@@ -1119,8 +1134,32 @@ export function createMock(opts: MockOptions = {}) {
       const update = firmwarePhase()
       if (update === 'writing' || update === 'rebooting') return fixtureError(409, 'errors/factory_reset_during_update.json')
       if (!eraseReady) return err(503, 'unavailable', "The hub can't do a factory reset right now")
-      erase = { startedAt: Date.now(), advancedMs: 0 }
+      // Back fresh: no admin, sessions, tokens, remote or config; Bluetooth bonds erased with the rest.
+      startRestart(() => {
+        reset({ firstRun: true, requireAuth: mode.requireAuth })
+        bleHosts = new Map()
+      })
       return { status: 202 }
+    }],
+    ['GET', /^\/admin\/hub$/, 'admin', () => ok(hub())],
+    ['PUT', /^\/admin\/hub$/, 'admin', (req) => {
+      const body = (req.body ?? {}) as Record<string, unknown>
+      const extra = Object.keys(body).filter((k) => k !== 'name')
+      if (extra.length) return invalid(unknownFields(extra)) // hostname is read-only
+      if (typeof body.name !== 'string') return invalid([{ path: '/name', code: 'wrong_type', message: 'Name must be text' }])
+      const name = body.name.replace(/^ +| +$/g, '') // spaces only: a tab or newline is a control character
+      if (!name) return invalid([{ path: '/name', code: 'required', message: 'Name is required' }])
+      // In core's order: control characters, then length.
+      if (CONTROL.test(name)) return invalid([{ path: '/name', code: 'invalid_name', message: 'Name must be text without control characters' }])
+      if ([...name].length > 32) return fixtureError(422, 'errors/hub_name_invalid.json')
+      setHubName(name)
+      return ok(hub())
+    }],
+    ['POST', /^\/admin\/restart$/, 'admin', () => {
+      const update = firmwarePhase()
+      if (update === 'writing' || update === 'rebooting') return fixtureError(409, 'errors/restart_during_update.json')
+      startRestart(() => sessions.clear()) // sessions live in RAM
+      return { status: 202, body: fixture('admin/restart.json') }
     }],
     ['GET', /^\/admin\/firmware$/, 'admin', () => ok(firmwareStatus())],
     // In the hub's order: size and type (the router), Content-Length, busy, ready, then the image checks.
@@ -1169,7 +1208,7 @@ export function createMock(opts: MockOptions = {}) {
       if (details) details.startedAt -= ms
       if (discovery.startedAt !== undefined) discovery.startedAt -= ms
       if (fw.state === 'writing') fw.advancedMs += ms
-      if (erase) erase.advancedMs += ms
+      if (restart) restart.advancedMs += ms
       return ok()
     }],
     // The HA client's state, as the fake HA server would drive it (cleared by the next settings change).
@@ -1248,7 +1287,7 @@ export function createMock(opts: MockOptions = {}) {
   async function handle(req: MockRequest): Promise<MockResponse> {
     const base = opts.latencyMs ?? 0
     if (base > 0) await new Promise((r) => setTimeout(r, base * (0.5 + rand())))
-    if ((firmwarePhase() === 'down' || erasing()) && !req.path.startsWith('/__mock/')) return { status: 0 }
+    if ((firmwarePhase() === 'down' || restarting()) && !req.path.startsWith('/__mock/')) return { status: 0 }
     // Per-route limits (x-hubbo-max-body): restore takes a whole config; firmware images are streamed.
     const limit = req.path.startsWith('/admin/restore') ? RESTORE_MAX_BODY : MAX_BODY
     const firmware = req.path.startsWith('/admin/firmware')

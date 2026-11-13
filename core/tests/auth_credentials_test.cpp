@@ -401,6 +401,7 @@ struct ForcedHealthRecords : storage::RecordStore {
     ErrorCode save(std::string_view name, uint64_t generation, std::string_view payload) override {
         return real.save(name, generation, payload);
     }
+    ErrorCode remove(std::string_view name) override { return real.remove(name); }
     storage::RecordStore &real;
     storage::Health forced = storage::Health::Available;
 };

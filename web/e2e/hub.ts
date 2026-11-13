@@ -27,6 +27,8 @@ async function resetHub(page: Page, flags: ResetFlags): Promise<boolean> {
   let s = await session(page)
   // Credentials the hub can't read come from how hub-sim was started, not from a reset.
   if (flags.authState) return s.auth_state === flags.authState
+  // A set-up hub-sim --auth (its --data keeps the admin across --reset) gets a factory reset instead.
+  if (flags.firstRun && !s.setup_required && s.auth_mode === 'enforced' && !flags.authState && !flags.configState) s = await factoryResetSim(page, s)
   const fresh = !!flags.firstRun && s.setup_required
   if (flags.firstRun && !fresh) return false // already set up
   if (flags.requireAuth && s.auth_mode !== 'enforced') return false // no-auth simulator
@@ -52,6 +54,18 @@ async function resetHub(page: Page, flags: ResetFlags): Promise<boolean> {
   expect(r.ok(), `POST /sim/reset -> ${r.status()}`).toBeTruthy()
   if (flags.requireAuth) await page.request.post(`${API_BASE}/auth/logout`)
   return true
+}
+
+/** Erases hub-sim back to first run (signed in as the e2e admin first), and waits for it to come back fresh. */
+async function factoryResetSim(page: Page, s: Session): Promise<Session> {
+  if (!s.authenticated) {
+    const r = await page.request.post(`${API_BASE}/auth/login`, { data: ADMIN })
+    if (!r.ok()) return s // someone else's admin: leave it
+  }
+  expect((await page.request.post(`${API_BASE}/admin/factory-reset`)).status(), 'factory reset for first run').toBe(202)
+  await advance(page, 1_000)
+  await expect.poll(async () => (await session(page).catch(() => null))?.setup_required, { timeout: 10_000 }).toBe(true)
+  return session(page)
 }
 
 export const test = base.extend<{ reset: ResetFlags; hub: void }>({

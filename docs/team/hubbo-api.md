@@ -1,6 +1,6 @@
 # hubbo-api: working notes
 
-Current as of the remote-editor phase (HA service labels; uncommitted). Not a log: rewrite sections as they change.
+Current as of the hub-name branch (hub name and restart; uncommitted). Not a log: rewrite sections as they change.
 
 ## State
 
@@ -26,6 +26,15 @@ Current as of the remote-editor phase (HA service labels; uncommitted). Not a lo
 
 ## Key decisions (and why)
 
+- **Hub name and restart** (hub-name branch): `GET/PUT /admin/hub` (`getHub`, `updateHub`) and
+  `POST /admin/restart` (`restartHub`), all admin, under /admin/ by convention; tokens read the
+  name from /status `hubbo.name`. Core trims spaces at the ends, then checks 1-32 code points with
+  no C0/C1 controls; detail codes at /name are `required`, `too_long` and `invalid_name`.
+  `hostname` is derived (core `hostnameFor`) and read-only. Restart is 202 `{}`, or 409 mid-update.
+  The policy rows are mine (`policy.h`/`policy.cpp`); the routes are core's `hub_routes.cpp`.
+  Contract: `hub_flow` (both modes), restart 409 inside `factory_reset_flow`, the default name
+  after a factory reset, and `snapshot()` holds /status `hubbo.name`. `anonymous_matrix` (auth
+  mode) sends every non-public operation without credentials and expects 401.
 - **Global-binding fallback is per button** (core, button-press): an activity that binds any
   trigger of a button hides all of that button's globals. agent-api.md and the
   `/global-bindings` description say so.
@@ -252,6 +261,7 @@ Current as of the remote-editor phase (HA service labels; uncommitted). Not a lo
 
 ## Open items
 
+- **hub-name:** gate passed in all four modes; waiting on the lead's commit call.
 - **Waiting on core (review round):**
   - Device rule breaks become 422 before the save: the contract already expects unknown_kind at
     /kind and a 422 at /provider/type; pin that code when core picks it.

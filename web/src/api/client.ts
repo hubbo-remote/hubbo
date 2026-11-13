@@ -18,6 +18,7 @@ import type {
   DiscoverStatus,
   ExecuteResult,
   FirmwareStatus,
+  Hub,
   GlobalBindings,
   Integration,
   IntegrationConfig,
@@ -260,5 +261,9 @@ export const api = {
   /** Erases everything (202); the hub restarts into first-run setup. */
   factoryReset: () => post<void>('/admin/factory-reset'),
   firmware: () => get<FirmwareStatus>('/admin/firmware'),
+  hub: () => get<Hub>('/admin/hub'),
+  renameHub: (name: string) => put<Hub>('/admin/hub', { name }),
+  /** Restarts the hub (202); every session ends. 409 `update_in_progress` while an update runs. */
+  restart: () => post<void>('/admin/restart'),
   uploadFirmware,
 }

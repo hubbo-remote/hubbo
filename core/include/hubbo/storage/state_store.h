@@ -8,8 +8,8 @@
 #include "hubbo/storage/record_store.h"
 
 // Small, non-secret runtime state that should survive a reboot (today: the
-// active activity id). Keys follow storage::isValidKey (fits NVS); values
-// are short strings (at most 64 bytes).
+// active activity id, the hub's name). Keys follow storage::isValidKey
+// (fits NVS); values are short strings (at most kMaxStateValueLength bytes).
 //
 // Implementations:
 //   RecordStateStore  one record per key in a RecordStore (hub-sim --data).
@@ -20,7 +20,7 @@
 // persister on the config/HTTP side (see engine/active_persister.h).
 namespace hubbo::storage {
 
-constexpr size_t kMaxStateValueLength = 64;  // keys: storage::isValidKey
+constexpr size_t kMaxStateValueLength = 128;  // keys: storage::isValidKey
 
 class StateStore {
 public:
@@ -31,12 +31,16 @@ public:
     // False on failure (invalid key, too long, medium error). May be slow
     // (flash); never call it from the engine task.
     virtual bool set(std::string_view key, std::string_view value) = 0;
+    // Removes the key, so get() is NotFound. False on failure; removing an
+    // absent key is true. Same tasks as set().
+    virtual bool remove(std::string_view key) = 0;
 };
 
 class MemoryStateStore : public StateStore {
 public:
     ErrorCode get(std::string_view key, std::string *value) const override;
     bool set(std::string_view key, std::string_view value) override;
+    bool remove(std::string_view key) override;
 
     int writes() const { return writes_; }
     bool failWrites = false;  // test hook
@@ -53,6 +57,7 @@ public:
     explicit RecordStateStore(RecordStore &store) : store_(store) {}
     ErrorCode get(std::string_view key, std::string *value) const override;
     bool set(std::string_view key, std::string_view value) override;
+    bool remove(std::string_view key) override;
 
 private:
     RecordStore &store_;

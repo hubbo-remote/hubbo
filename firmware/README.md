@@ -35,6 +35,8 @@ Pinned: `espressif32@8.0.0` (arduino-esp32 3.3.12), `nRF24/RF24@1.6.2`,
 | `src/latency.*` | Fixed-size latency recorder (p50/p95/p99/max). |
 | `src/ota.*` | ArduinoOTA, compiled in only with `HUBBO_OTA_PASSWORD`, and the update owner flag it shares with the web update. |
 | `src/factory_reset.*` | `api::FactoryResetPort`: records the request (one NVS flag) and reboots; the wipe (all of NVS, then the fs format) runs early in the next boot. The gate's `HUBBO_WIPE_ON_BOOT` uses the same wipe. |
+| `src/hub_name.*` | The hub's name (core's `HubSettings`, a StateStore record): the BLE name, the mDNS instance and hostname, live on a rename (mDNS on httpd, BLE through a mailbox to the loop); DHCP and OTA take the boot hostname. |
+| `src/restart.*` | `api::RestartPort` (POST /admin/restart): claims the update-owner flag, then the normal reboot path. |
 | `src/firmware_update.*` | `api::FirmwareUpdatePort` over esp_ota: firmware updates from the web admin (see "Web updates"). |
 | `src/image_marker.h`, `scripts/image_marker.py` | The `HUBBO-IMAGE/1 board=… layout=… version=<git describe>` marker every image carries; the build fails if the .bin doesn't hold exactly one. Its version is the API's `version`. |
 | `src/main.cpp` | Wiring, boot, main loop, serial console. |

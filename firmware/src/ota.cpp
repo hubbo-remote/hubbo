@@ -117,6 +117,10 @@ bool claim(Owner who) {
     return currentOwner.compare_exchange_strong(expected, who) || expected == who;
 }
 
+bool holds(Owner who) {
+    return currentOwner.load() == who;
+}
+
 void release(Owner who) {
     Owner expected = who;
     currentOwner.compare_exchange_strong(expected, Owner::Idle);

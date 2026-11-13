@@ -39,6 +39,7 @@ SimHub::SimHub(storage::Storage *storage, storage::StateStore *state, bool realH
         };
     }
     factoryReset_ = freshFactoryResetPort();
+    (void)hubSettings_.load();
 }
 
 config::LoadReport SimHub::boot(const ConfigSpec &defaults, auth::Credentials *credentials) {
@@ -77,17 +78,21 @@ ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
     resetBle();
     firmware_ = api::SimulatedFirmwareUpdate();
     factoryReset_ = freshFactoryResetPort();
+    restart_.reset();  // keeps the restarted callback SimApi set
+    (void)hubSettings_.forget();
     return load(config);
 }
+
 
 void SimHub::wipe(auth::Credentials *credentials) {
     stopEverything();
     fakes_.bleHosts.reset();  // no bonds
     // The board formats the filesystem; here the config record's slots
-    // (SlotRecordStore's "<name>.a"/".b") go.
+    // (SlotRecordStore's "<name>.a"/".b") go, whatever the medium's trust.
     for (const char slot : {'a', 'b'}) {
         (void)storage_->remove(std::string(config::ConfigService::kRecordName) + "." + slot);
     }
+    (void)hubSettings_.forget();
     boot(ConfigSpec{}, credentials);  // the firmware's first boot and defaults
     engine_.poll(nowMs_);
 }
@@ -159,6 +164,7 @@ void SimHub::advance(uint32_t ms, bool silent) {
     fakes_.bleHosts.advance(ms);  // pairing window timeout
     advanceFirmware(ms);
     factoryReset_.advance(ms);  // the restart, then its erase
+    restart_.advance(ms);
     // The radio gave up on them; the simulated thumb lets go too.
     if (silent && input_.held() == 0) held_ = 0;
 }
