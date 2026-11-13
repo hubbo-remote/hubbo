@@ -69,6 +69,7 @@ private:
     void host(http::Method method, const char *pattern, Fn::F f,
               auth::Requirement access = auth::Requirement::AdminOnly);
     std::string simTime() const;
+    std::string mqttJson() const;  // GET /sim/mqtt
     void eraseEverything();
 
     ScenarioRunner &runner_;

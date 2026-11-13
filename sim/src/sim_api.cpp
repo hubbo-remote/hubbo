@@ -1,6 +1,9 @@
 #include "sim_api.h"
 
+#include <ArduinoJson.h>
+
 #include "hubbo/api/agent_docs.h"
+#include "hubbo/api/transitions.h"
 
 #include <cstdlib>
 #include <sstream>
@@ -49,7 +52,8 @@ api::ApiContext context(auth::Credentials &credentials, auth::SessionStore &sess
                            &hub.firmware(),
                            &hub.factoryResetPort(),
                            &hub.hubSettings(),
-                           &hub.restartPort()};
+                           &hub.restartPort(),
+                           &hub.mqtt()};
 }
 
 // "channel=76&address=e7e7e7e7e7" (hex, 40 bits).
@@ -83,8 +87,45 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
     runner.hub().onFactoryReset = [this] { eraseEverything(); };
     api::registerApiRoutes(router_, api_);
 
-    // As the firmware does at boot: the "ha_main" URL and the stored token.
+    // As the firmware does at boot: the "ha_main" URL and the stored token,
+    // and "mqtt_main" with its password.
     api::applyHomeAssistantSettings(runner.hub().configService(), secrets, runner.hub().haClient());
+    (void)api::applyMqttSettings(runner.hub().configService(), secrets, runner.hub().mqtt());
+    // HA's activity choices reach the engine as the API's do.
+    runner.hub().runTransition = [this](const std::string &activityId) {
+        (void)api::runTransition(runner_.hub().configService(), runtime_, activityId);
+    };
+
+    // The fake MQTT broker: ?reachable=0|1 (0 drops the link: the will
+    // fires) and ?auth=reject|ok. GET shows what the hub published.
+    host(Method::Post, "/sim/mqtt", [this](auto &r, auto &, auto &out) {
+        const std::string reachable = http::queryValue(r.query, "reachable");
+        const std::string auth = http::queryValue(r.query, "auth");
+        const bool reachableOk = reachable.empty() || reachable == "0" || reachable == "1";
+        const bool authOk = auth.empty() || auth == "reject" || auth == "ok";
+        if ((reachable.empty() && auth.empty()) || !reachableOk || !authOk) {
+            http::jsonError(out, 400, "bad_request", "need reachable=0|1 and/or auth=reject|ok");
+            return;
+        }
+        FakeMqttBroker &broker = runner_.hub().mqttBroker();
+        if (!reachable.empty()) broker.reachable = reachable == "1";
+        if (!auth.empty()) broker.refuseAuth = auth == "reject";
+        runner_.hub().serviceIntegrations();
+        out.json(200, mqttJson());
+    });
+    host(Method::Get, "/sim/mqtt", [this](auto &, auto &, auto &out) { out.json(200, mqttJson()); });
+    // ?topic=&payload=&retain=0|1: a message from "HA" to the hub.
+    host(Method::Post, "/sim/mqtt/publish", [this](auto &r, auto &, auto &out) {
+        const std::string topic = http::queryValue(r.query, "topic");
+        const std::string retain = http::queryValue(r.query, "retain");
+        if (topic.empty() || !(retain.empty() || retain == "0" || retain == "1")) {
+            http::jsonError(out, 400, "bad_request", "need topic= (and retain=0|1)");
+            return;
+        }
+        runner_.hub().mqttBroker().publish(topic, http::queryValue(r.query, "payload"), retain == "1");
+        runner_.hub().advance(1);  // delivered, and a posted transition run
+        out.json(200, "{}");
+    });
 
     // The remote radio's pair scan: a Hub answers (?channel=N&address=HEX).
     host(Method::Post, "/sim/radio/found", [this](auto &r, auto &, auto &out) {
@@ -294,6 +335,28 @@ void SimApi::eraseEverything() {
     sessions_.clear();
     runner_.hub().wipe(&credentials_);
     api::applyHomeAssistantSettings(runner_.hub().configService(), secrets_, runner_.hub().haClient());
+    (void)api::applyMqttSettings(runner_.hub().configService(), secrets_, runner_.hub().mqtt());
+}
+
+std::string SimApi::mqttJson() const {
+    const FakeMqttBroker &broker = runner_.hub().mqttBroker();
+    JsonDocument doc;
+    doc["connected"] = broker.connected();
+    doc["client_id"] = broker.clientId();
+    JsonObject retained = doc["retained"].to<JsonObject>();
+    for (const auto &[topic, payload] : broker.retained()) retained[topic] = payload;
+    JsonArray published = doc["published"].to<JsonArray>();
+    for (const FakeMqttBroker::Message &m : broker.published()) {
+        JsonObject o = published.add<JsonObject>();
+        o["topic"] = m.topic;
+        o["payload"] = m.payload;
+        o["retained"] = m.retained;
+    }
+    JsonArray subscriptions = doc["subscriptions"].to<JsonArray>();
+    for (const std::string &filter : broker.subscriptions()) subscriptions.add(filter);
+    std::string out;
+    serializeJson(doc, out);
+    return out;
 }
 
 std::string SimApi::simTime() const {

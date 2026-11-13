@@ -62,6 +62,7 @@ const char *SimRuntime::integrationState(std::string_view integrationId) const {
     if (integration->type == kBleHidType) {
         return integrations::bleRadioState(*integration, hub_.bleHosts().radioReady());
     }
+    if (integration->type == kMqttType) return hub_.mqtt().state();
     if (!integration->enabled) return "disabled";
     if (integration->type == kHomeAssistantType && !hub_.homeAssistant().available()) return "disconnected";
     return "connected";
@@ -69,6 +70,7 @@ const char *SimRuntime::integrationState(std::string_view integrationId) const {
 
 std::string SimRuntime::integrationDetail(std::string_view integrationId) const {
     const IntegrationSpec *integration = hub_.configService().findIntegration(integrationId);
+    if (integration != nullptr && integration->type == kMqttType) return hub_.mqtt().detail();
     if (integration == nullptr || integration->type != kBleHidType) return {};
     return integrations::bleRadioDetail(hub_.bleHosts().radioReady());
 }
