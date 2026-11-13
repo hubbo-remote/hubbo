@@ -6,7 +6,9 @@ Current as of the mqtt branch (Hubbo as an HA device over MQTT discovery). Not a
 
 - Gate: `bin/hubbo gate api` (`api/lint.sh`, then `api/contract.sh` in all four modes: `noauth auth`
   on hub-sim, `mock mock-auth` on the web mock). Core's gate runs the native tests, tsan and asan.
-  While working, run my own suites with `bin/hubbo test -R <regex>`.
+  While working, run my own suites with `bin/hubbo test -R <regex>` and one contract mode. Never
+  start a gate myself: the lead starts the gates once per phase, when the code is frozen. A change
+  after the gates gets a targeted test, not another gate, unless the lead calls it broad.
 - Routes in `core/src/api/`, one file per area:
   - `registry_routes.cpp`: devices and registration (HA, or `{profile_id, name?, kind?}`);
   - `profile_routes.cpp`: GET /profiles, /profiles/{profile_id} (percent-decoded; the published
