@@ -22,6 +22,7 @@ const PAGES: [string, string][] = [
   ['/status/backups', 'Restore'],
   ['/status/firmware', 'Firmware'],
   ['/status/diagnostics', 'Raw status'],
+  ['/settings/hub', 'Restart'],
   ['/settings/account', 'Password'],
   ['/settings/remote', 'Pair the remote'],
   ['/settings/reset', 'Factory reset'],
