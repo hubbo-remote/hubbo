@@ -1,5 +1,8 @@
 #include "hub.h"
 
+#include <cstdio>
+
+#include "hubbo/api/transitions.h"
 #include "hubbo/domain/trigger.h"
 #include "hubbo/remote/packet.h"
 
@@ -26,9 +29,10 @@ SimHub::SimHub(storage::Storage *storage, storage::StateStore *state, bool realH
       service_(records_, fakes_.set, store_),
       recordState_(records_),
       state_(state != nullptr ? *state : recordState_),
-      persister_(state_) {
+      persister_(state_),
+      mqtt_(mqttTransport_, integrations::mqttNodeId(kSimMac), mqttHooks()) {
     engine_.setObserver(this);
-    service_.setListener(&bleReconciler_);  // as the firmware wires it
+    service_.setListener(&configListeners_);
     resetBle();
     if (bonds != nullptr) {
         // The bonds saved by the last run; with none, the fixture's.
@@ -40,6 +44,27 @@ SimHub::SimHub(storage::Storage *storage, storage::StateStore *state, bool realH
     }
     factoryReset_ = freshFactoryResetPort();
     (void)hubSettings_.load();
+    mqtt_.setHubName(hubSettings_.identity().name);
+    hubSettings_.onChanged([this](const config::HubIdentity &identity) { mqtt_.setHubName(identity.name); });
+}
+
+integrations::MqttBridge::Hooks SimHub::mqttHooks() {
+    integrations::MqttBridge::Hooks hooks;
+    hooks.activityChanges = [this] { return activityChanges_; };
+    hooks.activeActivityId = [this] { return engine_.activeActivityIdShared(); };
+    hooks.liveInfo = [this] {
+        integrations::MqttDeviceInfo info;
+        info.version = "0.0.0-sim";
+        info.board = "simulator";
+        info.ip = "127.0.0.1";
+        info.mac = integrations::mqttMacText(kSimMac);
+        info.hostname = hubSettings_.identity().shownHostname();
+        info.uptimeS = nowMs_ / 1000;
+        return info;
+    };
+    hooks.transition = [this](const std::string &activityId) { mqttTransitions_.push_back(activityId); };
+    hooks.restart = [this] { (void)api::requestHubRestart(&restart_, &firmware_); };
+    return hooks;
 }
 
 config::LoadReport SimHub::boot(const ConfigSpec &defaults, auth::Credentials *credentials) {
@@ -79,7 +104,10 @@ ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
     firmware_ = api::SimulatedFirmwareUpdate();
     factoryReset_ = freshFactoryResetPort();
     restart_.reset();  // keeps the restarted callback SimApi set
+    mqttBroker_.reset();
+    mqttTransitions_.clear();
     (void)hubSettings_.forget();
+    mqtt_.setHubName(hubSettings_.identity().name);
     return load(config);
 }
 
@@ -93,6 +121,7 @@ void SimHub::wipe(auth::Credentials *credentials) {
         (void)storage_->remove(std::string(config::ConfigService::kRecordName) + "." + slot);
     }
     (void)hubSettings_.forget();
+    mqtt_.setHubName(hubSettings_.identity().name);
     boot(ConfigSpec{}, credentials);  // the firmware's first boot and defaults
     engine_.poll(nowMs_);
 }
@@ -165,6 +194,15 @@ void SimHub::advance(uint32_t ms, bool silent) {
     advanceFirmware(ms);
     factoryReset_.advance(ms);  // the restart, then its erase
     restart_.advance(ms);
+    // What the bridge posted, run outside its poll (a transition advances
+    // the hub itself: no re-entry).
+    if (!runningTransition_ && !mqttTransitions_.empty() && runTransition) {
+        runningTransition_ = true;
+        const std::vector<std::string> pending = std::move(mqttTransitions_);
+        mqttTransitions_.clear();
+        for (const std::string &id : pending) runTransition(id);
+        runningTransition_ = false;
+    }
     // The radio gave up on them; the simulated thumb lets go too.
     if (silent && input_.held() == 0) held_ = 0;
 }
@@ -176,6 +214,8 @@ void SimHub::serviceIntegrations() {
         ha_.adapter.service();
         ha_.transport.poll(0);
     } while (ha_.client.hasWork());
+    mqttTransport_.poll(0);
+    mqtt_.poll(nowMs_);
 }
 
 void SimHub::logCommand(std::string text) {
@@ -247,6 +287,7 @@ void SimHub::onSequenceFinished(const SequenceReport &report) {
 }
 
 void SimHub::onActivityChanged(const char *activityId, uint32_t) {
+    activityChanges_++;
     logEvent(std::string("activity ") + (activityId[0] != '\0' ? activityId : "none"));
 }
 

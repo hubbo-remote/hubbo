@@ -2,6 +2,9 @@
 
 #include "hubbo/domain/ids.h"
 
+#include <cstddef>
+#include <iterator>
+
 namespace hubbo {
 
 std::string providerRef(const DeviceSpec &device) {
@@ -17,29 +20,42 @@ const ProfileCommand *DeviceProfile::findCommand(std::string_view name) const {
     return nullptr;
 }
 
+namespace {
+
+// The built-ins, in the order they lead config.integrations.
+struct Builtin {
+    const char *id;
+    const char *type;
+    const char *name;
+    const char *deviceName;
+    bool enabled;
+};
+constexpr Builtin kBuiltins[] = {
+    {kSystemIntegrationId, kSystemType, "System", "", true},
+    {kBleIntegrationId, kBleHidType, "Bluetooth", "Hubbo", true},
+    {kHomeAssistantIntegrationId, kHomeAssistantType, "Home Assistant", "", true},
+    {kMqttIntegrationId, kMqttType, "MQTT", "", false},
+};
+
+}  // namespace
+
+size_t integrationCountWithBuiltins(const std::vector<IntegrationSpec> &integrations) {
+    size_t count = integrations.size();
+    for (const Builtin &b : kBuiltins) count += indexOfId(integrations, b.id) < 0;
+    return count;
+}
+
 void ensureBuiltinIntegrations(ConfigSpec *config) {
-    auto has = [&](const char *id) { return indexOfId(config->integrations, id) >= 0; };
-    if (!has(kSystemIntegrationId)) {
-        IntegrationSpec system;
-        system.id = kSystemIntegrationId;
-        system.type = kSystemType;
-        system.name = "System";
-        config->integrations.insert(config->integrations.begin(), system);
-    }
-    if (!has(kBleIntegrationId)) {
-        IntegrationSpec ble;
-        ble.id = kBleIntegrationId;
-        ble.type = kBleHidType;
-        ble.name = "Bluetooth";
-        ble.deviceName = "Hubbo";
-        config->integrations.insert(config->integrations.begin() + 1, ble);
-    }
-    if (!has(kHomeAssistantIntegrationId)) {
-        IntegrationSpec ha;
-        ha.id = kHomeAssistantIntegrationId;
-        ha.type = kHomeAssistantType;
-        ha.name = "Home Assistant";
-        config->integrations.insert(config->integrations.begin() + 2, ha);
+    for (size_t i = 0; i < std::size(kBuiltins); i++) {
+        const Builtin &b = kBuiltins[i];
+        if (indexOfId(config->integrations, b.id) >= 0) continue;
+        IntegrationSpec spec;
+        spec.id = b.id;
+        spec.type = b.type;
+        spec.name = b.name;
+        spec.deviceName = b.deviceName;
+        spec.enabled = b.enabled;
+        config->integrations.insert(config->integrations.begin() + static_cast<std::ptrdiff_t>(i), spec);
     }
 }
 

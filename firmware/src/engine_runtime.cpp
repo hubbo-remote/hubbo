@@ -19,6 +19,10 @@ bool isHomeAssistant(std::string_view integrationId) {
     return integrationId == hubbo::api::kHaIntegrationId;
 }
 
+bool isMqtt(std::string_view integrationId) {
+    return integrationId == hubbo::kMqttIntegrationId;
+}
+
 }  // namespace
 
 void EngineRuntime::publish(const RuntimeStatus &status) {
@@ -93,10 +97,16 @@ const char *EngineRuntime::integrationState(std::string_view integrationId) cons
     if (isBle(integrationId)) {
         return hubbo::integrations::bleRadioState(*integration, bleRadioReady());
     }
+    if (isMqtt(integrationId) && mqtt_ != nullptr) {
+        return mqtt_->state();
+    }
     return "not_configured";
 }
 
 std::string EngineRuntime::integrationDetail(std::string_view integrationId) const {
+    if (isMqtt(integrationId)) {
+        return mqtt_ != nullptr ? mqtt_->detail() : std::string();
+    }
     if (!isBle(integrationId)) {
         return {};
     }

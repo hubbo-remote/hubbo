@@ -1,5 +1,6 @@
 // Activities, global bindings and activity transitions.
 
+#include "hubbo/api/transitions.h"
 #include "hubbo/config/json.h"
 #include "hubbo/config/service.h"
 #include "routes.h"
@@ -21,16 +22,15 @@ void putPhase(JsonObject out, const TransitionPhase &phase) {
     if (phase.status == PhaseStatus::Rejected) out["reason"] = errorCodeName(phase.reason);
 }
 
-// Runs an activate/off request and answers with what happened, phase by
+// Runs an activate/off ("" = off) and answers with what happened, phase by
 // phase. A transition that switched is final (200), even if its sequence was
 // rejected; only a request that never reached the engine is a retryable 503.
-void transition(ApiContext &ctx, EngineRequest &request, http::Response &out) {
-    // A blocked hub runs no configuration: say so rather than 404 an id the
-    // saved config may well have. (storage_unavailable doesn't stop
-    // switching; the active activity just isn't saved.)
-    if (ctx.config.state() == config::ConfigState::Blocked) return sendCoreError(out, ErrorCode::ConfigBlocked, "");
-    if (!runEngine(ctx, request, out)) return;
-    const TransitionResult &t = request.transition();
+void transition(ApiContext &ctx, std::string_view activityId, http::Response &out) {
+    const TransitionOutcome outcome = runTransition(ctx.config, ctx.runtime, activityId);
+    // A blocked hub: say so rather than 404 an id the saved config may well have.
+    if (outcome.status == TransitionStatus::Blocked) return sendCoreError(out, ErrorCode::ConfigBlocked, "");
+    if (outcome.status == TransitionStatus::Busy) return sendEngineBusy(out);
+    const TransitionResult &t = outcome.result;
     // Off with nothing active is a no-op (switched == false), not an error.
     if (!t.switched && t.error != ErrorCode::NoActiveActivity) {
         return sendCoreError(out, t.error, "activity");
@@ -88,9 +88,7 @@ void addActivityRoutes(RouteSink &sink, ApiContext &ctx) {
              });
 
     sink.add("/api/v1/activities/off", auth::Operation::ActivitiesOff, [&ctx](auto &, auto &, auto &out) {
-        EngineRequest request;
-        request.off();
-        transition(ctx, request, out);
+        transition(ctx, "", out);
     });
 
     sink.add("/api/v1/activities/{activity_id}", auth::Operation::GetActivity, [&ctx](auto &, auto &p, auto &out) {
@@ -126,9 +124,7 @@ void addActivityRoutes(RouteSink &sink, ApiContext &ctx) {
 
     sink.add("/api/v1/activities/{activity_id}/activate", auth::Operation::ActivateActivity,
              [&ctx](auto &, auto &p, auto &out) {
-                 EngineRequest request;
-                 request.activate(p[0]);
-                 transition(ctx, request, out);
+                 transition(ctx, p[0], out);
              });
 
     sink.add("/api/v1/global-bindings", auth::Operation::GetGlobalBindings, [&ctx](auto &, auto &, auto &out) {

@@ -33,6 +33,7 @@ class ConfigService;
 }
 namespace hubbo::integrations {
 class HomeAssistantClient;
+class MqttBridge;
 }
 
 namespace hubbo::api {
@@ -152,6 +153,9 @@ struct ApiContext {
     config::HubSettings *hub = nullptr;
     // POST /admin/restart; null answers 503.
     RestartPort *restart = nullptr;
+    // The MQTT bridge of integration "mqtt_main": settings changes reach it
+    // through applyMqttSettings(). Null: they're saved, nothing applies them.
+    integrations::MqttBridge *mqtt = nullptr;
 };
 
 // SecretStore key of the "ha_main" access token. Never in config, backups,
@@ -168,6 +172,16 @@ std::string homeAssistantSocketUrl(std::string_view baseUrl);
 // after a change. Returns the token read's result, for a boot log line.
 auth::SecretRead applyHomeAssistantSettings(const config::ConfigService &config, const auth::SecretStore *secrets,
                                             integrations::HomeAssistantClient &client);
+
+// SecretStore key of the "mqtt_main" broker password. Never in config,
+// backups, responses or logs.
+constexpr const char *kMqttPasswordKey = "mqtt_password";
+// Configures `bridge` from the "mqtt_main" integration (enabled, host, port,
+// username) and the stored password (none unless the read is Ok). The
+// platform calls it at boot; the API after a change (PUT, restore, reset).
+// Returns the password read's result, for a boot log line.
+auth::SecretRead applyMqttSettings(const config::ConfigService &config, const auth::SecretStore *secrets,
+                                   integrations::MqttBridge &bridge);
 
 // Owns the route handlers; keep it alive as long as the router.
 class Api {

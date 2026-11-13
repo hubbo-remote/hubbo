@@ -100,15 +100,22 @@ struct DiscoveryCache {
 };
 
 void addIntegrationRoutes(RouteSink &sink, ApiContext &ctx);
-// Before replacing the whole config (restore, factory reset) with `next`:
-// erases the HA token if "ha_main"'s URL would change, so it's never sent to
-// a host it wasn't entered for. False after sending 503 (nothing changed).
-bool forgetTokenForNewHaUrl(ApiContext &ctx, const ConfigSpec &next, http::Response &out);
-// After a config change: the HA client follows the stored settings. With
-// `haChanged` (another URL, token or enabled state; a restore or reset) the
-// discovery of the old settings is cancelled and its candidates dropped, so
-// nothing is registered from a different Home Assistant.
-void reapplyHomeAssistant(ApiContext &ctx, bool haChanged);
+// Before replacing the whole config (restore, reset) with `next`: erases the
+// HA token if "ha_main"'s URL would change, and the MQTT password if
+// "mqtt_main"'s host would, so neither is sent to a host it wasn't entered
+// for. False after sending 503 if an erase failed: the config is unchanged,
+// but secrets erased before it stay erased (the clients are re-applied to
+// match).
+bool forgetSecretsForNewEndpoints(ApiContext &ctx, const ConfigSpec &next, http::Response &out);
+// After a config change: the HA client and the MQTT bridge follow the stored
+// settings (each ignores settings it already has). With `haChanged` (another
+// URL, token or enabled state; a restore or reset) the HA discovery of the
+// old settings is cancelled and its candidates dropped, so nothing is
+// registered from a different Home Assistant.
+void reapplyIntegrations(ApiContext &ctx, bool haChanged);
+// Restore's `requires`: the secret of each integration in `restored` that
+// has an endpoint (home_assistant_token, mqtt_password).
+void putSecretFollowUps(JsonArray out, const ConfigSpec &restored);
 // The finished details of `entityId` from the current HA settings (what
 // registering or re-linking it stores), or null: fetch them first.
 const EntityDetails *completedDetails(ApiContext &ctx, std::string_view entityId);

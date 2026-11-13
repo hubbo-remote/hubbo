@@ -1,6 +1,6 @@
 # hubbo-api: working notes
 
-Current as of the ha-domains branch (seven more HA domains). Not a log: rewrite sections as they change.
+Current as of the mqtt branch (Hubbo as an HA device over MQTT discovery). Not a log: rewrite sections as they change.
 
 ## State
 
@@ -11,7 +11,10 @@ Current as of the ha-domains branch (seven more HA domains). Not a log: rewrite 
   - `registry_routes.cpp`: devices and registration (HA, or `{profile_id, name?, kind?}`);
   - `profile_routes.cpp`: GET /profiles, /profiles/{profile_id} (percent-decoded; the published
     file minus `meta`) and /kinds, all admin, over `config::builtinProfiles()`;
-  - `integration_routes.cpp`: HA settings, discovery, entity details, `applyHomeAssistantSettings()`;
+  - `integration_routes.cpp`: HA and MQTT settings, discovery, entity details,
+    `applyHomeAssistantSettings()` / `applyMqttSettings()`;
+  - `transitions.cpp` (`api/transitions.h`): `runTransition()` (activate, "" = off) and
+    `requestHubRestart()`, shared by the routes and the MQTT bridge's hooks;
   - `remote_routes.cpp` / `ble_routes.cpp`: the remote, and Bluetooth device pairing over core's
     `integrations::BleHostPort` (`ctx.bleHosts`; `SimulatedRemote` / hub-sim's hosts);
   - `firmware_routes.cpp`: GET /admin/firmware and POST /admin/firmware/update over
@@ -311,6 +314,25 @@ Current as of the ha-domains branch (seven more HA domains). Not a log: rewrite 
   end-of-phase instruction (CLAUDE.md), and only your own files, staged by path.
 
 ## Open items
+
+- **mqtt (in progress, no gate yet):**
+  - Done: transitions.h; GET/PUT mqtt_main (host and username checked by core's
+    `isValidMqttHost`/`isValidMqttUsername` in domain/ids.h, the same rule as config decode:
+    host up to 253 of [A-Za-z0-9._:-], never exactly one ':' (host:port), IPv6 fine; port 1..65535; `password` write-only: omit keeps, null clears, which the
+    lead approved over the design's ""); `kMqttPasswordKey`; `ApiContext::mqtt` (last field);
+    spec, fixtures (`integrations/mqtt_main.*`, list/status/backup entries); restore `requires`
+    `mqtt_password` (the restored broker has a host); `RestartOutcome::NoPort` (the route's
+    null-port 503 lives in requestHubRestart); ApiTest `TheMqttPasswordIsWriteOnly` and
+    `SharedTransitionAndRestart`; contract `mqtt_flow` (noauth passes, with the fake broker); security.md.
+  - A failed erase in `forgetSecretsForNewEndpoints()` re-applies the clients before its 503
+    (an earlier slot's secret may be gone); ApiTest's `secrets.failEraseKey` fails one erase.
+  - Secrets: one `kSecretSlots` table (integration, type, key, settings field, `has_*` flag,
+    restore follow-up, endpoint) drives decode, `has_*`, "a new URL/host forgets the secret"
+    (PUT, and `forgetSecretsForNewEndpoints()` for restore/reset) and `putSecretFollowUps()`.
+    One `reapplyIntegrations(ctx, haChanged)` re-applies HA and MQTT after every change; it relies
+    on both clients ignoring unchanged settings (HA does; MqttBridge::configure is core's, so I asked for the same).
+  - Waiting: the web mock's mqtt_main (the mock modes fail on its 404). Core switched
+    POST /admin/restart to `requestHubRestart()`, and detail() no longer names the host.
 
 - **ha-domains:** DeviceKind follows profiles/kinds.json (43 kinds, adds cover, scene and script);
   lint checks the order. Every cover suggests `cover` (the user renamed `shade`; garage doors and

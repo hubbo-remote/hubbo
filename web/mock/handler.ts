@@ -112,6 +112,10 @@ const FW_SLOT_BYTES = 6_553_600
 const RESTART_MS = 1000
 /** A new hub's name, as hub-sim's (its fixed MAC suffix; the board's is its own MAC's). */
 const DEFAULT_HUB_NAME = 'Hubbo 534D'
+/** The MQTT bridge's detail lines, by state (core's MqttBridge::detail). */
+const MQTT_DETAIL: Partial<Record<IntegrationState, string>> = { connected: 'Connected to the broker', auth_failed: 'The broker refused the username or password', unreachable: "Can't reach the broker", connecting: 'Connecting to the broker' }
+/** A restored broker that needs its password again (core's rule: it has a host, enabled or not). */
+const needsMqttPassword = (i: Backup['integrations'][number]) => i.type === 'mqtt' && !!i.settings?.host
 /** The hostname the hub derives from its name (api/openapi.yaml Hub.hostname): ASCII A–Z lowercased only, like core's hostnameFor. */
 const hostnameOf = (name: string) => name.replace(/[A-Z]/g, (c) => c.toLowerCase()).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'hubbo'
 /** api/openapi.yaml HubName: trimmed, 1–32 characters, no control characters. */
@@ -190,6 +194,8 @@ export function createMock(opts: MockOptions = {}) {
   let endpoint: RemoteEndpoint | null
   /** Simulated HA client state (POST /__mock/ha); cleared when its settings change, like the real client. */
   let haOverride: IntegrationState | null
+  /** The broker, like hub-sim's fake one (POST /__mock/mqtt?reachable=0|1&auth=reject|ok). */
+  let broker: { reachable: boolean; auth: 'ok' | 'reject' }
   /** Bonded Bluetooth hosts by device id, and whether each is connected (like hub-sim's fake hosts). */
   let bleHosts = new Map<string, { connected: boolean }>()
   /** Like hub-sim's /sim/ble/radio?ready=0: the radio is down (no host connects, pairing is refused). */
@@ -254,6 +260,7 @@ export function createMock(opts: MockOptions = {}) {
     pairing = mode.firstRun ? { state: 'idle', paired: false } : { ...db.remote.pairing }
     endpoint = mode.firstRun ? null : db.remote.endpoint
     haOverride = null
+    broker = { reachable: true, auth: 'ok' }
     // Like hub-sim: every seeded Bluetooth device starts paired and connected.
     bleHosts = new Map(db.devices.filter((d) => d.provider.type === 'ble_hid').map((d) => [d.id, { connected: true }]))
     blePair = null
@@ -322,6 +329,8 @@ export function createMock(opts: MockOptions = {}) {
     db.discover.candidates.forEach((c) => (c.registered_device_id = null))
     const ha = db.configs.get('ha_main')!
     ha.settings = { type: 'home_assistant', url: 'http://homeassistant.local:8123', verify_tls: false, has_access_token: false }
+    const mqtt = db.configs.get('mqtt_main')!
+    Object.assign(mqtt, { enabled: false, settings: { type: 'mqtt', host: '', port: 1883, username: '', has_password: false } })
   }
 
   /** Restore and reset stamp every object with one new generation, so every stale client gets 409. */
@@ -352,6 +361,7 @@ export function createMock(opts: MockOptions = {}) {
     if (c.settings.type === 'home_assistant') return c.settings.has_access_token ? (haOverride ?? 'connected') : 'not_configured'
     // ble is the radio: working (connected) while enabled, `error` when it's down.
     if (c.settings.type === 'ble_hid') return bleRadioDown ? 'error' : 'connected'
+    if (c.settings.type === 'mqtt') return !c.settings.host ? 'not_configured' : !broker.reachable ? 'unreachable' : broker.auth === 'reject' ? 'auth_failed' : 'connected'
     return 'connected'
   }
 
@@ -564,7 +574,7 @@ export function createMock(opts: MockOptions = {}) {
     return db.integrations.map((i) => {
       const c = db.configs.get(i.id)
       const state = integrationState(i.id)
-      const detail = state === 'not_configured' ? 'Not set up' : i.type === 'ble_hid' ? (state === 'error' ? "Bluetooth isn't working" : undefined) : i.detail
+      const detail = state === 'not_configured' ? 'Not set up' : i.type === 'ble_hid' ? (state === 'error' ? "Bluetooth isn't working" : undefined) : i.type === 'mqtt' ? MQTT_DETAIL[state] : i.detail
       return { ...i, name: c?.name ?? i.name, enabled: c?.enabled ?? i.enabled, state, detail, device_count: db.devices.filter((d) => d.integration_id === i.id).length }
     })
   }
@@ -885,6 +895,24 @@ export function createMock(opts: MockOptions = {}) {
         }
         if (s.verify_tls !== undefined) next.settings.verify_tls = s.verify_tls
         if (s.access_token !== undefined) mut(next.settings).has_access_token = s.access_token !== null
+      } else if (s?.type === 'mqtt' && next.settings.type === 'mqtt') {
+        const unknown = Object.keys(s).filter((k) => !['type', 'host', 'port', 'username', 'password'].includes(k))
+        if (unknown.length) return invalid(unknownFields(unknown, '/settings'))
+        if (s.host !== undefined) {
+          if (s.host.length > 253) return invalid([{ path: '/settings/host', code: 'too_long', message: 'Up to 253 characters' }])
+          // The spec's pattern: no colon, or IPv6's two or more (one is a host:port; the port has its own field).
+          if (!/^([A-Za-z0-9._-]*|[A-Za-z0-9._-]*:[A-Za-z0-9._:-]*:[A-Za-z0-9._:-]*)$/.test(s.host)) return invalid([{ path: '/settings/host', code: 'wrong_type', message: 'An IP address or a hostname' }])
+          // A new broker clears the password unless a new one comes with it.
+          if (s.host !== next.settings.host && s.password === undefined) mut(next.settings).has_password = false
+          next.settings.host = s.host
+        }
+        if (s.port !== undefined) {
+          if (!Number.isInteger(s.port) || s.port < 1 || s.port > 65535) return invalid([{ path: '/settings/port', code: 'param_out_of_range', message: 'Port must be 1–65535' }])
+          next.settings.port = s.port
+        }
+        if (s.username !== undefined) next.settings.username = s.username
+        if (s.password === '') return invalid([{ path: '/settings/password', code: 'required', message: 'Enter a password, or null to remove it' }])
+        if (s.password !== undefined) mut(next.settings).has_password = s.password !== null
       } else if (s?.type === 'ble_hid' && next.settings.type === 'ble_hid') {
         if (s.device_name !== undefined) next.settings.device_name = s.device_name
       } else if (s) return invalid([{ path: '/settings/type', code: 'wrong_type', message: `Settings type must be ${next.settings.type}` }])
@@ -1105,7 +1133,8 @@ export function createMock(opts: MockOptions = {}) {
           type: c.type,
           name: c.name,
           enabled: c.enabled,
-          settings: c.settings.type === 'home_assistant' ? { url: c.settings.url, verify_tls: c.settings.verify_tls } : c.settings.type === 'ble_hid' ? { device_name: c.settings.device_name } : {},
+          // Everything but the type and the secrets' has_* flags (the secrets never leave the hub).
+          settings: Object.fromEntries(Object.entries(c.settings).filter(([k]) => k !== 'type' && !k.startsWith('has_'))),
         })),
       }
       return { status: 200, body: b, headers: { 'x-hubbo-backup': 'config', 'content-disposition': `attachment; filename="hubbo-backup-${date}.json"` } }
@@ -1129,7 +1158,7 @@ export function createMock(opts: MockOptions = {}) {
       const runtime = b.devices.flatMap((d, i) => unknownFields(['availability', 'bluetooth'].filter((k) => k in d), `/devices/${i}`))
       if (runtime.length) return invalid(runtime)
       const dry = req.query.get('dry_run') === 'true'
-      const result = { dry_run: dry, devices: b.devices.length, activities: b.activities.length, integrations: b.integrations?.length ?? 0, migrated_from: null, requires: ['home_assistant_token', 'ble_pairing', 'api_tokens'], warnings: [] }
+      const result = { dry_run: dry, devices: b.devices.length, activities: b.activities.length, integrations: b.integrations?.length ?? 0, migrated_from: null, requires: ['home_assistant_token', ...(b.integrations?.some(needsMqttPassword) ? ['mqtt_password' as const] : []), 'ble_pairing', 'api_tokens'], warnings: [] }
       if (!dry) {
         // Revisions in the backup may be missing or 0; stampAll() replaces them all.
         // A backup's StoredDevice carries ha_capabilities; a Device (what the API returns) never does.
@@ -1143,6 +1172,12 @@ export function createMock(opts: MockOptions = {}) {
         // hub, the stored token survives only when the URL stays the same.
         for (const i of b.integrations ?? []) {
           const c = db.configs.get(i.id)
+          if (c?.settings.type === 'mqtt' && i.type === 'mqtt') {
+            const s = (i.settings ?? {}) as { host?: string; port?: number; username?: string }
+            const host = s.host ?? ''
+            db.configs.set(i.id, { ...c, name: i.name ?? c.name, enabled: i.enabled ?? c.enabled, settings: { type: 'mqtt', host, port: s.port ?? 1883, username: s.username ?? '', has_password: c.settings.has_password && host === c.settings.host } })
+            continue
+          }
           if (!c || c.settings.type !== 'home_assistant' || i.type !== 'home_assistant') continue
           const s = (i.settings ?? {}) as { url?: string; verify_tls?: boolean }
           const url = s.url ?? ''
@@ -1211,6 +1246,13 @@ export function createMock(opts: MockOptions = {}) {
     ['POST', /^\/__mock\/hub$/, 'public', (req) => {
       if (req.query.has('conflict')) setHostnameConflict(req.query.get('conflict') === '1')
       return ok(hub())
+    }],
+    ['POST', /^\/__mock\/mqtt$/, 'public', (req) => {
+      const reachable = req.query.get('reachable'), auth = req.query.get('auth')
+      if ((reachable !== null && reachable !== '0' && reachable !== '1') || (auth !== null && auth !== 'ok' && auth !== 'reject')) return invalid([{ path: '', code: 'invalid_enum_value', message: 'reachable=0|1, auth=ok|reject' }])
+      if (reachable !== null) broker.reachable = reachable === '1'
+      if (auth) broker.auth = auth as 'ok' | 'reject'
+      return ok({})
     }],
     ['POST', /^\/__mock\/factory-reset$/, 'public', (req) => {
       if (req.query.has('ready')) eraseReady = req.query.get('ready') === '1'

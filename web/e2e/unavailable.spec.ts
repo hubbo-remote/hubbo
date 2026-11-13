@@ -13,12 +13,13 @@ test('features the hub does not implement yet show "Not available yet"', async (
   await expect(notAvailable(page)).toBeVisible()
 
   await open(page, '/integrations')
-  await expect(notAvailable(page)).toHaveCount(1) // Home Assistant's settings (Bluetooth has none)
+  await expect(notAvailable(page)).toHaveCount(2) // Home Assistant's and MQTT's settings (Bluetooth has none)
+  const panels = await page.getByText('Not available yet', { exact: true }).count()
   // An action that hits a 501 gives one neutral notice, however often it's repeated.
   const toggle = page.getByRole('switch', { name: 'Enable Home Assistant' })
   await toggle.click()
   await toggle.click()
-  await expect(page.getByText('Not available yet', { exact: true })).toHaveCount(2) // the panel + 1 toast
+  await expect(page.getByText('Not available yet', { exact: true })).toHaveCount(panels + 1) // one toast
 
   await open(page, '/devices')
   await page.getByRole('button', { name: 'Add device' }).click()

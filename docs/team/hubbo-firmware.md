@@ -1,6 +1,6 @@
 # hubbo-firmware: working notes
 
-Current as of the hub-name work on branch `hub-name`. Not a log: state,
+Current as of the MQTT work on branch `mqtt`. Not a log: state,
 numbers and traps. Design: `docs/design/phase5-appliance.md`.
 
 ## State
@@ -18,7 +18,7 @@ numbers and traps. Design: `docs/design/phase5-appliance.md`.
       status, or connect/TLS codes.
     - Fragments are reassembled up to 4 MB.
     - mbedTLS allocates from PSRAM (`useExternalTlsMemory()`).
-  - `ha_task.*`: core 0, priority 4, 8 KB PSRAM stack; a job queue plus a service callback that
+  - `integration_task.*` (was ha_task): core 0, priority 4, 8 KB PSRAM stack; a job queue plus a service callback that
     returns `client.hasWork()` (an idle pass sleeps 10 ms on the queue).
   - `main.cpp` wires `haTransport` → `haClient` → `haAdapter("ha_main")`; the service is
     `transport.poll(hasWork ? 0 : 50)`, `client.poll(now)`, `adapter.service()`;
@@ -264,6 +264,84 @@ of remote lag during the write are accepted.
   hosts still work), a 32-emoji name (GAP read, shortened scan name), DHCP name after a reboot,
   POST /admin/restart answers before the reboot, loop max gap during a rename (HCI stop/start on
   the loop, as `updateAdvertising` already does).
+
+## MQTT discovery (branch `mqtt`, gate passed, on the board, connected to the user's broker)
+
+- Design: `docs/design/mqtt-discovery.md`. Core owns `MqttBridge` and the `MqttTransport` port.
+  Firmware supplies `EspMqttTransport` (`mqtt_transport.{h,cpp}`), the `mqtt` task and the wiring.
+- esp-mqtt (prebuilt, IDF v5.5.5):
+  - The task isn't pinned. `esp_mqtt_client_start` creates it with tskNO_AFFINITY, and the
+    sdkconfig has no core selection.
+  - Its defaults are prio 5, a 6144 B stack and 1024 B buffers. We set prio 4 (can't preempt
+    the loop at 16), a 4 KB internal stack, a 512 B in buffer, a 5120 B out buffer (escaped
+    names can push a discovery to about 4.4 KB) and an 8 KB outbox. Keepalive is 15 s, and it reconnects every 5 s.
+  - `esp_mqtt_client_stop` sends DISCONNECT itself, then waits for its task to end.
+  - The client is made on the mqtt task, after `heap_caps_malloc_extmem_enable(0)`, so its
+    buffers are in PSRAM. Only the 4 KB stack is internal.
+  - `CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=1`, so a `.local` broker host should resolve. Check
+    it on the board.
+  - Flash cost about 16 KB for the library, about 54 KB with the bridge and wiring.
+- Transport:
+  - Link state never goes through the queue. The handler keeps atomics: connects, drops
+    (counters), up and authRefused (a CONNACK 4/5 since the last connect). They're atomics and
+    not a spinlock, because esp-mqtt's task can run on core 1. It sends a wake-up only when the
+    queue is empty. `poll()` compares it with what it last delivered, so a connect and a
+    drop between two polls are both seen. A drop is delivered (AuthFailed or Unreachable),
+    then a connect if the link is up.
+  - Only DATA goes through the 16-deep queue (sent with no wait, and dropped when full). It's
+    delivered after the link, and only while connected. `connect()` resets the link before
+    `esp_mqtt_client_start`.
+  - DATA is whole messages only: a payload of at most 256 B and a topic of at most 128 B.
+  - `publish` uses `esp_mqtt_client_enqueue(store=true)`.
+  - `disconnect()` waits up to 1 s for the outbox to drain, then stops and destroys the client,
+    and drops anything still queued.
+- `startMqtt()` runs after `heap_caps_malloc_extmem_enable(0)`, so esp-mqtt's client and
+  buffers are always in PSRAM. Each bridge state change is logged once, e.g.
+  `mqtt: connected: <detail>` or `mqtt: auth_failed: <detail>`.
+- Task: `IntegrationTask` (was `HaTask`; `start(name, service)`) runs "ha" and "mqtt": core 0, prio 4, an 8 KB PSRAM stack. The
+  service is `mqttTransport.poll(50)` plus `mqttBridge.poll(now)`. Every 10 s, the transport's
+  poll logs a new low in esp-mqtt's stack (`mqtt: esp-mqtt stack low N of 4096`), using the task
+  handle recorded from its first event.
+- The wire MAC, checked in ETH.cpp: `begin(..., spi_host, ...)` calls `beginSPI(mac=nullptr)`,
+  which uses `esp_read_mac(ESP_MAC_ETH)`, adds `_eth_index` (0 for `ETH`), then applies
+  `esp_derive_local_mac`. So `EthernetLink::mac()` is exact: BE:1F:3F:BC:7F:8D (locally
+  administered), and "Hubbo 7F8D" stands.
+- Wiring (main.cpp):
+  - `ethernetMac` is read once in a static constructor; it feeds the default name and the node id.
+  - `EthernetLink::mac()` now applies `esp_derive_local_mac`, so it returns the wire MAC itself.
+    The last 2 bytes, and so the default name, are unchanged.
+  - Core's `config::ConfigFanOut{&bleReconciler, &mqttActivities}` (an `MqttActivitySync`),
+    wired the same way as hub-sim.
+  - `setHubName` is called at boot and in `onChanged`.
+  - Boot runs `configureMqtt()` (`applyMqttSettings`; the API applies it later).
+  - `context.mqtt` is set, and `runtime.setMqtt` makes `integrationState/Detail("mqtt_main")`
+    the bridge's.
+  - The hooks: `activityChanges`; `engine.activeActivityIdShared()`; `liveInfo` (`runtime.ip()`, core's `mqttMacText` made once,
+    a new any-task read, and `shownHostname()`).
+  - `transition` and `restart` are posted to httpd (`runTransition`, `requestHubRestart`), and a
+    refusal is logged there. The RestartPort is never called from the mqtt task.
+- Gate (fw) passed (after the second /simplify): serial RAM 89,032 B, flash 2,245,503 B; OTA RAM
+  97,248 B, flash 2,268,247 B. On the board (connected, at 30 s): internal free 31,980 B, min
+  29,748 B (+0.5 KB with startMqtt after extmem), largest 22,516 B. esp-mqtt stack low 1,792 B free.
+  Loop max gap 2,975 us, 0 over 5 ms. The boot log shows connecting, then unreachable (before DHCP),
+  then connected 5 s later.
+- Board, connected (the user's broker, a `restart: restart` boot): internal free 31,968 B, min
+  29,216 B, largest 22,516 B at 30 s. That's about 6 KB under disabled (the 4 KB esp-mqtt stack
+  plus socket state). esp-mqtt stack low 1,792 of 4,096 bytes free. Loop max gap 2,455 us, 0 over 5 ms.
+- Board boot check (f33b293-dirty, MQTT disabled): the boot line reads `mqtt: disabled, node hubbo_be1f3fbc7f8d,
+  password not_found`. The mqtt task is core 0 prio 4, with no esp-mqtt task. Loop max gap 2,727 us, 0 over 5 ms.
+  Internal heap: free 37.9 KB, min 28,280 B (reached by the boot mem line), largest 17,396 B. That's
+  below the 35.7 KB min in the agent-docs notes.
+- Main's build is no baseline: it BLOCKS a config saved by the MQTT build (`wrong_type` at the
+  mqtt integration; no compat, by design). Blocked, with HA off, it showed 84.8 KB free and
+  83.2 KB min. The MQTT build's min comes at boot, from bootState's config parse before
+  extmem(0). Measure the MQTT cost within one build: disabled, then connected.
+- Board test to do:
+  - Min free internal heap with MQTT connected (it was about 35.7 KB before).
+  - esp-mqtt stack low.
+  - Loop gap.
+  - A `.local` broker.
+  - The doc's 9 checks.
 
 ## Unique default name (branch `hub-name`, /simplify done, gate passed, board checked)
 

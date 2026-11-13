@@ -49,12 +49,16 @@ struct ActivitySpec {
 constexpr const char *kSystemType = "system";
 constexpr const char *kBleHidType = "ble_hid";
 constexpr const char *kHomeAssistantType = "home_assistant";
+constexpr const char *kMqttType = "mqtt";
 
 // The built-in BLE HID integration's id (always present, like "system").
 constexpr const char *kBleIntegrationId = "ble";
 // The built-in Home Assistant integration's id (always present; no URL, so
 // not_configured, until its settings are set).
 constexpr const char *kHomeAssistantIntegrationId = "ha_main";
+// The built-in MQTT integration's id (always present, disabled until the
+// admin turns it on): Hubbo as a device in HA (docs/design/mqtt-discovery.md).
+constexpr const char *kMqttIntegrationId = "mqtt_main";
 
 // Index of the item with this id in items[0, end), or -1. Cold path.
 template <typename T>
@@ -167,17 +171,25 @@ std::string providerRef(const DeviceSpec &device);
 // storage, not here.
 struct IntegrationSpec {
     std::string id;
-    std::string type;  // "system", "ble_hid", "home_assistant"
+    std::string type;  // "system", "ble_hid", "home_assistant", "mqtt"
     std::string name;
     bool enabled = true;
     std::string url;          // home_assistant
     bool verifyTls = true;    // home_assistant
     std::string deviceName;   // ble_hid: advertised name
+    std::string host;         // mqtt: the broker, an IP or a hostname ("" = not configured)
+    uint16_t port = 1883;     // mqtt
+    std::string username;     // mqtt ("" = none; the password is a secret, not here)
     uint32_t revision = 0;
 };
 
+// The integrations' count once ensureBuiltinIntegrations() has added the
+// missing built-ins (system, ble, ha_main, mqtt_main). Checked against
+// limits::kMaxIntegrations, so a stored list can never grow past the cap.
+size_t integrationCountWithBuiltins(const std::vector<IntegrationSpec> &integrations);
+
 struct ConfigSpec;
-// Adds the built-in integrations ("system", "ble", "ha_main") if they're missing, so
+// Adds the built-in integrations ("system", "ble", "ha_main", "mqtt_main") if they're missing, so
 // config.integrations is always complete. Idempotent.
 void ensureBuiltinIntegrations(ConfigSpec *config);
 

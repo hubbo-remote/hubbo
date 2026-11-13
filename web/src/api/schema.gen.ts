@@ -570,7 +570,8 @@ export interface paths {
          * @description Omit a secret field to keep the stored value; send `null` to clear it.
          *     Changing the Home Assistant URL clears the stored token unless a new
          *     one is sent in the same request (stops a token being sent to a
-         *     different host).
+         *     different host). Likewise, changing the MQTT broker's `host` clears
+         *     its stored password.
          *
          *     The Home Assistant token is write-only: it goes to the hub's secret
          *     store and is never returned, logged or put in a backup. Responses
@@ -578,6 +579,12 @@ export interface paths {
          *     settings; `GET /integrations` shows its `state`. The hub connects to
          *     `<url>/api/websocket`: `ws://` for an `http://` URL, `wss://` for
          *     `https://`. An empty `url` unsets it (and clears the token).
+         *
+         *     MQTT (`mqtt_main`): the hub shows up in Home Assistant through MQTT
+         *     discovery as one device with an Activity select, a Power switch and a
+         *     Restart button. The password is write-only like the HA token
+         *     (`has_password`). Anyone who can publish to the broker can switch
+         *     activities and restart the hub.
          */
         put: operations["configureIntegration"];
         post?: never;
@@ -1127,8 +1134,7 @@ export interface paths {
          * Rename the hub
          * @description Spaces at either end are dropped, then the rest must be a `HubName`;
          *     otherwise `422 validation_failed` at `/name` (`required`, `too_long`
-         *     or `invalid_name`). `hostname` follows the name (see `Hub`), and
-         *     `hostname_conflict` is false until the network is checked again.
+         *     or `invalid_name`). `hostname` follows the name (see `Hub`).
          */
         put: operations["updateHub"];
         post?: never;
@@ -1179,7 +1185,7 @@ export interface components {
          */
         IntegrationId: string;
         /** @enum {string} */
-        IntegrationType: "system" | "ble_hid" | "home_assistant";
+        IntegrationType: "system" | "ble_hid" | "home_assistant" | "mqtt";
         /**
          * @description Hubbo command identifier. HA commands are namespaced by entity domain
          *     (`media_player.volume_set`); BLE and system commands are bare (`key_tap`, `wait`).
@@ -1280,7 +1286,10 @@ export interface components {
          *     `authenticating`, `connected`, `auth_failed` (the token was refused;
          *     no retry until the settings change) or `unreachable` (retrying with
          *     backoff, 1 s doubling to 60 s). BLE: `connected` / `disconnected`.
-         *     Any integration: `disabled`, `error`.
+         *     MQTT: `not_configured` (no host), `connecting`, `connected`,
+         *     `auth_failed` (the broker refused the username or password; it keeps
+         *     retrying) or `unreachable` (retrying). Any integration: `disabled`,
+         *     `error`.
          * @enum {string}
          */
         IntegrationState: "not_configured" | "disabled" | "connecting" | "authenticating" | "connected" | "auth_failed" | "unreachable" | "disconnected" | "error";
@@ -1921,6 +1930,26 @@ export interface components {
             /** @description The name hosts see when pairing. Bonds live on each device (`bluetooth`). */
             device_name: string;
         };
+        MqttSettings: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "mqtt";
+            /**
+             * @description The broker: an IPv4 address, a hostname or an IPv6 address
+             *     (plain MQTT on the LAN, no TLS). No port: that's `port`
+             *     (`192.168.1.5:1883` is refused). Use an IP if `.local` names
+             *     don't resolve on your network. `""`: not set up yet (the built-in
+             *     `mqtt_main` starts so, and reports `not_configured`).
+             */
+            host: string;
+            /** @default 1883 */
+            port: number;
+            /** @description `""`: none (an anonymous broker). */
+            username: string;
+            readonly has_password: boolean;
+        };
         SystemSettings: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -1933,13 +1962,13 @@ export interface components {
             type: components["schemas"]["IntegrationType"];
             name: components["schemas"]["Name"];
             enabled: boolean;
-            settings: components["schemas"]["HomeAssistantSettings"] | components["schemas"]["BleHidSettings"] | components["schemas"]["SystemSettings"];
+            settings: components["schemas"]["HomeAssistantSettings"] | components["schemas"]["BleHidSettings"] | components["schemas"]["MqttSettings"] | components["schemas"]["SystemSettings"];
             revision: components["schemas"]["Revision"];
         };
         IntegrationConfigUpdate: {
             name?: components["schemas"]["Name"];
             enabled?: boolean;
-            settings?: components["schemas"]["HomeAssistantSettingsUpdate"] | components["schemas"]["BleHidSettingsUpdate"];
+            settings?: components["schemas"]["HomeAssistantSettingsUpdate"] | components["schemas"]["BleHidSettingsUpdate"] | components["schemas"]["MqttSettingsUpdate"];
             revision: components["schemas"]["Revision"];
         };
         HomeAssistantSettingsUpdate: {
@@ -1960,6 +1989,18 @@ export interface components {
              */
             type: "ble_hid";
             device_name?: components["schemas"]["BleHidSettings"]["device_name"];
+        };
+        MqttSettingsUpdate: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "mqtt";
+            host?: components["schemas"]["MqttSettings"]["host"];
+            port?: components["schemas"]["MqttSettings"]["port"];
+            username?: components["schemas"]["MqttSettings"]["username"];
+            /** @description The broker password. Write-only; omit to keep, null to clear. */
+            password?: string | null;
         };
         DiscoverCandidate: {
             provider: components["schemas"]["HomeAssistantProvider"];
@@ -2102,6 +2143,9 @@ export interface components {
                 url?: components["schemas"]["HomeAssistantSettings"]["url"];
                 verify_tls?: boolean;
                 device_name?: components["schemas"]["BleHidSettings"]["device_name"];
+                host?: components["schemas"]["MqttSettings"]["host"];
+                port?: components["schemas"]["MqttSettings"]["port"];
+                username?: components["schemas"]["MqttSettings"]["username"];
             };
         };
         Backup: {
@@ -2147,7 +2191,7 @@ export interface components {
             integrations: number;
             migrated_from?: number | null;
             /** @description Follow-up the admin must do. */
-            requires: ("home_assistant_token" | "ble_pairing" | "api_tokens")[];
+            requires: ("home_assistant_token" | "mqtt_password" | "ble_pairing" | "api_tokens")[];
             warnings?: components["schemas"]["ErrorDetail"][];
         };
         ApiIndex: {
@@ -2176,8 +2220,7 @@ export interface components {
          * @description What the hub is called: 1 to 32 characters, no control characters,
          *     no space at either end. A new hub is called "Hubbo XXXX", XXXX
          *     being the end of its network MAC in hex (e.g. "Hubbo 3F2A"), until
-         *     it's renamed. A reset or wipe brings that name back; a saved name is
-         *     never changed.
+         *     it's renamed. A factory reset brings it back.
          * @example Hubbo 3F2A
          * @example Living Room
          */

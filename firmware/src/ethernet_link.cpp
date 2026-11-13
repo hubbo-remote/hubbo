@@ -17,7 +17,8 @@ constexpr uint32_t kCheckIntervalMs = 250;
 }
 
 void EthernetLink::mac(uint8_t out[6]) {
-    if (esp_read_mac(out, ESP_MAC_ETH) != ESP_OK) {
+    uint8_t base[6];
+    if (esp_read_mac(base, ESP_MAC_ETH) != ESP_OK || esp_derive_local_mac(out, base) != ESP_OK) {
         std::fill(out, out + 6, 0);
     }
 }

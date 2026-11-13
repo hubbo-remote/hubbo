@@ -286,6 +286,36 @@ TEST_F(ServiceTest, IntegrationSettings) {
     EXPECT_TRUE(service->replaceIntegration("ha_main", std::move(ha), 2).issues.has(ErrorCode::IntegrationMismatch, "/type"));
 }
 
+// The built-in mqtt_main: disabled until set up; its broker survives a
+// reboot, and the broker fields belong to it alone.
+TEST_F(ServiceTest, MqttIntegrationSettings) {
+    const IntegrationSpec *built = service->findIntegration(kMqttIntegrationId);
+    ASSERT_NE(built, nullptr);
+    EXPECT_EQ(built->type, kMqttType);
+    EXPECT_FALSE(built->enabled);
+    EXPECT_EQ(built->port, 1883);
+    IntegrationSpec mqtt = *built;
+    mqtt.enabled = true;
+    mqtt.host = "broker.example";
+    mqtt.port = 8883;
+    mqtt.username = "hubbo";
+    ASSERT_TRUE(service->replaceIntegration(kMqttIntegrationId, std::move(mqtt), built->revision).ok());
+    boot();
+    const IntegrationSpec *saved = service->findIntegration(kMqttIntegrationId);
+    ASSERT_NE(saved, nullptr);
+    EXPECT_TRUE(saved->enabled);
+    EXPECT_EQ(saved->host, "broker.example");
+    EXPECT_EQ(saved->port, 8883);
+    EXPECT_EQ(saved->username, "hubbo");
+
+    IntegrationSpec ha = *service->findIntegration("ha_main");
+    ha.host = "stray";
+    ha.username = "stray";
+    ASSERT_TRUE(service->replaceIntegration("ha_main", std::move(ha), 1).ok());
+    EXPECT_EQ(service->findIntegration("ha_main")->host, "");
+    EXPECT_EQ(service->findIntegration("ha_main")->username, "");
+}
+
 TEST_F(ServiceTest, CompileCommand) {
     CompiledCommand cmd;
     Outcome o = service->compileCommand("dev_denon", "media_player.volume_set", {param("level", 0.25)}, &cmd);

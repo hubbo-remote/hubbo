@@ -2,6 +2,33 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## MQTT broker (branch `mqtt`; docs/design/mqtt-discovery.md; simplified, review fixed, gate green)
+
+- Integrations: an MQTT card after Home Assistant (`ORDER` in Integrations.tsx), no device count;
+  its state line is `healthLabel` only (core's detail just repeats the state). `auth_failed` reads
+  "Password rejected".
+- `components/admin/IntegrationSettings.tsx`: the shared save → wait → outcome block (help per
+  state, slow hint, test id). It owns the save (`save(settings)`, busy, error, plus `SaveError` and
+  `SaveButton`); the form remounts per revision, which clears a typed secret. `HomeAssistantSettings`
+  and `MqttSettings` (MqttForm.tsx) only hold their fields. e2e `settleIntegration(page, id, state)`
+  in hub.ts serves both.
+- MqttForm: Broker (host, no `.local` hint: it resolves on the board), Port (1883), Username,
+  Password write-only. A changed broker with a saved password warns "Enter the password again";
+  otherwise "Leave blank to keep the saved password" and a Remove password button (`password: null`).
+- Backups: restore `requires` gains `mqtt_password` ("enter the MQTT password again").
+- Mock: mqtt_main from `integrations/mqtt_main.config.json`; PUT validates like core (unknown
+  field, host `too_long`/`wrong_type` incl. a single-colon host:port (IPv6 is fine), port
+  `param_out_of_range`, empty password `required`); a new host clears the password unless one
+  comes with it. Restore asks for `mqtt_password` when the broker has a host (enabled or not),
+  after `home_assistant_token`, like core. State: no host = not_configured, then the
+  broker knob `POST /__mock/mqtt?reachable=0|1&auth=reject|ok` (like `/sim/mqtt`). Detail strings
+  copy core's MqttBridge.
+- unavailable.spec: on the mock's 501s, Integrations shows two "Not available yet" panels (HA, MQTT).
+- ha.spec:160 waits for its own debounced search response before removing the entity (it raced the
+  kept previous list under gate load).
+- e2e `mqtt.spec`: setup + write-only password, and auth_failed/unreachable/connected. Broker
+  traffic (discovery, HA picking an activity) is the contract's job, on hub-sim only.
+
 ## Unique hub name (branch `hub-name`; docs/design/hub-name.md)
 
 - A new hub is "Hubbo XXXX" (MAC suffix); hub-sim's and the mock's is "Hubbo 534D" / `hubbo-534d`
@@ -449,7 +476,7 @@ were deferred while iterating and are now caught up.
 - `POST /__mock/reset` body = `ResetFlags`: `firstRun`, `requireAuth`, `configState`,
   `configDamaged`, `startupRejected`, `authState` (unavailable), `discoverFails`, `scanNeverFinds`.
 - Mirroring hub-sim's `/sim/…`: `factory-reset?ready=`, `firmware?fail=&ready=`, `storage?health=`, `ha?state=|remove=|auth=&connect=`,
-  `ble/bond?device=`, `ble/link?device=&up=`, `ble/radio?ready=`, `radio/found?channel&address`,
+  `mqtt?reachable=&auth=`, `ble/bond?device=`, `ble/link?device=&up=`, `ble/radio?ready=`, `radio/found?channel&address`,
   `advance?ms` (also runs down the Bluetooth window and entity details), `remote/<button>/<press|release|tap>` (only records
   `last_event`; no bindings run).
 - Mock only: `ha?rename=<id>&to=<new>` (the old id gone; `renamedFrom` makes the new one's

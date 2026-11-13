@@ -42,6 +42,7 @@ const ROUTES: Record<string, [string, string]> = {
 // Requests whose operation needs another target than ROUTES gives.
 const FILE_ROUTES: Record<string, [string, string]> = {
   'devices/execute.press.request.json': ['POST', '/devices/dev_apple_tv/commands/press/execute'],
+  'integrations/mqtt_main.configure.request.json': ['PUT', '/admin/integrations/mqtt_main'],
 }
 
 describe('mock vs api/fixtures', () => {
@@ -185,6 +186,51 @@ describe('hub name, like core', () => {
     expect(await hub()).toEqual({ name: 'Hubbo 534D', hostname: 'hubbo-534d-2', hostname_conflict: true })
     expect(((await m.handle(req('GET', '/status', undefined, as))).body as Status).network.hostname).toBe('hubbo-534d-2')
     expect((await m.handle(req('PUT', '/admin/hub', { name: 'Den' }, as))).body).toEqual({ name: 'Den', hostname: 'den', hostname_conflict: false })
+  })
+})
+
+const stateOf = async (m: ReturnType<typeof createMock>, id: string) => ((await m.handle(req('GET', '/status'))).body as Status).integrations.find((i) => i.id === id)?.state
+
+describe('MQTT, like core', () => {
+  const put = async (m: ReturnType<typeof createMock>, settings: object) => {
+    const { revision } = (await m.handle(req('GET', '/admin/integrations/mqtt_main'))).body as { revision: number }
+    return m.handle(req('PUT', '/admin/integrations/mqtt_main', { revision, settings: { type: 'mqtt', ...settings } }))
+  }
+  const state = (m: ReturnType<typeof createMock>) => stateOf(m, 'mqtt_main')
+  it('keeps the password write-only: omitted keeps it, null clears it, a new host clears it', async () => {
+    const m = createMock()
+    expect((await put(m, { username: 'den' })).body).toMatchObject({ settings: { username: 'den', has_password: true } })
+    expect(JSON.stringify((await put(m, { password: 'sekrit-1' })).body)).not.toContain('sekrit-1')
+    expect((await put(m, { password: null })).body).toMatchObject({ settings: { has_password: false } })
+    await put(m, { password: 'sekrit-1' })
+    expect((await put(m, { host: 'mqtt.local' })).body).toMatchObject({ settings: { host: 'mqtt.local', has_password: false } })
+    expect((await put(m, { host: 'other.local', password: 'sekrit-2' })).body).toMatchObject({ settings: { has_password: true } })
+    expect((await put(m, { host: 'fd00::11' })).status).toBe(200) // IPv6 has several colons
+    for (const [bad, path] of [[{ port: 0 }, '/settings/port'], [{ host: 'a b' }, '/settings/host'], [{ host: '192.168.1.5:1883' }, '/settings/host'], [{ password: '' }, '/settings/password'], [{ access_token: 'x' }, '/settings/access_token']] as const) {
+      expect(errorOf(await put(m, bad)).details?.[0]?.path).toBe(path)
+    }
+  })
+  it('asks for the password again for any restored broker with a host, in core’s order', async () => {
+    const m = createMock()
+    type B = { integrations: { type: string; enabled: boolean; settings: { host?: string; username?: string } }[] }
+    const backup = (await m.handle(req('GET', '/admin/backup'))).body as B
+    const requires = async () => ((await m.handle(req('POST', '/admin/restore?dry_run=true', backup))).body as { requires: string[] }).requires
+    const mqtt = backup.integrations.find((i) => i.type === 'mqtt')!
+    Object.assign(mqtt, { enabled: false, settings: { ...mqtt.settings, username: '' } })
+    expect(await requires()).toEqual(['home_assistant_token', 'mqtt_password', 'ble_pairing', 'api_tokens'])
+    mqtt.settings.host = ''
+    expect(await requires()).not.toContain('mqtt_password')
+  })
+  it('reports the broker as hub-sim’s fake one does', async () => {
+    const m = createMock()
+    expect(await state(m)).toBe('connected')
+    await m.handle(req('POST', '/__mock/mqtt?auth=reject'))
+    expect(await state(m)).toBe('auth_failed')
+    await m.handle(req('POST', '/__mock/mqtt?auth=ok&reachable=0'))
+    expect(await state(m)).toBe('unreachable')
+    expect((await m.handle(req('POST', '/__mock/mqtt?reachable=2'))).status).toBe(422)
+    await put(m, { host: '' })
+    expect(await state(m)).toBe('not_configured')
   })
 })
 
@@ -425,7 +471,7 @@ describe('mock behaviour', () => {
 
   it('HA client states: auth_failed sticks until the settings change', async () => {
     const m = createMock()
-    const ha = async () => ((await m.handle(req('GET', '/status'))).body as Status).integrations.find((i) => i.id === 'ha_main')?.state
+    const ha = () => stateOf(m, 'ha_main')
     await m.handle(req('POST', '/__mock/ha?state=auth_failed'))
     expect(await ha()).toBe('auth_failed')
     const cfg = (await m.handle(req('GET', '/admin/integrations/ha_main'))).body as { revision: number }

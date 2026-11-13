@@ -27,6 +27,7 @@
 #include "hubbo/engine/engine.h"
 #include "hubbo/integrations/ble_hosts.h"
 #include "hubbo/integrations/ha_client.h"
+#include "hubbo/integrations/mqtt_bridge.h"
 #include "hubbo/remote/input.h"
 
 namespace hubbo::fw {
@@ -62,6 +63,8 @@ public:
     // Once at boot: the `ble` integration's and Bluetooth devices' state
     // (BleHostPort reads are httpd-safe).
     void setBleHosts(const hubbo::integrations::BleHostPort *bleHosts) { bleHosts_ = bleHosts; }
+    // Once at boot: the `mqtt_main` integration's state (any-task reads).
+    void setMqtt(const hubbo::integrations::MqttBridge *mqtt) { mqtt_ = mqtt; }
 
     // Engine task.
     void publish(const RuntimeStatus &status);
@@ -74,6 +77,9 @@ public:
     std::string integrationDetail(std::string_view integrationId) const override;
     const char *deviceAvailability(const hubbo::DeviceSpec &device) const override;
 
+    // Any task: the address as of the last publish() ("" when not up).
+    std::string ip() const { return read().ip; }
+
     static constexpr uint32_t kSlowRequestMs = 2000;  // logged, not abandoned
 
 private:
@@ -85,6 +91,7 @@ private:
     const hubbo::integrations::HomeAssistantClient &homeAssistant_;  // state(): any task
     const hubbo::config::ConfigService *config_ = nullptr;
     const hubbo::integrations::BleHostPort *bleHosts_ = nullptr;
+    const hubbo::integrations::MqttBridge *mqtt_ = nullptr;
     mutable portMUX_TYPE lock_ = portMUX_INITIALIZER_UNLOCKED;
     RuntimeStatus status_;
 };

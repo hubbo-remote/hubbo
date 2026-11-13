@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "fake_ha.h"
+#include "fake_mqtt.h"
 #include "fakes.h"
 #include "hubbo/config/service.h"
 #include "hubbo/config/boot.h"
@@ -39,6 +40,7 @@
 #include "hubbo/engine/engine.h"
 #include "hubbo/integrations/ha_adapter.h"
 #include "hubbo/integrations/ha_client.h"
+#include "hubbo/integrations/mqtt_bridge.h"
 #include "hubbo/remote/input.h"
 
 namespace hubbo::sim {
@@ -141,6 +143,15 @@ public:
     // /sim/reset gives a fresh port (ready, nothing pending).
     api::SimulatedFactoryReset &factoryResetPort() { return factoryReset_; }
     config::HubSettings &hubSettings() { return hubSettings_; }
+    // Hubbo as an HA device over MQTT (the API's ApiContext::mqtt), against
+    // the fake broker. Its node id comes from kSimMac. It runs on hub time
+    // in serviceIntegrations(); its settings come from api::applyMqttSettings.
+    integrations::MqttBridge &mqtt() { return mqtt_; }
+    FakeMqttBroker &mqttBroker() { return mqttBroker_; }
+    // How the bridge's activity commands reach the engine: SimApi sets it to
+    // api::runTransition over its Runtime ("" = off). The bridge only posts
+    // one; it runs after the current advance() step, as httpd would run it.
+    std::function<void(const std::string &activityId)> runTransition;
     api::SimulatedRestart &restartPort() { return restart_; }
     std::function<void()> onFactoryReset;
     // One turn of the integration task (transport, client, adapter) at the
@@ -178,6 +189,7 @@ private:
     void stopEverything();  // keys released, nothing active or saved active, remote unpaired
     api::SimulatedFactoryReset freshFactoryResetPort();  // erase calls onFactoryReset
     void advanceFirmware(uint32_t ms);
+    integrations::MqttBridge::Hooks mqttHooks();
     void logCommand(std::string text);
     void logEvent(std::string text);
 
@@ -208,6 +220,14 @@ private:
     ActivePersister persister_;
     config::HubSettings hubSettings_{state_, config::defaultHubName(kSimMac)};
     api::SimulatedRestart restart_;
+    FakeMqttBroker mqttBroker_;
+    FakeMqttTransport mqttTransport_{mqttBroker_};
+    integrations::MqttBridge mqtt_;
+    integrations::MqttActivitySync mqttActivities_{mqtt_};
+    config::ConfigFanOut configListeners_{&bleReconciler_, &mqttActivities_};  // as the firmware wires them
+    uint32_t activityChanges_ = 1;  // the firmware's activityChanges counter
+    std::vector<std::string> mqttTransitions_;  // posted by the bridge, run by advance()
+    bool runningTransition_ = false;
     BootReport boot_;
 
     uint32_t nowMs_ = 0;

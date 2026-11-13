@@ -43,6 +43,23 @@ TEST(Ids, CommandIds) {
     EXPECT_FALSE(isValidCommandId(std::string(32, 'a') + "." + std::string(33, 'b')));
 }
 
+TEST(Ids, MqttHostAndUsername) {
+    for (const char *ok : {"", "broker.lan", "10.0.0.2", "mqtt_1-a", "fe80::1", "2001:db8::42"}) {
+        EXPECT_TRUE(isValidMqttHost(ok)) << ok;
+    }
+    for (const char *bad : {"broker lan", "broker.lan:1883", "10.0.0.2:1883", "mqtt://broker", "a/b", "h\n"}) {
+        EXPECT_FALSE(isValidMqttHost(bad)) << bad;
+    }
+    EXPECT_TRUE(isValidMqttHost(std::string(limits::kMaxHostLength, 'h')));
+    EXPECT_FALSE(isValidMqttHost(std::string(limits::kMaxHostLength + 1, 'h')));
+
+    EXPECT_TRUE(isValidMqttUsername(""));
+    EXPECT_TRUE(isValidMqttUsername("hubbo user@home"));
+    EXPECT_FALSE(isValidMqttUsername("hubbo\n"));
+    EXPECT_FALSE(isValidMqttUsername("a\x7f"));
+    EXPECT_FALSE(isValidMqttUsername(std::string(limits::kMaxUsernameLength + 1, 'u')));
+}
+
 TEST(Ids, Names) {
     EXPECT_TRUE(isValidName("Watch Apple TV"));
     EXPECT_TRUE(isValidName("Télé du salon"));

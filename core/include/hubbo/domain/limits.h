@@ -19,6 +19,8 @@ constexpr size_t kMaxTypeLength = 32;        // integration/provider type names
 constexpr size_t kMaxUrlLength = 200;        // Home Assistant base URL
 constexpr size_t kMaxUniqueIdLength = 64;    // HA entity registry id
 constexpr size_t kMaxBleNameLength = 29;     // advertised BLE name (fits the scan response)
+constexpr size_t kMaxHostLength = 253;       // MQTT broker: an IP or a DNS name
+constexpr size_t kMaxUsernameLength = 64;    // MQTT broker username
 
 // Configuration.
 constexpr size_t kMaxParams = 4;             // per action
@@ -27,6 +29,10 @@ constexpr size_t kMaxActivities = 16;
 constexpr size_t kMaxDevices = 64;
 constexpr size_t kMaxBleDevices = 4;         // Bluetooth hosts (bonds and connections at once)
 constexpr size_t kMaxAdapters = 8;           // integration instances (excl. system)
+// The integrations list, built-ins included: the adapters (ble and ha_main
+// are two of them) plus system and mqtt_main, which have none. Decode and
+// compile both check it, counting built-ins not yet added.
+constexpr size_t kMaxIntegrations = kMaxAdapters + 2;
 constexpr size_t kMaxCompiledActions = 2048; // whole compiled config
 constexpr size_t kMaxValidationIssues = 32;  // further issues are dropped
 constexpr size_t kMaxEnumOptions = 128;      // options of one enum param

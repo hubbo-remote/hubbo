@@ -1169,3 +1169,86 @@ TEST_F(RealHa, ResetRestoresTheFakeHomeAssistant) {
     const http::Response r = volume();
     EXPECT_NE(r.body.find("\"accepted\""), std::string::npos) << r.body;
 }
+
+// MQTT in hub-sim: the fake broker, HA's commands reaching the engine
+// through api::runTransition, the integration state, and the /sim/mqtt routes.
+TEST(SimApi, MqttDrivesTheHub) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials);
+    SimHub &hub = runner.hub();
+    const std::string base = "hubbo/" + hub.mqtt().nodeId() + "/";
+    EXPECT_EQ(hub.mqtt().nodeId(), "hubbo_02000000534d");
+    EXPECT_EQ(std::string(hub.mqtt().state()), "disabled");
+
+    // mqtt_main set up, and applied as at boot.
+    IntegrationSpec mqtt = *hub.configService().findIntegration(kMqttIntegrationId);
+    mqtt.enabled = true;
+    mqtt.host = "broker.test";
+    ASSERT_TRUE(hub.configService().replaceIntegration(kMqttIntegrationId, std::move(mqtt), 1).ok());
+    (void)api::applyMqttSettings(hub.configService(), nullptr, hub.mqtt());
+    hub.advance(integrations::MqttBridge::kStatesDelayMs + 200);
+    EXPECT_TRUE(hub.mqttBroker().connected());
+    EXPECT_EQ(hub.mqttBroker().retained().at(base + "activity"), "PowerOff");
+    const auto state = [&] {
+        JsonDocument doc;
+        EXPECT_FALSE(deserializeJson(doc, call(api, http::Method::Get, "/api/v1/integrations").body));
+        for (JsonVariantConst i : doc["integrations"].as<JsonArrayConst>()) {
+            if (i["id"] == kMqttIntegrationId) return i["state"].as<std::string>();
+        }
+        return std::string("missing");
+    };
+    EXPECT_EQ(state(), "connected");
+
+    // HA picks an activity: it runs, and the state follows.
+    std::string query = "topic=" + base + "cmd/activity&payload=Play+Xbox";
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/mqtt/publish", query.c_str()).status, 200);
+    hub.advance(100);
+    EXPECT_EQ(hub.engine().activeActivityIdShared(), "act_play_xbox");
+    EXPECT_EQ(hub.mqttBroker().retained().at(base + "activity"), "Play Xbox");
+    EXPECT_EQ(hub.mqttBroker().retained().at(base + "power"), "ON");
+
+    // A rename republishes the discovery with the new name.
+    ASSERT_EQ(call(api, http::Method::Put, "/api/v1/admin/hub", "", R"({"name":"Den"})").status, 200);
+    hub.advance(100);
+    EXPECT_NE(hub.mqttBroker().retained().at("homeassistant/device/" + hub.mqtt().nodeId() + "/config").find(
+                  R"("name":"Den")"),
+              std::string::npos);
+
+    // GET /sim/mqtt: what the hub published.
+    JsonDocument doc;
+    ASSERT_FALSE(deserializeJson(doc, call(api, http::Method::Get, "/sim/mqtt").body));
+    EXPECT_TRUE(doc["connected"].as<bool>());
+    EXPECT_EQ(doc["client_id"], "hubbo_02000000534d");
+    EXPECT_EQ(doc["retained"][base + "availability"], "online");
+    EXPECT_EQ(doc["subscriptions"][0], base + "cmd/+");
+    EXPECT_FALSE(doc["published"].as<JsonArrayConst>().size() == 0);
+
+    // The broker goes away: the will, and the integration says so.
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/mqtt", "reachable=2").status, 400);
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/mqtt").status, 400);
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/mqtt", "reachable=0").status, 200);
+    EXPECT_EQ(hub.mqttBroker().retained().at(base + "availability"), "offline");
+    EXPECT_EQ(state(), "unreachable");
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/mqtt", "reachable=1&auth=reject").status, 200);
+    EXPECT_EQ(state(), "auth_failed");
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/mqtt", "auth=ok").status, 200);
+    EXPECT_EQ(state(), "connected");
+}
+
+// The Restart button restarts the hub as POST /admin/restart does.
+TEST(SimApi, MqttRestartButton) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials);
+    SimHub &hub = runner.hub();
+    integrations::MqttSettings s;
+    s.enabled = true;
+    s.host = "broker.test";
+    hub.mqtt().configure(s);
+    hub.advance(200);
+    std::string query = "topic=hubbo/" + hub.mqtt().nodeId() + "/cmd/restart&payload=PRESS";
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/mqtt/publish", query.c_str()).status, 200);
+    hub.advance(api::SimulatedRestart::kRestartMs);
+    EXPECT_EQ(hub.restartPort().restarts(), 1);
+}

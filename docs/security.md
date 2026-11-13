@@ -15,7 +15,9 @@ contract is `api/openapi.yaml`.
 2. The admin password and session. They give full control of Hubbo, including the HA settings.
 3. API tokens. They can drive every registered device and rewrite activities.
 4. BLE bond keys (up to 4 paired hosts, one per Bluetooth device).
-5. Configuration (devices, activities). Not secret, but tampering means the remote does the
+5. The MQTT broker password. On its own broker it can do whatever that login can, and through
+   Hubbo's topics it can switch activities and restart the hub.
+6. Configuration (devices, activities). Not secret, but tampering means the remote does the
    wrong thing.
 
 **Attackers we design for:**
@@ -49,6 +51,10 @@ contract is `api/openapi.yaml`.
 - Online password guessing. There's no rate limit; each guess costs a PBKDF2 hash (about 0.5 s
   on the board), and the admin picks the password.
 - A compromised Home Assistant. Hubbo trusts HA's responses about entities and states.
+- Anyone who can publish to the MQTT broker. With `mqtt_main` enabled, they can switch
+  activities, turn everything off and restart the hub through `hubbo/<node>/cmd/*` (no more
+  than the remote or the HA device page can). Restart is refused during a firmware update, as
+  `POST /admin/restart` is. Secure the broker with its own logins and ACLs.
 - Bluetooth hosts nearby. Outside a pairing window, only paired hosts may connect (the
   advertising whitelist). While an admin's window is open, any host in range can bond to that
   device (as with any keyboard); the admin sees which device it landed on, and Forget undoes it.
@@ -196,6 +202,11 @@ setting. `http://` HA URLs work but send the HA token in plaintext. The UI shoul
 Changing the HA URL clears the stored token unless a new one is sent, so a token can't be
 redirected to another host by editing the URL.
 
+Outbound to the MQTT broker: plain MQTT on the LAN, no TLS (user decision, 2026-11-13). The
+broker username and password cross the LAN in plaintext, like the admin password does. Changing
+the broker `host` clears the stored password unless a new one is sent, for the same reason as
+the HA URL.
+
 ## Secrets at rest
 
 All core secrets go through one port, `auth::SecretStore` (`core/include/hubbo/auth/secret_store.h`):
@@ -212,11 +223,19 @@ new token, so a token is never sent to a host it wasn't entered for. The platfor
 to hand it to the HA client (`api::applyHomeAssistantSettings`), which uses it in the auth
 message and nowhere else.
 
+The MQTT broker password is the key `mqtt_password`, and it works the same way.
+`PUT /admin/integrations/mqtt_main` is the only way in (`password`: omit to keep, `null` to
+clear). Responses show `has_password`, and a new `host` erases it. The platform reads it only to
+hand it to the MQTT bridge (`api::applyMqttSettings`), which puts it in the CONNECT packet and
+nowhere else. A restore asks for it again (`requires: mqtt_password`) when the restored broker
+has a host.
+
 | Secret | Where | In backups | In API responses |
 |---|---|---|---|
 | Admin password hash | NVS | no | never |
 | API token hashes | NVS | no | never (plaintext once, at creation) |
 | HA access token | NVS | no | never (`has_access_token: true/false`) |
+| MQTT broker password | NVS | no | never (`has_password: true/false`) |
 | BLE bond keys (and each host's identity address) | NimBLE's NVS store | no | never |
 | TLS private key | NVS | no | never |
 | Sessions | RAM | no | never (the cookie only, at login) |
@@ -251,8 +270,8 @@ it.
 
 ## Logs, diagnostics and errors
 
-- Never log request bodies, `Authorization` or `Cookie` headers, the HA token, password, or
-  token plaintext. Log token IDs (`tok_…`) only.
+- Never log request bodies, `Authorization` or `Cookie` headers, the HA token, the MQTT
+  password, passwords, or token plaintext. Log token IDs (`tok_…`) only.
 - Error messages are fixed strings plus IDs and field paths. They never echo a submitted
   secret.
 - `/status` diagnostics hold no URLs with credentials and no HA responses verbatim.
@@ -279,10 +298,11 @@ its own compiled-in password hash, and shares the one-update-at-a-time owner fla
 
 `POST /admin/factory-reset` is admin-only (a token gets `403`) and is refused (`409`) during a
 firmware update. It answers `202`, then the hub erases every secret (the login, tokens, the HA
-token), the BLE bonds, the remote endpoint and the config filesystem, and restarts into
+token, the MQTT password), the BLE bonds, the remote endpoint and the config filesystem, and restarts into
 first-run setup (`fresh`). Like the first boot, whoever reaches the hub first can then set it
 up, which is fine on a trusted LAN. The Apple TV keeps its side of the pairing until it forgets
-"Hubbo". `POST /admin/reset` (reset configuration) keeps all secrets and pairings. With
+"Hubbo". `POST /admin/reset` (reset configuration) keeps all secrets and pairings, except an HA token
+or MQTT password whose URL or host the reset changes. With
 `unavailable` credentials nobody can authenticate, so recovery stays the wipe.
 
 ## Restart and the hub's name

@@ -18,6 +18,8 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -33,12 +35,13 @@
 #include "factory_reset.h"
 #include "firmware_update.h"
 #include "flash_fs.h"
-#include "ha_task.h"
+#include "integration_task.h"
 #include "http_server.h"
 #include "hub_name.h"
 #include "image_marker.h"
 #include "hubbo/api/api.h"
 #include "hubbo/api/remote_port.h"
+#include "hubbo/api/transitions.h"
 #include "hubbo/api/authenticator.h"
 #include "hubbo/auth/credentials.h"
 #include "hubbo/auth/crypto.h"
@@ -54,11 +57,13 @@
 #include "hubbo/integrations/ble_hid.h"
 #include "hubbo/integrations/ha_adapter.h"
 #include "hubbo/integrations/ha_client.h"
+#include "hubbo/integrations/mqtt_bridge.h"
 #include "hubbo/remote/button.h"
 #include "hubbo/remote/input.h"
 #include "hubbo/storage/record_store.h"
 #include "hubbo/storage/state_store.h"
 #include "littlefs_storage.h"
+#include "mqtt_transport.h"
 #include "nvs_secret_store.h"
 #include "ota.h"
 #include "remote_radio.h"
@@ -220,14 +225,16 @@ hubbo::api::Authenticator authenticator(credentials, sessions, apiClock);
 LittleFsStorage fsStorage;
 hubbo::storage::SlotRecordStore records(fsStorage, hubbo::config::kMaxConfigFileBytes);
 hubbo::storage::RecordStateStore stateStore(records);
+// The Ethernet MAC (efuse), read once: the default hub name's suffix and
+// the MQTT node id.
+struct EthernetMac {
+    uint8_t bytes[6];
+    EthernetMac() { EthernetLink::mac(bytes); }
+};
+const EthernetMac ethernetMac;
 // The hub's name ("hub_name"). A hub never renamed is "Hubbo XXXX", from the
 // last two bytes of the Ethernet MAC.
-std::string defaultHubName() {
-    uint8_t mac[6];
-    EthernetLink::mac(mac);
-    return hubbo::config::defaultHubName(mac);
-}
-hubbo::config::HubSettings hubSettings(stateStore, defaultHubName());
+hubbo::config::HubSettings hubSettings(stateStore, hubbo::config::defaultHubName(ethernetMac.bytes));
 std::unique_ptr<hubbo::config::ConfigService> configService;
 hubbo::ActivePersister activePersister(stateStore);
 hubbo::config::LoadReport bootConfig;  // for the console; the API reads live state
@@ -238,7 +245,8 @@ hubbo::storage::Health bootSecretsHealth = hubbo::storage::Health::Unavailable;
 std::unique_ptr<hubbo::api::Api> api;
 hubbo::http::Router router;
 HttpServer httpServer;
-HaTask haTask;
+IntegrationTask haTask;
+IntegrationTask mqttTask;  // the MQTT bridge (below)
 
 #ifdef HUBBO_DEV_CONSOLE
 void addDevEndpoints();  // below, with the console commands
@@ -374,6 +382,62 @@ FirmwareUpdate firmwareUpdate(&requestReboot, hash);  // updates from the web ad
 FactoryReset factoryReset(&requestReboot);           // POST /admin/factory-reset
 Restart restart(&requestReboot);                     // POST /admin/restart
 
+// --- MQTT: Hubbo as a Home Assistant device (docs/design/mqtt-discovery.md) ---
+// The bridge and its transport run on the mqtt task. Its hooks only read
+// shared state or post to httpd: transitions and the restart go through the
+// same calls as the API's routes, on the API's task.
+
+// Runs `job` on httpd, or logs why it couldn't.
+void postFromMqtt(const char *what, std::function<void()> job) {
+    if (!httpServer.post(std::move(job))) {
+        con.printf("mqtt: %s dropped (httpd queue full)\n", what);
+    }
+}
+
+EspMqttTransport mqttTransport;
+hubbo::integrations::MqttBridge mqttBridge(
+    mqttTransport, hubbo::integrations::mqttNodeId(ethernetMac.bytes),
+    hubbo::integrations::MqttBridge::Hooks{
+        [] { return activityChanges.load(std::memory_order_acquire); },
+        [] { return engine.activeActivityIdShared(); },
+        [] {
+            hubbo::integrations::MqttDeviceInfo info;
+            info.version = image::version();
+            info.board = board::kName;
+            info.ip = runtime.ip();
+            static const std::string mac = hubbo::integrations::mqttMacText(ethernetMac.bytes);
+            info.mac = mac;
+            info.hostname = hubSettings.identity().shownHostname();
+            info.uptimeS = static_cast<uint32_t>(apiClock.monotonicMs() / 1000);
+            return info;
+        },
+        [](const std::string &activityId) {
+            postFromMqtt("transition", [activityId] {
+                const hubbo::api::TransitionOutcome outcome =
+                    hubbo::api::runTransition(*configService, runtime, activityId);
+                if (outcome.status != hubbo::api::TransitionStatus::Done) {
+                    con.printf("mqtt: transition to %s refused (%s)\n", activityId.empty() ? "(off)" : activityId.c_str(),
+                               outcome.status == hubbo::api::TransitionStatus::Busy ? "engine busy" : "config blocked");
+                }
+            });
+        },
+        [] {
+            postFromMqtt("restart", [] {
+                const hubbo::api::RestartOutcome outcome = hubbo::api::requestHubRestart(&restart, &firmwareUpdate);
+                if (outcome != hubbo::api::RestartOutcome::Accepted) {
+                    con.printf("mqtt: restart refused (%s)\n", outcome == hubbo::api::RestartOutcome::UpdateInProgress
+                                                                   ? "a firmware update is running"
+                                                                   : "unavailable");
+                }
+            });
+        },
+    });
+
+// Each saved config (the one loaded at boot included): Bluetooth hosts the
+// config no longer has are forgotten, then the bridge gets the activities.
+hubbo::integrations::MqttActivitySync mqttActivities(mqttBridge);
+hubbo::config::ConfigFanOut configListeners{&bleReconciler, &mqttActivities};
+
 // --- Boot ----------------------------------------------------------------------
 
 const char *resetReasonName(esp_reset_reason_t reason) {
@@ -422,7 +486,11 @@ void loadHubName() {
     const hubbo::ErrorCode loaded = hubSettings.load();
     const hubbo::config::HubIdentity identity = hubSettings.identity();
     hubName.begin(identity);
-    hubSettings.onChanged([](const hubbo::config::HubIdentity &renamed) { hubName.apply(renamed); });
+    mqttBridge.setHubName(identity.name);
+    hubSettings.onChanged([](const hubbo::config::HubIdentity &renamed) {
+        hubName.apply(renamed);
+        mqttBridge.setHubName(renamed.name);
+    });
     con.printf("name: \"%s\", hostname %s\n", identity.name.c_str(), identity.hostname.c_str());
     if (loaded != hubbo::ErrorCode::Ok && loaded != hubbo::ErrorCode::NotFound) {
         con.printf("name: saved name unreadable (%s); using the default\n", hubbo::errorCodeName(loaded));
@@ -463,7 +531,7 @@ void printCredentialState() {
 // read, so the button map is live from the start.
 void bootState() {
     configService = std::make_unique<hubbo::config::ConfigService>(records, adapters, configStore);
-    configService->setListener(&bleReconciler);
+    configService->setListener(&configListeners);
     const hubbo::BootReport report = hubbo::bootHub(hubbo::ConfigSpec{}, *configService, &credentials, engine,
                                                     activePersister, millis());
 
@@ -521,6 +589,37 @@ void configureHomeAssistant() {
     con.printf("ha: %s, token %s\n", hasUrl ? "configured" : "not configured", hubbo::auth::secretReadName(read));
 }
 
+// The bridge's settings at boot (core's helper: "mqtt_main" and the password
+// from NVS); the API applies later changes. The password is never logged.
+void configureMqtt() {
+    const hubbo::auth::SecretRead read = hubbo::api::applyMqttSettings(*configService, &secretStore, mqttBridge);
+    const hubbo::IntegrationSpec *integration = configService->findIntegration(hubbo::kMqttIntegrationId);
+    const bool enabled = integration != nullptr && integration->enabled;
+    con.printf("mqtt: %s, node %s, password %s\n",
+               !enabled ? "disabled" : integration->host.empty() ? "no broker set" : "configured",
+               mqttBridge.nodeId().c_str(), hubbo::auth::secretReadName(read));
+}
+
+// The mqtt task: the transport's wait is the pass's sleep. Each change of
+// the bridge's state is logged once ("mqtt: connected").
+void startMqtt() {
+    const bool started = mqttTask.start("mqtt", [] {
+        static const char *logged = nullptr;
+        mqttTransport.poll(IntegrationTask::kSocketWaitMs);
+        mqttBridge.poll(apiClock.monotonicMs());
+        const char *state = mqttBridge.state();
+        if (logged == nullptr || strcmp(state, logged) != 0) {
+            logged = state;
+            const std::string detail = mqttBridge.detail();
+            con.printf("mqtt: %s%s%s\n", state, detail.empty() ? "" : ": ", detail.c_str());
+        }
+        return false;
+    });
+    if (!started) {
+        con.println("mqtt: task failed to start; MQTT is unavailable");
+    }
+}
+
 void startApi() {
     hubbo::api::HubInfo info;
     info.version = image::version();
@@ -532,6 +631,7 @@ void startApi() {
     context.factoryReset = &factoryReset;
     context.hub = &hubSettings;
     context.restart = &restart;
+    context.mqtt = &mqttBridge;
     context.homeAssistant = &haClient;
     context.secrets = &secretStore;
     api = std::make_unique<hubbo::api::Api>(std::move(context));
@@ -1069,16 +1169,17 @@ void setup() {
     bootState();
     runtime.setConfig(configService.get());
     runtime.setBleHosts(&bleHosts);
+    runtime.setMqtt(&mqttBridge);
     ota::setRebootPending([] { return rebootReason.load(std::memory_order_acquire) != nullptr; });
     beginEthernetOnCore0();
     startApi();
     EspWsTransport::useExternalTlsMemory();
     configureHomeAssistant();
     haClient.setYield([] { vTaskDelay(1); });
-    const bool haStarted = haTask.start([] {
+    const bool haStarted = haTask.start("ha", [] {
         // A connect blocks here for up to 15 s (TLS); the client reads its
         // clock (haNowMs) fresh, so its deadlines start after it.
-        haTransport.poll(haClient.hasWork() ? 0 : HaTask::kSocketWaitMs);
+        haTransport.poll(haClient.hasWork() ? 0 : IntegrationTask::kSocketWaitMs);
         haClient.poll(haNowMs());
         haAdapter.service();
         return haClient.hasWork();
@@ -1086,6 +1187,7 @@ void setup() {
     if (!haStarted) {
         con.println("ha: task failed to start; Home Assistant is unavailable");
     }
+    configureMqtt();
     con.printf("ota: %s\n", ota::enabled() ? "compiled in, starts when Ethernet is up"
                                               : "disabled (no HUBBO_OTA_PASSWORD at build)");
 
@@ -1094,6 +1196,7 @@ void setup() {
     // restore's small allocations otherwise use up internal RAM. Drivers,
     // all started above, ask for internal or DMA memory explicitly. See README.
     heap_caps_malloc_extmem_enable(0);
+    startMqtt();  // after: esp-mqtt's client and buffers go to PSRAM
 
     printMemory();
     enableLoopWDT();

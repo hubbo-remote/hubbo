@@ -7,6 +7,7 @@
 
 add_library(hubbo_sim_support STATIC
     src/fake_ha.cpp
+    src/fake_mqtt.cpp
     src/fakes.cpp
     src/fixtures.cpp
     src/hub.cpp

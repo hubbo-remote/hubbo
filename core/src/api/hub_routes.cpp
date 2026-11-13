@@ -1,6 +1,7 @@
 // GET/PUT /admin/hub (the hub's name, over config::HubSettings) and
 // POST /admin/restart (over RestartPort).
 
+#include "hubbo/api/transitions.h"
 #include "hubbo/config/hub.h"
 #include "routes.h"
 #include "support.h"
@@ -49,12 +50,13 @@ void addHubRoutes(RouteSink &sink, ApiContext &ctx) {
     });
 
     sink.add("/api/v1/admin/restart", auth::Operation::RestartHub, [&ctx](auto &, auto &, auto &out) {
-        if (ctx.restart == nullptr) return sendError(out, 503, "unavailable", "This hub can't restart");
-        if (ctx.firmware != nullptr && firmwareUpdateRunning(ctx.firmware->status().state)) {
-            return sendError(out, 409, "update_in_progress", "A firmware update is running");
-        }
-        if (!ctx.restart->requestRestart()) {
-            return sendError(out, 503, "unavailable", "The hub can't restart right now");
+        switch (requestHubRestart(ctx.restart, ctx.firmware)) {
+            case RestartOutcome::Accepted: break;
+            case RestartOutcome::NoPort: return sendError(out, 503, "unavailable", "This hub can't restart");
+            case RestartOutcome::UpdateInProgress:
+                return sendError(out, 409, "update_in_progress", "A firmware update is running");
+            case RestartOutcome::Unavailable:
+                return sendError(out, 503, "unavailable", "The hub can't restart right now");
         }
         JsonDocument doc;
         doc.to<JsonObject>();

@@ -51,6 +51,11 @@
       "id": "ha_main",
       "type": "home_assistant",
       "state": "connected"
+    },
+    {
+      "id": "mqtt_main",
+      "type": "mqtt",
+      "state": "connected"
     }
   ],
   "diagnostics": {

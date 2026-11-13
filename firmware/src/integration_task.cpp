@@ -1,4 +1,4 @@
-#include "ha_task.h"
+#include "integration_task.h"
 
 #include <esp_heap_caps.h>
 #include <esp_timer.h>
@@ -14,7 +14,7 @@ constexpr UBaseType_t kQueueDepth = 8;
 using Job = std::function<void()>;
 }  // namespace
 
-bool HaTask::start(Service service) {
+bool IntegrationTask::start(const char *name, Service service) {
     if (queue_ != nullptr) {
         return true;
     }
@@ -24,7 +24,7 @@ bool HaTask::start(Service service) {
     }
     service_ = std::move(service);
     queue_ = queue;
-    if (xTaskCreatePinnedToCoreWithCaps(&HaTask::run, "ha", kStackBytes, this, kPriority, nullptr, kCore,
+    if (xTaskCreatePinnedToCoreWithCaps(&IntegrationTask::run, name, kStackBytes, this, kPriority, nullptr, kCore,
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         vQueueDelete(queue);
         queue_ = nullptr;
@@ -33,7 +33,7 @@ bool HaTask::start(Service service) {
     return true;
 }
 
-bool HaTask::post(std::function<void()> job) {
+bool IntegrationTask::post(std::function<void()> job) {
     if (queue_ == nullptr) {
         return false;
     }
@@ -45,8 +45,8 @@ bool HaTask::post(std::function<void()> job) {
     return true;
 }
 
-void HaTask::run(void *arg) {
-    auto *self = static_cast<HaTask *>(arg);
+void IntegrationTask::run(void *arg) {
+    auto *self = static_cast<IntegrationTask *>(arg);
     auto queue = static_cast<QueueHandle_t>(self->queue_);
     TickType_t wait = 0;
     for (;;) {

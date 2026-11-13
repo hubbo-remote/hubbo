@@ -33,6 +33,17 @@
         "url": "https://homeassistant.local:8123",
         "verify_tls": true
       }
+    },
+    {
+      "id": "mqtt_main",
+      "type": "mqtt",
+      "name": "MQTT",
+      "enabled": true,
+      "settings": {
+        "host": "192.0.2.10",
+        "port": 1883,
+        "username": "hubbo"
+      }
     }
   ],
   "devices": [
