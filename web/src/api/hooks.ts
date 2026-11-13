@@ -15,6 +15,8 @@ interface Entry {
   data?: unknown
   error?: ApiError
   inflight?: Promise<void>
+  /** Invalidated while a fetch was in flight: that fetch may predate the write, so fetch again. */
+  refetch?: boolean
   fetchedAt: number
   fn?: () => Promise<unknown>
   listeners: Set<() => void>
@@ -59,6 +61,10 @@ function run(key: string): Promise<void> {
       e.inflight = undefined
       e.fetchedAt = Date.now()
       publish(e)
+      if (e.refetch) {
+        e.refetch = false
+        if (e.listeners.size) void run(key)
+      }
     })
   publish(e)
   return e.inflight
@@ -126,7 +132,8 @@ export function invalidate(...paths: string[]) {
   for (const [k, e] of cache) {
     if (!paths.some((p) => matches(k, p))) continue
     e.fetchedAt = 0
-    if (e.listeners.size) void run(k)
+    if (e.inflight) e.refetch = true
+    else if (e.listeners.size) void run(k)
   }
 }
 
