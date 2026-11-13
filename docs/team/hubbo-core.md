@@ -1,12 +1,32 @@
 # hubbo-core: working notes
 
-Current as of the remote-editor phase, on branch `remote-editor` (device profiles and everything
+Current as of the ha-domains branch (device profiles and everything
 before are committed). Design: `docs/design/device-profiles.md`;
 the profile spec is `~/src/hubbo-devices/docs/spec.md`. This file covers state, decisions and
 traps only.
 
 ## State
 
+- More HA domains (ha-domains, uncommitted; design `docs/design/ha-domains.md`): scene, script,
+  cover, button, input_boolean, humidifier, select. Remote and climate were dropped by the user
+  (2026-11-13), as were locks. So was send_command: free text has no param type.
+  - The client already filters by `ha::entityDomain()`, so new EntityDomain values (api's) need no
+    client change. `entityInfo()` also reads min/max_humidity, available_modes and options.
+    `HaCandidate::deviceClass` (the state's device_class) feeds api's `ha::suggestedKind`.
+  - Fake HA: `FakeHaEntity::deviceClass`; info-built states emit the new attributes (humidity only
+    when min < max, api's "not reported" rule) and use `FakeHaEntity::state` when set.
+    call_service answers any service already. `fixtureHaEntities()` (with `state` and
+    `deviceClass`) has one made-up entity per new domain, mirroring api/tools/gen_fixtures.py
+    NEW_DOMAIN_ENTITIES (a drift guard: the contract registers each and checks capabilities and
+    suggested_kind). Change both together.
+  - Showcase: kinds come from `ha::suggestedKind(domain, platform, device_class)` (kindFor is
+    gone); a captured entity outside the allowlist is skipped; a domain the capture lacks (the
+    humidifier) gets the fixture's made-up entity. The capture (58) nearly fills the
+    64-device cap, so the fixture's HA devices are no longer kept (only its BLE Apple TV), the
+    light buttons bind the first captured light, and over the cap the showcase fails with a message.
+  - Tests: ClientTest.TheNewDomainsAttributesAreRead and
+    AdapterTest.TheNewDomainsRoundTripAndCallTheRightServices, both over the fixture's made-up
+    entities (addFakeHaSnapshots, then a config round trip, then execute, then the fake's call line).
 - Agent docs (agent-docs, uncommitted). The hub describes itself to LLM agents:
   - `core/tools/embed_docs.py <api/openapi.yaml> <docs/agent-api.md> <docs/llms.txt> <out.cpp>`
     (PyYAML, in the toolchain venv) generates `agent_docs.cpp`, defining
@@ -78,11 +98,10 @@ traps only.
   with a one-line message and SimShowcase skips. `FakeHaServer::enableShowcase()` (kept across
   reset) adds the captured entities, serving their state and attributes as is
   (`FakeHaEntity::attributesJson`), plus the captured services and translations.
-  `showcaseConfig()` keeps the fixture's BLE Apple TV and the fixture HA devices whose entity
-  isn't captured. It adds a device per captured entity, with the snapshot fetched by the real HA
+  `showcaseConfig()` keeps the fixture's BLE Apple TV and adds a device per captured entity, with the snapshot fetched by the real HA
   client and normalized (as registration does), the Fire TV Stick and SHIELD profiles, and
-  `act_watch_tv` on the first captured player with sources (none: no activity). Fans are kind
-  "fan" (kinds.json gained it on the fan-kind branch). The test checks generic properties only.
+  `act_watch_tv` on the first captured player with sources (none: no activity). The test checks
+  generic properties only.
 - HA service translations (remote-editor, uncommitted): entity details also send WS
   `frontend/get_translations` (en, services, `integration:[platform]`), and only when the entity
   has a platform. `HaEntityDetails::translations` holds the raw flat `resources` object, or "".
