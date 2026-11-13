@@ -1,6 +1,6 @@
 # hubbo-api: working notes
 
-Current as of the agent-docs branch (discovery endpoints, the agent guide; uncommitted). Not a log: rewrite sections as they change.
+Current as of the fan-kind branch (the Fan device kind). Not a log: rewrite sections as they change.
 
 ## State
 
@@ -72,8 +72,7 @@ Current as of the agent-docs branch (discovery endpoints, the agent guide; uncom
   `fan_feature` bits (checked against HA's fan/ const.py, services.py and services.yaml). EntityInfo and
   the snapshot have `presetModes` and `percentageStep`. The snapshot stores the step as an int,
   rounded down: ArduinoJson doesn't round-trip 33.333… exactly, and the slider step is an int
-  anyway. Core parses the attributes (ha_client, fake_ha). Showcase fans get the "climate" kind,
-  because kinds.json has no fan kind.
+  anyway. Core parses the attributes (ha_client, fake_ha). Fans get the `fan` kind.
   `fanSpeedStep()` (capabilities.h) is the one rounding rule, used by the snapshot and the commands.
 - One default rule: `applyDefault()` (snapshot_json.h) serves both `parse()` (which drops a default
   that doesn't fit) and `decodeSnapshot()` (which refuses it). contract.py's `HA_DOMAINS` comes
@@ -287,7 +286,10 @@ Current as of the agent-docs branch (discovery endpoints, the agent guide; uncom
 
 ## Open items
 
-- **Stack (agent-docs branch, not committed):** done and simplified; gate passed. Board: adding
+- **fan-kind (branch fan-kind):** `fan` added to DeviceKind after `climate`
+  (lint wants the enum in profiles/kinds.json's order) and the kinds fixture regenerated.
+  `bin/hubbo gate api` passed in all four modes.
+- **Stack (merged with agent-docs):** done and simplified; gate passed. Board: adding
   a Sonos peaked near 6 KB of 16 KB. Xtensa frames now: create 336, update 352, execute 496,
   decodeSnapshot 496, fromSnapshot 400. Not done (each under 900 B): `syncDetails` 800,
   `mediaPlayer` 592, ConfigureIntegration 672, `status_routes` 752. Suggested to core:

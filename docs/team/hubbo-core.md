@@ -82,7 +82,7 @@ traps only.
   isn't captured. It adds a device per captured entity, with the snapshot fetched by the real HA
   client and normalized (as registration does), the Fire TV Stick and SHIELD profiles, and
   `act_watch_tv` on the first captured player with sources (none: no activity). Fans are kind
-  "climate" (there's no fan kind). The test checks generic properties only.
+  "fan" (kinds.json gained it on the fan-kind branch). The test checks generic properties only.
 - HA service translations (remote-editor, uncommitted): entity details also send WS
   `frontend/get_translations` (en, services, `integration:[platform]`), and only when the entity
   has a platform. `HaEntityDetails::translations` holds the raw flat `resources` object, or "".

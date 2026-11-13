@@ -2445,7 +2445,7 @@ components:
         The list (with display labels) is `GET /kinds`, from the device
         profile spec's kinds.json. Anything else is `unknown_kind`.
       type: string
-      enum: [tv, tv_vcr, tv_dvd, tv_dvd_vcr, tv_dvr, projector, streamer, set_top_box, cable_box, cable_dvr, satellite_box, console, computer, disc_player, dvd_recorder, dvd_vcr, dvd_recorder_vcr, vcr, laserdisc, home_theater, home_theater_vcr, receiver, amplifier, speaker, mini_system, tuner, cd_player, cd_changer, tape_deck, dat_deck, minidisc, portable_audio, hdmi_switch, climate, light, switch, smart_home_hub, accessory, other]
+      enum: [tv, tv_vcr, tv_dvd, tv_dvd_vcr, tv_dvr, projector, streamer, set_top_box, cable_box, cable_dvr, satellite_box, console, computer, disc_player, dvd_recorder, dvd_vcr, dvd_recorder_vcr, vcr, laserdisc, home_theater, home_theater_vcr, receiver, amplifier, speaker, mini_system, tuner, cd_player, cd_changer, tape_deck, dat_deck, minidisc, portable_audio, hdmi_switch, climate, fan, light, switch, smart_home_hub, accessory, other]
     HomeAssistantProvider:
       type: object
       additionalProperties: false

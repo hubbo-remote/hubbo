@@ -120,7 +120,7 @@ const char *kindFor(const FakeHaEntity &e, const std::string &deviceClass) {
     switch (ha::entityDomain(e.info.entityId)) {
         case ha::EntityDomain::Light: return "light";
         case ha::EntityDomain::Switch: return "switch";
-        case ha::EntityDomain::Fan: return "climate";  // no "fan" kind; fans and purifiers
+        case ha::EntityDomain::Fan: return "fan";
         default: break;
     }
     if (deviceClass == "receiver") return "receiver";
