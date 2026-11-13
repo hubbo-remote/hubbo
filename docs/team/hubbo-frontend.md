@@ -2,6 +2,23 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## Agent docs (branch `agent-docs`; mock parity for the contract)
+
+- `mock/docs.ts`: read at mock start from the repo (never copied): api/openapi.yaml as JSON
+  (js-yaml, CORE_SCHEMA: dates stay strings), docs/agent-api.md and docs/llms.txt (exact bytes;
+  llms.txt is the source of truth for /llms.txt). `sendDoc` is core's: gzip only on
+  Accept-Encoding gzip, always `Vary`, sha256 ETag + 304, `no-cache`. Built once per process
+  (`loadDocs` caches), not per createMock. Routes (public): GET /api/v1 and /api/v1/ (discovery/index.json,
+  version from /status), /openapi.json, /agent.md. node.ts serves /llms.txt, and `unknownPath`
+  (handler.ts) for /api, /api/ and any non-v1 /api/ path.
+- `error.docs = /api/v1/agent.md` as core: on the `unauthenticated` 401s (no credentials; not a
+  wrong password's `invalid_credentials`) and on unknown-path 404s; never a 405 or a missing id.
+- Vite dev proxy sends `/api` and `/llms.txt` to a hub target. index.html has a hidden
+  `rel=alternate` link to /llms.txt and an API comment for agents fetching `/`.
+- Dev deps: js-yaml 4.3.2, @types/js-yaml 4.0.9.
+- Tests: mock unit tests (docs served, gzip/304, hints); e2e `agent-docs.spec` (through the dev
+  server: /llms.txt, index, guide, /api 404 hints, the link in index.html), mock and hub-sim.
+
 ## Hub name and restart (branch `hub-name`; simplified, tests caught up; review next)
 
 - **Settings → Hub** is the first tab and what /settings opens to (`components/admin/HubSettings.tsx`):
