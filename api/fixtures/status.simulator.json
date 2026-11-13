@@ -1,6 +1,6 @@
 {
   "hubbo": {
-    "name": "Hubbo",
+    "name": "Hubbo 534D",
     "version": "0.1.0",
     "build": "sim",
     "board": "hub-sim"
@@ -17,7 +17,7 @@
   "network": {
     "link": "up",
     "ip": "192.0.2.56",
-    "hostname": "living-room"
+    "hostname": "hubbo-534d"
   },
   "remote": {
     "paired": true,

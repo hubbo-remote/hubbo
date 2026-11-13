@@ -31,6 +31,7 @@ import http.client
 import http.cookies
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -356,7 +357,7 @@ def readable_labels(dev_id, caps):
 
 # The entity domains with a curated allowlist (docs/ha-capabilities.md): the
 # spec's discovery `domain` filter, which lint checks against core's list.
-HA_DOMAINS = set(v.query_param(v.yaml.safe_load(v.read(v.SPEC_PATH)), "getDiscovery", "domain")["schema"]["enum"])
+HA_DOMAINS = set(v.query_param(v.load_spec(), "getDiscovery", "domain")["schema"]["enum"])
 
 
 def devices_and_profiles(c, devices):
@@ -751,7 +752,9 @@ def factory_reset_flow(c):
     _, tokens, _ = c.call("listTokens", "GET", "/admin/tokens", expect=200, label="tokens after a factory reset")
     expect(tokens is not None and not tokens["tokens"], f"tokens survived a factory reset: {tokens}")
     hub = get_hub(c, "hub after a factory reset")
-    expect(hub == DEFAULT_HUB, f"the hub's name survived a factory reset: {hub}")
+    expect_default_hub(hub, "the hub's name after a factory reset")
+    if DEFAULT_HUB:
+        expect(hub == DEFAULT_HUB, f"a factory reset should bring back {DEFAULT_HUB}: {hub}")
 
 
 # ---------------------------------------------------------------- discovery
@@ -798,7 +801,16 @@ def discovery_flow(c):
 
 # ---------------------------------------------------------------- hub name, restart
 
-DEFAULT_HUB = {"name": "Hubbo", "hostname": "hubbo"}
+# A hub never renamed is "Hubbo XXXX" (its MAC's end); hub_flow records it,
+# and a factory reset brings exactly it back.
+DEFAULT_HUB_NAME = re.compile(r"^Hubbo [0-9A-F]{4}$")
+DEFAULT_HUB = {}  # hub-sim's name before hub_flow renames it (the mock's seeded hub is already renamed)
+
+
+def expect_default_hub(hub, label):
+    """A hub never renamed: "Hubbo XXXX", its derived hostname, no conflict."""
+    expect(DEFAULT_HUB_NAME.match(hub.get("name", "")) and hub.get("hostname") == hub["name"].lower().replace(" ", "-")
+           and hub.get("hostname_conflict") is False, f"{label}: {hub}")
 
 
 def get_hub(c, label):
@@ -808,13 +820,17 @@ def get_hub(c, label):
 def rename_hub(c, name, hostname, label, sent=None):
     """PUT `sent` (default: `name`) and expect the hub to be called `name`."""
     _, hub, _ = c.call("updateHub", "PUT", "/admin/hub", {"name": sent or name}, expect=200, label=label)
-    expect(hub == {"name": name, "hostname": hostname}, f"{label}: {hub}")
+    expect(hub == {"name": name, "hostname": hostname, "hostname_conflict": False}, f"{label}: {hub}")
 
 
 def hub_flow(c):
     """Naming the hub: the name, the hostname derived from it, the names
     refused, then a restart (202, every session gone, the name kept). Ends
     named "Living Room"."""
+    if not MOCK:  # hub-sim starts never renamed
+        hub = get_hub(c, "the hub's default name")
+        expect_default_hub(hub, "a new hub's default name")
+        DEFAULT_HUB.update(hub)
     rename_hub(c, "Living Room", "living-room", "rename the hub")
     _, st, _ = c.call("getStatus", "GET", "/status", expect=200, label="status after a rename")
     expect(st and st["hubbo"].get("name") == "Living Room", f"status hubbo.name after a rename: {st and st['hubbo']}")
@@ -2077,7 +2093,7 @@ def main():
     global MOCK
     MOCK = args.mode.startswith("mock")
     wait_for(args.base, 90 if MOCK else 10)  # the mock's container installs node_modules first
-    checker = v.SpecValidator(v.yaml.safe_load(v.read(v.SPEC_PATH)))
+    checker = v.SpecValidator(v.load_spec())
     global GUIDE, SPEC_LINK  # the index's links, as the spec fixes them
     links = checker.spec["components"]["schemas"]["ApiIndex"]["properties"]
     GUIDE, SPEC_LINK = links["docs"]["const"], links["openapi"]["const"]

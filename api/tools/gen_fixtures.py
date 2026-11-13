@@ -572,7 +572,7 @@ INTEGRATIONS = [
      "state": "connected", "detail": "Home Assistant 2026.11.1", "device_count": 5},
 ]
 
-HUB = {"name": "Living Room", "hostname": "living-room"}
+HUB = {"name": "Living Room", "hostname": "living-room", "hostname_conflict": False}
 STATUS = {
     "hubbo": {"name": HUB["name"], "version": "0.1.0", "build": "0.1.0+g1a2b3c4",
               "board": "waveshare_esp32_s3_eth"},
@@ -626,7 +626,8 @@ fx("status.blocked.json", "getStatus", "200",
                 "reason": "config.json schema_version 2 is newer than this firmware (1)"}))
 fx("status.simulator.json", "getStatus", "200",
    dict(copy.deepcopy(STATUS), auth_mode="simulator_no_auth",
-        hubbo={"name": "Hubbo", "version": "0.1.0", "build": "sim", "board": "hub-sim"}))
+        hubbo={"name": "Hubbo 534D", "version": "0.1.0", "build": "sim", "board": "hub-sim"},
+        network=dict(STATUS["network"], hostname="hubbo-534d")))
 fx("remote/status.json", "getRemoteStatus", "200", REMOTE_STATUS)
 fx("remote/buttons.json", "listRemoteButtons", "200", {
     "buttons": [{"name": n, "group": g, "label": l} for n, g, l in BUTTONS],
@@ -893,6 +894,8 @@ fx("errors/factory_reset_during_update.json", "factoryReset", "409",
    err("update_in_progress", "A firmware update is running"))
 
 fx("admin/hub.json", "getHub", "200", HUB)
+fx("admin/hub.conflict.json", "getHub", "200",
+   {"name": HUB["name"], "hostname": HUB["hostname"] + "-2", "hostname_conflict": True})
 fx("admin/hub_update.request.json", "updateHub", "request", {"name": HUB["name"]})
 fx("errors/hub_name_invalid.json", "updateHub", "422", err(
     "validation_failed", "Name must be at most 32 characters", [

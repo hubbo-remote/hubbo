@@ -557,6 +557,11 @@
       "kind": "200"
     },
     {
+      "file": "admin/hub.conflict.json",
+      "operation": "getHub",
+      "kind": "200"
+    },
+    {
       "file": "admin/hub_update.request.json",
       "operation": "updateHub",
       "kind": "request"

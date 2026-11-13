@@ -1,4 +1,5 @@
 {
   "name": "Living Room",
-  "hostname": "living-room"
+  "hostname": "living-room",
+  "hostname_conflict": false
 }
