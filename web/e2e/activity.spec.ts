@@ -213,6 +213,9 @@ test('duplicate asks for the new name; the tile menu works from the keyboard', a
 
 test('closing the duplicate dialog while it saves stays on the list', async ({ page }) => {
   await open(page, '/')
+  // The browser's close event is queued, so it can come after the save's reply. Hold it back for
+  // good, so the page only knows about the Escape from the key itself.
+  await page.evaluate(() => document.addEventListener('close', (e) => e.stopImmediatePropagation(), true))
   let release!: () => void
   const held = new Promise<void>((r) => (release = r))
   await page.route('**/api/v1/activities', async (route) => (route.request().method() === 'POST' ? (await held, route.continue()) : route.continue()))

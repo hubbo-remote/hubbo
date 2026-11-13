@@ -49,6 +49,8 @@ test('restart asks first, then waits for the hub and opens the app afresh', asyn
   await expect(dialog).toContainText('You’ll need to sign in again.')
   await dialog.getByRole('button', { name: 'Restart', exact: true }).click()
   await expect(dialog.getByText('Restarting…')).toBeVisible()
+  await page.keyboard.press('Escape') // can't be dismissed while it restarts
+  await expect(dialog.getByText('Restarting…')).toBeVisible()
   await advance(page, 1_000)
   if (!enforced) return await expect(page.getByRole('heading', { name: 'Activities' })).toBeVisible() // a simulator with no sign-in
   await expect(loginHeading(page)).toBeVisible()

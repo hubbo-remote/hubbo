@@ -2,7 +2,11 @@ import { X } from 'lucide-react'
 import { useEffect, useRef, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
-/** Native <dialog>: focus trap, Esc and top-layer for free, no Radix weight. */
+/**
+ * Native <dialog>: focus trap, Esc and top-layer for free, no Radix weight. It opens and closes only
+ * with `open`: Esc asks `onClose` at once (the browser's own close is held back, and its close event
+ * comes later, maybe after other work), so the owner can refuse, e.g. while something runs.
+ */
 export function Dialog({ open, onClose, title, description, children, footer, className }: { open: boolean; onClose: () => void; title: string; description?: ReactNode; children?: ReactNode; footer?: ReactNode; className?: string }) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => {
@@ -14,7 +18,12 @@ export function Dialog({ open, onClose, title, description, children, footer, cl
   return (
     <dialog
       ref={ref}
-      onClose={onClose}
+      onCancel={(e) => {
+        e.preventDefault()
+        onClose()
+      }}
+      // The browser can still close it itself (a repeated Esc it won't let a page refuse): tell the owner.
+      onClose={() => open && onClose()}
       onClick={(e) => e.target === ref.current && onClose()}
       aria-labelledby="dlg-title"
       className={cn(
