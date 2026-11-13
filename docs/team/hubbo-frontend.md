@@ -2,6 +2,15 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## Fan kind (branch `fan-kind`)
+
+- `fan` is a DeviceKind (schema.gen.ts regenerated). AddDeviceDialog `guessKind`: an HA candidate
+  with domain `fan` defaults to Fan. Domains named like their kind (light, switch, fan) come from
+  one `DOMAIN_KINDS` list; add a domain there, not another ternary. No per-kind icons exist in
+  the UI (kinds are only a label in a select), so there's no icon to add.
+- The mock serves GET /kinds and its devices straight from api/fixtures (profiles/kinds.json,
+  devices/); fan shows up there when API's fixtures have it. No mock code holds kinds.
+
 ## Agent docs (branch `agent-docs`; mock parity for the contract)
 
 - `mock/docs.ts`: read at mock start from the repo (never copied): api/openapi.yaml as JSON
