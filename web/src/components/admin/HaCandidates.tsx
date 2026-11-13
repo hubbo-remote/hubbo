@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, toApiError } from '@/api/client'
 import { getQueryData, setQueryData, useQuery } from '@/api/hooks'
 import type { DiscoverCandidate, DiscoverStatus } from '@/api/types'
-import { ErrorState } from '@/components/common'
+import { EntityId, ErrorState } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -113,7 +113,7 @@ export function HaCandidates({ integration, onPick, emptyText = 'Nothing matches
           <li key={c.provider.entity_id}>
             <button onClick={() => onPick(c)} className="block w-full cursor-pointer rounded-md px-3 py-2 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset">
               <p className="truncate text-sm font-medium">{c.name}</p>
-              <p className="truncate font-mono text-xs text-muted-foreground">{c.provider.entity_id}</p>
+              <EntityId provider={c.provider} />
             </button>
           </li>
         ))}
