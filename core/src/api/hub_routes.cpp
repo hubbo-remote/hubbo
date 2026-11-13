@@ -12,7 +12,8 @@ namespace {
 void sendHub(http::Response &out, const config::HubIdentity &identity) {
     JsonDocument doc;
     doc["name"] = identity.name;
-    doc["hostname"] = identity.hostname;
+    doc["hostname"] = identity.shownHostname();
+    doc["hostname_conflict"] = identity.hostnameConflict();
     sendJson(out, 200, doc);
 }
 
