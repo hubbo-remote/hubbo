@@ -1,6 +1,6 @@
 # hubbo-api: working notes
 
-Current as of the hub-name branch (hub name and restart; uncommitted). Not a log: rewrite sections as they change.
+Current as of the agent-docs branch (discovery endpoints, the agent guide; uncommitted). Not a log: rewrite sections as they change.
 
 ## State
 
@@ -26,6 +26,25 @@ Current as of the hub-name branch (hub name and restart; uncommitted). Not a log
 
 ## Key decisions (and why)
 
+- **Discovery** (agent-docs): `GET /api/v1/` (`getApiIndex`), `/api/v1/openapi.json`
+  (`getOpenApi`), `/api/v1/agent.md` (`getAgentGuide`) are Public policy rows; `/llms.txt` is
+  core's Public host route (not in the spec). gzip only when `Accept-Encoding` allows it
+  (`Vary`), so plain curl works. The index has no hub name. `Error.error.docs` (const
+  `/api/v1/agent.md`) is on every 401 and on the router's 404 for unknown paths, never on a
+  handler's missing-id 404. Core embeds the spec (as JSON) and the guide at build time, so
+  **docs/agent-api.md and docs/llms.txt are served verbatim** (the contract compares bytes): write it for outside agents (no repo paths, no
+  phases), about 20 KB, with `#/components/schemas/...` pointers instead of "see the spec". The
+  button rules in it mirror web/src/lib/commands.ts (`writeMain`/`writeLongPress`, `isTimed`):
+  re-check them when the web's button model changes. The fixtures (gen_fixtures.py
+  `passthrough()`) and core's sim seeds bind the same way: HA on `:down`, Bluetooth as
+  down/up pairs, tap only with a Long press or for activate/off.
+- Contract: `discovery_flow` (both modes, no credentials; parsed-spec and byte-exact guide
+  equality, gzip vs identity, index links, /llms.txt, the 404 hint and its absence on a missing
+  id) and `anonymous_matrix` also requires `docs` on each 401. Ops marked `x-hubbo-describes-api`
+  (getOpenApi) skip the body scans (revisions >= 1, secret keys); `x-hubbo-returns-secret`
+  (createToken) skips the secret scan. GUIDE and SPEC_LINK are read from the spec's `ApiIndex`
+  consts in main(). All requests go through `Client._send` (call, host_call, fetch). The guide must not contain the contract's
+  `PASSWORD` or `HA_TOKEN` values, or the sent-secrets check trips.
 - **Hub name and restart** (hub-name branch): `GET/PUT /admin/hub` (`getHub`, `updateHub`) and
   `POST /admin/restart` (`restartHub`), all admin, under /admin/ by convention; tokens read the
   name from /status `hubbo.name`. Core trims spaces at the ends, then checks 1-32 code points with
@@ -209,6 +228,13 @@ Current as of the hub-name branch (hub name and restart; uncommitted). Not a log
 
 ## Gotchas
 
+- **httpd's stack is small (16 KB on the board).** A handler's helpers inline into one frame
+  with every local live at once, so big records (DeviceSpec, DeviceUpdate, EngineRequest) live
+  on the heap, and decoders fill their caller's record in place (`decodeSnapshot`,
+  `decodeService`, `decodeParam`, `serviceDraft`) rather than return a copy. Rule in
+  `api/support.h`. No noinline: measured, separate frames stacked deeper than the inlined ones.
+  Measure with the Xtensa compiler (host -Os inlines differently): `build/scratch/xsu-api.sh
+  /work/core <out>` in `bin/hubbo run` (core's `xsu.sh` covers config/).
 - `-Werror=missing-field-initializers`: `ApiContext` brace-init in tests must list every
   trailing field, and an aggregate with a default member initializer needs a constructor (see
   `ParamDraft` and `SimulatedRemote`).
@@ -261,6 +287,11 @@ Current as of the hub-name branch (hub name and restart; uncommitted). Not a log
 
 ## Open items
 
+- **Stack (agent-docs branch, not committed):** done and simplified; gate passed. Board: adding
+  a Sonos peaked near 6 KB of 16 KB. Xtensa frames now: create 336, update 352, execute 496,
+  decodeSnapshot 496, fromSnapshot 400. Not done (each under 900 B): `syncDetails` 800,
+  `mediaPlayer` 592, ConfigureIntegration 672, `status_routes` 752. Suggested to core:
+  `updateDevice(DeviceUpdate &&)` like `createDevice`.
 - **hub-name:** gate passed in all four modes; waiting on the lead's commit call.
 - **Waiting on core (review round):**
   - Device rule breaks become 422 before the save: the contract already expects unknown_kind at
