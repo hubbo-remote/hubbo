@@ -17,6 +17,14 @@ bool MemoryStateStore::set(std::string_view key, std::string_view value) {
     return true;
 }
 
+bool MemoryStateStore::remove(std::string_view key) {
+    if (failWrites) return false;
+    const auto it = values_.find(key);
+    if (it != values_.end()) values_.erase(it);
+    writes_++;
+    return true;
+}
+
 ErrorCode RecordStateStore::get(std::string_view key, std::string *value) const {
     if (!isValidKey(key)) return ErrorCode::NotFound;
     Record record;
@@ -30,6 +38,10 @@ bool RecordStateStore::set(std::string_view key, std::string_view value) {
     uint64_t generation = 0;
     if (store_.nextGeneration(key, &generation) != ErrorCode::Ok) return false;
     return store_.save(key, generation, value) == ErrorCode::Ok;
+}
+
+bool RecordStateStore::remove(std::string_view key) {
+    return isValidKey(key) && store_.remove(key) == ErrorCode::Ok;
 }
 
 }  // namespace hubbo::storage
