@@ -1,13 +1,41 @@
 # hubbo-core: working notes
 
-Current as of the ha-domains branch (device profiles and everything
-before are committed). Design: `docs/design/device-profiles.md`;
-the profile spec is `~/src/hubbo-devices/docs/spec.md`. This file covers state, decisions and
-traps only.
+Current as of the mqtt branch (ha-domains, hub-name and everything before are committed).
+Design: `docs/design/mqtt-discovery.md`; the profile spec is `~/src/hubbo-devices/docs/spec.md`.
+This file covers state, decisions and traps only.
 
 ## State
 
-- More HA domains (ha-domains, uncommitted; design `docs/design/ha-domains.md`): scene, script,
+- MQTT discovery (mqtt, uncommitted). Hubbo is an HA device over the user's broker.
+  - Port `integrations/mqtt_transport.h` (WebSocket pattern: callbacks only in poll(), the transport
+    reconnects, clean session so resubscribe on each onConnected). Firmware: esp-mqtt.
+  - `integrations/mqtt_bridge.{h,cpp}`: device-based discovery on
+    `homeassistant/device/<node>/config` (Activity select, Power switch, Restart button,
+    diag sensors), retained LWT on `hubbo/<node>/availability`, cmds on `hubbo/<node>/cmd/+`,
+    resend on HA's `homeassistant/status` "online". Node id `hubbo_<mac hex>` (sim:
+    hubbo_02000000534d). Labels dedupe with " (2)"; an activity named PowerOff is "PowerOff (2)".
+    Power ON starts the last activity seen (RAM only). `detail()` never contains the host (API
+    caps detail at 120; hosts go to 253).
+  - Config: IntegrationSpec host/port/username (mqtt only; the scrub clears them elsewhere),
+    built-in `mqtt_main` (disabled). `Fields::integer()` and `Fields::text(valid)` added.
+    `ConfigFanOut` in service.h. The field rules live in domain/ids.h: `isValidMqttHost` (no
+    host:port, i.e. exactly one ':'; IPv6 ok) and `isValidMqttUsername`, used by decode and api's PUT.
+  - Integrations cap: `limits::kMaxIntegrations` (adapters + system + mqtt_main), checked by decode
+    and compile via `integrationCountWithBuiltins()`, so ensureBuiltinIntegrations can't make a
+    list the next decode rejects.
+  - A connect() that refuses to start is Unreachable and retried after `kConnectRetryMs` (5 s).
+    `mqttMacText(mac)` is the colon form (diag, `cns`); firmware switches its macText to it.
+  - hub-sim: `FakeMqttBroker`/`FakeMqttTransport` (sim/src/fake_mqtt.*), SimHub wires the bridge
+    (config fan-out after the BLE reconciler, rename hook, restart via api::requestHubRestart),
+    SimApi sets `hub.runTransition` (api::runTransition), calls api::applyMqttSettings at boot and
+    after eraseEverything, and serves GET/POST /sim/mqtt and POST /sim/mqtt/publish. SimRuntime
+    forwards mqtt_main state/detail to the bridge.
+  - POST /admin/restart (hub_routes.cpp) goes through api::requestHubRestart; the null-port 503
+    keeps its own message.
+  - Tests: core/tests/mqtt_bridge_test.cpp (golden discovery, size bound, commands, power, birth,
+    LWT/reconnect, states, detail cap), ConfigJson.MqttSettings,
+    ServiceTest.MqttIntegrationSettings, SimApi.MqttDrivesTheHub / MqttRestartButton.
+- More HA domains (ha-domains, committed; design `docs/design/ha-domains.md`): scene, script,
   cover, button, input_boolean, humidifier, select. Remote and climate were dropped by the user
   (2026-11-13), as were locks. So was send_command: free text has no param type.
   - The client already filters by `ha::entityDomain()`, so new EntityDomain values (api's) need no
@@ -27,7 +55,7 @@ traps only.
   - Tests: ClientTest.TheNewDomainsAttributesAreRead and
     AdapterTest.TheNewDomainsRoundTripAndCallTheRightServices, both over the fixture's made-up
     entities (addFakeHaSnapshots, then a config round trip, then execute, then the fake's call line).
-- Agent docs (agent-docs, uncommitted). The hub describes itself to LLM agents:
+- Agent docs (agent-docs, committed). The hub describes itself to LLM agents:
   - `core/tools/embed_docs.py <api/openapi.yaml> <docs/agent-api.md> <docs/llms.txt> <out.cpp>`
     (PyYAML, in the toolchain venv) generates `agent_docs.cpp`, defining
     `hubbo::api::docs::kOpenApiJson` and `kAgentGuide` (`api/agent_docs.h`: raw and gzip bytes, a
@@ -362,6 +390,15 @@ traps only.
 
 ## Gotchas
 
+- MQTT: liveInfo (it allocates on the board) is read only while connected, and once in
+  onConnected so the first discovery carries the version and hostname. All five hooks are required
+  and unchecked. `configure()` ignores settings equal to the current ones (api re-applies them
+  after every integration PUT, restore and reset; a reconnect would blip HA's availability). In hub-sim the transition hook only
+  queues: runTransition advances the hub, so calling it inside the bridge's poll would re-enter;
+  SimHub::advance drains the queue at its end. A live publish reaches subscribers with retain
+  clear (MQTT 3.1.1); only the copy sent on subscribe is retained.
+- Discovery size: plain 64-byte names x16 with the longest hub name fit 3584 B; names made of
+  characters JSON escapes (" and \) reach about 4.4 KB, over esp-mqtt's 4096 out_size.
 - **The HTTP task's stack (8 KB, firmware raising it to 16 KB).** POST /admin/devices runs route →
   createDevice → add → commit → parseConfig (the full config) → decodeSections → decodeDevice →
   ha::decodeSnapshot. Keep big values off those frames: decodeList decodes into
