@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "Name must be at most 32 characters",
+    "details": [
+      {
+        "path": "/name",
+        "code": "too_long",
+        "message": "Name must be at most 32 characters"
+      }
+    ]
+  }
+}

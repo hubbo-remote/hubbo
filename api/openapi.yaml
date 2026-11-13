@@ -1503,6 +1503,78 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
 
+  /admin/hub:
+    get:
+      tags: [admin]
+      operationId: getHub
+      x-hubbo-role: admin
+      summary: The hub's name and hostname
+      responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '200':
+          description: The hub
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Hub'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    put:
+      tags: [admin]
+      operationId: updateHub
+      x-hubbo-role: admin
+      x-hubbo-max-body: 1024
+      summary: Rename the hub
+      description: |
+        Spaces at either end are dropped, then the rest must be a `HubName`;
+        otherwise `422 validation_failed` at `/name` (`required`, `too_long`
+        or `invalid_name`). `hostname` follows the name (see `Hub`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/HubUpdate'}
+      responses:
+        '200':
+          description: Renamed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Hub'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/restart:
+    post:
+      tags: [admin]
+      operationId: restartHub
+      x-hubbo-role: admin
+      summary: Restart the hub
+      description: |
+        Answers `202` first; the hub then stops answering for a few seconds
+        and comes back with everything it had saved. Sessions don't survive
+        a restart: log in again. API tokens keep working. Refused while a
+        firmware update is running.
+      responses:
+        '202':
+          description: The restart will start once this response is sent
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Empty'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409':
+          description: A firmware update is running (`update_in_progress`)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
 components:
   securitySchemes:
     sessionCookie:
@@ -1802,8 +1874,9 @@ components:
         hubbo:
           type: object
           additionalProperties: false
-          required: [version, board]
+          required: [name, version, board]
           properties:
+            name: {$ref: '#/components/schemas/HubName'}
             version: {type: string, maxLength: 32}
             build: {type: string, maxLength: 64}
             board: {type: string, maxLength: 32}
@@ -1821,7 +1894,10 @@ components:
           properties:
             link: {type: string, enum: [up, down]}
             ip: {type: string, format: ipv4}
-            hostname: {type: string, maxLength: 63}
+            hostname:
+              description: The hub's hostname, as `GET /admin/hub` shows it.
+              type: string
+              maxLength: 63
         remote: {$ref: '#/components/schemas/RemoteStatus'}
         integrations:
           type: array
@@ -3110,6 +3186,43 @@ components:
           type: array
           maxItems: 32
           items: {$ref: '#/components/schemas/ErrorDetail'}
+    Empty:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
+    HubName:
+      description: |
+        What the hub is called: 1 to 32 characters, no control characters,
+        no space at either end.
+      type: string
+      minLength: 1
+      maxLength: 32
+      pattern: '^[^ \x00-\x1f\x7f-\x9f]([^\x00-\x1f\x7f-\x9f]*[^ \x00-\x1f\x7f-\x9f])?$'
+      examples: [Hubbo, Living Room]
+    Hub:
+      type: object
+      additionalProperties: false
+      required: [name, hostname]
+      properties:
+        name: {$ref: '#/components/schemas/HubName'}
+        hostname:
+          description: |
+            Read-only, derived from the name: lowercased, each run of
+            characters other than `a-z` and `0-9` becomes one `-`, with none at
+            either end; `hubbo` when nothing is left. "Living Room" is
+            `living-room`.
+          type: string
+          readOnly: true
+          minLength: 1
+          maxLength: 63
+          pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+          examples: [hubbo, living-room]
+    HubUpdate:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: {type: string, examples: [Living Room]}
     FirmwareStatus:
       type: object
       additionalProperties: false

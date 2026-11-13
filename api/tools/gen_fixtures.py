@@ -467,12 +467,14 @@ INTEGRATIONS = [
      "state": "connected", "detail": "Home Assistant 2026.11.1", "device_count": 5},
 ]
 
+HUB = {"name": "Living Room", "hostname": "living-room"}
 STATUS = {
-    "hubbo": {"version": "0.1.0", "build": "0.1.0+g1a2b3c4", "board": "waveshare_esp32_s3_eth"},
+    "hubbo": {"name": HUB["name"], "version": "0.1.0", "build": "0.1.0+g1a2b3c4",
+              "board": "waveshare_esp32_s3_eth"},
     "uptime_s": 86400, "time": "2026-11-08T20:15:00Z", "auth_mode": "enforced",
     "auth_state": "ok", "config": {"state": "ok", "generation": 42},
     "active_activity_id": "act_watch_apple_tv",
-    "network": {"link": "up", "ip": "192.0.2.56", "hostname": "hubbo-d4afab"},
+    "network": {"link": "up", "ip": "192.0.2.56", "hostname": HUB["hostname"]},
     "remote": REMOTE_STATUS,
     "integrations": [{"id": i["id"], "type": i["type"], "state": i["state"]} for i in INTEGRATIONS],
     "diagnostics": {
@@ -510,7 +512,7 @@ fx("status.blocked.json", "getStatus", "200",
                 "reason": "config.json schema_version 2 is newer than this firmware (1)"}))
 fx("status.simulator.json", "getStatus", "200",
    dict(copy.deepcopy(STATUS), auth_mode="simulator_no_auth",
-        hubbo={"version": "0.1.0", "build": "sim", "board": "hub-sim"}))
+        hubbo={"name": "Hubbo", "version": "0.1.0", "build": "sim", "board": "hub-sim"}))
 fx("remote/status.json", "getRemoteStatus", "200", REMOTE_STATUS)
 fx("remote/buttons.json", "listRemoteButtons", "200", {
     "buttons": [{"name": n, "group": g, "label": l} for n, g, l in BUTTONS],
@@ -767,6 +769,15 @@ fx("errors/invalid_image.json", "updateFirmware", "422",
 fx("errors/length_required.json", "updateFirmware", "411",
    err("length_required", "Send the image whole, with Content-Length"))
 fx("errors/factory_reset_during_update.json", "factoryReset", "409",
+   err("update_in_progress", "A firmware update is running"))
+
+fx("admin/hub.json", "getHub", "200", HUB)
+fx("admin/hub_update.request.json", "updateHub", "request", {"name": HUB["name"]})
+fx("errors/hub_name_invalid.json", "updateHub", "422", err(
+    "validation_failed", "Name must be at most 32 characters", [
+        ("/name", "too_long", "Name must be at most 32 characters")]))
+fx("admin/restart.json", "restartHub", "202", {})
+fx("errors/restart_during_update.json", "restartHub", "409",
    err("update_in_progress", "A firmware update is running"))
 
 # Errors

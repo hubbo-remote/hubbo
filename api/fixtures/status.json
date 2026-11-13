@@ -1,5 +1,6 @@
 {
   "hubbo": {
+    "name": "Living Room",
     "version": "0.1.0",
     "build": "0.1.0+g1a2b3c4",
     "board": "waveshare_esp32_s3_eth"
@@ -16,7 +17,7 @@
   "network": {
     "link": "up",
     "ip": "192.0.2.56",
-    "hostname": "hubbo-d4afab"
+    "hostname": "living-room"
   },
   "remote": {
     "paired": true,

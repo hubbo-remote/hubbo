@@ -512,6 +512,31 @@
       "kind": "409"
     },
     {
+      "file": "admin/hub.json",
+      "operation": "getHub",
+      "kind": "200"
+    },
+    {
+      "file": "admin/hub_update.request.json",
+      "operation": "updateHub",
+      "kind": "request"
+    },
+    {
+      "file": "errors/hub_name_invalid.json",
+      "operation": "updateHub",
+      "kind": "422"
+    },
+    {
+      "file": "admin/restart.json",
+      "operation": "restartHub",
+      "kind": "202"
+    },
+    {
+      "file": "errors/restart_during_update.json",
+      "operation": "restartHub",
+      "kind": "409"
+    },
+    {
       "file": "errors/unauthenticated.json",
       "operation": "listDevices",
       "kind": "401"

@@ -1,5 +1,6 @@
 {
   "hubbo": {
+    "name": "Hubbo",
     "version": "0.1.0",
     "build": "sim",
     "board": "hub-sim"
@@ -16,7 +17,7 @@
   "network": {
     "link": "up",
     "ip": "192.0.2.56",
-    "hostname": "hubbo-d4afab"
+    "hostname": "living-room"
   },
   "remote": {
     "paired": true,

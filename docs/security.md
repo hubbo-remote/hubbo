@@ -69,6 +69,7 @@ One admin account and any number of API tokens (max 16). No other roles.
 | Remote pairing | yes | **no** |
 | Tokens, admin password | yes | **no** |
 | Backup, restore, firmware | yes | **no** |
+| Rename the hub, restart | yes | **no** (the name is in status) |
 
 The table is data in `core/src/auth/policy.cpp`: per operation the requirement (`Public`,
 `TokenOrAdmin` or `AdminOnly`), the method, the body limit and the body type. Every operation in
@@ -279,6 +280,11 @@ up, which is fine on a trusted LAN. The Apple TV keeps its side of the pairing u
 "Hubbo". `POST /admin/reset` (reset configuration) keeps all secrets and pairings. With
 `unavailable` credentials nobody can authenticate, so recovery stays the wipe.
 
+## Restart and the hub's name
+
+A restart ends every session; tokens and everything saved stay. The hub's name isn't a
+secret (it's in `/status` and on the network as the hostname); only the admin changes it.
+
 ## Security test checklist
 
 Covered by unit tests today (`core/tests/auth_*_test.cpp`, `route_test.cpp`,
@@ -308,6 +314,8 @@ Covered over HTTP against hub-sim by `api/contract.sh` (both modes):
 - [x] Auth-enabled simulator: setup (bad username refused, no default `admin`), login, cookies,
       tokens, every admin operation 403 for a token (a real firmware image too), revocation,
       logout, cross-origin requests refused, wrong passwords stay 401.
+- [x] Restart and rename: anonymous 401, token 403 (the role matrix); restart refused
+      mid-update, 202, then every session gone and the name kept.
 - [x] Firmware update: every refusal (411, 413, 415, 422 `wrong_board`/`invalid_image`, 409,
       503) changes nothing; a good image writes, reboots and ends idle; a failed write.
 - [x] Credentials unreadable at boot or damaged: `unavailable`, setup and login 503.

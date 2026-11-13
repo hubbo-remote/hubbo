@@ -34,14 +34,14 @@ fake adapters.
 
 ## What a token can and can't do
 
-Can: read status, remote buttons, devices and capabilities; run registered commands; create,
+Can: read status (the hub's name is `hubbo.name`), remote buttons, devices and capabilities; run registered commands; create,
 replace, delete, validate and activate activities; turn the current activity off; edit global
 bindings; list integrations.
 
 Can't (`403 forbidden`): list the built-in profiles or kinds; register, edit or delete devices;
 configure or discover integrations;
 set the remote's endpoint or pair the remote or Bluetooth; manage tokens or the password; back
-up, restore or update firmware. Ask the admin for those.
+up, restore or update firmware; rename or restart the hub. Ask the admin for those.
 
 ## Discover
 
