@@ -60,6 +60,7 @@ TEST(AuthPolicy, RoleMatrix) {
         "deleteDevice", "getRemoteConfig", "setRemoteEndpoint", "getRemotePairing", "startRemotePairing", "cancelRemotePairing",
         "changeAdminPassword", "listTokens", "createToken", "revokeToken", "downloadBackup",
         "restoreBackup", "resetConfiguration", "factoryReset", "getFirmwareStatus", "updateFirmware",
+        "getHub", "updateHub", "restartHub",
     };
     // setupAdmin's handler refuses it unless the credentials are fresh.
     const char *publicOps[] = {"setupAdmin", "login", "logout", "getSession"};
@@ -99,6 +100,7 @@ TEST(AuthPolicy, EveryAdminPathIsAdminOnly) {
                                id.find("Backup") != std::string::npos ||
                                id.find("Firmware") != std::string::npos ||
                                id.find("Password") != std::string::npos ||
+                               id.find("Hub") != std::string::npos ||
                                id == "registerDevice" || id == "updateDevice" || id == "deleteDevice";
         if (sensitive && id != "listIntegrations") {
             EXPECT_NE(d, Decision::Allow) << id;

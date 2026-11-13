@@ -81,6 +81,9 @@ constexpr OperationInfo kOperations[] = {
     {Operation::GetFirmwareStatus, "getFirmwareStatus", Method::Get, Requirement::AdminOnly, 0},
     {Operation::UpdateFirmware, "updateFirmware", Method::Post, Requirement::AdminOnly, kMaxFirmwareImageBytes,
      Body::Binary},
+    {Operation::GetHub, "getHub", Method::Get, Requirement::AdminOnly, 0},
+    {Operation::UpdateHub, "updateHub", Method::Put, Requirement::AdminOnly, 1024},
+    {Operation::RestartHub, "restartHub", Method::Post, Requirement::AdminOnly, 0},
 };
 
 static_assert(sizeof(kOperations) / sizeof(kOperations[0]) == kOperationCount,

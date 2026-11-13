@@ -95,6 +95,9 @@ enum class Operation : uint8_t {
     FactoryReset,
     GetFirmwareStatus,
     UpdateFirmware,
+    GetHub,
+    UpdateHub,
+    RestartHub,
     Count
 };
 
