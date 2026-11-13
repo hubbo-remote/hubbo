@@ -359,10 +359,10 @@ bool decodeDevice(JsonVariantConst json, DeviceShape shape, DeviceSpec *out, Val
     // (a client sending one gets unknown_field).
     if (stored) {
         f.nested("ha_capabilities", false, [&](JsonVariantConst v, const std::string &p) {
-            ha::CapabilitySnapshot snapshot;
-            if (!ha::decodeSnapshot(v, &snapshot, report, p)) return false;
-            out->haCapabilities = std::move(snapshot);
-            return true;
+            // In place, not through a snapshot on this frame (stack: the HTTP task).
+            if (ha::decodeSnapshot(v, &out->haCapabilities.emplace(), report, p)) return true;
+            out->haCapabilities.reset();
+            return false;
         });
     }
     return f.finish();

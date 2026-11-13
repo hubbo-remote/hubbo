@@ -205,10 +205,10 @@ TEST_F(ServiceTest, DeviceRulesAreCheckedUpFront) {
     // A Bluetooth device carries its profile; nothing else does.
     DeviceSpec bare = bleDevice("", "Box", "streamer");
     bare.profile.reset();
-    EXPECT_TRUE(service->createDevice(bare).issues.has(ErrorCode::Required, "/profile"));
+    EXPECT_TRUE(service->createDevice(std::move(bare)).issues.has(ErrorCode::Required, "/profile"));
     DeviceSpec tv = haDevice("", "TV", "tv", "media_player.family_room_lg_tv");
     tv.profile = bleDevice("", "Box", "streamer").profile;
-    EXPECT_TRUE(service->createDevice(tv).issues.has(ErrorCode::UnknownField, "/profile"));
+    EXPECT_TRUE(service->createDevice(std::move(tv)).issues.has(ErrorCode::UnknownField, "/profile"));
 
     // A device stays on its platform.
     const DeviceSpec *denon = service->findDevice("dev_denon");
@@ -245,7 +245,7 @@ TEST_F(ServiceTest, ADroppedKindBlocksNothing) {
 
 TEST_F(ServiceTest, DeviceLifecycle) {
     DeviceSpec tv = haDevice("", "Bedroom TV", "tv", "media_player.family_room_lg_tv");
-    const Outcome created = service->createDevice(tv);
+    const Outcome created = service->createDevice(std::move(tv));
     ASSERT_TRUE(created.ok()) << (created.issues.ok() ? errorCodeName(created.code) : created.issues.issues()[0].path);
     EXPECT_EQ(created.id, "dev_bedroom_tv");
 
@@ -267,7 +267,7 @@ TEST_F(ServiceTest, DeviceLifecycle) {
     EXPECT_EQ(service->findDevice("dev_bedroom_tv"), nullptr);
 
     DeviceSpec bad = haDevice("", "Ghost", "tv", "");
-    EXPECT_TRUE(service->createDevice(bad).issues.has(ErrorCode::Required, "/provider"));
+    EXPECT_TRUE(service->createDevice(std::move(bad)).issues.has(ErrorCode::Required, "/provider"));
 }
 
 TEST_F(ServiceTest, Limits) {
@@ -280,10 +280,10 @@ TEST_F(ServiceTest, Limits) {
 TEST_F(ServiceTest, IntegrationSettings) {
     IntegrationSpec ha = *service->findIntegration("ha_main");
     ha.url = "https://ha.example:8123";
-    EXPECT_EQ(service->replaceIntegration("ha_main", ha, 1).revision, 2u);
+    EXPECT_EQ(service->replaceIntegration("ha_main", IntegrationSpec(ha), 1).revision, 2u);
     EXPECT_EQ(service->findIntegration("ha_main")->url, "https://ha.example:8123");
     ha.type = "ble_hid";
-    EXPECT_TRUE(service->replaceIntegration("ha_main", ha, 2).issues.has(ErrorCode::IntegrationMismatch, "/type"));
+    EXPECT_TRUE(service->replaceIntegration("ha_main", std::move(ha), 2).issues.has(ErrorCode::IntegrationMismatch, "/type"));
 }
 
 TEST_F(ServiceTest, CompileCommand) {

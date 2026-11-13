@@ -387,7 +387,7 @@ TEST(RebootRoundTrip, EveryMutationType) {
     IntegrationSpec ha = *svc().findIntegration("ha_main");
     ha.url = "https://ha.example:8123";
     ha.verifyTls = false;
-    ASSERT_TRUE(svc().replaceIntegration("ha_main", ha, ha.revision).ok());
+    ASSERT_TRUE(svc().replaceIntegration("ha_main", IntegrationSpec(ha), ha.revision).ok());
     EXPECT_REBOOT_CLEAN(box);
 
     ASSERT_TRUE(svc().deleteDevice(device.id, svc().findDevice(device.id)->revision).ok());
@@ -579,7 +579,7 @@ private:
                 IntegrationSpec edit = *in;
                 edit.url = "http://ha-" + std::to_string(pick(100)) + ".local:8123";
                 edit.verifyTls = chance(50);
-                o = svc().replaceIntegration("ha_main", edit, edit.revision);
+                o = svc().replaceIntegration("ha_main", IntegrationSpec(edit), edit.revision);
                 break;
             }
             case 9: {
@@ -676,10 +676,10 @@ TEST(RebootRoundTrip, FieldsThatDontApplyToTheTypeAreNotKept) {
     IntegrationSpec ble = *svc().findIntegration("ble");
     ble.url = "http://not-for-ble";
     ble.verifyTls = false;
-    ASSERT_TRUE(svc().replaceIntegration("ble", ble, ble.revision).ok());
+    ASSERT_TRUE(svc().replaceIntegration("ble", IntegrationSpec(ble), ble.revision).ok());
     DeviceSpec shield = bleDevice("", "Den Shield", "streamer");
     shield.provider.entityId = "media_player.not_for_ble";
-    ASSERT_TRUE(svc().createDevice(shield).ok());
+    ASSERT_TRUE(svc().createDevice(std::move(shield)).ok());
     EXPECT_REBOOT_CLEAN(box);
 }
 

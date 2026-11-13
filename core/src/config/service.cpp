@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "hubbo/domain/ids.h"
+#include "json_fields.h"
 
 namespace hubbo::config {
 
@@ -75,7 +76,7 @@ struct ActionRef {
     Referrer referrer() const {
         std::string path = section;
         if (trigger != nullptr) path += "/" + jsonPointerToken(*trigger);
-        return {owner, path + "/" + std::to_string(index), ownerName};
+        return {owner, detail::child(path, index), ownerName};
     }
 };
 
@@ -196,7 +197,7 @@ LoadReport ConfigService::load(const ConfigSpec &defaults) {
         report.state = ConfigState::Fresh;
         state_ = ConfigState::Fresh;
         config_ = {};
-        const Outcome saved = commit(defaults, {}, "", CommitKind::Restore);
+        const Outcome saved = commit(ConfigSpec(defaults), {}, "", CommitKind::Restore);
         if (saved.ok()) {
             report.saved = true;
             report.generation = config_.revision;
@@ -208,7 +209,7 @@ LoadReport ConfigService::load(const ConfigSpec &defaults) {
             // by the same pipeline (a dry run) and published as parsed.
             report.reason = saved.code;
             Built built;
-            const Outcome dry = commit(defaults, {}, "", CommitKind::Restore, /*dryRun=*/true, &built);
+            const Outcome dry = commit(ConfigSpec(defaults), {}, "", CommitKind::Restore, /*dryRun=*/true, &built);
             if (dry.code == ErrorCode::ValidationFailed) {
                 report.issues = dry.issues;  // bad defaults: run nothing
                 return runNothing(ConfigState::Blocked, ErrorCode::ValidationFailed);
@@ -310,7 +311,7 @@ uint32_t ConfigService::generation() const {
     return state_ == ConfigState::Blocked ? static_cast<uint32_t>(load_.generation) : config_.revision;
 }
 
-Outcome ConfigService::commit(ConfigSpec next, Outcome outcome, const std::string &issuePrefix, CommitKind kind,
+Outcome ConfigService::commit(ConfigSpec &&next, Outcome &&outcome, const std::string &issuePrefix, CommitKind kind,
                               bool dryRun, Built *built) {
     // One step order for every edit: editable, (revision: by the caller,
     // after this check), build, round trip, compile, save, publish.
@@ -399,7 +400,7 @@ std::string ConfigService::uniqueId(const char *prefix, const std::string &name,
 
 template <typename T>
 Outcome ConfigService::add(std::vector<T> ConfigSpec::*member, size_t limit, const char *idPrefix,
-                           const char *fallbackName, const char *section, T item) {
+                           const char *fallbackName, const char *section, T &&item) {
     if (editable() != ErrorCode::Ok) return failure(editable());
     if ((config_.*member).size() >= limit) return failure(ErrorCode::LimitReached);
     item.id = uniqueId(idPrefix, item.name, fallbackName);
@@ -407,19 +408,26 @@ Outcome ConfigService::add(std::vector<T> ConfigSpec::*member, size_t limit, con
     Outcome outcome;
     outcome.id = item.id;
     ConfigSpec next = config_;
-    const std::string prefix = std::string(section) + "/" + std::to_string((next.*member).size());
+    const std::string prefix = detail::child(section, (next.*member).size());
     (next.*member).push_back(std::move(item));
     return commit(std::move(next), std::move(outcome), prefix);
 }
 
 template <typename T>
-Outcome ConfigService::replace(std::vector<T> ConfigSpec::*member, size_t index, const char *section, T item) {
+Outcome ConfigService::replace(std::vector<T> ConfigSpec::*member, size_t index, const char *section, T &&item) {
+    ConfigSpec next = config_;
+    (next.*member)[index] = std::move(item);
+    return commitItem(std::move(next), member, index, section);
+}
+
+template <typename T>
+Outcome ConfigService::commitItem(ConfigSpec &&next, std::vector<T> ConfigSpec::*member, size_t index,
+                                  const char *section) {
+    T &item = (next.*member)[index];
     item.revision = 0;  // commit stamps it with the new generation
     Outcome outcome;
     outcome.id = item.id;
-    ConfigSpec next = config_;
-    (next.*member)[index] = std::move(item);
-    return commit(std::move(next), std::move(outcome), std::string(section) + "/" + std::to_string(index));
+    return commit(std::move(next), std::move(outcome), detail::child(section, index));
 }
 
 template <typename T>
@@ -506,7 +514,7 @@ Outcome checkDevice(const DeviceSpec &device, bool kindChanged) {
 
 }  // namespace
 
-Outcome ConfigService::createDevice(DeviceSpec device) {
+Outcome ConfigService::createDevice(DeviceSpec &&device) {
     if (editable() != ErrorCode::Ok) return failure(editable());
     const Outcome checked = checkDevice(device, true);
     if (checked.code != ErrorCode::Ok) return checked;
@@ -515,20 +523,24 @@ Outcome ConfigService::createDevice(DeviceSpec device) {
 
 Outcome ConfigService::updateDevice(std::string_view id, const DeviceUpdate &update) {
     if (editable() != ErrorCode::Ok) return failure(editable());
-    const int index = indexOfId(config_.devices, id);
-    if (index < 0) return failure(ErrorCode::NotFound);
-    DeviceSpec device = config_.devices[static_cast<size_t>(index)];
-    if (update.revision != device.revision) return conflict(device.revision);
-    if (update.provider && update.provider->type != device.provider.type) {
+    const int found = indexOfId(config_.devices, id);
+    if (found < 0) return failure(ErrorCode::NotFound);
+    const auto index = static_cast<size_t>(found);
+    const DeviceSpec &current = config_.devices[index];
+    if (update.revision != current.revision) return conflict(current.revision);
+    if (update.provider && update.provider->type != current.provider.type) {
         return invalid(ErrorCode::IntegrationMismatch, "/provider/type");  // a device stays on its platform
     }
+    // Edited in the copy commit takes, never in a DeviceSpec of its own: a
+    // re-link parses the whole config under this frame on the HTTP task.
+    ConfigSpec next = config_;
+    DeviceSpec &device = next.devices[index];
     if (update.name) device.name = *update.name;
     if (update.kind) device.kind = *update.kind;
     if (update.provider) device.provider = *update.provider;
     if (update.haCapabilities) device.haCapabilities = *update.haCapabilities;
-    const Outcome checked = checkDevice(device, update.kind.has_value());
-    if (checked.code != ErrorCode::Ok) return checked;
-    return replace(&ConfigSpec::devices, static_cast<size_t>(index), "/devices", std::move(device));
+    if (Outcome checked = checkDevice(device, update.kind.has_value()); checked.code != ErrorCode::Ok) return checked;
+    return commitItem(std::move(next), &ConfigSpec::devices, index, "/devices");
 }
 
 std::vector<Referrer> ConfigService::deviceReferrers(std::string_view id) const {
@@ -547,7 +559,7 @@ Outcome ConfigService::deleteDevice(std::string_view id, uint32_t baseRevision) 
     return erase(&ConfigSpec::devices, static_cast<size_t>(index));
 }
 
-Outcome ConfigService::replaceIntegration(std::string_view id, IntegrationSpec integration, uint32_t baseRevision) {
+Outcome ConfigService::replaceIntegration(std::string_view id, IntegrationSpec &&integration, uint32_t baseRevision) {
     if (editable() != ErrorCode::Ok) return failure(editable());
     const int index = indexOfId(config_.integrations, id);
     if (index < 0) return failure(ErrorCode::NotFound);
