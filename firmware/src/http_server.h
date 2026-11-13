@@ -41,7 +41,9 @@ public:
     static constexpr uint16_t kPort = 80;
     static constexpr int kCore = 0;
     static constexpr unsigned kPriority = 5;  // tskIDLE_PRIORITY + 5; lwIP runs at 18
-    static constexpr size_t kStackBytes = 8192;
+    // Internal RAM (httpd writes flash). 8 KB overflowed adding an HA
+    // media_player: the config commit's parse runs deep in the handler.
+    static constexpr size_t kStackBytes = 16384;
 
     // `router` and `authenticator` must outlive the server. A null
     // authenticator treats every caller as anonymous (fail closed).

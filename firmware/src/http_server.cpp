@@ -111,14 +111,31 @@ esp_err_t sendError(httpd_req_t *req, int status, std::string_view code, std::st
     return send(req, response);
 }
 
+// After each request: logs httpd's stack high-water mark (the least free
+// since boot, posted jobs included) whenever it reaches a new low. The scan
+// costs a few microseconds, on httpd.
+void noteStackLow() {
+    static UBaseType_t lowest = ~UBaseType_t{0};
+    const UBaseType_t freeBytes = uxTaskGetStackHighWaterMark(nullptr);
+    if (freeBytes < lowest) {
+        lowest = freeBytes;
+        con.printf("http: stack low %lu of %lu bytes free\n", static_cast<unsigned long>(freeBytes),
+                   static_cast<unsigned long>(HttpServer::kStackBytes));
+    }
+}
+
 }  // namespace
 
 struct HttpServerAccess {
     static esp_err_t onRequest(httpd_req_t *req) {
-        return static_cast<HttpServer *>(req->user_ctx)->serve(req);
+        const esp_err_t result = static_cast<HttpServer *>(req->user_ctx)->serve(req);
+        noteStackLow();
+        return result;
     }
     static esp_err_t onStatic(httpd_req_t *req) {
-        return static_cast<HttpServer *>(req->user_ctx)->serveStatic(req);
+        const esp_err_t result = static_cast<HttpServer *>(req->user_ctx)->serveStatic(req);
+        noteStackLow();
+        return result;
     }
 };
 
