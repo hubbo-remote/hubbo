@@ -2,6 +2,21 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## Unique hub name (branch `hub-name`; docs/design/hub-name.md)
+
+- A new hub is "Hubbo XXXX" (MAC suffix); hub-sim's and the mock's is "Hubbo 534D" / `hubbo-534d`
+  (`DEFAULT_HUB_NAME` in mock/handler.ts). First run and factory reset bring it back; the config
+  reset (POST /admin/reset) leaves the name alone. "Hubbo" in UI copy is the product, not the hub.
+- Hub is `{name, hostname, hostname_conflict}`; `hostname` is what mDNS really advertises (also
+  /status network.hostname). Settings → Hub shows "Another hub on your network already uses this
+  name, so this one is at <hostname>.local." when `hostname_conflict`; a rename's reply clears it.
+  Not in Setup, by decision. The UI never derives a hostname itself.
+- Mock knob `POST /__mock/hub?conflict=1|0`: hostname `<name's>-2`; `hostname_conflict` is derived
+  (hostname ≠ the name's), so a rename clears it. hub-sim has no mDNS: the hint e2e is mock only.
+- The hint is the Name field's `hint`. Status leaves the hostname out when there's none. Setup's
+  Name step: an unread name shows an error with Retry; Continue waits, Skip keeps the hub's own.
+- Tests: setup.spec expects "Hubbo 534D"; hub-settings.spec (hint); mock unit test (default + knob).
+
 ## HA domains (branch `ha-domains`; docs/design/ha-domains.md)
 
 - New HA domains: scene, script, cover, button, input_boolean, humidifier, select (remote and
