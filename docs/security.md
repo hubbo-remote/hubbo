@@ -30,12 +30,25 @@ contract is `api/openapi.yaml`.
   cookie, JSON-only bodies, an Origin check and no CORS headers (see below).
 - **A leaked or over-eager API token**, e.g. an LLM agent. *Defence:* tokens can't register
   devices, change integrations, see secrets, manage tokens, pair, restore or flash. They can only
-  touch registered devices through allowlisted commands with typed params. Tokens can be revoked
-  instantly.
+  touch registered devices, through their commands; on a Home Assistant device that includes
+  the Home Assistant action (below). Tokens can be revoked instantly.
 - **Crafted payloads** aimed at turning Hubbo into an open HA proxy (nested `target`,
   `entity_id: all`, raw service calls). *Defence:* strict schemas (`additionalProperties: false`,
-  scalar params only), target-like names refused, HA calls built only from the static allowlist
-  (docs/ha-capabilities.md).
+  scalar params only), target-like names refused, typed HA calls built only from the static
+  allowlist and HA's own service metadata (docs/ha-capabilities.md). The target is always a
+  registered entity.
+- **The Home Assistant action** (`call_service`, the user's decision 2026-11-13) is a deliberate
+  escape hatch: anyone who can edit bindings or execute commands (the admin or an API token, no
+  new role) can send any service of a registered HA device's own integration (its snapshot's
+  platform: `webostv.*` on a webOS TV) with free JSON data to that device's entity. Only
+  media player, light, switch and fan devices have such services. That reaches whatever HA
+  allows for the integration's services, as far as the HA token's user may: for an MQTT light,
+  `mqtt.publish` to any topic. Lock and alarm entities never get the action. What still holds: no other
+  domain (`homeassistant.stop`, `hassio.*`, `script.*`: `forbidden_param`), the target is only
+  the registered entity (no target keys in `data`), the data is at most 1024 bytes and 4 levels, templates are
+  refused (HA's call_service wouldn't render them anyway), no response is ever requested, and at
+  most 16 such actions per config. Accepted at hobby scale on a trusted LAN; the UI offers only
+  the device's own services.
 
 **Out of scope / accepted:**
 
