@@ -4,6 +4,7 @@ import { IntegrationSettings, SaveButton, SaveError, type ConnectionHelp, type S
 import { Alert } from '@/components/ui/alert'
 import { Field, Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { usePendingFormSave } from '@/hooks/stepSave'
 
 /** What each HA client state means for the admin (design §1). Only the states that need words. */
 const HA_HELP: ConnectionHelp = {
@@ -31,18 +32,22 @@ function HomeAssistantForm({ config, save, busy, error }: { config: IntegrationC
   const [url, setUrl] = useState(s?.url ?? '')
   const [token, setToken] = useState('')
   const [verify, setVerify] = useState(s?.verify_tls ?? true)
+  const urlChanged = !!s && url.replace(/\/$/, '') !== s.url.replace(/\/$/, '')
+  const send = () => save({ type: 'home_assistant', url, verify_tls: verify, ...(token ? { access_token: token } : {}) })
+  // In setup, Continue saves what's typed (without waiting for the connection).
+  const dirty = !!s && (urlChanged || !!token || verify !== s.verify_tls)
+  const form = usePendingFormSave(dirty, send)
   if (!s) return null
-  const urlChanged = url.replace(/\/$/, '') !== s.url.replace(/\/$/, '')
   const keepsToken = s.has_access_token && !urlChanged
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
-    void save({ type: 'home_assistant', url, verify_tls: verify, ...(token ? { access_token: token } : {}) })
+    void send()
   }
 
   const urlError = error?.details.find((d) => d.path === '/settings/url')?.message
   return (
-    <form onSubmit={submit} className="grid gap-4">
+    <form ref={form} onSubmit={submit} className="grid gap-4">
       <Field label="URL" htmlFor="ha-url" error={urlError}>
         <Input id="ha-url" type="url" inputMode="url" placeholder="http://homeassistant.local:8123" value={url} onChange={(e) => setUrl(e.target.value)} maxLength={200} required />
       </Field>

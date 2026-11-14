@@ -1,10 +1,13 @@
 import type { Page } from '@playwright/test'
-import { ADMIN, advance, api, connectHa, control, expect, expectNotStoredInBrowser, FAKE_HA, fakeHaNextConnect, hubAnswersScan, letHaConnect, notAvailable, SIM_URL, test } from './hub.ts'
+import { ADMIN, advance, api, connectHa, control, expect, expectNotStoredInBrowser, FAKE_HA, fakeHaNextConnect, hubAnswersScan, letHaConnect, notAvailable, settleIntegration, SIM_URL, test } from './hub.ts'
 
 // hub-sim: a Hub answers the scan only via /sim/radio/found, and only the fake HA's token connects.
 const HA_TOKEN = SIM_URL ? FAKE_HA.token : 'e2e-not-a-real-token'
 
 test.use({ reset: { firstRun: true } })
+
+/** The wizard is on step `n` of 7, titled `title`. */
+const step = (page: Page, n: number, title: string) => Promise.all([expect(page.getByText(`Step ${n} of 7`)).toBeVisible(), expect(page.getByRole('heading', { name: title })).toBeVisible()])
 
 async function createAdmin(page: Page) {
   await page.goto('/')
@@ -22,12 +25,12 @@ async function createAdmin(page: Page) {
   await page.getByRole('button', { name: 'Create account' }).click()
 }
 
-test('first-run setup: admin, name, network, remote, Home Assistant (save shows the result), done', async ({ page }) => {
+test('first-run setup: admin, name, network, remote, Home Assistant and MQTT (save shows the result), done', async ({ page }) => {
   // 1. Admin
   await createAdmin(page)
 
   // 2. Name: the default to start with; spaces at the ends go; blank isn't a name.
-  await expect(page.getByText('Step 2 of 6')).toBeVisible()
+  await expect(page.getByText('Step 2 of 7')).toBeVisible()
   const name = page.getByLabel('Hub name')
   await expect(name).toHaveValue('Hubbo 534D') // hub-sim's default, and the mock's
   await expect(name).toHaveAttribute('data-1p-ignore', '') // not a login, though it follows one
@@ -38,11 +41,11 @@ test('first-run setup: admin, name, network, remote, Home Assistant (save shows 
   await page.getByRole('button', { name: 'Continue', exact: true }).click()
 
   // 3. Network (read-only)
-  await expect(page.getByText('Step 3 of 6')).toBeVisible()
+  await expect(page.getByText('Step 3 of 7')).toBeVisible()
   await page.getByRole('button', { name: 'Continue', exact: true }).click()
 
   // 4. Remote pairing via an existing Hub
-  await expect(page.getByText('Step 4 of 6')).toBeVisible()
+  await expect(page.getByText('Step 4 of 7')).toBeVisible()
   await page.getByRole('button', { name: 'Scan', exact: true }).click()
   if (SIM_URL) {
     await expect(page.getByRole('progressbar', { name: 'Scan progress' })).toBeVisible()
@@ -52,7 +55,7 @@ test('first-run setup: admin, name, network, remote, Home Assistant (save shows 
   await page.getByRole('button', { name: 'Continue', exact: true }).click()
 
   // 5. Home Assistant (hub-sim: not available yet, or no HA integration while the config is blocked; skip)
-  await expect(page.getByText('Step 5 of 6')).toBeVisible()
+  await expect(page.getByText('Step 5 of 7')).toBeVisible()
   const haForm = page.getByLabel('URL', { exact: true })
   await expect(haForm.or(notAvailable(page)).or(page.getByText('Home Assistant isn’t available.'))).toBeVisible()
   const haSupported = await haForm.isVisible()
@@ -65,48 +68,65 @@ test('first-run setup: admin, name, network, remote, Home Assistant (save shows 
     await page.getByRole('button', { name: 'Save', exact: true }).click()
     await letHaConnect(page)
     await expect(conn).toContainText('The token was rejected')
-    await expect(page.getByText('Step 5 of 6')).toBeVisible()
+    await expect(page.getByText('Step 5 of 7')).toBeVisible()
 
     await fakeHaNextConnect(page, 'ok')
     await page.getByLabel('Access token').fill(HA_TOKEN)
     await page.getByRole('button', { name: 'Save', exact: true }).click()
     await letHaConnect(page)
     await expect(conn).toContainText('Saved and connected.')
-    await expect(page.getByText('Step 5 of 6')).toBeVisible()
+    await expect(page.getByText('Step 5 of 7')).toBeVisible()
     await page.getByRole('button', { name: 'Continue', exact: true }).click()
   } else {
     await page.getByRole('button', { name: 'Skip' }).click()
   }
 
-  // 6. Done: a summary, nothing about devices or activities; it goes to Activities.
-  await expect(page.getByText('Step 6 of 6')).toBeVisible()
+  // 6. MQTT: the same save → connection result as Home Assistant.
+  await expect(page.getByText('Step 6 of 7')).toBeVisible()
+  const broker = page.getByLabel('Broker')
+  await expect(broker.or(notAvailable(page)).or(page.getByText('MQTT isn’t available.'))).toBeVisible()
+  const mqttSupported = await broker.isVisible()
+  if (mqttSupported) {
+    await broker.fill('mqtt.local')
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await settleIntegration(page, 'mqtt_main', 'connected')
+    await expect(page.getByTestId('mqtt-connection')).toContainText('Saved and connected.')
+    await page.getByRole('button', { name: 'Continue', exact: true }).click()
+  } else {
+    await page.getByRole('button', { name: 'Skip' }).click()
+  }
+
+  // 7. Done: a summary, nothing about devices or activities; it goes to Activities.
+  await expect(page.getByText('Step 7 of 7')).toBeVisible()
   const summary = page.getByLabel('Setup summary')
   await expect(summary).toContainText(/Paired|Not paired/)
   await expect(summary).toContainText('Den Hub')
-  if (haSupported) await expect(summary).toContainText('Connected')
+  if (haSupported) await expect(summary).toContainText(/Home Assistant\s*Connected/)
+  if (mqttSupported) await expect(summary).toContainText(/MQTT\s*Connected/)
   await expect(page.getByRole('region', { name: 'Done' })).not.toContainText(/device|activit/i)
   await page.getByRole('button', { name: 'Finish' }).click()
   await expect(page.getByRole('heading', { name: 'Activities' })).toBeVisible()
   expect((await api(page).get('/admin/hub')).name).toBe('Den Hub')
+  // A new hub's one global button: Off turns everything off.
+  expect((await api(page).get('/global-bindings')).bindings).toEqual({ 'off:tap': [{ integration_id: 'system', device_id: null, command_id: 'off', params: {} }] })
   // The tokens typed in step 5 are never shown back or kept in the browser.
   await expectNotStoredInBrowser(page, HA_TOKEN)
   await expectNotStoredInBrowser(page, 'e2e-wrong-token')
 })
 
 test('the wizard resumes from hub state after a reload, and keeps nothing in the browser', async ({ page }) => {
-  const step = (n: number, title: string) => Promise.all([expect(page.getByText(`Step ${n} of 6`)).toBeVisible(), expect(page.getByRole('heading', { name: title })).toBeVisible()])
   await createAdmin(page)
   // Hub state can't say Name or Network was seen, so the URL holds them until Continue.
-  await step(2, 'Name')
+  await step(page, 2, 'Name')
   await expect(page).toHaveURL(/#\/setup\/hub$/)
   await page.reload()
-  await step(2, 'Name')
+  await step(page, 2, 'Name')
   await page.getByRole('button', { name: 'Continue', exact: true }).click() // the default, kept
-  await step(3, 'Network')
+  await step(page, 3, 'Network')
   expect(await api(page).get('/admin/hub')).toMatchObject({ name: 'Hubbo 534D', hostname: 'hubbo-534d' })
   await expect(page).toHaveURL(/#\/setup\/network$/)
   await page.reload()
-  await step(3, 'Network')
+  await step(page, 3, 'Network')
   await page.getByRole('button', { name: 'Continue', exact: true }).click()
   await expect(page).toHaveURL(/#\/setup$/)
 
@@ -114,7 +134,7 @@ test('the wizard resumes from hub state after a reload, and keeps nothing in the
   // (hub-sim starts paired, so its resume goes past the remote: open that step by its URL.)
   await page.reload()
   if (SIM_URL) await page.goto('/#/setup/remote')
-  await step(4, 'Remote')
+  await step(page, 4, 'Remote')
   await page.getByLabel('Channel').fill('125')
   await page.getByLabel('Address').fill('FC:5C:97:55:0F')
   await expect(page.getByText('A whole number from 0 to 124')).toHaveCount(0) // not before a submit
@@ -134,7 +154,7 @@ test('the wizard resumes from hub state after a reload, and keeps nothing in the
   // Paired, HA has no token: Home Assistant.
   if (SIM_URL) await page.goto('/#/setup') // leave the step opened by URL
   await page.reload()
-  await step(5, 'Home Assistant')
+  await step(page, 5, 'Home Assistant')
   if (SIM_URL) await connectHa(page)
   else {
     await page.getByLabel('Access token').fill(HA_TOKEN)
@@ -142,19 +162,24 @@ test('the wizard resumes from hub state after a reload, and keeps nothing in the
     await expect(page.getByTestId('ha-connection')).toContainText('Saved and connected')
   }
 
-  // HA set up (devices don't matter): Done.
+  // HA set up (devices don't matter), MQTT not yet: MQTT. Continue saves a typed broker.
   await page.reload()
-  await step(6, 'Done')
+  await step(page, 6, 'MQTT')
+  await page.getByLabel('Broker').fill('mqtt.local')
+  await page.getByRole('button', { name: 'Continue', exact: true }).click()
+  await step(page, 7, 'Done')
+  await page.reload()
+  await step(page, 7, 'Done')
   expect(await page.evaluate(() => Object.keys({ ...localStorage, ...sessionStorage }).filter((k) => k !== 'hubbo.theme'))).toEqual([])
 })
 
 test('once finished, the wizard never comes back on its own, even with pairing and HA skipped', async ({ page }) => {
   await createAdmin(page)
-  for (let n = 2; n <= 5; n++) {
-    await expect(page.getByText(`Step ${n} of 6`)).toBeVisible()
+  for (let n = 2; n <= 6; n++) {
+    await expect(page.getByText(`Step ${n} of 7`)).toBeVisible()
     await page.getByRole('button', { name: 'Skip', exact: true }).click()
   }
-  await expect(page.getByText('Step 6 of 6')).toBeVisible()
+  await expect(page.getByText('Step 7 of 7')).toBeVisible()
   await page.getByRole('button', { name: 'Finish' }).click()
   await expect(page.getByRole('heading', { name: 'Activities' })).toBeVisible()
   await page.reload()
@@ -162,4 +187,46 @@ test('once finished, the wizard never comes back on its own, even with pairing a
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Activities' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Set up Hubbo' })).toHaveCount(0)
+})
+
+test('Continue saves what’s typed on the remote, Home Assistant and MQTT steps', async ({ page }) => {
+  await createAdmin(page)
+  await step(page, 2, 'Name')
+  await page.getByRole('button', { name: 'Continue', exact: true }).click()
+  await step(page, 3, 'Network')
+  await page.getByRole('button', { name: 'Continue', exact: true }).click()
+
+  // Remote: a half-typed endpoint stays on the step and says what's missing.
+  await step(page, 4, 'Remote')
+  await page.getByLabel('Channel').fill('74')
+  await page.getByRole('button', { name: 'Continue', exact: true }).click()
+  await expect(page.getByText('Enter the address')).toBeVisible()
+  await step(page, 4, 'Remote')
+  await page.getByLabel('Address').fill('FC:5C:97:55:0F')
+  await page.getByRole('button', { name: 'Continue', exact: true }).click()
+  await step(page, 5, 'Home Assistant')
+  expect((await api(page).get('/admin/remote')).endpoint).toEqual({ channel: 74, address: 'FC5C97550F' })
+
+  // Home Assistant: saved without waiting for the connection.
+  const haForm = page.getByLabel('URL', { exact: true })
+  await expect(haForm.or(notAvailable(page)).or(page.getByText('Home Assistant isn’t available.'))).toBeVisible()
+  if (await haForm.isVisible()) {
+    await haForm.fill(FAKE_HA.url)
+    await page.getByLabel('Access token').fill(HA_TOKEN)
+    await page.getByRole('button', { name: 'Continue', exact: true }).click()
+    await step(page, 6, 'MQTT')
+    expect((await api(page).get('/admin/integrations/ha_main')).settings).toMatchObject({ url: FAKE_HA.url, has_access_token: true })
+  } else await page.getByRole('button', { name: 'Skip' }).click()
+
+  // MQTT, the same.
+  await step(page, 6, 'MQTT')
+  const broker = page.getByLabel('Broker')
+  await expect(broker.or(notAvailable(page)).or(page.getByText('MQTT isn’t available.'))).toBeVisible()
+  if (await broker.isVisible()) {
+    await broker.fill('mqtt.local')
+    await page.getByRole('button', { name: 'Continue', exact: true }).click()
+    await step(page, 7, 'Done')
+    expect((await api(page).get('/admin/integrations/mqtt_main')).settings).toMatchObject({ host: 'mqtt.local', port: 1883 })
+  }
+  await expectNotStoredInBrowser(page, HA_TOKEN)
 })

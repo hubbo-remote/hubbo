@@ -15,8 +15,8 @@ export type ConnectionHelp = Partial<Record<IntegrationState, { variant: 'info' 
 
 type Settings = NonNullable<IntegrationConfigUpdate['settings']>
 
-/** What a settings form gets: `save` enables the integration with these settings; `error` is the last failure. */
-export type SaveSettings = { save: (settings: Settings) => Promise<void>; busy: boolean; error: ApiError | null }
+/** What a settings form gets: `save` enables the integration with these settings (false when it failed); `error` is the last failure. */
+export type SaveSettings = { save: (settings: Settings) => Promise<boolean>; busy: boolean; error: ApiError | null }
 
 /**
  * A connecting integration's settings (Home Assistant, MQTT): loads its config, then shows the form
@@ -49,8 +49,10 @@ export function IntegrationSettings({ id, showState, help, slow, testId, form }:
       // Before status is re-read, so the cache still holds the pre-save state.
       setSaved({ at: Date.now(), before: getQueryData<Status>('status')?.integrations.find((i) => i.id === id)?.state })
       invalidate('integrations', 'status')
+      return true
     } catch (err) {
       setError(toApiError(err))
+      return false
     } finally {
       setBusy(false)
     }
