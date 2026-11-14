@@ -9,6 +9,7 @@ import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Field, Input, ShowErrors } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
+import { usePendingSave } from '@/hooks/stepSave'
 import { checkAddress, formatAddress, parseChannel } from '@/lib/remote'
 import { PressCheck } from './PressCheck'
 
@@ -31,8 +32,10 @@ function EndpointForm({ current }: { current: RemoteConfig }) {
   // null = not edited: show the stored endpoint, so the fields always say what the hub uses.
   const [editChannel, setChannel] = useState<string | null>(null)
   const [editAddress, setAddress] = useState<string | null>(null)
-  const channel = editChannel ?? (current.endpoint ? String(current.endpoint.channel) : '')
-  const address = editAddress ?? (current.endpoint ? formatAddress(current.endpoint.address) : '')
+  const storedChannel = current.endpoint ? String(current.endpoint.channel) : ''
+  const storedAddress = current.endpoint ? formatAddress(current.endpoint.address) : ''
+  const channel = editChannel ?? storedChannel
+  const address = editAddress ?? storedAddress
   const [touched, setTouched] = useState(false) // errors show from the first submit on (ShowErrors)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
@@ -40,14 +43,14 @@ function EndpointForm({ current }: { current: RemoteConfig }) {
   const ch = parseChannel(channel)
   const checked = checkAddress(address)
   const addr = 'address' in checked ? checked.address : null
-  const chError = channel !== '' && ch === null ? `A whole number from 0 to ${REMOTE_CHANNEL_MAX}` : undefined
-  const addrError = address !== '' && 'error' in checked ? checked.error : undefined
+  // A blank one only shows after a setup Continue (Save needs both).
+  const chError = !channel.trim() ? 'Enter the channel' : ch === null ? `A whole number from 0 to ${REMOTE_CHANNEL_MAX}` : undefined
+  const addrError = !address.trim() ? 'Enter the address' : 'error' in checked ? checked.error : undefined
   const scanning = current.radio === 'scanning'
 
-  const submit = async (e: FormEvent) => {
-    e.preventDefault()
+  const save = async () => {
     setTouched(true)
-    if (ch === null || addr === null) return
+    if (ch === null || addr === null) return false
     setBusy(true)
     setError(null)
     setSavedAt(null)
@@ -58,12 +61,22 @@ function EndpointForm({ current }: { current: RemoteConfig }) {
       setAddress(null)
       setTouched(false)
       setSavedAt(Date.now())
+      return true
     } catch (err) {
       setError(toApiError(err))
+      return false
     } finally {
       setBusy(false)
     }
   }
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    void save()
+  }
+  // In setup, Continue saves a typed endpoint that isn't the stored one.
+  const typed = channel.trim() !== '' || address.trim() !== ''
+  const dirty = typed && !scanning && (channel.trim() !== storedChannel || address.trim() !== storedAddress)
+  usePendingSave(dirty ? save : null)
 
   return (
     <ShowErrors.Provider value={touched}>
@@ -73,7 +86,7 @@ function EndpointForm({ current }: { current: RemoteConfig }) {
             <Input id="rf-channel" inputMode="numeric" placeholder={String(current.endpoint?.channel ?? 74)} value={channel} onChange={(e) => setChannel(e.target.value)} maxLength={3} />
           </Field>
           <Field label="Address" htmlFor="rf-address" error={addrError ?? error?.details.find((d) => d.path === '/address')?.message}>
-            <Input id="rf-address" className="font-mono" spellCheck={false} placeholder={current.endpoint ? formatAddress(current.endpoint.address) : 'FC:5C:97:55:0F'} value={address} onChange={(e) => setAddress(e.target.value)} maxLength={20} />
+            <Input id="rf-address" className="font-mono" spellCheck={false} placeholder={storedAddress || 'FC:5C:97:55:0F'} value={address} onChange={(e) => setAddress(e.target.value)} maxLength={20} />
           </Field>
         </div>
         {error && !error.details.some((d) => d.path === '/channel' || d.path === '/address') && <ErrorState error={error} />}

@@ -1,9 +1,10 @@
 import { Check, ChevronRight, Loader2 } from 'lucide-react'
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useLocation } from 'wouter'
 import { api, errorMessage } from '@/api/client'
 import { useQuery } from '@/api/hooks'
 import { HomeAssistantSettings } from '@/components/admin/HomeAssistantForm'
+import { MqttSettings } from '@/components/admin/MqttForm'
 import { NetworkInfo } from '@/components/admin/NetworkInfo'
 import { PairRemote } from '@/components/admin/PairRemote'
 import { RemoteEndpoint } from '@/components/admin/RemoteEndpoint'
@@ -17,7 +18,8 @@ import { Field, Input, ShowErrors } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { toastError } from '@/components/ui/toast'
 import { useIntegrations, useSession, useStatus } from '@/hooks/data'
-import { healthLabel } from '@/lib/health'
+import { StepSaveContext, type PendingSave } from '@/hooks/stepSave'
+import { healthLabel, isUnset } from '@/lib/health'
 import { HUB_NAME_MAX, hubNameProblem, saveHubName, trimHubName } from '@/lib/hub'
 import { cn } from '@/lib/utils'
 
@@ -27,6 +29,7 @@ const STEPS = [
   { id: 'network', title: 'Network', blurb: null },
   { id: 'remote', title: 'Remote', blurb: null },
   { id: 'ha', title: 'Home Assistant', blurb: 'Optional.' },
+  { id: 'mqtt', title: 'MQTT', blurb: 'Optional. Shows Hubbo in Home Assistant.' },
   { id: 'done', title: 'Done', blurb: 'You’re all set.' },
 ] as const
 type StepId = (typeof STEPS)[number]['id']
@@ -34,7 +37,7 @@ const stepIndex = (id: StepId | string | undefined) => STEPS.findIndex((s) => s.
 
 /**
  * Where to pick up after a reload, from what the hub already has (never from browser storage):
- * the first thing that isn't done yet. Skipped optional steps (pairing, HA) come back until done.
+ * the first thing that isn't done yet. Skipped optional steps (pairing, HA, MQTT) come back until done.
  */
 function useResumeStep(needed: boolean): number | null {
   const session = useSession().data
@@ -45,7 +48,10 @@ function useResumeStep(needed: boolean): number | null {
   if (session.setup_required) return stepIndex('admin')
   if (!status) return null
   if (!status.remote.paired) return stepIndex('remote')
-  if (status.integrations.find((i) => i.type === 'home_assistant')?.state === 'not_configured') return stepIndex('ha')
+  // Not set up yet: no settings, or never turned on (MQTT starts off until a broker is saved).
+  const unset = (type: string) => isUnset(status.integrations.find((i) => i.type === type)?.state)
+  if (unset('home_assistant')) return stepIndex('ha')
+  if (unset('mqtt')) return stepIndex('mqtt')
   return stepIndex('done')
 }
 
@@ -85,7 +91,15 @@ export default function Setup({ onDone, start }: { onDone: () => void; start?: s
   const name = hubName ?? hub.data?.name // until it's read, Continue waits (Skip keeps the hub's own)
   const [nameTried, setNameTried] = useState(false)
   const [busy, setBusy] = useState(false)
+  // The step's unsaved edits (Remote, HA, MQTT): Continue saves them, and stays only if that fails.
+  const pending = useRef<PendingSave | null>(null)
   const next = async () => {
+    if (pending.current) {
+      setBusy(true)
+      const saved = await pending.current()
+      setBusy(false)
+      if (!saved) return
+    }
     if (onName) {
       setNameTried(true)
       if (name === undefined || hubNameProblem(name)) return
@@ -135,16 +149,19 @@ export default function Setup({ onDone, start }: { onDone: () => void; start?: s
                 {STEPS[current]!.title}
                 {STEPS[current]!.blurb && <span className="mt-0.5 block text-sm font-normal text-muted-foreground">{STEPS[current]!.blurb}</span>}
               </h2>
+              <StepSaveContext.Provider value={pending}>
               {
                 {
                   admin: <AdminStep onCreated={adminCreated} />,
                   hub: <HubStep name={name} onChange={setHubName} error={nameTried && name !== undefined ? hubNameProblem(name) : null} loadError={hub.data ? null : hub.error} retry={hub.refetch} />,
                   network: <NetworkStep />,
                   remote: <RemoteStep />,
-                  ha: <HaStep />,
+                  ha: <IntegrationStep type="home_assistant" />,
+                  mqtt: <IntegrationStep type="mqtt" />,
                   done: <DoneStep />,
                 }[STEPS[current]!.id]
               }
+              </StepSaveContext.Provider>
             </>
           )}
         </section>
@@ -252,25 +269,35 @@ function RemoteStep() {
   )
 }
 
-/** Saving connects (and shows the result); Continue or Skip move on. */
-function HaStep() {
+/** Saving connects (and shows the result); Continue saves what's typed and moves on, Skip just moves on. */
+const INTEGRATION_STEP = {
+  home_assistant: ['Home Assistant', HomeAssistantSettings],
+  mqtt: ['MQTT', MqttSettings],
+} as const
+
+function IntegrationStep({ type }: { type: keyof typeof INTEGRATION_STEP }) {
   const integrations = useIntegrations()
-  const ha = integrations.data?.find((i) => i.type === 'home_assistant')
+  const found = integrations.data?.find((i) => i.type === type)
+  const [name, Settings] = INTEGRATION_STEP[type]
   if (!integrations.data) return <Skeleton className="h-40" />
-  if (!ha) return <p className="text-sm text-muted-foreground">Home Assistant isn’t available.</p>
-  return <HomeAssistantSettings id={ha.id} showState />
+  if (!found) return <p className="text-sm text-muted-foreground">{name} isn’t available.</p>
+  return <Settings id={found.id} showState />
 }
 
 /** What's set up, from the hub. */
 function DoneStep() {
   const status = useStatus().data
-  const ha = status?.integrations.find((i) => i.type === 'home_assistant')
   if (!status) return <Skeleton className="h-24" />
+  const state = (type: string) => {
+    const i = status.integrations.find((x) => x.type === type)
+    return i ? healthLabel(i.state, i.type) : 'Not available'
+  }
   const rows: [string, string][] = [
     ['Account', 'Created'],
     ['Name', status.hubbo.name],
     ['Remote', status.remote.paired ? 'Paired' : 'Not paired'],
-    ['Home Assistant', ha ? healthLabel(ha.state) : 'Not available'],
+    ['Home Assistant', state('home_assistant')],
+    ['MQTT', state('mqtt')],
   ]
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm" aria-label="Setup summary">

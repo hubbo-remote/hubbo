@@ -4,8 +4,10 @@ import { Field, Select } from '@/components/ui/input'
 import { useCapabilities } from '@/hooks/data'
 import { hubboCommands, isSystem, type Catalog } from '@/lib/activity'
 import { actionFor, choiceName, choiceOf, choiceParams, choices, domainOf, isFriendly } from '@/lib/commands'
+import { customServices, startCall } from '@/lib/haCall'
 import { ActionPicker, TestButton } from './ActionPicker'
 import { DeviceSelect } from './DeviceSelect'
+import { HaActionFields } from './HaAction'
 import { ParamForm } from './ParamForm'
 import { startAction, SYSTEM_VALUE } from './start'
 
@@ -25,6 +27,7 @@ export function CommandPicker({ value, onChange, catalog, context, testable = tr
   if (value && !isFriendly(value, commands)) return <ActionPicker value={value} onChange={onChange} catalog={catalog} context={context} allowHold={context === 'binding'} testable={testable} />
 
   const list = choices(commands, context, domainOf(catalog.devices.get(deviceId)))
+  const services = customServices(commands)
   const choice = value ? choiceOf(value, commands) : ''
   const params = value ? choiceParams(choice, commands, context) : []
   const picked = list.find((c) => c.id === choice)
@@ -32,7 +35,7 @@ export function CommandPicker({ value, onChange, catalog, context, testable = tr
   const more = list.filter((c) => c.more)
 
   const pickDevice = (d: string) => onChange(startAction(catalog, context, d))
-  const pickCommand = (c: string) => value && onChange(actionFor(c, value, commands))
+  const pickCommand = (c: string) => value && onChange(c === 'call' ? startCall(actionFor(c, value, commands), services) : actionFor(c, value, commands))
 
   // One row: Device | Command | what the command needs (a key, a code, a source); Device on its own
   // line on a phone. The drawer (other settings) sits below.
@@ -70,6 +73,7 @@ export function CommandPicker({ value, onChange, catalog, context, testable = tr
     <div className="grid gap-3">
       {/* Always through ParamForm, so the Device and Command selects keep their place (and focus) once a value is set. */}
       <ParamForm commandId={value?.command_id ?? ''} name={picked ? choiceName(picked) : (value?.command_id ?? '')} params={params} values={value?.params ?? {}} onChange={(p) => value && onChange({ ...value, params: p })} activities={catalog.activities} lead={lead} />
+      {value && choice === 'call' && <HaActionFields key={deviceId} id={id} value={value} services={services} onChange={onChange} />}
       {testable && value?.device_id && value.command_id && commands.find((c) => c.command_id === value.command_id)?.effect === 'momentary' && <TestButton action={value} />}
     </div>
   )

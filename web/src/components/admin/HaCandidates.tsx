@@ -15,9 +15,17 @@ import type { EntityDetails } from '@/lib/ha'
  * until it's done (it reads HA's states, services and entity registry), then search.
  * Only entities that can be picked are listed: supported, and not already a device here.
  */
-export function HaCandidates({ integration, onPick, emptyText = 'Nothing matches.' }: { integration: string; onPick: (c: DiscoverCandidate) => void; /** When nothing's left to pick (a search with no match says so instead). */ emptyText?: string }) {
-  const [q, setQ] = useState('')
-  const [query, setQuery] = useState('')
+export function HaCandidates({ integration, onPick, emptyText = 'Nothing matches.', search }: {
+  integration: string
+  onPick: (c: DiscoverCandidate) => void
+  /** When nothing's left to pick (a search with no match says so instead). */
+  emptyText?: string
+  /** The search text, when the caller keeps it across a remount. */
+  search?: [string, (q: string) => void]
+}) {
+  const own = useState('')
+  const [q, setQ] = search ?? own
+  const [query, setQuery] = useState(q.trim())
   useEffect(() => {
     const t = setTimeout(() => setQuery(q.trim()), 250)
     return () => clearTimeout(t)

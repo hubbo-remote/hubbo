@@ -1,6 +1,7 @@
 #include "hubbo/engine/compiler.h"
 
 #include <algorithm>
+#include <memory>
 #include <string_view>
 
 #include "hubbo/domain/ids.h"
@@ -40,6 +41,16 @@ std::string jsonPointerToken(const std::string &token) {
 }
 
 namespace {
+
+// A Home Assistant action stays on its device: the service's domain is the
+// device's own integration (webostv.* on a webostv TV), so nothing aimed at
+// HA as a whole (homeassistant.stop, hassio.*) can be bound or run.
+bool serviceOnDevice(const HaServiceCallSpec &call, const DeviceSpec &device) {
+    if (!device.haCapabilities || device.haCapabilities->platform.empty()) return false;
+    const std::string &platform = device.haCapabilities->platform;
+    return call.service.size() > platform.size() && call.service.compare(0, platform.size(), platform) == 0 &&
+           call.service[platform.size()] == '.';
+}
 
 // Where a command runs, and what its effect allows there: a Hold only in a
 // binding (paired with its release there), a Wait only in a startup or
@@ -100,6 +111,7 @@ public:
             return;
         }
         size_t bluetooth = 0;
+        size_t hintBytes = 0;
         for (size_t i = 0; i < devices.size(); i++) {
             const DeviceSpec &d = devices[i];
             const std::string path = prefix + "/" + std::to_string(i);
@@ -108,6 +120,15 @@ public:
             if (d.provider.type == kBleHidType && ++bluetooth > limits::kMaxBleDevices) {
                 report.add(ErrorCode::TooManyDevices, path + "/integration_id");
                 ok = false;
+            }
+            // The size budget: the saved record carries every device's hints.
+            if (d.haCapabilities) {
+                const size_t before = hintBytes;
+                hintBytes += ha::customHintBytes(*d.haCapabilities);
+                if (hintBytes > ha::kMaxConfigHintBytes && before <= ha::kMaxConfigHintBytes) {
+                    report.add(ErrorCode::CapacityExceeded, path + "/ha_capabilities/custom_services");
+                    ok = false;
+                }
             }
             if (!isValidId(d.id)) {
                 report.add(ErrorCode::InvalidId, path + "/id");
@@ -379,6 +400,18 @@ private:
         }
 
         if (!resolveCommand(catalog, a.commandId, a.params, this, path, out, report_)) return false;
+        if (a.call) {
+            // The size budget: every call's data sits in the saved record.
+            if (++calls_ > limits::kMaxHaServiceCalls) {
+                report_.add(ErrorCode::CapacityExceeded, path + "/call");
+                return false;
+            }
+            if (!serviceOnDevice(*a.call, config_->devices[out->deviceIndex])) {
+                report_.add(ErrorCode::ForbiddenParam, path + "/call/service");
+                return false;
+            }
+            out->call = std::make_shared<const HaServiceCallSpec>(*a.call);
+        }
         if (out->command->effect == CommandEffect::Hold) {
             // The ledger releases it with this command (same params).
             const int release = out->command->releasedBy != nullptr ? catalog.find(out->command->releasedBy) : -1;
@@ -407,6 +440,7 @@ private:
     std::vector<DeviceInfo> info_;
     std::vector<std::string> activityIds_;
     std::vector<CompiledAction> actions_;
+    size_t calls_ = 0;  // actions with a call (limits::kMaxHaServiceCalls)
 };
 
 }  // namespace
@@ -504,7 +538,7 @@ IntegrationResolution resolveIntegration(const ConfigSpec &config, const Adapter
 
 ErrorCode compileDeviceCommand(const ConfigSpec &config, const AdapterSet &adapters, std::string_view deviceId,
                                std::string_view commandId, const std::vector<ParamInput> &params,
-                               CompiledCommand *out, ValidationReport *report) {
+                               CompiledCommand *out, ValidationReport *report, const HaServiceCallSpec *call) {
     ValidationReport local;
     ValidationReport &r = report != nullptr ? *report : local;
     const int device = indexOfId(config.devices, deviceId);
@@ -522,6 +556,13 @@ ErrorCode compileDeviceCommand(const ConfigSpec &config, const AdapterSet &adapt
     if (misplaced != ErrorCode::Ok) {
         r.add(misplaced, "/command_id");
         return ErrorCode::ValidationFailed;
+    }
+    if (call != nullptr) {
+        if (!serviceOnDevice(*call, d)) {
+            r.add(ErrorCode::ForbiddenParam, "/call/service");
+            return ErrorCode::ValidationFailed;
+        }
+        compiled.action.call = std::make_shared<const HaServiceCallSpec>(*call);
     }
     compiled.action.op = ActionOp::Adapter;
     compiled.action.adapterIndex = static_cast<uint8_t>(resolved.adapterIndex);

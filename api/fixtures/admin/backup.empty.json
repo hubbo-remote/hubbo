@@ -7,7 +7,16 @@
   "integrations": [],
   "devices": [],
   "global_bindings": {
-    "bindings": {},
+    "bindings": {
+      "off:tap": [
+        {
+          "integration_id": "system",
+          "device_id": null,
+          "command_id": "off",
+          "params": {}
+        }
+      ]
+    },
     "revision": 1
   },
   "activities": [],

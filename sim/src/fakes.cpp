@@ -213,13 +213,13 @@ void SimulatedBleHosts::record(std::string_view deviceId, std::string report) {
 }
 
 void FakeHomeAssistant::addEntity(const ha::EntityInfo &entity) {
-    entities_.erase(entity.entityId);
-    entities_.emplace(entity.entityId, ha::EntityCapabilities::fromEntity(entity));
+    entities_[entity.entityId] = &catalogs_.keep(ha::EntityCapabilities::fromEntity(entity));
 }
 
 CommandCatalog FakeHomeAssistant::commandsFor(const DeviceSpec &device) const {
+    if (device.haCapabilities) return catalogs_.commandsFor(device);
     const auto it = entities_.find(providerRef(device));
-    return it == entities_.end() ? CommandCatalog{} : it->second.catalog();
+    return it == entities_.end() ? CommandCatalog{} : it->second->catalog();
 }
 
 void FakeHomeAssistant::failNext(std::string commandId, ErrorCode error) {
@@ -229,13 +229,19 @@ void FakeHomeAssistant::failNext(std::string commandId, ErrorCode error) {
 ExecResult FakeHomeAssistant::execute(const ExecRequest &request) {
     if (!available_) return ExecResult::failed(ErrorCode::AdapterUnavailable);
 
-    const auto entity = entities_.find(request.providerRef);
-    if (entity == entities_.end()) return ExecResult::failed(ErrorCode::AdapterFailed);
+    // A fake: it may lock on the engine task (the real adapter doesn't).
+    const std::string entityId(request.providerRef);
+    const ha::EntityCapabilities *caps = catalogs_.owner(request.command, entityId);
+    if (caps == nullptr) return ExecResult::failed(ErrorCode::AdapterFailed);
+    const char *stateKey = request.call ? nullptr : caps->stateAttribute(request.commandIndex);
+    const ha::ServiceValue *state = stateKey != nullptr ? attribute(entityId, stateKey) : nullptr;
     ha::ServiceCall call;
-    const ErrorCode built = entity->second.buildServiceCall(request.commandIndex, request.params, request.paramsPresent, &call);
+    const ErrorCode built = integrations::HaCatalogs::buildCall(*caps, request.commandIndex, request.params,
+                                                                request.paramsPresent, request.call.get(), state, &call);
     if (built != ErrorCode::Ok) return ExecResult::failed(built);
 
     std::string line = call.domain + "." + call.service + " " + call.entityId;
+    if (!call.rawData.empty()) line += " " + call.rawData;
     for (const auto &field : call.data) {
         line += " " + field.key + "=";
         switch (field.value.kind) {
@@ -255,9 +261,19 @@ ExecResult FakeHomeAssistant::execute(const ExecRequest &request) {
             break;
         }
     }
+    if (result.status == ExecStatus::Accepted) {  // HA applied it
+        for (const auto &field : call.data) state_[call.entityId][field.key] = field.value;
+    }
     if (latencyMs_ == 0) return result;
     delayed_.push_back({request.ticket, request.nowMs + latencyMs_, result});
     return ExecResult::pending();
+}
+
+const ha::ServiceValue *FakeHomeAssistant::attribute(const std::string &entityId, const std::string &key) const {
+    const auto entity = state_.find(entityId);
+    if (entity == state_.end()) return nullptr;
+    const auto value = entity->second.find(key);
+    return value == entity->second.end() ? nullptr : &value->second;
 }
 
 void FakeHomeAssistant::poll(uint32_t nowMs, CompletionSink &sink) {

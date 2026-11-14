@@ -176,15 +176,16 @@ const char *MqttBridge::state() const {
 std::string MqttBridge::detail() const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!settings_.enabled || settings_.host.empty()) return "";
-    // Short and without the host (up to 253 characters): the card shows the
-    // broker, and the API caps detail at 120.
+    // Problems only (connected or connecting would just repeat the state, as
+    // HA's client leaves it empty). Short and without the host (up to 253
+    // characters): the card shows the broker, and the API caps detail at 120.
     switch (link_) {
-        case Link::Connected: return "Connected to the broker";
         case Link::AuthFailed: return "The broker refused the username or password";
         case Link::Unreachable: return "Can't reach the broker";
+        case Link::Connected:
         case Link::Connecting: break;
     }
-    return "Connecting to the broker";
+    return "";
 }
 
 void MqttBridge::applySettings() {

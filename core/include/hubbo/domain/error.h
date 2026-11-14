@@ -77,6 +77,11 @@ enum class ErrorCode : uint8_t {
     EntityNotFound,     // the provider no longer knows the target (HA: entity removed or renamed)
     SequenceOnly,       // a wait command outside a startup or shutdown (a binding, direct execute)
     UnknownKind,        // a device kind that isn't in kinds.json
+    // A Home Assistant action's call (HaServiceCallSpec).
+    Pattern,               // a string that doesn't match its pattern (call.service)
+    ForbiddenParam,        // a target key in call.data (entity_id, device_id, ...)
+    TooDeep,               // call.data nested deeper than limits::kMaxHaCallDataDepth
+    TemplateNotSupported,  // "{{" or "{%" in call.data
 
     Count
 };

@@ -401,10 +401,8 @@
       {
         "integration_id": "ha_main",
         "device_id": "dev_sonos",
-        "command_id": "media_player.volume_mute",
-        "params": {
-          "muted": true
-        }
+        "command_id": "media_player.mute_toggle",
+        "params": {}
       }
     ],
     "plus:down": [

@@ -183,9 +183,30 @@ bool readSelector(JsonObjectConst selector, SnapshotParam *param, size_t *droppe
     return false;  // text (no string params yet), entity, object, time, ...
 }
 
+// An `entity` selector's filters as targets: {integration, domain,
+// supported_features}, or a `filter` object or list of them.
+void addEntityTargets(JsonObjectConst entity, ServiceDirectory::Service *service) {
+    JsonVariantConst filter = entity["filter"];
+    if (filter.is<JsonObjectConst>()) {
+        service->targets.push_back(readEntityFilter(filter.as<JsonObjectConst>()));
+    } else if (filter.is<JsonArrayConst>()) {
+        for (JsonVariantConst f : filter.as<JsonArrayConst>()) {
+            if (f.is<JsonObjectConst>()) service->targets.push_back(readEntityFilter(f.as<JsonObjectConst>()));
+        }
+    } else {
+        service->targets.push_back(readEntityFilter(entity));
+    }
+}
+
 void readFields(JsonObjectConst fields, ServiceDirectory::Service *service) {
     for (JsonPairConst pair : fields) {
         JsonObjectConst field = pair.value().as<JsonObjectConst>();
+        // Older services.yaml (webostv's) name the target as an entity_id
+        // field with an entity selector instead of `target`.
+        if (std::string_view(pair.key().c_str()) == "entity_id" && field["selector"]["entity"].is<JsonObjectConst>()) {
+            addEntityTargets(field["selector"]["entity"].as<JsonObjectConst>(), service);
+            continue;
+        }
         // A section ({collapsed, fields}) groups fields for the UI: flatten.
         if (field["selector"].isNull() && field["fields"].is<JsonObjectConst>()) {
             readFields(field["fields"].as<JsonObjectConst>(), service);
@@ -204,6 +225,10 @@ void readFields(JsonObjectConst fields, ServiceDirectory::Service *service) {
         f.supported = isHaName(f.param.name) && !isForbiddenParamName(f.param.name) &&
                       readSelector(field["selector"].as<JsonObjectConst>(), &f.param, &service->droppedOptions);
         if (f.supported) applyDefault(field["default"], &f.param);  // a default that doesn't fit is dropped
+        // A long example (a whole blob of JSON) is left out, not cut.
+        if (!field["example"].isNull() && measureJson(field["example"]) <= kMaxHintExampleBytes) {
+            serializeJson(field["example"], f.example);
+        }
         service->fields.push_back(std::move(f));
     }
 }
@@ -293,6 +318,19 @@ ServiceDirectory ServiceDirectory::parse(std::string_view json, const std::vecto
     return directory;
 }
 
+void ServiceDirectory::addCustom(const Service &service, uint32_t supportedFeatures, Offer *offer) {
+    SnapshotCustomService custom;
+    custom.service = service.domain + "." + service.service;
+    custom.label = service.label;
+    for (const Field &field : service.fields) {
+        if (custom.fields.size() >= kMaxCustomFields) break;
+        if (!field.unknownFilter && !featuresMatch(field.features, supportedFeatures)) continue;  // not for this entity
+        if (!isHaName(field.param.name) || isForbiddenParamName(field.param.name)) continue;  // never a target
+        custom.fields.push_back({field.param.name, field.param.required, field.example, field.param.description});
+    }
+    offer->custom.push_back(std::move(custom));  // offerFor() trims them all once
+}
+
 ServiceDirectory::Offer ServiceDirectory::offerFor(std::string_view entityId, std::string_view platform,
                                                    uint32_t supportedFeatures) const {
     Offer offer;
@@ -339,11 +377,13 @@ ServiceDirectory::Offer ServiceDirectory::offerFor(std::string_view entityId, st
                                                               : std::nullopt;
         if (reason) {
             if (offer.skipped.size() < kMaxSnapshotServices) offer.skipped.push_back({id, *reason});
+            if (*reason != SkipReason::ResponseOnly && service.nameValid) addCustom(service, supportedFeatures, &offer);
             continue;
         }
         offer.droppedOptions += service.droppedOptions;
         offer.services.push_back(std::move(offered));
     }
+    trimCustomServices(&offer.custom, kMaxCustomHintBytes);
     return offer;
 }
 

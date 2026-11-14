@@ -220,7 +220,7 @@ ConfigSpec showcaseConfig() {
         watch.bindings = {
             bind("volume_up:down", {haAction(id, "media_player.volume_up")}),
             bind("volume_down:down", {haAction(id, "media_player.volume_down")}),
-            bind("mute:down", {haAction(id, "media_player.volume_mute", {param("muted", true)})}),
+            bind("mute:down", {haAction(id, "media_player.mute_toggle")}),
         };
         c.activities.push_back(std::move(watch));
         c.globalBindings.push_back(bind("tv:tap", {activateAction(kShowcaseActivityId)}));

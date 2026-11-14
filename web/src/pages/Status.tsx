@@ -1,4 +1,4 @@
-import { AlertTriangle, Bluetooth, Cable, Home, Radio, RefreshCw, type LucideIcon } from 'lucide-react'
+import { AlertTriangle, Bluetooth, Cable, Home, Radio, RadioTower, RefreshCw, type LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Link, useLocation } from 'wouter'
 import type { IntegrationState, LatencyStats, Status as HubStatus } from '@/api/types'
@@ -10,10 +10,10 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/misc'
 import { Tabs } from '@/components/ui/tabs'
-import { useIntegrations, useStatus } from '@/hooks/data'
+import { useStatus } from '@/hooks/data'
 import { buttonLabel } from '@/lib/buttons'
 import { EVENT_VERB } from '@/lib/remote'
-import { healthLabel } from '@/lib/health'
+import { healthLabel, isUnset } from '@/lib/health'
 import { agoMs, bytes, cn, formatDuration, timeAgo } from '@/lib/utils'
 import { NotFound } from './NotFound'
 
@@ -47,20 +47,23 @@ const TARGET_P95_MS = 10
 const TARGET_P99_MS = 25
 
 function Overview({ status: s }: { status: HubStatus | undefined }) {
-  const integrations = useIntegrations()
   const integ = (type: string) => s?.integrations.find((i) => i.type === type)
-  const detail = (type: string) => integrations.data?.find((i) => i.type === type)?.detail
+  const detail = (type: string) => integ(type)?.detail ?? ''
   const ble = integ('ble_hid')
   const bleLabel = ble && healthLabel(ble.state, ble.type)
   const ha = integ('home_assistant')
+  const mqtt = integ('mqtt')
+  const mqttLabel = mqtt && healthLabel(mqtt.state, mqtt.type)
   const ev = s?.remote.last_event
   return (
     <div className="grid gap-4 lg:grid-cols-3">
-      <div className="grid gap-4 sm:grid-cols-2 lg:col-span-3 lg:grid-cols-4">
+      {/* Remote, Bluetooth, Ethernet; then Home Assistant and MQTT side by side, wider for their details. */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:col-span-3 lg:grid-cols-6">
         <StatusTile
           icon={Radio}
           title="Remote"
-          state={!s ? null : s.remote.paired ? (s.remote.last_packet_age_ms != null ? 'connected' : 'connecting') : 'not_configured'}
+          className="lg:col-span-2"
+          state={!s ? null : s.remote.paired ? 'connected' : 'not_configured'}
           value={s ? (s.remote.paired ? (s.remote.held?.length ? `Holding ${s.remote.held.map(buttonLabel).join(' + ')}` : 'Paired') : 'Not paired') : null}
           detail={
             !s ? null : !s.remote.paired ? (
@@ -74,14 +77,32 @@ function Overview({ status: s }: { status: HubStatus | undefined }) {
             )
           }
         />
-        <StatusTile icon={Bluetooth} title="Bluetooth" state={ble?.state ?? null} label={bleLabel} value={bleLabel ?? (s ? 'Not available' : null)} detail={detail('ble_hid') ?? ''} />
-        <StatusTile icon={Home} title="Home Assistant" state={ha?.state ?? null} value={ha ? healthLabel(ha.state) : s ? 'Not available' : null} detail={detail('home_assistant') ?? ''} />
+        <StatusTile icon={Bluetooth} title="Bluetooth" className="lg:col-span-2" state={ble?.state ?? null} label={bleLabel} value={bleLabel ?? (s ? 'Not available' : null)} detail={detail('ble_hid')} />
         <StatusTile
           icon={Cable}
           title="Ethernet"
+          className="sm:col-span-2 lg:col-span-2"
           state={!s ? null : s.network.link === 'up' ? 'connected' : 'error'}
           value={s ? (s.network.ip ?? (s.network.link === 'up' ? 'No address' : 'Not connected')) : null}
           detail={s?.network.hostname ? `${s.network.hostname}.local` : null}
+        />
+        <StatusTile icon={Home} title="Home Assistant" className="lg:col-span-3" state={ha?.state ?? null} value={ha ? healthLabel(ha.state) : s ? 'Not available' : null} detail={detail('home_assistant')} />
+        <StatusTile
+          icon={RadioTower}
+          title="MQTT"
+          className="lg:col-span-3"
+          state={mqtt?.state ?? null}
+          label={mqttLabel}
+          value={mqttLabel ?? (s ? 'Not available' : null)}
+          detail={
+            isUnset(mqtt?.state) ? (
+              <Link href="/integrations" className="text-primary underline-offset-4 hover:underline">
+                Set up a broker
+              </Link>
+            ) : (
+              detail('mqtt')
+            )
+          }
         />
       </div>
       <ErrorsCard status={s} className="lg:col-span-2" />
@@ -90,9 +111,9 @@ function Overview({ status: s }: { status: HubStatus | undefined }) {
   )
 }
 
-function StatusTile({ icon: Icon, title, state, label, value, detail }: { icon: LucideIcon; title: string; state: IntegrationState | null; label?: string; value: ReactNode; detail: ReactNode }) {
+function StatusTile({ icon: Icon, title, state, label, value, detail, className }: { icon: LucideIcon; title: string; state: IntegrationState | null; label?: string; value: ReactNode; detail: ReactNode; className?: string }) {
   return (
-    <Card aria-label={title}>
+    <Card aria-label={title} className={className}>
       <CardContent className="grid gap-2 py-4">
         <div className="flex items-center justify-between">
           <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">

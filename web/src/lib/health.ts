@@ -15,12 +15,16 @@ export const HEALTH: Record<IntegrationState, [dotClass: string, label: string]>
 
 /**
  * Where a type's state reads differently. Bluetooth's `connected` means the radio works, not that
- * a host is connected (devices show that); a broker rejects a password, not a token.
+ * a host is connected (devices show that); a broker rejects a password, not a token, and stays off
+ * until one is saved.
  */
 const TYPE_LABEL: Partial<Record<IntegrationType, Partial<Record<IntegrationState, string>>>> = {
   ble_hid: { connected: 'Ready' },
-  mqtt: { auth_failed: 'Password rejected' },
+  mqtt: { auth_failed: 'Password rejected', disabled: 'Off' },
 }
+
+/** Whether an integration still needs setting up: nothing saved yet, or turned off. */
+export const isUnset = (s: IntegrationState | undefined) => s === 'not_configured' || s === 'disabled'
 
 /** Unknown states (a newer hub) read as their raw name rather than crashing. */
 export const healthLabel = (s: IntegrationState, type?: IntegrationType) => (type && TYPE_LABEL[type]?.[s]) ?? HEALTH[s]?.[1] ?? s

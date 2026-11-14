@@ -194,8 +194,10 @@ public:
     // POST /devices/{id}/commands/{command_id}/execute. NotFound;
     // IntegrationDisabled; ValidationFailed (UnknownCommand at /command_id,
     // HoldNotAllowed for hold commands, params at /params/<name>); Ok.
+    // `call`: call_service's (see compileDeviceCommand()).
     Outcome compileCommand(std::string_view deviceId, std::string_view commandId,
-                           const std::vector<ParamInput> &params, CompiledCommand *out) const;
+                           const std::vector<ParamInput> &params, CompiledCommand *out,
+                           const HaServiceCallSpec *call = nullptr) const;
 
 private:
     // Restore: restore/reset (every object gets the new generation; otherwise

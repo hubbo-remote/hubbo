@@ -1,5 +1,5 @@
 import { Check, Copy, KeyRound, Loader2, Plus, RotateCcw, Trash2 } from 'lucide-react'
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import { useLocation } from 'wouter'
 import { api, errorMessage } from '@/api/client'
 import { invalidate, invalidateAll, useQuery } from '@/api/hooks'
@@ -19,6 +19,7 @@ import { Skeleton } from '@/components/ui/misc'
 import { Tabs } from '@/components/ui/tabs'
 import { toast, toastError } from '@/components/ui/toast'
 import { useStatus } from '@/hooks/data'
+import { copyText, selectText } from '@/lib/clipboard'
 import { timeAgo, typedMatches } from '@/lib/utils'
 import { NotFound } from './NotFound'
 
@@ -118,7 +119,8 @@ function Tokens() {
   const tokens = useQuery('tokens', () => api.tokens())
   const [name, setName] = useState('')
   const [created, setCreated] = useState<TokenCreated | null>(null)
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<boolean | 'failed'>(false)
+  const tokenText = useRef<HTMLElement>(null)
   const [busy, setBusy] = useState(false)
 
   const create = async (e: FormEvent) => {
@@ -186,18 +188,20 @@ function Tokens() {
         {created && (
           <div className="grid gap-3">
             <div className="flex items-center gap-2 rounded-lg border bg-muted p-2">
-              <code className="min-w-0 flex-1 break-all px-1 font-mono text-sm select-all">{created.token}</code>
+              <code ref={tokenText} className="min-w-0 flex-1 break-all px-1 font-mono text-sm select-all">{created.token}</code>
               <Button
                 size="sm"
                 variant="outline"
-                onClick={async () => {
-                  await navigator.clipboard?.writeText(created.token)
-                  setCopied(true)
+                onClick={async (e) => {
+                  const ok = await copyText(created.token, e.currentTarget)
+                  setCopied(ok || 'failed')
+                  if (!ok) selectText(tokenText.current) // to copy by hand
                 }}
               >
-                {copied ? <Check /> : <Copy />} {copied ? 'Copied' : 'Copy'}
+                {copied === true ? <Check /> : <Copy />} {copied === true ? 'Copied' : 'Copy'}
               </Button>
             </div>
+            {copied === 'failed' && <p className="text-xs text-muted-foreground" role="status">Couldn’t copy it. It’s selected, so copy it yourself.</p>}
             <p className="text-xs text-muted-foreground">Send it as a Bearer token. Keep it private.</p>
           </div>
         )}

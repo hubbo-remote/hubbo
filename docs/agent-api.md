@@ -69,9 +69,10 @@ A device's capabilities list its commands and their params
 (`media_player.turn_on`, `media_player.select_source {source}`, `light.turn_on`,
 `cover.set_cover_position {position}`, `scene.turn_on`...). The domains are media_player, light,
 switch, fan, scene, script, cover, button, input_boolean, humidifier and select. Media players,
-lights, switches and fans often add their integration's own services (`webostv.button {button}`,
-`sonos.set_sleep_timer`), typed from HA's metadata (labels, units, defaults, descriptions).
-Response-only services, ones Hubbo can't type and `play_media` aren't offered. A device whose entity disappeared
+lights, switches and fans often add their integration's own services (`sonos.set_sleep_timer`),
+typed from HA's metadata (labels, units, defaults, descriptions). Response-only services and
+`play_media` aren't offered. Services Hubbo can't type (free text, objects: `webostv.button`)
+are offered through one command, `call_service` ("Home Assistant action", see Actions). A device whose entity disappeared
 shows `availability: stale`; its commands fail until an admin re-links it.
 
 **Bluetooth devices** (`integration_id: "ble"`, an Apple TV, a Fire TV...) were added from a
@@ -111,6 +112,22 @@ Every action has the same four fields (`#/components/schemas/Action`):
 `integration_id` must be the device's own. `params` is always present (`{}` when there are none)
 and holds at most 4 scalar values.
 
+**A Home Assistant action** sends one of a device's untyped integration services with JSON data.
+The device's capabilities list them in the `call_service` command's `services`, each with field
+hints (`required`, `example`, `description`; `#/components/schemas/HaCustomService`). The action
+adds `call` (`#/components/schemas/HaServiceCall`):
+
+```json
+{"integration_id": "ha_main", "device_id": "dev_lg_tv", "command_id": "call_service", "params": {},
+ "call": {"service": "webostv.button", "data": {"button": "INFO"}}}
+```
+
+`data` goes to Home Assistant as is, aimed at the device's entity: at most 1024 bytes, 4 levels
+deep, no target keys (`entity_id`, `device_id`, ...: `forbidden_param`), no templates (`{{`, `{%`:
+`template_not_supported`). Use a service from the list. Its domain must be the device's own
+integration (`webostv.*` for this TV): any other, such as `homeassistant.stop`, is `forbidden_param`
+at `/call/service`. HA answers `failed` for one the entity doesn't have. A config holds at most 16 of them.
+
 **Try one** before you put it in an activity:
 
 ```sh
@@ -118,6 +135,10 @@ curl -s -X POST -H "$H" -H 'Content-Type: application/json' -d '{"params":{"leve
   $HUBBO/devices/dev_denon/commands/media_player.volume_set/execute
 # {"status":"accepted","device_id":"dev_denon","command_id":"media_player.volume_set","elapsed_ms":84}
 ```
+
+A Home Assistant action takes its `call` in the body:
+`POST /devices/dev_lg_tv/commands/call_service/execute` with
+`{"params": {}, "call": {"service": "webostv.button", "data": {"button": "INFO"}}}`.
 
 `200` comes back with `status` `accepted`, `failed` or `timeout`; all three mean it was sent. A
 `4xx` means nothing was sent: read `error.details`. Only `momentary` commands can be executed:
@@ -392,4 +413,5 @@ lists recent errors.
 ## Limits
 
 16 activities; 64 devices, at most 4 of them Bluetooth; 32 actions per sequence or trigger;
-4 params per action; names up to 64 characters; enum strings up to 64; `wait` up to 60 s.
+4 params per action; names up to 64 characters; enum strings up to 64; `wait` up to 60 s;
+16 Home Assistant actions (`call`), each with at most 1024 bytes of `data`.

@@ -126,7 +126,7 @@ ActivitySpec watchAppleTv() {
     a.bindings.push_back(bind("volume_up:down", {haAction("dev_denon", "media_player.volume_up")}));
     a.bindings.push_back(bind("volume_down:down", {haAction("dev_denon", "media_player.volume_down")}));
     a.bindings.push_back(
-        bind("mute:down", {haAction("dev_denon", "media_player.volume_mute", {param("muted", true)})}));
+        bind("mute:down", {haAction("dev_denon", "media_player.mute_toggle")}));
     return a;
 }
 
@@ -151,7 +151,7 @@ ActivitySpec playXbox() {
     a.bindings.push_back(bind("volume_up:down", {haAction("dev_denon", "media_player.volume_up")}));
     a.bindings.push_back(bind("volume_down:down", {haAction("dev_denon", "media_player.volume_down")}));
     a.bindings.push_back(
-        bind("mute:down", {haAction("dev_denon", "media_player.volume_mute", {param("muted", true)})}));
+        bind("mute:down", {haAction("dev_denon", "media_player.mute_toggle")}));
     return a;
 }
 

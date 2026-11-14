@@ -17,6 +17,9 @@ test('adding a cover starts on the type the hub suggests, and its position is a 
   await expect(dialog.getByLabel('Type').locator('option:checked')).toHaveText('Cover')
   await dialog.getByLabel('Name').fill('E2E Blinds')
   await dialog.getByRole('button', { name: 'Add device', exact: true }).click()
+  await expect(dialog.getByRole('status').filter({ hasText: 'Added E2E Blinds' })).toBeVisible()
+  await dialog.getByRole('button', { name: 'Done' }).click()
+  await page.getByRole('link', { name: /E2E Blinds/ }).click()
   await expect(page.getByRole('heading', { name: 'E2E Blinds' })).toBeVisible()
 
   const position = page.getByRole('group', { name: 'Set position', exact: true })

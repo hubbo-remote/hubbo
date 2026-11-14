@@ -39,6 +39,12 @@
       ]
     },
     {
+      "command_id": "media_player.mute_toggle",
+      "label": "Toggle mute",
+      "effect": "momentary",
+      "params": []
+    },
+    {
       "command_id": "media_player.media_play_pause",
       "label": "Play/pause",
       "effect": "momentary",
@@ -90,6 +96,57 @@
             "Live TV",
             "Netflix",
             "YouTube"
+          ]
+        }
+      ]
+    },
+    {
+      "command_id": "call_service",
+      "label": "Home Assistant action",
+      "effect": "momentary",
+      "params": [],
+      "group": "custom",
+      "services": [
+        {
+          "service": "webostv.button",
+          "label": "Button",
+          "fields": [
+            {
+              "name": "button",
+              "required": true,
+              "example": "LEFT",
+              "description": "Name of the button to press. Known possible values are LEFT, RIGHT, DOWN, UP, HOME, MENU, BACK, ENTER, DASH, INFO, ASTERISK, CC, EXIT, MUTE, RED, …"
+            }
+          ]
+        },
+        {
+          "service": "webostv.command",
+          "label": "Command",
+          "fields": [
+            {
+              "name": "command",
+              "required": true,
+              "example": "system.launcher/open",
+              "description": "Endpoint for the command."
+            },
+            {
+              "name": "payload",
+              "required": false,
+              "example": "target: https://www.google.com\n",
+              "description": "An optional payload to provide to the endpoint in the format of key value pair(s)."
+            }
+          ]
+        },
+        {
+          "service": "webostv.select_sound_output",
+          "label": "Select sound output",
+          "fields": [
+            {
+              "name": "sound_output",
+              "required": true,
+              "example": "external_speaker",
+              "description": "Name of the sound output to switch to."
+            }
           ]
         }
       ]

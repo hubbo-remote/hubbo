@@ -58,11 +58,14 @@ test('the wizard builds a starter activity from an HA TV and receiver', async ({
   ])
   expect(a.shutdown.map((s: { device_id: string }) => s.device_id)).toEqual(['dev_lg_tv'])
   expect(a.bindings['volume_up:down'][0]).toMatchObject({ device_id: 'dev_denon', command_id: 'media_player.volume_up' })
-  expect(a.bindings['mute:hold'][0]).toMatchObject({ device_id: 'dev_denon', params: { muted: false } })
+  // The volume device's mute button gets the hub's Toggle mute, nothing on a long press.
+  expect(a.bindings['mute:down']).toEqual([expect.objectContaining({ device_id: 'dev_denon', command_id: 'media_player.mute_toggle' })])
+  expect(a.bindings['mute:hold']).toBeUndefined()
   expect(a.bindings['play:down'][0]).toMatchObject({ device_id: 'dev_lg_tv', command_id: 'media_player.media_play' }) // HA: one send on press
   // The buttons show in the editor.
   await expect(page.locator('[data-key="volume_up"]')).toHaveAttribute('aria-label', /bound/)
   await expect(page.locator('[data-key="play"]')).toHaveAttribute('aria-label', /bound/)
+  await expect(page.locator('[data-key="mute"]')).toHaveAttribute('aria-label', /bound/)
 })
 
 test('ticking devices never disables Continue or reloads the step', async ({ page }) => {

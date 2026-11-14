@@ -411,6 +411,59 @@ of remote lag during the write are accepted.
   Outside it, 2.6 ms.
 - Gate (fw) passed: serial RAM 88,208 B, flash 2,175,635 B; OTA RAM 96,432 B, flash 2,203,099 B.
 
+## Setup fixes (branch `setup-fixes`, built, the lead does the board)
+
+- `bootState()` boots with core's `factoryDefaultConfig()` instead of an empty `ConfigSpec`.
+  That's the built-in integrations plus Off bound to the system's off. hub-sim and backup restore
+  use the same seed.
+- The fw gate passed:
+
+  | Env | Static RAM | Flash | .bin |
+  |---|---|---|---|
+  | Default | 89,680 B | 2,293,587 B | 2,336,208 B |
+  | OTA | 97,896 B | 2,314,983 B | 2,358,384 B (36.0% of the 0x640000 slot) |
+
+## Moving a board from other firmware to Hubbo over USB
+
+- Use USB when the board runs other firmware. An OTA can't change the bootloader or the partition
+  table, and the old firmware's NVS and data partition would be left behind.
+- **Image:** one merged file, written at 0x0. It's the `_ota` env, built with the OTA hash
+  compiled in, so `bin/hubbo ota <ip>` can update it later. The hash grants OTA access, so keep
+  the file private (`build/` is gitignored).
+
+  | Offset | Content |
+  |---|---|
+  | 0x0 | `bootloader.bin` |
+  | 0x8000 | `partitions.bin` (`default_16MB.csv`) |
+  | 0xe000 | `boot_app0.bin` (framework `tools/partitions/`) |
+  | 0x10000 | `firmware.bin` |
+
+  The flash settings are DIO, 80m and 16MB.
+- **Merge** in the toolchain (`bin/hubbo run bash -c '...'`), with `B` set to
+  `firmware/.pio/build/waveshare_esp32_s3_eth_ota`:
+  `/platformio/packages/tool-esptool/esptool --chip esp32s3 merge-bin -o build/hubbo-esp32s3eth-full.bin
+  --flash-mode dio --flash-freq 80m --flash-size 16MB 0x0 $B/bootloader.bin 0x8000 $B/partitions.bin
+  0xe000 /platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin
+  0x10000 $B/firmware.bin`. Afterwards, record the image's sha256.
+- **Erase first. This is required.** Hubbo formats only a blank `spiffs` partition, so leftover
+  data leaves it with no storage. The erase also clears the old firmware's NVS: its settings and
+  its NimBLE bonds.
+- **PoE:** never connect USB and PoE at the same time. Unplug the PoE cable before plugging in
+  USB.
+- **Web flasher** (Chrome, no installs: https://espressif.github.io/esptool-js/):
+  1. Connect over the board's USB-C (native USB, "USB JTAG/serial debug unit"). If it won't
+     connect, hold BOOT, tap RESET, release BOOT, and try again.
+  2. Click Erase Flash.
+  3. Write the merged bin at address 0x0 with Program.
+  4. Press RESET, then reconnect the network cable.
+- `bin/hubbo` has no USB flash command, so there's no device passthrough to Docker.
+- **First boot:** it gets its address over DHCP. Its name is "Hubbo XXXX", from the Ethernet MAC.
+  It then needs first-run setup.
+- **Remote:** a known endpoint (the channel and the 40-bit address, which the old firmware may
+  show) can be entered by hand with `PUT /admin/remote/endpoint`. The original Harmony hub isn't
+  needed for that; a scan needs the hub transmitting.
+- **Bluetooth hosts:** forget the old name on each host, then pair again with Hubbo.
+
 ## Task layout (priorities)
 
 | task | core | prio | notes |

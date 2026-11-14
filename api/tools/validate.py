@@ -186,9 +186,13 @@ def check_core_names(spec):
     trigger = f"^({'|'.join(buttons)}):({'|'.join(events)})$"
     if schemas["Trigger"]["pattern"] != trigger:
         fail(f"Trigger pattern should be {trigger}")
-    forbidden = cpp_string_array("kForbiddenNames", read(os.path.join(CORE_SRC, "ha", "capabilities.cpp")))
+    capabilities_cpp = read(os.path.join(CORE_SRC, "ha", "capabilities.cpp"))
+    targets = cpp_string_array("kTargetKeys", capabilities_cpp)
+    forbidden = targets + cpp_string_array("kPayloadNames", capabilities_cpp)
     if sorted(schemas["ParamName"]["not"]["enum"]) != sorted(forbidden):
-        fail("ParamName.not.enum differs from kForbiddenNames in core/src/ha/capabilities.cpp")
+        fail("ParamName.not.enum differs from kTargetKeys + kPayloadNames in core/src/ha/capabilities.cpp")
+    if sorted(schemas["HaServiceCall"]["properties"]["data"]["propertyNames"]["not"]["enum"]) != sorted(targets):
+        fail("HaServiceCall data propertyNames differ from kTargetKeys in core/src/ha/capabilities.cpp")
     domains = cpp_string_array("kEntityDomains",
                                read(os.path.join(ROOT, "core", "include", "hubbo", "ha", "capabilities.h")))
     if query_param(spec, "getDiscovery", "domain")["schema"]["enum"] != domains:

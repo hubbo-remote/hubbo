@@ -317,11 +317,14 @@ def expect(cond, message):
 
 def registry_flow(c):
     """Reads: status, remote, devices, capabilities, integrations."""
-    c.call("getStatus", "GET", "/status", expect=200)
+    _, status, _ = c.call("getStatus", "GET", "/status", expect=200)
     c.call("getRemoteStatus", "GET", "/remote/status", expect=200)
     _, buttons, _ = c.call("listRemoteButtons", "GET", "/remote/buttons", expect=200)
     expect(buttons and len(buttons["buttons"]) == 48, "remote/buttons: expected 48 buttons")
-    c.call("listIntegrations", "GET", "/integrations", expect=200)
+    _, ints, _ = c.call("listIntegrations", "GET", "/integrations", expect=200)
+    # Status carries each integration's state and detail, as the list does (one poll).
+    summary = lambda body: {i["id"]: (i["state"], i.get("detail")) for i in (body or {}).get("integrations", [])}
+    expect(summary(status) == summary(ints), f"status integrations {summary(status)} != list {summary(ints)}")
     _, listing, _ = c.call("listDevices", "GET", "/devices", expect=200)
     devices = (listing or {}).get("devices", [])
     expect(devices, "no devices registered in hub-sim")
@@ -1209,6 +1212,101 @@ def integration_param_flow(c):
         expect(timer["params"] == [SLEEP_TIME], f"sleep_time param: {timer['params']}")
 
 
+def mute_toggle_flow(c):
+    """media_player.mute_toggle reads the entity's is_volume_muted at press
+    time and sends the opposite (HA has no mute toggle)."""
+    if MOCK:
+        skip("mute toggle", "the mock has no Home Assistant state")
+        return
+    entity = "media_player.family_room_denon"
+    path = "/devices/dev_denon/commands/media_player.mute_toggle/execute"
+
+    def toggle(was, sends):
+        _, body, _ = c.call("executeCommand", "POST", path, {"params": {}}, expect=200,
+                            label=f"mute toggle, {was}")
+        expect((body or {}).get("status") == "accepted", f"mute toggle, {was}: {body}")
+        _, reply = c.host_call("POST", "/sim/ha")
+        last = (reply or {}).get("last_call")
+        want = {"service": "media_player.volume_mute", "entity_id": entity, "data": {"is_volume_muted": sends}}
+        expect(last == want, f"mute toggle, {was}: sent {last}, want {want}")
+
+    c.control(f"ha?muted={entity}:1")
+    toggle("muted", False)
+    toggle("unmuted by the toggle", True)  # the fake applied the first call
+    c.control(f"ha?muted={entity}:0")
+    toggle("unmuted", True)
+    c.control(f"ha?muted={entity}:0")  # leave the Denon unmuted for later flows
+
+
+def ha_action_flow(c):
+    """A Home Assistant action (call_service): the LG TV offers its webostv
+    services with HA's hints, an execute sends the service and data verbatim
+    to the TV's entity, and the call's rules answer 422 at their paths."""
+    _, caps, _ = c.call("getDeviceCapabilities", "GET", "/devices/dev_lg_tv/capabilities", expect=200)
+    action = next((x for x in (caps or {}).get("commands", []) if x["command_id"] == "call_service"), None)
+    want = next(x for x in fixture("devices/dev_lg_tv.capabilities.json")["commands"]
+                if x["command_id"] == "call_service")
+    expect(action == want, f"dev_lg_tv call_service: {action}")
+    _, denon, _ = c.call("getDeviceCapabilities", "GET", "/devices/dev_denon/capabilities", expect=200)
+    expect(all(x["command_id"] != "call_service" for x in (denon or {}).get("commands", [])),
+           "dev_denon has no custom services, so no Home Assistant action")
+
+    path = "/devices/dev_lg_tv/commands/call_service/execute"
+    info = {"service": "webostv.button", "data": {"button": "INFO"}}
+    _, body, _ = c.call("executeCommand", "POST", path, {"params": {}, "call": info}, expect=200,
+                        label="Home Assistant action")
+    expect((body or {}).get("status") == "accepted", f"Home Assistant action: {body}")
+    if not MOCK:
+        _, reply = c.host_call("POST", "/sim/ha")
+        last = (reply or {}).get("last_call")
+        expect(last == {"service": "webostv.button", "entity_id": "media_player.family_room_lg_tv",
+                        "data": {"button": "INFO"}}, f"Home Assistant action sent {last}")
+
+    def refused(label, body, code, at, path=path, op="executeCommand", method="POST"):
+        _, reply, _ = c.call(op, method, path, body, expect=422, label=label)
+        details = [(d["code"], d["path"]) for d in error_details(reply)]
+        expect((code, at) in details, f"{label}: want {code} at {at}, got {details}")
+
+    def with_data(data):
+        return {"params": {}, "call": {"service": "webostv.button", "data": data}}
+
+    deep = {"a": {"b": {"c": {"d": {"e": 1}}}}}
+    refused("call missing", {"params": {}}, "required", "/call")
+    refused("call on another command", {"params": {}, "call": info}, "unknown_field", "/call",
+            path="/devices/dev_lg_tv/commands/media_player.volume_up/execute")
+    refused("service pattern", {"params": {}, "call": {"service": "webostv"}}, "pattern", "/call/service")
+    refused("service of another integration", {"params": {}, "call": {"service": "homeassistant.stop"}},
+            "forbidden_param", "/call/service")
+    refused("data not an object", with_data(["INFO"]), "wrong_type", "/call/data")
+    refused("data too big", with_data({"button": "x" * 1100}), "too_long", "/call/data")
+    refused("data too deep", with_data(deep), "too_deep", "/call/data")
+    refused("data names a target", with_data({"entity_id": "lock.front_door"}), "forbidden_param",
+            "/call/data/entity_id")
+    refused("data holds a template", with_data({"payload": {"target": "{{ states('x') }}"}}),
+            "template_not_supported", "/call/data/payload/target")
+    refused("no custom services", {"params": {}, "call": info}, "unknown_command", "/command_id",
+            path="/devices/dev_denon/commands/call_service/execute")
+
+    # The same rules in a binding, at the action's path.
+    gb = c.call("getGlobalBindings", "GET", "/global-bindings", expect=200)[1]
+    if gb:
+        act = {"integration_id": "ha_main", "device_id": "dev_lg_tv", "command_id": "call_service", "params": {}}
+        put = {"path": "/global-bindings", "op": "replaceGlobalBindings", "method": "PUT"}
+
+        def bind(action):
+            return dict(gb, bindings=dict(gb["bindings"], **{"info:tap": [action]}))
+        for label, extra, code, at in (
+                ("binding without call", {}, "required", "/bindings/info:tap/0/call"),
+                ("binding data names a target", {"call": {"service": "webostv.button", "data": {"device_id": "x"}}},
+                 "forbidden_param", "/bindings/info:tap/0/call/data/device_id"),
+                ("binding service of another integration", {"call": {"service": "hassio.host_shutdown"}},
+                 "forbidden_param", "/bindings/info:tap/0/call/service")):
+            refused(label, bind(dict(act, **extra)), code, at, **put)
+        stray = {"integration_id": "system", "device_id": None, "command_id": "off", "params": {}, "call": info}
+        refused("call on another command, in a binding", bind(stray), "unknown_field", "/bindings/info:tap/0/call",
+                **put)
+
+
 # One made-up entity per newer domain (gen_fixtures.py NEW_DOMAIN_ENTITIES);
 # hub-sim's fake HA has the same ones.
 NEW_DOMAIN_FIXTURES = os.path.join(FIXTURES, "integrations", "ha_main.entities")
@@ -1426,6 +1524,8 @@ def noauth(c, checker):
     admin_flow(c, checker, candidate)
     hub_flow(c)
     integration_param_flow(c)
+    mute_toggle_flow(c)
+    ha_action_flow(c)
     new_domains_flow(c)
     ha_unlink_flow(c)
     mqtt_flow(c)

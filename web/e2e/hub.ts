@@ -107,13 +107,18 @@ export async function settleIntegration(page: Page, id: string, state: string) {
   await expect.poll(async () => (await advance(page, 2_000), integrationState(page, id)), { message: `${id} -> ${state}` }).toBe(state)
 }
 
+/** Save an integration's config through the API (`body` without the revision, which it reads first). */
+export async function configureIntegration(page: Page, id: string, body: object) {
+  const hub = api(page)
+  const cfg = await hub.get(`/admin/integrations/${id}`)
+  const r = await hub.put(`/admin/integrations/${id}`, { revision: cfg.revision, ...body })
+  expect(r.ok(), `configure ${id} -> ${r.status()}`).toBeTruthy()
+}
+
 /** Point ha_main at the fake HA with its token (hub-sim seeds no token). The mock starts connected. */
 export async function connectHa(page: Page, token = FAKE_HA.token) {
   if (!SIM_URL) return
-  const hub = api(page)
-  const cfg = await hub.get('/admin/integrations/ha_main')
-  const r = await hub.put('/admin/integrations/ha_main', { revision: cfg.revision, settings: { type: 'home_assistant', url: FAKE_HA.url, access_token: token } })
-  expect(r.ok(), `configure HA -> ${r.status()}`).toBeTruthy()
+  await configureIntegration(page, 'ha_main', { settings: { type: 'home_assistant', url: FAKE_HA.url, access_token: token } })
   await settleIntegration(page, 'ha_main', token === FAKE_HA.token ? 'connected' : 'auth_failed')
 }
 

@@ -13,7 +13,9 @@
 // get_services lists every service HA has. For an entity provided by
 // integration P (its registry `platform`, e.g. "sonos"), a service P.S is
 // offered when:
-//   - its `target` has an `entity` filter that matches the entity: the
+//   - its `target` has an `entity` filter that matches the entity (older
+//     services.yaml files, e.g. webostv's, give an `entity_id` field with an
+//     `entity` selector instead: it counts as the target, not a field): the
 //     filter's integration (if any) is P, its domain list (if any) has the
 //     entity's domain, and its supported_features (if any) has an entry the
 //     entity fully supports. Services without an entity target (domain-wide,
@@ -32,6 +34,10 @@
 //     the entity's domain;
 //   - it isn't response-only (`response: {optional: false}`: it only returns
 //     data, which Hubbo can't use).
+//
+// A matching service that isn't offered is listed in Offer::skipped; unless
+// it's response-only (or badly named) it's also in Offer::custom, callable
+// as a Home Assistant action with JSON data (command call_service).
 //
 // Labels come from HA's English translations (frontend/get_translations,
 // category services: "component.P.services.S.name" and
@@ -72,6 +78,10 @@ public:
     struct Offer {
         std::vector<SnapshotService> services;  // offered, sorted by id
         std::vector<Skipped> skipped;           // matching the entity but not offered
+        // The skipped ones that can still be called with free data (not
+        // response-only, valid names), with field hints; within
+        // kMaxCustomServices / kMaxCustomFields / kMaxCustomHintBytes.
+        std::vector<SnapshotCustomService> custom;
         size_t droppedOptions = 0;              // select options left out (too long or too many)
     };
     // The services offered to `entityId` (whose domain is its prefix) from
@@ -91,6 +101,7 @@ public:
         bool supported = false;
         std::vector<uint32_t> features;  // the field's own filter; empty = always
         bool unknownFilter = false;      // a filter we can't evaluate: unsupported
+        std::string example;             // HA's example, compact JSON; "" none or too long
     };
     struct Service {
         std::string domain;   // == platform
@@ -104,6 +115,8 @@ public:
     };
 
 private:
+    static void addCustom(const Service &service, uint32_t supportedFeatures, Offer *offer);
+
     std::vector<Service> services_;
 };
 

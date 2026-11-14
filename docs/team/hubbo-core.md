@@ -6,6 +6,42 @@ This file covers state, decisions and traps only.
 
 ## State
 
+- Home Assistant action (setup-fixes, docs/design/ha-custom-action.md): `ActionSpec::call`
+  (`HaServiceCallSpec` {service, data as compact JSON text}). `config::decodeHaServiceCall()` is
+  the one checker (config decode, backup/restore and api's execute route): pattern via api's
+  `ha::isHaServiceId`, data object, `kMaxHaCallDataBytes` 1024 (too_long), depth 4 (too_deep),
+  top-level target keys (forbidden_param, api's `ha::isTargetKey`), `{{`/`{%` anywhere (template_not_supported, first
+  one). decodeAction: call required with `call_service`, unknown_field on any other command.
+  New ErrorCodes: pattern, forbidden_param, too_deep, template_not_supported.
+  `kRequestNestingLimit` is 9 (an activity binding's call.data at depth 4 needs it).
+  - Compile: `CompiledAction::call` is a `HaServiceCallRef` (shared_ptr<const HaServiceCallSpec>,
+    domain/config.h), made by the compile and owned by the compiled config or direct
+    CompiledCommand, plus every copy still carrying it (executor nodes, `ExecRequest::call`, the
+    adapter's Call until the call is built). No global store: a dry run's or replaced config's
+    calls go with it. Executor work survives a config publish, so a raw pointer into the config
+    would dangle. freeNode() resets a node's ref; the SPSC ring's pop moves out, so slots hold
+    nothing. Gotcha: the engine task can drop the last ref (a queued, never-sent call_service
+    whose config was replaced and reclaimed), a rare free on the engine task, never an allocation.
+  - Domain rule: the call's service must be `<device's snapshot platform>.*` (webostv.* on a
+    webostv TV), else forbidden_param at .../call/service (config) or /call/service (direct
+    execute, ValidationFailed). Not the exact custom_services list (re-link trimming would orphan
+    bindings). Budget: `kMaxHaServiceCalls` 16 per
+    config (capacity_exceeded at .../call). Hints: devices() sums customHintBytes as it goes and
+    flags the device that first crosses `ha::kMaxConfigHintBytes` (capacity_exceeded at
+    /devices/N/ha_capabilities/custom_services); api's `ha::configHintBytes` gives only the total,
+    so the compiler keeps its running sum. `compileDeviceCommand(..., call)` and
+    `ConfigService::compileCommand(..., call)` take the execute body's call.
+  - `ExecRequest::call`; the HA adapter keeps the stale check, then api's `buildCustomCall`;
+    the client sends `ServiceCall::rawData` verbatim as service_data.
+  - Fake HA: webostv.button (text `button`) and select_sound_output (text) on webostv players,
+    as real HA's services.yaml; any service is recorded in `last_call`.
+- Fresh-hub defaults (setup-fixes): `factoryDefaultConfig()` (domain/config.h) is the built-ins plus
+  one global binding, `kOffTrigger` "off:tap" -> system.off. It's the defaults for the board's
+  first boot and factory reset (firmware passes it to bootHub; hub-sim's wipe() uses it). An
+  ordinary binding: a stored config is never touched, no migration. `/admin/reset`'s fallback
+  (api's backup_routes.cpp, `ctx.factoryDefaults` unset) and `backup.empty.json` are api's.
+  `emptyConfig()` (run-nothing, service.cpp) stays empty on purpose.
+
 - MQTT discovery (mqtt, uncommitted). Hubbo is an HA device over the user's broker.
   - Port `integrations/mqtt_transport.h` (WebSocket pattern: callbacks only in poll(), the transport
     reconnects, clean session so resubscribe on each onConnected). Firmware: esp-mqtt.
@@ -30,6 +66,8 @@ This file covers state, decisions and traps only.
     SimApi sets `hub.runTransition` (api::runTransition), calls api::applyMqttSettings at boot and
     after eraseEverything, and serves GET/POST /sim/mqtt and POST /sim/mqtt/publish. SimRuntime
     forwards mqtt_main state/detail to the bridge.
+  - `MqttBridge::detail()` is only for problems (unreachable, auth_failed); "" while connected or
+    connecting, as HA's client (the state alone says it).
   - POST /admin/restart (hub_routes.cpp) goes through api::requestHubRestart; the null-port 503
     keeps its own message.
   - Tests: core/tests/mqtt_bridge_test.cpp (golden discovery, size bound, commands, power, birth,
@@ -270,6 +308,12 @@ This file covers state, decisions and traps only.
       (not_found means YAML-only), `subscribe_entities` for that id, then `get_services` (moved out
       unparsed). Runs alongside a discovery. A completed fetch adds the entity to the stale set's
       "known" list until the next discovery;
+    - `readAttribute(entityId, attribute, done(ErrorCode, optional<ServiceValue>))`: one attribute
+      read fresh (Kind::ReadState: subscribe_entities for that id, first event, unsubscribe),
+      `kStateReadTimeoutMs` 2 s; the adapter then sends the call with what's left of
+      kCommandTimeoutMs (`callService(..., timeoutMs)`, `client.nowMs()`), so both fit the 5 s. Ok+nullopt when the
+      attribute is left out/null/object/array; EntityNotFound when the event has no state for the
+      id. Runs alongside calls, discovery and details (`isDetails()` keeps forgetPending off it);
     - any-task mailboxes for both (`Mailbox<T>`: request, take, cancel, publish by generation).
       Results from an older generation (cancelled, or from before new settings) are never
       published. A cancel frees the slot at once;
@@ -278,12 +322,30 @@ This file covers state, decisions and traps only.
   - `integrations/ha_adapter.*`: the HomeAssistantAdapter for `ha_main`. Catalogs come from
     `DeviceSpec::haCapabilities`; `execute` pushes into an SPSC ring (Pending, or AdapterUnavailable
     at once); `service()` runs on the integration task; results come back through a second ring.
+    A command with `EntityCapabilities::stateAttribute()` (mute_toggle -> is_volume_muted) reads
+    it first, then `buildServiceCall(..., &state)`: a failed/timed-out read still sends (unknown
+    = mute), EntityNotFound and AdapterUnavailable finish unsent. One result per ticket (the
+    call's). No cache, no standing subscription (fast double presses may both read the old state).
+  - `integrations/ha_catalogs.*` (HaCatalogs): the catalog store both the real adapter and the
+    scripted FakeHomeAssistant use: snapshot catalogs cached per device, `keep()` for the fake's
+    addEntity ones, `owner(command, entityId)` (one locked scan per call; the result is used
+    unlocked, since kept capabilities never change or move) and static `buildCall(caps, ...)`
+    (custom or service call). Never frees.
+  - Client internals: every pending slot has one `Answer(ErrorCode, const std::string *text)`
+    (null text on failure/timeout); callService and readAttribute wrap their callbacks in it;
+    discovery and details have none and dispatch by Kind.
   - `ErrorCode::EntityNotFound` ("entity_not_found"): HA doesn't know the target entity.
   - `DeviceSpec::haCapabilities` is stored as `ha_capabilities` (json.cpp); the ConfigService drops
     it for non-HA devices. The backup `remote` block is checked with `api::isValidRemoteEndpoint`.
 - hub-sim:
   - `sim/src/fake_ha.*`: FakeHaServer and FakeHaTransport, in-process. They never touch a real HA.
-    The token is "fake-ha-token" and is redacted in `received()`.
+    The token is "fake-ha-token" and is redacted in `received()`. `FakeHaEntity::muted`: an
+    answered volume_mute applies it, so subscribe_entities serves it (`setMuted`/`muted`).
+    `/sim/ha?muted=<media player id>:0|1` sets it (400 otherwise); `/sim/ha` answers `last_call`
+    (`lastCallJson()`: {service, entity_id, data} or null; reset() clears it).
+  - The scripted FakeHomeAssistant keeps each call's data as the entity's attributes, so
+    mute_toggle toggles in scenarios and engine tests too. Fixtures and showcase bind mute to
+    `media_player.mute_toggle`.
   - SimHub always owns the real client over the fake server. `realHomeAssistant` (SimHub,
     ScenarioRunner) also makes the real adapter the engine's `ha_main`. `hub-sim serve` turns it on,
     so the contract and e2e go through snapshot, buildServiceCall, client and the fake server.
@@ -346,8 +408,9 @@ This file covers state, decisions and traps only.
   (commandsFor) and the integration task (service). The engine task never takes it.
 - **No queueing.** While disconnected, or when the ring is full, execute returns AdapterUnavailable at
   once. A connection drop fails everything in flight with AdapterUnavailable, and nothing is replayed.
-- **Catalog storage is never freed** while the adapter lives (a `std::deque`). Compiled configs hold
-  pointers into it. A changed snapshot gets new storage, keyed by entity_id plus the encoded snapshot.
+- **Catalog storage is never freed** while the adapter lives (HaCatalogs' `std::deque`). Compiled
+  configs hold pointers into it. A changed snapshot gets new storage, keyed by device id, entity_id
+  and the snapshot.
   This is a small, bounded leak per edit, accepted at hobby scale.
 - **Discovery parses in steps** of kParseStepEntities (25) per poll, with a yield hook between steps.
   `hasWork()` tells the loop not to sleep. Big texts are freed between phases. Registry entries are
@@ -389,6 +452,10 @@ This file covers state, decisions and traps only.
   answer for that ticket is ignored.
 
 ## Gotchas
+
+- A header edited by another agent while a build compiles can leave an object that looks newer than
+  the edit (ninja then skips it): odd segfaults and garbage in the native build while asan passes.
+  `touch` the shared headers and rebuild.
 
 - MQTT: liveInfo (it allocates on the board) is read only while connected, and once in
   onConnected so the first discovery carries the version and hostname. All five hooks are required

@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <utility>
 
 // Bounded single-producer/single-consumer ring. Lock-free, no allocation.
 // One task pushes, one task pops. Holds N-1 items.
@@ -26,7 +27,7 @@ public:
     bool pop(T *out) {
         const size_t tail = tail_.load(std::memory_order_relaxed);
         if (tail == head_.load(std::memory_order_acquire)) return false;
-        *out = items_[tail];
+        *out = std::move(items_[tail]);  // the slot keeps nothing (no stale owners)
         tail_.store((tail + 1) % N, std::memory_order_release);
         return true;
     }

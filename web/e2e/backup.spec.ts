@@ -72,6 +72,8 @@ test('resetting the configuration needs “reset” typed first', async ({ page 
   await expect(page.getByText('Configuration reset')).toBeVisible()
   await open(page, '/devices')
   await expect(page.getByText('No devices yet')).toBeVisible()
+  // Only the Off button is left: a tap turns everything off.
+  expect((await api(page).get('/global-bindings')).bindings).toEqual({ 'off:tap': [{ integration_id: 'system', device_id: null, command_id: 'off', params: {} }] })
 })
 
 test('a factory reset erases everything: the hub restarts into setup', async ({ page }) => {

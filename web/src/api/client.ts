@@ -7,6 +7,7 @@ import type {
   ActivityList,
   ActionParams,
   ApiErrorBody,
+  HaServiceCall,
   BluetoothStatus,
   EntityDetailsStatus,
   Capabilities,
@@ -199,7 +200,7 @@ export const api = {
   /** One device in the detail form: a Bluetooth device carries its profile (commands, power, inputs…). */
   device: (id: string) => get<DeviceDetail>(`/devices/${enc(id)}`),
   capabilities: (id: string) => get<Capabilities>(`/devices/${enc(id)}/capabilities`),
-  execute: (id: string, command: string, params: ActionParams) => post<ExecuteResult>(`/devices/${enc(id)}/commands/${enc(command)}/execute`, { params }),
+  execute: (id: string, command: string, params: ActionParams, call?: HaServiceCall) => post<ExecuteResult>(`/devices/${enc(id)}/commands/${enc(command)}/execute`, { params, ...(call ? { call } : {}) }),
   registerDevice: (b: DeviceRegister) => post<DeviceDetail>('/admin/devices', b),
   profiles: async () => (await get<{ profiles: ProfileSummary[] }>('/profiles')).profiles,
   kinds: async () => (await get<{ kinds: Kind[] }>('/kinds')).kinds,

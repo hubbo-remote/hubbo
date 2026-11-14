@@ -10,6 +10,8 @@ import type {
   AuthState,
   Backup,
   Command,
+  CustomService,
+  HaServiceCall,
   ConfigState,
   Capabilities,
   Device,
@@ -43,6 +45,7 @@ import type {
 } from '../src/api/types.ts'
 import { BLE_MAX_DEVICES, BLE_PAIR_WINDOW_MAX_S, BLE_PAIR_WINDOW_MIN_S, BLE_PAIR_WINDOW_S, REMOTE_CHANNEL_MAX, REMOTE_SCAN_TIMEOUT_S } from '../src/api/constants.ts'
 import { forEachAction, validateActivity, validateBindings, type Catalog } from '../src/lib/activity.ts'
+import { CALL_DATA_MAX_DEPTH, CALL_SERVICE, depth } from '../src/lib/haCall.ts'
 import { addressProblem } from '../src/lib/remote.ts'
 import { GUIDE_PATH, loadDocs, sendDoc } from './docs.ts'
 import { checkFirmwareImage } from './firmware.ts'
@@ -112,8 +115,10 @@ const FW_SLOT_BYTES = 6_553_600
 const RESTART_MS = 1000
 /** A new hub's name, as hub-sim's (its fixed MAC suffix; the board's is its own MAC's). */
 const DEFAULT_HUB_NAME = 'Hubbo 534D'
-/** The MQTT bridge's detail lines, by state (core's MqttBridge::detail). */
-const MQTT_DETAIL: Partial<Record<IntegrationState, string>> = { connected: 'Connected to the broker', auth_failed: 'The broker refused the username or password', unreachable: "Can't reach the broker", connecting: 'Connecting to the broker' }
+/** The skip reasons whose services a Home Assistant action can still send (core's snapshot). */
+const CALLABLE_SKIPS = new Set(['unsupported_field', 'too_many_fields', 'too_many_services'])
+/** The MQTT bridge's detail lines, by state (core's MqttBridge::detail; none while connected or connecting). */
+const MQTT_DETAIL: Partial<Record<IntegrationState, string>> = { auth_failed: 'The broker refused the username or password', unreachable: "Can't reach the broker" }
 /** A restored broker that needs its password again (core's rule: it has a host, enabled or not). */
 const needsMqttPassword = (i: Backup['integrations'][number]) => i.type === 'mqtt' && !!i.settings?.host
 /** The hostname the hub derives from its name (api/openapi.yaml Hub.hostname): ASCII A–Z lowercased only, like core's hostnameFor. */
@@ -126,10 +131,12 @@ const SESSION_S = 604_800
 /** Requests refused while the config is blocked or unwritable (validate is a dry run, so it isn't one). */
 const EDITS = [/^\/activities(\/(?!validate$)[^/]+)?$/, /^\/activities\/[^/]+\/activate$/, /^\/global-bindings$/, /^\/admin\/devices/]
 const MAX_BODY = 32 * 1024
-/** Like the hub's JSON reader: deeper nesting is malformed (a restore is a file, so it gets the file limit). */
-const MAX_JSON_DEPTH = 8
+/**
+ * Like the hub's JSON reader: deeper nesting is malformed (a restore is a file, so it gets the file
+ * limit). 9: an activity's call data sits 5 levels down (bindings → trigger → action → call), at its deepest.
+ */
+const MAX_JSON_DEPTH = 5 + CALL_DATA_MAX_DEPTH
 const MAX_FILE_DEPTH = 12
-const depth = (v: unknown): number => (v !== null && typeof v === 'object' ? 1 + Math.max(0, ...Object.values(v).map(depth)) : 0)
 /** The HA entity domains Hubbo offers (api/openapi.yaml), and how the hub's messages list them. */
 type HaDomain = NonNullable<NonNullable<operations['getDiscovery']['parameters']['query']>['domain']>
 // Every domain of the spec's list, once (the compiler says when they drift).
@@ -139,10 +146,17 @@ const DOMAIN_LIST = `${HA_DOMAINS.slice(0, -1).join(', ')} or ${HA_DOMAINS.at(-1
 /** Entity → platform, the integration services Hubbo would offer, and the ones it skips. */
 type Skipped = NonNullable<EntityDetailsStatus['skipped_services']>[number]
 const skip = (reason: Skipped['reason'], ...services: string[]): Skipped[] => services.map((service) => ({ service, reason }))
+/** HA's field hints for the skipped services a device can still call (its Home Assistant actions). */
+const CUSTOM_SERVICES: Record<string, CustomService> = {
+  'webostv.button': { service: 'webostv.button', label: 'Button', fields: [{ name: 'button', required: true, example: 'LEFT', description: 'Name of the button to press.' }] },
+  'webostv.command': { service: 'webostv.command', label: 'Command', fields: [{ name: 'command', required: true, example: 'system.launcher/open', description: 'Endpoint of the command.' }, { name: 'payload', required: false, description: 'An optional payload to provide to the endpoint.' }] },
+  'sonos.play_queue': { service: 'sonos.play_queue', label: 'Play queue', fields: [{ name: 'queue_position', required: false, example: 0, description: 'Position of the song in the queue to start playing from.' }] },
+  'hue.activate_scene': { service: 'hue.activate_scene', label: 'Activate Hue scene', fields: [{ name: 'transition', required: false, example: 10, description: 'Transition duration in seconds.' }] },
+}
 const PLATFORMS: [RegExp, string, Command[], Skipped[]][] = [
   [/denon/, 'denonavr', [{ command_id: 'denonavr.set_dynamic_eq', label: 'Dynamic EQ', effect: 'momentary', params: [{ name: 'dynamic_eq', label: 'Dynamic EQ', type: 'bool', required: true }] }], skip('response_only', 'denonavr.get_command')],
-  [/sonos/, 'sonos', [{ command_id: 'sonos.set_sleep_timer', label: 'Sleep timer', effect: 'momentary', params: [{ name: 'sleep_time', label: 'Sleep after', type: 'int', required: true, minimum: 0, maximum: 86400, unit: 's' }] }, { command_id: 'sonos.snapshot', label: 'Snapshot', effect: 'momentary', params: [{ name: 'with_group', label: 'With group', type: 'bool', required: false, default: true }] }], [...skip('response_only', 'sonos.get_queue'), ...skip('unsupported_field', 'sonos.play_queue')]],
-  [/lg_tv/, 'webostv', [{ command_id: 'webostv.select_sound_output', label: 'Sound output', effect: 'momentary', params: [{ name: 'sound_output', label: 'Output', type: 'enum', required: true, options: ['tv_speaker', 'external_arc', 'external_optical', 'bt_soundbar'] }] }], skip('unsupported_field', 'webostv.command')],
+  [/sonos/, 'sonos', [{ command_id: 'sonos.set_sleep_timer', label: 'Sleep timer', effect: 'momentary', params: [{ name: 'sleep_time', label: 'Sleep after', type: 'int', required: true, minimum: 0, maximum: 86400, unit: 's' }] }, { command_id: 'sonos.snapshot', label: 'Snapshot', effect: 'momentary', params: [{ name: 'with_group', label: 'With group', type: 'bool', required: false, default: true }] }, { command_id: 'sonos.restore', label: 'Restore', effect: 'momentary', params: [{ name: 'with_group', label: 'With group', type: 'bool', required: false, default: true }] }], [...skip('response_only', 'sonos.get_queue'), ...skip('unsupported_field', 'sonos.play_queue')]],
+  [/lg_tv/, 'webostv', [{ command_id: 'webostv.select_sound_output', label: 'Sound output', effect: 'momentary', params: [{ name: 'sound_output', label: 'Output', type: 'enum', required: true, options: ['tv_speaker', 'external_arc', 'external_optical', 'bt_soundbar'] }] }], skip('unsupported_field', 'webostv.button', 'webostv.command')],
   [/xbox/, 'xbox', [], []],
   [/^light\./, 'hue', [], skip('unsupported_field', 'hue.activate_scene')],
   [/^switch\./, 'hue', [], []],
@@ -219,7 +233,7 @@ export function createMock(opts: MockOptions = {}) {
   /** Each HA entity's own command variants (e.g. its source list), from the fixture device on it. */
   let entityCommands: Map<string, Command[]>
   /** What only an entity's details carry (§3b): its integration's services, the skipped ones, its registry id. */
-  let entityExtras: Map<string, { services: string[]; skipped: Skipped[]; uniqueId?: string }>
+  let entityExtras: Map<string, { platform: string; services: string[]; skipped: Skipped[]; uniqueId?: string }>
   /** The last details request (one at a time); dropped when the HA settings change. */
   let details: { entityId: string; startedAt: number; state: 'running' | 'settled' } | null
   /** A renamed entity's old id (POST /__mock/ha?rename=): like the hub's unique_id match, its details name the device. */
@@ -285,7 +299,7 @@ export function createMock(opts: MockOptions = {}) {
     if (!haCandidate('media_player.denon')) db.discover.candidates.push({ provider: { type: 'home_assistant', entity_id: 'media_player.denon' }, name: 'Denon AVR-X3700H', domain: 'media_player', suggested_kind: 'receiver', supported: true, command_ids: ['media_player.turn_on', 'media_player.turn_off', 'media_player.volume_set', 'media_player.select_source'], dropped_options: 0, registered_device_id: null })
     for (const c of db.discover.candidates) {
       const [, platform = c.platform ?? 'unknown', services = [], skipped = []] = PLATFORMS.find(([re]) => re.test(c.provider.entity_id)) ?? []
-      entityExtras.set(c.provider.entity_id, { services: services.map((s) => s.command_id), skipped, uniqueId: c.provider.unique_id ?? `${platform}-${c.provider.entity_id.split('.')[1]}` })
+      entityExtras.set(c.provider.entity_id, { platform, services: services.map((s) => s.command_id), skipped, uniqueId: c.provider.unique_id ?? `${platform}-${c.provider.entity_id.split('.')[1]}` })
       delete c.provider.unique_id // details carry it
       Object.assign(c, { platform, dropped_options: 0 })
     }
@@ -319,13 +333,13 @@ export function createMock(opts: MockOptions = {}) {
     if (mode.configState) db.activeActivityId = null
   }
 
-  /** Factory defaults: no devices, activities or global bindings; built-in integrations unconfigured. Credentials and tokens stay. */
+  /** Factory defaults: no devices or activities, one global button (Off tap → off, like core); built-in integrations unconfigured. Credentials and tokens stay. */
   function factoryDefaults() {
     db.devices = []
     db.capabilities.clear()
     db.activities = []
     db.activeActivityId = null
-    db.globalBindings = { bindings: {}, revision: configGen }
+    db.globalBindings = { bindings: { 'off:tap': [{ integration_id: 'system', device_id: null, command_id: 'off', params: {} }] }, revision: configGen }
     db.discover.candidates.forEach((c) => (c.registered_device_id = null))
     const ha = db.configs.get('ha_main')!
     ha.settings = { type: 'home_assistant', url: 'http://homeassistant.local:8123', verify_tls: false, has_access_token: false }
@@ -352,7 +366,10 @@ export function createMock(opts: MockOptions = {}) {
     capabilities: db.capabilities,
     systemCommands: db.integrations.find((i) => i.id === 'system')?.commands ?? [],
     activities: db.activities.map((a) => ({ id: a.id, name: a.name })),
+    haPlatforms: new Map(db.devices.flatMap((d) => (d.provider.type === 'home_assistant' ? [[d.id, entityPlatform(d.provider.entity_id)] as const] : []))),
   })
+  /** An entity's HA integration (its snapshot's platform; kept after HA forgets it), '' for none (YAML-only). */
+  const entityPlatform = (entityId: string) => entityExtras.get(entityId)?.platform ?? ''
 
   function integrationState(id: string): IntegrationState {
     const c = db.configs.get(id)
@@ -468,7 +485,13 @@ export function createMock(opts: MockOptions = {}) {
     for (const cmd of entityCommands.get(c.entity_id!) ?? []) all.set(cmd.command_id, cmd)
     // A built-in the fixtures never show (e.g. switch.turn_on): a plain momentary command.
     const plain = (id: string): Command => ({ command_id: id, label: id.split('.').pop()!.replace(/_/g, ' ').replace(/^./, (x) => x.toUpperCase()), effect: 'momentary', params: [] })
-    return (c.command_ids ?? []).map((id) => all.get(id) ?? INTEGRATION_SERVICES.get(id) ?? plain(id))
+    const commands = (c.command_ids ?? []).map((id) => all.get(id) ?? INTEGRATION_SERVICES.get(id) ?? plain(id))
+    // Like the hub's snapshot: the services it skipped but can still call, with HA's hints, as one command.
+    const services = (entityExtras.get(c.entity_id!)?.skipped ?? [])
+      .filter((x) => CALLABLE_SKIPS.has(x.reason))
+      .map((x) => CUSTOM_SERVICES[x.service] ?? { service: x.service, fields: [] })
+    if (services.length) commands.push({ command_id: CALL_SERVICE, label: 'Home Assistant action', effect: 'momentary', group: 'custom', params: [], services })
+    return commands
   }
 
   /** Like the hub: drop pairings (and a window) whose device is no longer in config. */
@@ -670,7 +693,7 @@ export function createMock(opts: MockOptions = {}) {
     s.active_activity_id = db.activeActivityId
     s.config = config
     s.auth_state = authState()
-    s.integrations = integrations().map(({ id, type, state }) => ({ id, type, state }))
+    s.integrations = integrations().map(({ id, type, state, detail }) => ({ id, type, state, ...(detail ? { detail } : {}) }))
     s.remote.paired = pairing.paired
     if (endpoint) s.remote.channel = endpoint.channel
     s.remote.last_packet_age_ms = Date.now() - lastEventAt
@@ -767,8 +790,8 @@ export function createMock(opts: MockOptions = {}) {
     ['POST', /^\/devices\/([^/]+)\/commands\/([^/]+)\/execute$/, 'token', (req, m) => {
       const d = db.devices.find((x) => x.id === m[1])
       if (!d) return err(404, 'not_found', 'No such device')
-      const params = (req.body as { params?: Record<string, never> })?.params ?? {}
-      const a = { integration_id: d.integration_id, device_id: d.id, command_id: m[2]!, params }
+      const body = req.body as { params?: Record<string, never>; call?: HaServiceCall }
+      const a: Action = { integration_id: d.integration_id, device_id: d.id, command_id: m[2]!, params: body?.params ?? {}, ...(body?.call !== undefined ? { call: body.call } : {}) }
       if (db.capabilities.get(d.id)?.commands.find((c) => c.command_id === a.command_id)?.effect === 'wait') return fixtureError(422, 'errors/sequence_only.json')
       const shape = activityShape({ name: 'x', startup: [a], shutdown: [], bindings: {} }, ['name', 'startup', 'shutdown', 'bindings'])
       const v = shape.length ? shape : validateActivity({ name: 'x', startup: [a], shutdown: [], bindings: {} }, catalog()).errors
@@ -1022,6 +1045,7 @@ export function createMock(opts: MockOptions = {}) {
           const commands = haCommands(c)
           const cat = catalog()
           cat.capabilities = new Map(cat.capabilities).set(d.id, { device_id: d.id, integration_id: d.integration_id, commands })
+          cat.haPlatforms = new Map(cat.haPlatforms).set(d.id, entityPlatform(p.entity_id))
           const broken = db.activities.flatMap((a, ai) => validateActivity(a, cat).errors.map((x) => ({ ...x, path: `/activities/${ai}${x.path}` })))
           const global: ValidationIssue[] = []
           validateBindings(db.globalBindings.bindings, cat, global, [])

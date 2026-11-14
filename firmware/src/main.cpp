@@ -532,7 +532,7 @@ void printCredentialState() {
 void bootState() {
     configService = std::make_unique<hubbo::config::ConfigService>(records, adapters, configStore);
     configService->setListener(&configListeners);
-    const hubbo::BootReport report = hubbo::bootHub(hubbo::ConfigSpec{}, *configService, &credentials, engine,
+    const hubbo::BootReport report = hubbo::bootHub(hubbo::factoryDefaultConfig(), *configService, &credentials, engine,
                                                     activePersister, millis());
 
     bootConfig = report.config;

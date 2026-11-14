@@ -576,10 +576,12 @@ Outcome ConfigService::replaceIntegration(std::string_view id, IntegrationSpec &
 }
 
 Outcome ConfigService::compileCommand(std::string_view deviceId, std::string_view commandId,
-                                      const std::vector<ParamInput> &params, CompiledCommand *out) const {
+                                      const std::vector<ParamInput> &params, CompiledCommand *out,
+                                      const HaServiceCallSpec *call) const {
     Outcome outcome;
     outcome.id = std::string(deviceId);
-    const ErrorCode code = compileDeviceCommand(config_, adapters_, deviceId, commandId, params, out, &outcome.issues);
+    const ErrorCode code =
+        compileDeviceCommand(config_, adapters_, deviceId, commandId, params, out, &outcome.issues, call);
     switch (code) {
         case ErrorCode::Ok: break;
         case ErrorCode::UnknownCommand:

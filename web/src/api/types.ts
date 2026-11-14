@@ -12,6 +12,10 @@ export type ButtonId = S['Button']
 /** `${button}:${event}`, e.g. `volume_up:down`. */
 export type TriggerKey = string
 
+/** A Home Assistant action's call: a service of the device's own, with its data (docs/design/ha-custom-action.md). */
+export type HaServiceCall = S['HaServiceCall']
+/** One of an HA device's own services that Hubbo doesn't type, with HA's field hints. */
+export type CustomService = S['HaCustomService']
 export type Action = S['Action']
 export type ActionParams = S['ActionParams']
 export type ParamValue = ActionParams[string]

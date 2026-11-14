@@ -5,6 +5,7 @@
 #include <string_view>
 #include <vector>
 
+#include "hubbo/domain/config.h"
 #include "hubbo/domain/ids.h"
 #include "hubbo/domain/limits.h"
 #include "hubbo/domain/params.h"
@@ -29,6 +30,7 @@ enum class ActionOp : uint8_t {
 
 constexpr uint16_t kNoDevice = 0xFFFF;
 
+// The one stored copy of `call` (config or HTTP task; never the engine).
 struct CompiledAction {
     ActionOp op = ActionOp::Adapter;
     uint8_t adapterIndex = 0;       // into AdapterSet (Adapter only)
@@ -40,6 +42,10 @@ struct CompiledAction {
     // Hold-effect commands only: what releases the hold (same params).
     const CommandSpec *release = nullptr;
     uint16_t releaseIndex = 0;
+    // A Home Assistant action's call (call_service), shared with every copy
+    // of this action (executor nodes, the adapter's hand-over), so work that
+    // outlives a config publish still has it. Empty for every other command.
+    HaServiceCallRef call;
 };
 
 // One registered device command compiled for direct execution

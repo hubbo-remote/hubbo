@@ -4,17 +4,19 @@ import { IntegrationSettings, SaveButton, SaveError, type ConnectionHelp, type S
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
+import { usePendingFormSave } from '@/hooks/stepSave'
 
 const MQTT_HELP: ConnectionHelp = {
   auth_failed: { variant: 'error', text: 'The broker rejected the username or password.' },
   unreachable: { variant: 'warning', text: 'Can’t reach the broker. Check the address and port.' },
 }
 
-/** The MQTT broker Hubbo shows up through in Home Assistant, and its connection. */
-export function MqttSettings({ id }: { id: string }) {
+/** The MQTT broker Hubbo shows up through in Home Assistant, and its connection; `showState` adds the live state line (setup). */
+export function MqttSettings({ id, showState }: { id: string; showState?: boolean }) {
   return (
     <IntegrationSettings
       id={id}
+      showState={showState}
       help={MQTT_HELP}
       slow="Still connecting. Check the broker, or come back later."
       testId="mqtt-connection"
@@ -30,14 +32,16 @@ function MqttForm({ config, save: saveSettings, busy, error }: { config: Integra
   const [port, setPort] = useState(String(s?.port ?? 1883))
   const [username, setUsername] = useState(s?.username ?? '')
   const [password, setPassword] = useState('')
-  if (!s) return null
-  // A new broker clears the saved password unless a new one comes with it (the hub's rule).
-  const hostChanged = host.trim() !== s.host
-  const keepsPassword = s.has_password && !hostChanged
-
   // `password`: a new one, null to remove the saved one, or left out to keep it.
   const save = (password?: string | null) =>
     saveSettings({ type: 'mqtt', host: host.trim(), port: Number(port), username, ...(password === undefined ? {} : { password }) })
+  // A new broker clears the saved password unless a new one comes with it (the hub's rule).
+  const hostChanged = !!s && host.trim() !== s.host
+  // In setup, Continue saves what's typed (without waiting for the connection).
+  const dirty = !!s && (hostChanged || port !== String(s.port) || username !== s.username || !!password)
+  const form = usePendingFormSave(dirty, () => save(password || undefined))
+  if (!s) return null
+  const keepsPassword = s.has_password && !hostChanged
   const submit = (e: FormEvent) => {
     e.preventDefault()
     void save(password || undefined)
@@ -46,7 +50,7 @@ function MqttForm({ config, save: saveSettings, busy, error }: { config: Integra
   const at = (field: string) => error?.details.find((d) => d.path === `/settings/${field}`)?.message
   const fieldError = error?.details.some((d) => d.path.startsWith('/settings/'))
   return (
-    <form onSubmit={submit} className="grid gap-4">
+    <form ref={form} onSubmit={submit} className="grid gap-4">
       <div className="grid grid-cols-[1fr_6rem] gap-3">
         <Field label="Broker" htmlFor="mqtt-host" error={at('host')}>
           <Input id="mqtt-host" spellCheck={false} autoCapitalize="none" placeholder="homeassistant.local" value={host} onChange={(e) => setHost(e.target.value)} maxLength={253} required />

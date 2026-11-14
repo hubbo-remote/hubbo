@@ -1,9 +1,11 @@
 import type { Action } from '@/api/types'
 import { commandFor, isSystem, LEVEL_SCALE, numberChoices, paramUnit, percentLabel, withUnit, type Catalog } from '@/lib/activity'
 import { commandTitle, friendlyName, namedParam, toggleLabel, toggleOf } from '@/lib/commands'
+import { callLabel } from '@/lib/haCall'
 import { paramValueLabel } from '@/lib/keys'
 
 export function commandLabel(a: Action, cat: Catalog): string {
+  if (a.call) return callLabel(a.call) // a Home Assistant action: "webostv.button · button: INFO"
   const cmd = commandFor(a, cat)
   const t = toggleOf(a, cmd)
   return friendlyName(a) ?? (t ? toggleLabel(cmd!, ...t) : cmd && commandTitle(cmd)) ?? a.command_id

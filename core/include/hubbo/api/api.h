@@ -120,9 +120,6 @@ struct ApiContext {
     config::ConfigService &config;
     Runtime &runtime;
     HubInfo info;
-    // What POST /admin/reset (resetConfiguration) restores (the board's first-boot config). Null:
-    // an empty config (ConfigService adds the built-in integrations).
-    const ConfigSpec *factoryDefaults = nullptr;
 
     // Phase 3 ports; null where a platform has none (the routes answer 503).
     // The remote radio (GET/PUT /admin/remote..., the pair scan).

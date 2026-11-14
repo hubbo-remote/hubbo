@@ -620,6 +620,9 @@ TEST_F(EngineTest, HomeAssistantFakeRecordsTheRealServiceCall) {
     EXPECT_EQ(calls[0], "media_player.turn_on media_player.family_room_lg_tv");
     EXPECT_EQ(calls[2], "media_player.select_source media_player.family_room_lg_tv source=\"HDMI 1\"");
     EXPECT_EQ(calls.back(), "media_player.volume_mute media_player.denon is_volume_muted=true");
+    // Mute is a toggle: the next press reads the muted state and unmutes.
+    hub.tap(Button::Mute);
+    EXPECT_EQ(calls.back(), "media_player.volume_mute media_player.denon is_volume_muted=false");
 }
 
 // ---- request/reply (EngineRequest) ----

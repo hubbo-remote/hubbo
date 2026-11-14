@@ -85,6 +85,7 @@ Hubbo's; the HA field is fixed by the table.
 | `media_player.volume_down` | `volume_down` | VOLUME_SET or VOLUME_STEP | |
 | `media_player.volume_set` | `volume_set` | VOLUME_SET | `level` number 0–1 → `volume_level` |
 | `media_player.volume_mute` | `volume_mute` | VOLUME_MUTE | `muted` bool → `is_volume_muted` |
+| `media_player.mute_toggle` (Toggle mute) | `volume_mute` | VOLUME_MUTE | none; sends `is_volume_muted` = the opposite of the entity's current value, read at press time (unknown → `true`) |
 | `media_player.media_play_pause` | `media_play_pause` | PLAY and PAUSE | |
 | `media_player.media_play` | `media_play` | PLAY | |
 | `media_player.media_pause` | `media_pause` | PAUSE | |
@@ -194,6 +195,15 @@ function.
 - **toggle** (media_player, light, switch, fan, script): the architecture prefers explicit
   on/off. Toggles break as soon as the hub and the device disagree. Covers, humidifiers and input
   booleans get one too, as HA's own UI does.
+- **Mute toggle is the one exception, and it doesn't guess.** HA has no mute toggle
+  (`volume_mute` needs `is_volume_muted`), and a remote's mute key toggles. So
+  `media_player.mute_toggle` sits next to Mute/Unmute: `EntityCapabilities::stateAttribute()`
+  names the attribute it reads (`is_volume_muted`); the adapter reads the one entity's state
+  (`subscribe_entities`) just before sending and passes the value to `buildServiceCall()`, which
+  sends the opposite. HA leaves the attribute out when the player is off (or reports None);
+  unknown, or not a bool, counts as false, so the press mutes. Two presses faster than HA
+  updates its state can both send the same value. The wizard binds the remote's mute button to
+  it; activities and sequences keep the explicit Mute/Unmute.
 - **play_media, browse/search, announce, enqueue**: take free-form content IDs or URLs.
 - **join / unjoin** (GROUPING): take other entity IDs.
 - **media_seek, clear_playlist**: no remote use, and clear_playlist is destructive.
@@ -259,12 +269,16 @@ that token's HA user can do (see docs/security.md).
 ## Integration-specific services
 
 Built in Phase 3 (`core/include/hubbo/ha/services.h`, `snapshot.h`). Resolved from Home
-Assistant rather than curated per integration. Never free-text service calls: the user asked for
-that as a fallback, but HA's metadata covers the need.
+Assistant rather than curated per integration. What Hubbo can't type is still callable as a
+Home Assistant action (below).
 
 - `get_services` (WebSocket) returns every service with its `target` filter and its `fields`
-  with selectors. For example, `webostv.button` targets `entity: {integration: webostv, domain:
-  media_player}`, and its `button` field is a `select` selector listing `INFO`, `HOME`, ....
+  with selectors. For example, `sonos.set_sleep_timer` targets `entity: {integration: sonos,
+  domain: media_player}`, and its `sleep_time` field is a `number` selector. Older
+  services.yaml files name the target as an `entity_id` field with an `entity` selector instead
+  (`webostv.button`, `sonos.snapshot`): that field counts as the target, not a field.
+  `webostv.button`'s `button` field is a free `text` selector (HA documents INFO, HOME, ... but
+  sends any string), so it's a custom service, not a typed command.
 - The entity registry gives each entity's `platform` (integration), e.g. `webostv`. A YAML-only
   entity has no registry entry, so no platform and no integration services; its domain commands
   still work.
@@ -308,7 +322,8 @@ that as a fallback, but HA's metadata covers the need.
   `minutes` → `min`, `hours` → `h`) and dropped if still over 16 chars. All of it is stored in
   the snapshot and re-checked when it's loaded (a default that doesn't fit is refused).
 - Same safety rules as the allowlist: the target is always the registered entity, only declared
-  fields can be sent, and nothing can override `entity_id`, `area_id` or `device_id`.
+  fields can be sent, and nothing can override `entity_id`, `area_id` or `device_id`. (A Home
+  Assistant action sends data the user wrote, but keeps the target rule.)
 - **Discovery is lean** (Phase 4, decided 2026-11-09): `POST`/`GET
   /admin/integrations/ha_main/discover` reads the compact entity registry and all current states
   (about 0.8 MB, ~7 s on the board), never `get_services` (about 230 KB) or the full registry.
@@ -326,6 +341,27 @@ that as a fallback, but HA's metadata covers the need.
   never asked on the hot path. The API never accepts a snapshot from a client and never returns
   one; a stored snapshot is re-validated when it's loaded (`ha/snapshot_json.h`), so a
   hand-edited backup can't smuggle in a service of another integration or a target param.
+- **Home Assistant action** (`call_service`, docs/design/ha-custom-action.md; the user's
+  decision 2026-11-13, reversing "never free-text service calls"). The integration's services
+  that match the entity but can't be typed (`unsupported_field` or `too_many_fields`, never
+  `response_only`) are kept in the snapshot as `custom_services`, with HA's field hints (name,
+  required, example as JSON of at most 64 bytes, translated description). A device with any gets
+  the command `call_service` "Home Assistant action" (group `custom`), whose capabilities entry
+  lists them as `services`. An action picks one and writes its `data` as a JSON object, sent
+  verbatim (`ha::EntityCapabilities::buildCustomCall`, `ServiceCall::rawData`):
+  - the target is always the device's entity; the service must be `^[a-z][a-z0-9_]{0,31}\.[a-z][a-z0-9_]{0,63}$`
+    (`ha::isHaServiceId`), and its domain the snapshot's platform (`webostv.*` on a webOS TV;
+    else `forbidden_param` at `.../call/service`, checked when core compiles the action; a
+    device with no snapshot or platform takes none). Any service of that integration passes,
+    not only the listed ones; the UI offers the list;
+  - `data`: at most 1024 bytes compact and 4 levels; no top-level `entity_id`, `device_id`,
+    `area_id`, `floor_id`, `label_id` (`forbidden_param`); no `{{` or `{%` anywhere
+    (`template_not_supported`: HA's call_service sends templates as plain text);
+  - at most 16 such actions per config (`capacity_exceeded`);
+  - hints: up to 16 services and 8 fields, 2048 bytes per device and 16384 per config
+    (`ha::kMaxCustomHintBytes`, `kMaxConfigHintBytes`); registration and re-link keep what fits.
+  An action can reach anything HA allows for a service of the device's own integration, so
+  it's the one place the "only allowlisted calls" rule doesn't hold; security.md says so.
 - **Hue rate.** Hue handles about one command per second (Harmonizer/HANDOFF.md). Bursts of
   `light.brightness_step` should be coalesced by the HA adapter's queue rather than sent one by
   one.

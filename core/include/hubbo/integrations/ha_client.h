@@ -110,6 +110,10 @@ class HomeAssistantClient : private WebSocketTransport::Listener {
 public:
     static constexpr uint32_t kCommandTimeoutMs = 5000;
     static constexpr uint32_t kDiscoveryTimeoutMs = 30000;  // per discovery command
+    // A state read before a call (readAttribute). The call after it gets
+    // what's left of kCommandTimeoutMs (callService's timeoutMs), so the two
+    // together stay within the executor's 5 s action bound.
+    static constexpr uint32_t kStateReadTimeoutMs = 2000;
     static constexpr uint32_t kAuthTimeoutMs = 10000;
     static constexpr uint32_t kPingIntervalMs = 30000;
     static constexpr uint32_t kPongTimeoutMs = 10000;
@@ -154,12 +158,29 @@ public:
     // Integration task. Sends call_service; `done` gets Ok (HA's result was
     // success; HA also says so for an entity it doesn't have, see
     // entityStale()), AdapterFailed (HA refused it), AdapterTimeout (no result in
-    // kCommandTimeoutMs) or AdapterUnavailable (the connection dropped).
+    // `timeoutMs`) or AdapterUnavailable (the connection dropped).
     // Returns Ok (sent; `done` will be called exactly once), or at once with
     // AdapterUnavailable (not Connected, or the send failed) / QueueFull
     // (kMaxPendingCommands in flight), and then `done` isn't called.
     using CallDone = std::function<void(ErrorCode result)>;
-    ErrorCode callService(const ha::ServiceCall &call, CallDone done);
+    ErrorCode callService(const ha::ServiceCall &call, CallDone done, uint32_t timeoutMs = kCommandTimeoutMs);
+    // Integration task: the client's clock (poll()'s nowMs, or the Clock).
+    uint64_t nowMs() const { return nowMs_; }
+
+    // Integration task: one attribute of one entity's current state, read
+    // fresh (subscribe_entities for that id, its first event, then
+    // unsubscribe; nothing is cached or kept subscribed). For commands that
+    // act on the current state (a mute toggle). `done` gets Ok with the
+    // value (nullopt: the entity has no such attribute, e.g. a player that
+    // is off, or it isn't a bool, number or string), EntityNotFound (HA has
+    // no state for it), AdapterFailed (HA refused, or the answer was
+    // malformed), AdapterTimeout (no answer in kStateReadTimeoutMs) or
+    // AdapterUnavailable (the connection dropped). Returns Ok (`done` will
+    // be called exactly once), or at once AdapterUnavailable / QueueFull /
+    // InvalidId (not a valid, allowlisted entity id), and then `done` isn't
+    // called. Runs alongside calls, a discovery and a details fetch.
+    using ReadDone = std::function<void(ErrorCode result, std::optional<ha::ServiceValue> value)>;
+    ErrorCode readAttribute(const std::string &entityId, const std::string &attribute, ReadDone done);
 
     // Any task. Runtime status only (never saved): the entity is missing
     // from the latest completed discovery. Discovery is the only source: HA
@@ -222,15 +243,25 @@ private:
         DetailsState,     // details: subscribe_entities (one), a subscription
         DetailsServices,  // details: get_services
         DetailsTranslations,  // details: frontend/get_translations (optional: a failure degrades)
+        ReadState,        // readAttribute: subscribe_entities (one), a subscription
     };
-    static bool isSubscription(Kind k) { return k == Kind::States || k == Kind::DetailsState; }
+    static bool isSubscription(Kind k) { return k == Kind::States || k == Kind::DetailsState || k == Kind::ReadState; }
     static bool isDiscovery(Kind k) { return k == Kind::Registry || k == Kind::States; }
+    static bool isDetails(Kind k) {
+        return k == Kind::DetailsRegistry || k == Kind::DetailsState || k == Kind::DetailsServices ||
+               k == Kind::DetailsTranslations;
+    }
+    // A command's result: Ok with HA's message (`text`), or the failure
+    // (AdapterFailed, AdapterTimeout, AdapterUnavailable) without one.
+    using Answer = std::function<void(ErrorCode result, const std::string *text)>;
     struct Pending {
         bool used = false;
         uint32_t id = 0;
         Kind kind = Kind::CallService;
         uint64_t deadlineMs = 0;
-        CallDone done;  // CallService
+        // CallService and ReadState: their caller's answer. Discovery and
+        // details have none (their results go to the job in progress).
+        Answer answer;
     };
     struct Settings {
         std::string url;
@@ -314,7 +345,7 @@ private:
     void failInFlight();  // the connection is gone: fail calls, discovery and details
     void serviceMailboxes();
     // `body`: the command's JSON object without "id" (e.g. {"type":"get_states"}).
-    ErrorCode sendCommand(Kind kind, const std::string &body, uint32_t timeoutMs, CallDone done);
+    ErrorCode sendCommand(Kind kind, const std::string &body, uint32_t timeoutMs, Answer answer);
     void unsubscribe(uint32_t subscriptionId);
     void release(Pending &p);  // free a slot without an answer (ends a subscription)
     void forgetPending(bool discovery);  // a finished job's commands still in flight
@@ -332,6 +363,9 @@ private:
     // Entity details (integration task).
     void detailsResult(Kind kind, bool success, std::string text);
     void finishDetails(ErrorCode result);
+    // A state read's answer (integration task).
+    static void readResult(const std::string &entityId, const std::string &attribute, const ReadDone &done,
+                           ErrorCode result, const std::string *text);
 
     WebSocketTransport &transport_;
     Clock clock_;

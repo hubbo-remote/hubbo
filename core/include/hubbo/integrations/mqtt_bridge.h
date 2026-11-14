@@ -113,8 +113,9 @@ public:
     // Any task: an IntegrationState name: "disabled", "not_configured",
     // "connecting", "connected", "auth_failed" or "unreachable".
     const char *state() const;
-    // Any task: a short human detail for the status line ("" if none): no
-    // host and no secrets, well under the API's 120-character cap.
+    // Any task: a short human detail for the status line, only for a
+    // problem (unreachable, auth_failed); "" otherwise. No host and no
+    // secrets, well under the API's 120-character cap.
     std::string detail() const;
 
     const std::string &nodeId() const { return nodeId_; }

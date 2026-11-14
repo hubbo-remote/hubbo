@@ -49,7 +49,8 @@
     {
       "id": "ha_main",
       "type": "home_assistant",
-      "state": "connected"
+      "state": "connected",
+      "detail": "Home Assistant 2026.11.1"
     },
     {
       "id": "mqtt_main",

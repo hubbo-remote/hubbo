@@ -1,9 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include "hubbo/domain/params.h"
@@ -24,11 +26,27 @@
 // executed directly. Secrets (HA access token, BLE bonds) are never here.
 namespace hubbo {
 
+// A Home Assistant action on a device (command "call_service",
+// docs/design/ha-custom-action.md): one of the device's integration
+// services, and its data, sent verbatim. Checked by
+// config::decodeHaServiceCall().
+struct HaServiceCallSpec {
+    std::string service;      // "<domain>.<service>", e.g. "webostv.button"
+    std::string data = "{}";  // a JSON object, compact (canonical) text
+    bool operator==(const HaServiceCallSpec &o) const { return std::tie(service, data) == std::tie(o.service, o.data); }
+    bool operator<(const HaServiceCallSpec &o) const { return std::tie(service, data) < std::tie(o.service, o.data); }
+};
+// A compiled call: owned by the compiled config or direct command that made
+// it, and by any work still carrying it (executor, adapter), so it lives
+// exactly as long as something can still send it.
+using HaServiceCallRef = std::shared_ptr<const HaServiceCallSpec>;
+
 struct ActionSpec {
     std::string integrationId;            // integration_id
     std::optional<std::string> deviceId;  // device_id; nullopt == JSON null
     std::string commandId;                // command_id
     std::vector<ParamInput> params;       // params (object, in any order)
+    std::optional<HaServiceCallSpec> call;  // call_service only (required there)
 };
 
 struct BindingSpec {
@@ -204,5 +222,14 @@ struct ConfigSpec {
     uint32_t globalBindingsRevision = 0;
     uint32_t revision = 0;  // whole config; bumped by every saved change
 };
+
+// The remote's Off press as a trigger ("off:tap", what the web admin's
+// "Press" writes).
+constexpr const char *kOffTrigger = "off:tap";
+// A fresh hub's config (bootHub()'s defaults on the board's first boot and
+// after a factory reset): the built-in integrations, and the Off button
+// bound globally to system.off. An ordinary binding the user can change or
+// remove; a stored config is never touched by it.
+ConfigSpec factoryDefaultConfig();
 
 }  // namespace hubbo

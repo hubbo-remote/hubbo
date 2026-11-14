@@ -265,6 +265,8 @@ Current as of the mqtt branch (Hubbo as an HA device over MQTT discovery). Not a
   `api/support.h`. No noinline: measured, separate frames stacked deeper than the inlined ones.
   Measure with the Xtensa compiler (host -Os inlines differently): `build/scratch/xsu-api.sh
   /work/core <out>` in `bin/hubbo run` (core's `xsu.sh` covers config/).
+- A header edited mid-build (another agent's) can leave stale objects in build/native:
+  segfaults across ApiTest while ASan passes. Touch the headers and rebuild.
 - `-Werror=missing-field-initializers`: `ApiContext` brace-init in tests must list every
   trailing field, and an aggregate with a default member initializer needs a constructor (see
   `ParamDraft` and `SimulatedRemote`).
@@ -364,6 +366,66 @@ Current as of the mqtt branch (Hubbo as an HA device over MQTT discovery). Not a
 
 - **Profiles phase:** API tests, lint and contract noauth/auth pass; the mock modes wait on the
   web mock's new routes. Then /simplify and the gate.
+
+- **Default Off binding (setup-fixes):** POST /admin/reset restores core's `factoryDefaultConfig()`
+  (built-ins + global `off:tap` → system off); `ApiContext::factoryDefaults` is gone (hub-sim's
+  positional init dropped its slot). backup.empty.json carries the binding; the resetConfiguration
+  description says so. ApiTest's MQTT reset case asserts the binding. Contract noauth passes; no
+  reset flow assumed empty global bindings.
+
+- **Mute toggle (setup-fixes, built; no gate yet):** HA has no mute toggle. `media_player.mute_toggle`
+  "Toggle mute" (VOLUME_MUTE; next to volume_mute). Generic hook: `EntityCapabilities::stateAttribute(i)`
+  (the `CommandDef` row's `stateAttribute` column, capabilities.cpp) names the attribute to read; core's adapter reads the one
+  entity (subscribe_entities) at press time and passes it as `buildServiceCall(..., out, state)`
+  (trailing `const ServiceValue *`, default nullptr). Unknown or non-bool counts as false, so it mutes.
+  HA drops `is_volume_muted` when the player is off. Fixture bindings use mute:down to mute_toggle
+  (core's sim too). Contract `mute_toggle_flow` (noauth, sim only): muted=1 → false, again → true,
+  muted=0 → true.
+
+- **Home Assistant action (setup-fixes, built; no gate yet; docs/design/ha-custom-action.md):**
+  - Action/ExecuteRequest `call` (HaServiceCall {service, data}); only with `call_service` on an
+    HA device. Core decodes it (`config::decodeHaServiceCall`); the execute route requires it for
+    call_service, else `unknown_field` /call. Codes: pattern, wrong_type, too_long, too_deep,
+    forbidden_param, template_not_supported; 16 calls per config (`capacity_exceeded`).
+  - The picker list is the snapshot's `custom_services` (services skipped as unsupported_field or
+    too_many_fields; never response_only), with hints {name, required, example (JSON text,
+    at most 64 B), description}. They're served as call_service's `services` in capabilities
+    (`ha::encodeCustomServices`, shared with the snapshot encoder; no label → none sent, the
+    web shows the id). call_service is offered only when there are any. Budget: 16 services,
+    8 fields, `kMaxCustomHintBytes` 2048 per device (checked at decode) and `kMaxConfigHintBytes`
+    16384 per config (core's compiler checks; `snapshotFor` trims to what's left). One budget
+    rule, `trimCustomServices(&vector, budget)`: keeps in order what fits (bytes and 16), skips
+    what doesn't and goes on; used by offerFor (2048) and snapshotFor. ConfigAtTheLimits fills
+    it exactly.
+  - `decodeSnapshot(..., path, entityId)`: custom_services on a domain that never offers
+    integration services (scene, script, ...) is unknown_field (core passes the provider's
+    entity_id).
+  - Old-style services.yaml (no `target`, an `entity_id` field with an entity selector:
+    webostv.*, sonos.snapshot) now count that field as the target. So sonos.snapshot/restore
+    become typed commands after a re-link.
+  - `ha::isHaServiceId` (also the snapshot decoder's service check), `buildCustomCall` (sets
+    `ServiceCall::rawData`); buildServiceCall refuses call_service. call_service's group
+    "custom" is the `CommandDef` row's `group` column.
+  - Fixtures: dev_lg_tv is platform webostv with 3 custom services; act_play_xbox `info:down`
+    → webostv.button INFO. Contract `ha_action_flow` (all modes; last_call is sim only).
+  - Existing devices get call_service after one re-link (no shim).
+  - Domain rule (core's compiler): a call's service domain must be the snapshot's platform, else
+    `forbidden_param` at `.../call/service` (execute and config). Only media_player, light,
+    switch and fan devices ever get the action. The reach is the integration's own services
+    (e.g. mqtt.publish on an MQTT light); security.md says so. Contract: homeassistant.stop on
+    execute, hassio.host_shutdown in a binding. Not a malicious fixture: those must fail the
+    schema, and this one passes it.
+- **Simplify (setup-fixes):** done. Skipped: a shared execute/decodeAction `call` helper (needs
+  core's config/json.cpp). The config hint total became `ha::configHintBytes` (below).
+- **Shared with core (setup-fixes):** `ha::isTargetKey(name)` (capabilities.h; the five target keys,
+  a subset of `isForbiddenParamName`) and `ha::configHintBytes(devices, exceptId = "")`
+  (snapshot.h; customHintBytes over the config's HA devices). lint checks kTargetKeys against
+  HaServiceCall's data propertyNames and kTargetKeys + kPayloadNames against ParamName.
+- **GET /status integrations carry `detail`** (`putIntegrationSummary` adds it for both /status and
+  /integrations), so the Status page polls once. registry_flow asserts the state and detail match the
+  list. MQTT's detail is empty while connected or connecting (core), and the fixtures match.
+- **Remote keys per integration:** designed, parked for a later phase. It uses a per-integration
+  `ha-keys.json` that turns into a profile-shaped `press` command; the HA action is the fallback.
 
 - **Stale coverage:** no API-level test drives `stale` yet. A fresh-hub-sim contract case
   (`/sim/ha?remove=`, discover, `GET /devices/{id}`, execute → `entity_not_found`) would cover

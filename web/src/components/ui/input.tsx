@@ -25,6 +25,12 @@ export function Input({ className, 'aria-invalid': invalid, ...props }: Componen
   return <input className={cn(field, 'file:border-0 file:bg-transparent file:text-sm file:font-medium', className)} aria-invalid={show ? invalid : undefined} {...(login ? {} : NOT_A_LOGIN)} {...props} />
 }
 
+/** A multi-line field, in monospace (for JSON and the like). */
+export function Textarea({ className, 'aria-invalid': invalid, ...props }: ComponentProps<'textarea'>) {
+  const show = useShowErrors()
+  return <textarea className={cn(field, 'h-auto py-2 font-mono', className)} aria-invalid={show ? invalid : undefined} spellCheck={false} autoCapitalize="none" {...NOT_A_LOGIN} {...props} />
+}
+
 /**
  * Native select styled like shadcn's: accessible, zero JS, good on phones. `appearance-none` drops
  * the platform's arrow, so a real chevron icon marks it as a picker (iOS Safari too).

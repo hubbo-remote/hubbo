@@ -45,6 +45,16 @@ size_t integrationCountWithBuiltins(const std::vector<IntegrationSpec> &integrat
     return count;
 }
 
+ConfigSpec factoryDefaultConfig() {
+    ConfigSpec c;
+    ensureBuiltinIntegrations(&c);
+    ActionSpec off;
+    off.integrationId = kSystemIntegrationId;
+    off.commandId = "off";
+    c.globalBindings.push_back({kOffTrigger, {off}});
+    return c;
+}
+
 void ensureBuiltinIntegrations(ConfigSpec *config) {
     for (size_t i = 0; i < std::size(kBuiltins); i++) {
         const Builtin &b = kBuiltins[i];
