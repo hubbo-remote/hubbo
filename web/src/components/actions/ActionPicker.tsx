@@ -7,6 +7,7 @@ import { Field, Select } from '@/components/ui/input'
 import { useCapabilities } from '@/hooks/data'
 import { commandFor, defaultParams, hubboCommands, isSystem, type Catalog } from '@/lib/activity'
 import { commandTitle } from '@/lib/commands'
+import { CALL_SERVICE, callReady } from '@/lib/haCall'
 import { commandGroups } from '@/lib/keys'
 import { cn } from '@/lib/utils'
 import { ParamForm } from './ParamForm'
@@ -26,7 +27,8 @@ export function ActionPicker({ value, onChange, catalog, context, allowHold = fa
   // The binding UI edits one action per trigger, so it is always the last one.
   const systemCommands = hubboCommands(catalog, context)
   // Holds only where a release can follow (a binding's down); waits (wait_connected) only in sequences.
-  const offer = (c: Command) => (allowHold || c.effect !== 'hold') && (context === 'sequence' || c.effect !== 'wait')
+  // A Home Assistant action is set up in the command picker's dialog, never bare here.
+  const offer = (c: Command) => (allowHold || c.effect !== 'hold') && (context === 'sequence' || c.effect !== 'wait') && c.command_id !== CALL_SERVICE
   const commands = (system ? systemCommands : ((known ?? caps.data)?.commands ?? [])).filter(offer)
   const cmd = value ? commandFor(value, catalog) ?? commands.find((c) => c.command_id === value.command_id) : undefined
   const [showCustom, setShowCustom] = useState(false)
@@ -87,7 +89,10 @@ export function ActionPicker({ value, onChange, catalog, context, allowHold = fa
 
 export type TestResult = ExecuteResult | { status: 'error'; message: string }
 
-/** `onResult`: the caller shows the result itself (a device page row, under the name), not beside the button. */
+/**
+ * `onResult`: the caller shows the result itself (a device page row, under the name), not beside the
+ * button. Hidden while a Home Assistant action can't be sent yet (no service, or data with a problem).
+ */
 export function TestButton({ action, size = 'sm', onRun, onResult }: { action: Action; size?: 'sm' | 'default'; onRun?: () => void; onResult?: (r: TestResult | null) => void }) {
   const [busy, setBusy] = useState(false)
   const [res, setResState] = useState<TestResult | null>(null)
@@ -101,7 +106,7 @@ export function TestButton({ action, size = 'sm', onRun, onResult }: { action: A
     setBusy(true)
     setRes(null)
     try {
-      setRes(await api.execute(action.device_id, action.command_id, action.params))
+      setRes(await api.execute(action.device_id, action.command_id, action.params, action.call))
     } catch (e) {
       setRes({ status: 'error', message: errorMessage(e) })
     } finally {
@@ -114,6 +119,7 @@ export function TestButton({ action, size = 'sm', onRun, onResult }: { action: A
       Test
     </Button>
   )
+  if (!callReady(action)) return null
   if (onResult) return button
   return (
     <div className="flex flex-wrap items-center gap-3">

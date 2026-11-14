@@ -86,6 +86,30 @@ describe('mock vs api/fixtures', () => {
 })
 
 describe('mock matches hub-sim', () => {
+  it('a Home Assistant action: its call is checked like the hub, and execute sends it', async () => {
+    const m = createMock()
+    const lg = { integration_id: 'ha_main', device_id: 'dev_lg_tv', command_id: 'call_service', params: {} }
+    const put = async (action: object) => {
+      const g = (await m.handle(req('GET', '/global-bindings'))).body as { revision: number }
+      return m.handle(req('PUT', '/global-bindings', { revision: g.revision, bindings: { 'info:tap': [action] } }))
+    }
+    const paths = async (action: object) => errorOf(await put(action)).details?.map((d) => `${d.code} ${d.path}`)
+    expect(await paths(lg)).toEqual(['required /bindings/info:tap/0/call'])
+    expect(await paths({ ...lg, call: { service: 'webostv.button', data: { entity_id: 'x' } } })).toEqual(['forbidden_param /bindings/info:tap/0/call/data/entity_id'])
+    expect(await paths({ ...lg, call: { service: 'webostv.button', data: { a: '{{ x }}' } } })).toEqual(['template_not_supported /bindings/info:tap/0/call/data/a'])
+    expect(await paths({ ...lg, command_id: 'media_player.turn_on', call: { service: 'webostv.button', data: {} } })).toEqual(['unknown_field /bindings/info:tap/0/call'])
+    expect((await put({ ...lg, call: { service: 'webostv.button', data: { button: 'INFO' } } })).status).toBe(200)
+    // Data at its deepest (4 levels) is a 9-level body, which the hub's JSON reader allows.
+    expect((await put({ ...lg, call: { service: 'webostv.button', data: { a: { b: { c: {} } } } } })).status).toBe(200)
+
+    const run = (body: object) => m.handle(req('POST', '/devices/dev_lg_tv/commands/call_service/execute', body))
+    expect(((await run({ params: {}, call: { service: 'webostv.button', data: { button: 'INFO' } } })).body as ExecuteResult).status).toBe('accepted')
+    expect(errorOf(await run({ params: {} })).details?.map((d) => `${d.code} ${d.path}`)).toEqual(['required /call'])
+    // Only the device's own platform's services (core's rule), in a config and on execute.
+    expect(await paths({ ...lg, call: { service: 'sonos.snapshot', data: {} } })).toEqual(['forbidden_param /bindings/info:tap/0/call/service'])
+    expect(errorOf(await run({ params: {}, call: { service: 'sonos.snapshot', data: {} } })).details?.map((d) => `${d.code} ${d.path}`)).toEqual(['forbidden_param /call/service'])
+  })
+
   it('405 for a known path with the wrong method', async () => {
     const r = await createMock().handle(req('PATCH', '/devices'))
     expect(r.status).toBe(405)
@@ -268,6 +292,8 @@ describe('mock behaviour', () => {
     expect((reset.body as { state: string }).state).toBe('ok')
     expect(((await m.handle(req('GET', '/devices'))).body as { devices: unknown[] }).devices).toEqual([])
     expect(((await m.handle(req('GET', '/admin/tokens'))).body as { tokens: unknown[] }).tokens.length).toBeGreaterThan(0) // credentials and tokens stay
+    // Like core: a reset hub's Off button turns everything off.
+    expect(((await m.handle(req('GET', '/global-bindings'))).body as { bindings: unknown }).bindings).toEqual({ 'off:tap': [{ integration_id: 'system', device_id: null, command_id: 'off', params: {} }] })
   })
 
   it('restore accepts missing revisions and stamps every object with one new generation', async () => {
@@ -311,11 +337,12 @@ describe('mock behaviour', () => {
     expect(errorOf(await m.handle(sized(640 * 1024 + 1))).code).toBe('payload_too_large')
   })
 
-  it('nesting: requests allow 8 levels, a restore (a file) 12, like the hub', async () => {
+  it('nesting: requests allow 9 levels, a restore (a file) 12, like the hub', async () => {
     const m = createMock()
     const nested = (n: number): unknown => (n === 0 ? 1 : { a: nested(n - 1) })
     const raw = (path: string, n: number): MockRequest => ({ ...req('POST', path), headers: { 'content-type': 'application/json' }, rawBody: new TextEncoder().encode(JSON.stringify(nested(n))) })
-    expect(errorOf(await m.handle(raw('/activities', 9))).code).toBe('malformed_json')
+    expect(errorOf(await m.handle(raw('/activities', 9))).code).not.toBe('malformed_json')
+    expect(errorOf(await m.handle(raw('/activities', 10))).code).toBe('malformed_json')
     expect(errorOf(await m.handle(raw('/admin/restore?dry_run=true', 12))).code).not.toBe('malformed_json')
     expect(errorOf(await m.handle(raw('/admin/restore?dry_run=true', 13))).code).toBe('malformed_json')
   })

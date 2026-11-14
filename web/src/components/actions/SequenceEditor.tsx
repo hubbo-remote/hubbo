@@ -4,6 +4,7 @@ import type { Action, ParamSpec, ValidationIssue } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input } from '@/components/ui/input'
+import { callReady } from '@/lib/haCall'
 import { commandFor, isWait, LIMITS, mostUsedDevice, waitAction, type Catalog } from '@/lib/activity'
 import { WAIT_CONNECTED_MS, WAIT_MS } from '@/api/constants'
 import { cn } from '@/lib/utils'
@@ -159,7 +160,7 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
               Cancel
             </Button>
             <Button
-              disabled={!editing?.action || !editing.action.command_id || (timeEdit && !timeOk)}
+              disabled={!editing?.action || !editing.action.command_id || !callReady(editing.action) || (timeEdit && !timeOk)}
               onClick={() => {
                 if (!editing?.action) return
                 const next = [...actions]

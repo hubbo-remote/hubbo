@@ -17,6 +17,7 @@ import type {
   TriggerKey,
   ValidationIssue,
 } from '../api/types.ts'
+import { CALL_SERVICE, callIssues } from './haCall.ts'
 import { buttonLabel, isButtonId } from './buttons.ts'
 import { humanize, sentenceCase } from './utils.ts'
 
@@ -246,6 +247,12 @@ export interface Catalog {
   activities: { id: string; name: string }[]
   /** Bluetooth profile commands with their own timed hold (`hold_ms`), by device: a button sends them as one timed press. */
   timed?: ReadonlyMap<string, ReadonlySet<string>>
+  /**
+   * Home Assistant devices' snapshot platforms ('' for none), when known: a call's service must be
+   * on its device's platform. The mock knows them; the editors don't (the picker only offers a
+   * device's own services) and leave the check to the hub.
+   */
+  haPlatforms?: ReadonlyMap<string, string>
 }
 
 /** Whether an action is one of those timed profile commands (see `writeMain`). */
@@ -257,6 +264,17 @@ export function commandFor(a: Action, cat: Catalog): Command | undefined {
 }
 
 function checkAction(a: Action, path: string, cat: Catalog, out: ValidationIssue[], where: Placement) {
+  // A Home Assistant action carries its call; nothing else takes one.
+  if (a.command_id === CALL_SERVICE) {
+    if (a.call === undefined) out.push({ path: `${path}/call`, code: 'required', message: 'Pick a Home Assistant action' })
+    else {
+      const issues = callIssues(a.call, `${path}/call`)
+      out.push(...issues)
+      const platform = a.device_id ? cat.haPlatforms?.get(a.device_id) : undefined
+      const service = a.call.service
+      if (!issues.length && platform !== undefined && service.split('.')[0] !== platform) out.push({ path: `${path}/call/service`, code: 'forbidden_param', message: platform ? `Pick a ${platform} service: the action goes to this device` : 'This device takes no Home Assistant action' })
+    }
+  } else if (a.call !== undefined) out.push({ path: `${path}/call`, code: 'unknown_field', message: 'Only a Home Assistant action takes a call' })
   let cmd: Command | undefined
   let owner: string
   if (a.integration_id === SYSTEM) {

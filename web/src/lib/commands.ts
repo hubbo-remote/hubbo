@@ -6,6 +6,7 @@
 // React, relative imports.
 import type { Action, Bindings, ButtonId, Command, EventKind, ParamSpec } from '../api/types.ts'
 import { defaultParams, EVENT_ORDER, paramLabel, triggerKey } from './activity.ts'
+import { CALL_SERVICE } from './haCall.ts'
 import { keyLabel } from './keys.ts'
 import { humanize, same, sentenceCase } from './utils.ts'
 
@@ -37,7 +38,7 @@ export const commandName = (name: string) => NAME_LABEL[name] ?? humanize(name.r
 
 export type Where = 'binding' | 'sequence' | 'test'
 
-/** One entry in a command picker. `id` is `press:<name>`, `key`, `usage`, `cmd:<command_id>` or `set:<command_id>:<true|false>`. */
+/** One entry in a command picker. `id` is `press:<name>`, `key`, `usage`, `call`, `cmd:<command_id>` or `set:<command_id>:<true|false>`. */
 export interface Choice {
   id: string
   label: string
@@ -99,13 +100,13 @@ const isExtra = (c: Command, domain?: string) => !!domain && c.command_id.includ
 
 /**
  * What a device offers in a picker: its own commands first, then (under More) an integration's own
- * services, "Keyboard key…" and "Custom code…". `domain` is an HA entity's (`media_player`).
+ * services, "Home Assistant action…", "Keyboard key…" and "Custom code…". `domain` is an HA entity's (`media_player`).
  */
 export function choices(commands: Command[], where: Where, domain?: string): Choice[] {
   const out: Choice[] = (find(commands, 'press')?.params.find((p) => p.name === 'command')?.options ?? []).map((n) => ({ id: `press:${n}`, label: commandName(n) }))
   const extra: Choice[] = []
   for (const c of commands) {
-    if (familyOf(c.command_id) || c.effect === 'hold') continue // holds come from the Hold choice
+    if (familyOf(c.command_id) || c.effect === 'hold' || c.command_id === CALL_SERVICE) continue // holds come from the Hold choice
     if (c.effect === 'wait' && where !== 'sequence') continue
     const to = isExtra(c, domain) ? extra : out
     const more = to === extra || undefined
@@ -114,6 +115,8 @@ export function choices(commands: Command[], where: Where, domain?: string): Cho
     else to.push({ id: `cmd:${c.command_id}`, label: commandTitle(c), more })
   }
   out.push(...extra)
+  // A device page has no box to fill in: the action is set up on a button or step, with its own Test.
+  if (where !== 'test' && find(commands, CALL_SERVICE)?.services?.length) out.push({ id: 'call', label: 'Home Assistant action…', more: true })
   if (find(commands, 'key_tap')) out.push({ id: 'key', label: 'Keyboard key…', more: true })
   if (find(commands, 'usage_tap')) out.push({ id: 'usage', label: 'Custom code…', more: true })
   return out
@@ -130,6 +133,7 @@ export function isFriendly(a: Action, commands: Command[]): boolean {
 
 /** The picker entry an action shows as. */
 export function choiceOf(a: Action, commands: Command[]): string {
+  if (a.command_id === CALL_SERVICE) return 'call'
   const f = familyOf(a.command_id)
   if (f?.param === 'command') return `press:${String(a.params.command ?? '')}`
   if (f) return f.param
@@ -143,7 +147,7 @@ const toggleChoice = (choice: string) => {
   return { command_id: command_id!, param: param!, on: value === 'true' }
 }
 const commandIdOf = (choice: string) =>
-  choice.startsWith('press:') ? 'press' : choice === 'key' ? 'key_tap' : choice === 'usage' ? 'usage_tap' : choice.startsWith('set:') ? toggleChoice(choice).command_id : choice.slice(4)
+  choice.startsWith('press:') ? 'press' : choice === 'key' ? 'key_tap' : choice === 'usage' ? 'usage_tap' : choice === 'call' ? CALL_SERVICE : choice.startsWith('set:') ? toggleChoice(choice).command_id : choice.slice(4)
 
 /** The tap-form action for a picker entry on this device, with default params. */
 export function actionFor(choice: string, device: { integration_id: string; device_id: string | null }, commands: Command[]): Action {

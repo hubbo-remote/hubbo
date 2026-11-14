@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { bindsButton, buttonForPath, commandFor, isTimed, releaseFor, triggerKey, type Catalog } from '@/lib/activity'
+import { callReady } from '@/lib/haCall'
 import { readButton, viewKinds, writeLongPress, writeMain } from '@/lib/commands'
 import { BUTTONS, buttonLabel } from '@/lib/buttons'
 import { cn, same } from '@/lib/utils'
@@ -306,7 +307,7 @@ function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, o
               <>
                 <CommandPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="binding" testable={false} />
                 <EditButtons
-                  ok={!!editing.action?.command_id}
+                  ok={!!editing.action?.command_id && callReady(editing.action)}
                   onApply={() => (unchanged(editing) || onChange(writeMain(bindings, button, editing.action, timed)), close())}
                   onCancel={close}
                   test={testable(editing.action)}
@@ -328,7 +329,7 @@ function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, o
             {editing?.row === 'long' && (
               <>
                 <CommandPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="binding" testable={false} />
-                <EditButtons ok={!!editing.action?.command_id} onApply={() => (unchanged(editing) || onChange(writeLongPress(bindings, button, editing.action, timed)), close())} onCancel={close} test={testable(editing.action)} />
+                <EditButtons ok={!!editing.action?.command_id && callReady(editing.action)} onApply={() => (unchanged(editing) || onChange(writeLongPress(bindings, button, editing.action, timed)), close())} onCancel={close} test={testable(editing.action)} />
               </>
             )}
           </Row>

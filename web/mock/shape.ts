@@ -3,15 +3,16 @@
 // rejects these before validation; so does the mock.
 import type { ValidationIssue } from '../src/api/types.ts'
 import { LIMITS } from '../src/lib/activity.ts'
+import { isObject as isObj, TARGET_KEYS } from '../src/lib/haCall.ts'
 
-const FORBIDDEN_PARAMS = new Set(['entity_id', 'device_id', 'area_id', 'floor_id', 'label_id', 'target', 'data', 'service', 'service_data', 'domain'])
-const ACTION_KEYS = new Set(['integration_id', 'device_id', 'command_id', 'params'])
-
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+const FORBIDDEN_PARAMS = new Set([...TARGET_KEYS, 'target', 'data', 'service', 'service_data', 'domain'])
+const ACTION_KEYS = ['integration_id', 'device_id', 'command_id', 'params']
+/** `call` is optional: only a Home Assistant action has one (its rules are checkAction's). */
+const ACTION_FIELDS = new Set([...ACTION_KEYS, 'call'])
 
 function action(a: unknown, path: string, out: ValidationIssue[]) {
   if (!isObj(a)) return void out.push({ path, code: 'wrong_type', message: 'Action must be an object' })
-  for (const k of Object.keys(a)) if (!ACTION_KEYS.has(k)) out.push({ path: `${path}/${k}`, code: 'unknown_field', message: `Unknown field ${k}` })
+  for (const k of Object.keys(a)) if (!ACTION_FIELDS.has(k)) out.push({ path: `${path}/${k}`, code: 'unknown_field', message: `Unknown field ${k}` })
   for (const k of ACTION_KEYS) if (!(k in a)) out.push({ path: `${path}/${k}`, code: 'required', message: `${k} is required` })
   if (typeof a.device_id === 'string' && !/^dev_[a-z0-9_]{1,28}$/.test(a.device_id)) out.push({ path: `${path}/device_id`, code: 'pattern', message: 'device_id must be a hub device ID (dev_…), not a provider reference' })
   if (!isObj(a.params)) return void out.push({ path: `${path}/params`, code: 'wrong_type', message: 'params must be an object' })
