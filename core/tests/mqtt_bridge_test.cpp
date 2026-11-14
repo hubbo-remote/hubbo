@@ -201,7 +201,7 @@ TEST(MqttBridge, ConnectAnnouncesThenStates) {
     EXPECT_EQ(diag["hostname"], "hubbo-00aa");
     EXPECT_EQ(diag["uptime_s"], 42);
     EXPECT_EQ(std::string(h.bridge.state()), "connected");
-    EXPECT_EQ(h.bridge.detail(), "Connected to the broker");
+    EXPECT_EQ(h.bridge.detail(), "");  // healthy: the state says it all
 }
 
 TEST(MqttBridge, ActivityChangesPublishState) {
@@ -328,7 +328,7 @@ TEST(MqttBridge, DetailStaysShort) {
     s.host = std::string(limits::kMaxHostLength, 'h');
     h.bridge.configure(s);
     h.step();
-    EXPECT_EQ(h.bridge.detail(), "Connecting to the broker");
+    EXPECT_EQ(h.bridge.detail(), "");
     h.broker.refuseAuth = true;
     h.step();
     EXPECT_EQ(std::string(h.bridge.state()), "auth_failed");
