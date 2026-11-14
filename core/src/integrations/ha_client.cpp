@@ -274,7 +274,7 @@ void HomeAssistantClient::handleAuth(std::string_view text) {
 
 // ---- commands ------------------------------------------------------------
 
-ErrorCode HomeAssistantClient::sendCommand(Kind kind, const std::string &body, uint32_t timeoutMs, CallDone done) {
+ErrorCode HomeAssistantClient::sendCommand(Kind kind, const std::string &body, uint32_t timeoutMs, Answer answer) {
     if (state() != HaState::Connected) return ErrorCode::AdapterUnavailable;
     Pending *slot = nullptr;
     for (auto &p : pending_) {
@@ -292,26 +292,33 @@ ErrorCode HomeAssistantClient::sendCommand(Kind kind, const std::string &body, u
     slot->id = id;
     slot->kind = kind;
     slot->deadlineMs = nowMs_ + timeoutMs;
-    slot->done = std::move(done);
+    slot->answer = std::move(answer);
     return ErrorCode::Ok;
 }
 
-ErrorCode HomeAssistantClient::callService(const ha::ServiceCall &call, CallDone done) {
+ErrorCode HomeAssistantClient::callService(const ha::ServiceCall &call, CallDone done, uint32_t timeoutMs) {
     JsonDocument doc;
     doc["type"] = "call_service";
     doc["domain"] = call.domain;
     doc["service"] = call.service;
     doc["target"]["entity_id"] = call.entityId;
-    JsonObject data = doc["service_data"].to<JsonObject>();
-    for (const ha::ServiceField &field : call.data) {
-        switch (field.value.kind) {
-            case ha::ServiceValue::Kind::Bool: data[field.key] = field.value.boolean; break;
-            case ha::ServiceValue::Kind::Int: data[field.key] = field.value.integer; break;
-            case ha::ServiceValue::Kind::Number: data[field.key] = field.value.number; break;
-            case ha::ServiceValue::Kind::String: data[field.key] = field.value.string; break;
+    if (!call.rawData.empty()) {  // a Home Assistant action: the data as checked, verbatim
+        doc["service_data"] = serialized(call.rawData);
+    } else {
+        JsonObject data = doc["service_data"].to<JsonObject>();
+        for (const ha::ServiceField &field : call.data) {
+            switch (field.value.kind) {
+                case ha::ServiceValue::Kind::Bool: data[field.key] = field.value.boolean; break;
+                case ha::ServiceValue::Kind::Int: data[field.key] = field.value.integer; break;
+                case ha::ServiceValue::Kind::Number: data[field.key] = field.value.number; break;
+                case ha::ServiceValue::Kind::String: data[field.key] = field.value.string; break;
+            }
         }
     }
-    return sendCommand(Kind::CallService, serialize(doc), kCommandTimeoutMs, std::move(done));
+    return sendCommand(Kind::CallService, serialize(doc), timeoutMs,
+                       [done = std::move(done)](ErrorCode result, const std::string *) {
+                           if (done) done(result);
+                       });
 }
 
 bool HomeAssistantClient::entityStale(std::string_view entityId) const {
@@ -323,8 +330,8 @@ void HomeAssistantClient::failAll(ErrorCode error) {
     for (auto &p : pending_) {
         if (!p.used) continue;
         p.used = false;
-        CallDone done = std::move(p.done);
-        if (done) done(error);
+        const Answer answer = std::move(p.answer);
+        if (answer) answer(error, nullptr);
     }
 }
 
@@ -332,9 +339,9 @@ void HomeAssistantClient::expire() {
     for (auto &p : pending_) {
         if (!p.used || nowMs_ < p.deadlineMs) continue;
         release(p);
-        CallDone done = std::move(p.done);
-        if (p.kind == Kind::CallService) {
-            if (done) done(ErrorCode::AdapterTimeout);
+        const Answer answer = std::move(p.answer);
+        if (answer) {
+            answer(ErrorCode::AdapterTimeout, nullptr);
         } else if (isDiscovery(p.kind)) {
             finishDiscovery(ErrorCode::AdapterTimeout);
         } else {
@@ -358,7 +365,7 @@ void HomeAssistantClient::forgetPending(bool discovery) {
     // A job ended (or was cancelled) with commands still in flight: their
     // results are ignored, and a subscription is ended so HA stops sending.
     for (auto &p : pending_) {
-        if (p.used && p.kind != Kind::CallService && isDiscovery(p.kind) == discovery) release(p);
+        if (p.used && (discovery ? isDiscovery(p.kind) : isDetails(p.kind))) release(p);
     }
 }
 
@@ -387,9 +394,10 @@ void HomeAssistantClient::handleMessage(std::string text) {
         if (event && !isSubscription(p.kind)) return;
         p.used = false;
         if (event) unsubscribe(id);  // one snapshot is all we want
-        if (p.kind == Kind::CallService) {
-            CallDone done = std::move(p.done);
-            if (done) done(success ? ErrorCode::Ok : ErrorCode::AdapterFailed);
+        if (p.answer) {
+            // Moved out: it may send again, and that may take this slot.
+            const Answer answer = std::move(p.answer);
+            answer(success ? ErrorCode::Ok : ErrorCode::AdapterFailed, &text);
         } else if (isDiscovery(p.kind)) {
             discoveryResult(success, std::move(text));
         } else {
@@ -407,6 +415,20 @@ namespace {
 std::string_view stringMember(std::string_view element, std::string_view key) {
     const std::string_view quoted = json::member(element, key).in(element);
     return quoted.size() < 2 || quoted.front() != '"' ? std::string_view() : quoted.substr(1, quoted.size() - 2);
+}
+
+// subscribe_entities for one entity: its result, then one event with its
+// compressed state (or none, if HA has no such entity).
+std::string subscribeOne(const std::string &entityId) {
+    JsonDocument request;
+    request["type"] = "subscribe_entities";
+    request["entity_ids"].add(entityId);
+    return serialize(request);
+}
+
+// That event's state for `entityId` (event.a.<entity_id>), !found() if none.
+json::Span entityState(std::string_view text, std::string_view entityId) {
+    return json::member(text, json::member(text, json::member(text, "event"), "a"), entityId);
 }
 
 // An entity's EntityInfo from its compressed-state attributes ("a").
@@ -597,12 +619,9 @@ void HomeAssistantClient::detailsResult(Kind kind, bool success, std::string tex
             details_.name = stringOr(doc["name"]);
             if (details_.name.empty()) details_.name = stringOr(doc["original_name"]);
         }
-        JsonDocument request;
-        request["type"] = "subscribe_entities";
-        request["entity_ids"].add(details_.entityId);
-        sent = sendCommand(Kind::DetailsState, serialize(request), kDiscoveryTimeoutMs, nullptr);
+        sent = sendCommand(Kind::DetailsState, subscribeOne(details_.entityId), kDiscoveryTimeoutMs, nullptr);
     } else if (kind == Kind::DetailsState) {
-        const json::Span state = json::member(text, json::member(text, body, "a"), details_.entityId);
+        const json::Span state = entityState(text, details_.entityId);
         if (!state.found()) return finishDetails(ErrorCode::EntityNotFound);
         JsonDocument doc;
         const std::string_view element = state.in(text);
@@ -648,6 +667,52 @@ void HomeAssistantClient::finishDetails(ErrorCode result) {
     DetailsDone done = std::move(detailsDone_);
     detailsDone_ = nullptr;
     if (done) done(result, std::move(out));
+}
+
+// ---- state reads -----------------------------------------------------------
+
+ErrorCode HomeAssistantClient::readAttribute(const std::string &entityId, const std::string &attribute,
+                                             ReadDone done) {
+    if (state() != HaState::Connected) return ErrorCode::AdapterUnavailable;
+    if (!supportedDomain(entityId)) return ErrorCode::InvalidId;  // also an invalid id
+    return sendCommand(Kind::ReadState, subscribeOne(entityId), kStateReadTimeoutMs,
+                       [entityId, attribute, done = std::move(done)](ErrorCode result, const std::string *text) {
+                           readResult(entityId, attribute, done, result, text);
+                       });
+}
+
+void HomeAssistantClient::readResult(const std::string &entityId, const std::string &attribute,
+                                     const ReadDone &done, ErrorCode result, const std::string *text) {
+    if (!done) return;
+    if (result != ErrorCode::Ok) return done(result, std::nullopt);
+    // event.a.<entity_id>.a.<attribute>: only that one value is parsed.
+    const std::string &t = *text;
+    if (!json::member(t, json::member(t, "event"), "a").found()) return done(ErrorCode::AdapterFailed, std::nullopt);
+    const json::Span entity = entityState(t, entityId);
+    if (!entity.found()) return done(ErrorCode::EntityNotFound, std::nullopt);
+    const json::Span value = json::member(t, json::member(t, entity, "a"), attribute);
+    if (!value.found()) return done(ErrorCode::Ok, std::nullopt);
+    JsonDocument doc;
+    const std::string_view element = value.in(t);
+    if (deserializeJson(doc, element.data(), element.size())) return done(ErrorCode::AdapterFailed, std::nullopt);
+    const JsonVariantConst v = doc.as<JsonVariantConst>();
+    ha::ServiceValue out;
+    if (v.is<bool>()) {
+        out.kind = ha::ServiceValue::Kind::Bool;
+        out.boolean = v.as<bool>();
+    } else if (v.is<int32_t>()) {
+        out.kind = ha::ServiceValue::Kind::Int;
+        out.integer = v.as<int32_t>();
+    } else if (v.is<double>()) {
+        out.kind = ha::ServiceValue::Kind::Number;
+        out.number = v.as<double>();
+    } else if (v.is<const char *>()) {
+        out.kind = ha::ServiceValue::Kind::String;
+        out.string = v.as<const char *>();
+    } else {
+        return done(ErrorCode::Ok, std::nullopt);  // null, object, array
+    }
+    done(ErrorCode::Ok, std::move(out));
 }
 
 // ---- cross-task mailboxes --------------------------------------------------

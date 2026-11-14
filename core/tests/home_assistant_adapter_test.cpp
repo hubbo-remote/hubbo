@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,7 @@
 #include "hubbo/engine/compiler.h"
 #include "hubbo/engine/engine.h"
 #include "hubbo/integrations/ha_adapter.h"
+#include "hubbo/ha/snapshot.h"
 
 using namespace hubbo;
 using namespace hubbo::integrations;
@@ -27,6 +29,15 @@ DeviceSpec lightDevice(uint32_t features = ha::light_feature::kTransition) {
     snapshot.platform = "demo";
     snapshot.supportedFeatures = features;
     snapshot.supportedColorModes = {"color_temp"};
+    d.haCapabilities = snapshot;
+    return d;
+}
+
+DeviceSpec denonDevice() {
+    DeviceSpec d = sim::haDevice("dev_denon", "Denon", "receiver", "media_player.denon");
+    ha::CapabilitySnapshot snapshot;
+    snapshot.platform = "denonavr";
+    snapshot.supportedFeatures = ha::media_player_feature::kVolumeMute | ha::media_player_feature::kVolumeStep;
     d.haCapabilities = snapshot;
     return d;
 }
@@ -54,14 +65,14 @@ protected:
         }
     }
 
-    ExecRequest request(const CommandCatalog &catalog, const char *command, Ticket ticket) {
+    ExecRequest request(const CommandCatalog &catalog, const char *command, Ticket ticket,
+                        const char *entityId = "light.family_room") {
         const int index = catalog.find(command);
         EXPECT_GE(index, 0) << command;
         // As resolveParams() leaves them: every param typed, none supplied.
         const CommandSpec &spec = catalog.items[index];
         for (uint8_t i = 0; i < spec.paramCount; i++) params_[i] = spec.params[i].defaultValue;
-        return ExecRequest{&spec, static_cast<uint16_t>(index), params_, 0, "dev_lights", "light.family_room",
-                           ticket, 0, false};
+        return ExecRequest{&spec, static_cast<uint16_t>(index), params_, 0, "dev_lights", entityId, ticket, 0, false};
     }
 
     FakeHaServer server;
@@ -258,4 +269,316 @@ TEST_F(AdapterTest, TheNewDomainsRoundTripAndCallTheRightServices) {
         ASSERT_FALSE(server.calls().empty());
         EXPECT_EQ(server.calls().back(), c.call);
     }
+}
+
+// ---- a command that reads the current state first (mute toggle) ----------
+
+namespace {
+
+constexpr const char *kDenon = "media_player.denon";
+constexpr const char *kMute = "media_player.volume_mute media_player.denon is_volume_muted=true";
+constexpr const char *kUnmute = "media_player.volume_mute media_player.denon is_volume_muted=false";
+
+std::vector<std::string> muteCalls(const FakeHaServer &server) {
+    std::vector<std::string> out;
+    for (const std::string &c : server.calls()) {
+        if (c.rfind("media_player.volume_mute", 0) == 0) out.push_back(c);
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST_F(AdapterTest, MuteToggleReadsTheStateThenSendsTheOpposite) {
+    const CommandCatalog catalog = adapter.commandsFor(denonDevice());
+    ASSERT_GE(catalog.find("media_player.mute_toggle"), 0);
+    ASSERT_EQ(server.muted(kDenon), false);
+
+    EXPECT_EQ(adapter.execute(request(catalog, "media_player.mute_toggle", 1, kDenon)).status, ExecStatus::Pending);
+    integrationTask(300);  // read, then call
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 1u);
+    EXPECT_EQ(sink.results[0].first, 1u);
+    EXPECT_EQ(sink.results[0].second.status, ExecStatus::Accepted);
+    EXPECT_EQ(muteCalls(server), (std::vector<std::string>{kMute}));
+    EXPECT_EQ(server.muted(kDenon), true);  // the fake applied it
+
+    // Muted now: the next press unmutes, and the one after mutes again.
+    EXPECT_EQ(adapter.execute(request(catalog, "media_player.mute_toggle", 2, kDenon)).status, ExecStatus::Pending);
+    integrationTask(300);
+    EXPECT_EQ(adapter.execute(request(catalog, "media_player.mute_toggle", 3, kDenon)).status, ExecStatus::Pending);
+    integrationTask(300);
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 3u);
+    EXPECT_EQ(sink.results[2].second.status, ExecStatus::Accepted);
+    EXPECT_EQ(muteCalls(server), (std::vector<std::string>{kMute, kUnmute, kMute}));
+    EXPECT_EQ(server.subscriptions(), 0u);  // every read ended its subscription
+
+    // A command without state never reads.
+    const size_t received = server.received().size();
+    EXPECT_EQ(adapter.execute(request(catalog, "media_player.volume_up", 4, kDenon)).status, ExecStatus::Pending);
+    integrationTask();
+    for (size_t i = received; i < server.received().size(); i++) {
+        EXPECT_EQ(server.received()[i].find("subscribe_entities"), std::string::npos);
+    }
+}
+
+TEST_F(AdapterTest, MuteToggleWithTheAttributeMissingMutes) {
+    // A player that is off: HA leaves is_volume_muted out.
+    for (sim::FakeHaEntity &e : server.entities()) {
+        if (e.info.entityId != kDenon) continue;
+        e.state = "off";
+        e.attributesJson = R"({"friendly_name":"Denon","supported_features":1036})";
+    }
+    const CommandCatalog catalog = adapter.commandsFor(denonDevice());
+    EXPECT_EQ(adapter.execute(request(catalog, "media_player.mute_toggle", 1, kDenon)).status, ExecStatus::Pending);
+    integrationTask(300);
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 1u);
+    EXPECT_EQ(sink.results[0].second.status, ExecStatus::Accepted);
+    EXPECT_EQ(muteCalls(server), (std::vector<std::string>{kMute}));
+}
+
+TEST_F(AdapterTest, MuteToggleWhenTheReadTimesOutStillMutes) {
+    // Already muted, but the read gets no answer: unknown, so it mutes.
+    ASSERT_TRUE(server.setMuted(kDenon, true));
+    const CommandCatalog catalog = adapter.commandsFor(denonDevice());
+    server.answerCommands = false;
+    EXPECT_EQ(adapter.execute(request(catalog, "media_player.mute_toggle", 1, kDenon)).status, ExecStatus::Pending);
+    integrationTask(HomeAssistantClient::kStateReadTimeoutMs - 100);
+    EXPECT_TRUE(muteCalls(server).empty());  // still reading
+    integrationTask(200);
+    // Sent within the executor's 5 s bound (the fake records it unanswered).
+    EXPECT_EQ(muteCalls(server), (std::vector<std::string>{kMute}));
+    // The read and the call share kCommandTimeoutMs (the executor's 5 s):
+    // the call gets what the read left.
+    integrationTask(HomeAssistantClient::kCommandTimeoutMs - HomeAssistantClient::kStateReadTimeoutMs - 100);
+    adapter.poll(0, sink);
+    EXPECT_TRUE(sink.results.empty());  // the call's own result is still to come
+    integrationTask(100);  // 5 s since the read began
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 1u);  // one result for the ticket: the call's
+    EXPECT_EQ(sink.results[0].second.error, ErrorCode::AdapterTimeout);
+}
+
+TEST_F(AdapterTest, MuteToggleFailures) {
+    const CommandCatalog catalog = adapter.commandsFor(denonDevice());
+
+    // HA has no state for the entity: EntityNotFound, nothing sent.
+    server.removeEntity(kDenon);
+    EXPECT_EQ(adapter.execute(request(catalog, "media_player.mute_toggle", 1, kDenon)).status, ExecStatus::Pending);
+    integrationTask(300);
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 1u);
+    EXPECT_EQ(sink.results[0].second.status, ExecStatus::Failed);
+    EXPECT_EQ(sink.results[0].second.error, ErrorCode::EntityNotFound);
+    EXPECT_TRUE(muteCalls(server).empty());
+
+    // The connection drops during the read: unavailable, nothing sent.
+    server.reset();
+    server.answerCommands = false;
+    EXPECT_EQ(adapter.execute(request(catalog, "media_player.mute_toggle", 2, kDenon)).status, ExecStatus::Pending);
+    integrationTask();
+    transport.dropConnection();
+    integrationTask();
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 2u);
+    EXPECT_EQ(sink.results[1].second.error, ErrorCode::AdapterUnavailable);
+    EXPECT_TRUE(muteCalls(server).empty());
+
+    // HA refuses the call itself: AdapterFailed, as any call.
+    server.answerCommands = true;
+    integrationTask(1500);
+    ASSERT_EQ(client.state(), HaState::Connected);
+    server.failing.insert("media_player.volume_mute");
+    EXPECT_EQ(adapter.execute(request(catalog, "media_player.mute_toggle", 3, kDenon)).status, ExecStatus::Pending);
+    integrationTask(300);
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 3u);
+    EXPECT_EQ(sink.results[2].second.error, ErrorCode::AdapterFailed);
+    EXPECT_EQ(server.muted(kDenon), false);  // refused: not applied
+}
+
+// ---- a Home Assistant action (call_service) --------------------------------
+
+namespace {
+
+constexpr const char *kLgTv = "media_player.family_room_lg_tv";
+
+DeviceSpec lgTvDevice() {
+    DeviceSpec d = sim::haDevice("dev_lg_tv", "LG TV", "tv", kLgTv);
+    ha::CapabilitySnapshot snapshot;
+    snapshot.platform = "webostv";
+    snapshot.supportedFeatures = ha::media_player_feature::kTurnOn | ha::media_player_feature::kTurnOff;
+    ha::SnapshotCustomService button;
+    button.service = "webostv.button";
+    button.label = "Button";
+    snapshot.customServices = {button};
+    d.haCapabilities = snapshot;
+    return d;
+}
+
+// The LG TV with one activity, "act_tv", whose startup is `startup`.
+ConfigSpec tvConfig(std::vector<ActionSpec> startup) {
+    ConfigSpec cfg;
+    cfg.integrations = {sim::integration("ha_main", kHomeAssistantType, "Home Assistant")};
+    cfg.devices = {lgTvDevice()};
+    ActivitySpec a;
+    a.id = "act_tv";
+    a.name = "TV";
+    a.startup = std::move(startup);
+    cfg.activities = {a};
+    return cfg;
+}
+
+ActionSpec infoButton(const char *data = R"({"button":"INFO"})") {
+    ActionSpec a = sim::haAction("dev_lg_tv", ha::kCallServiceCommandId);
+    a.call = HaServiceCallSpec{"webostv.button", data};
+    return a;
+}
+
+}  // namespace
+
+TEST_F(AdapterTest, AHomeAssistantActionIsSentAsWritten) {
+    const CommandCatalog catalog = adapter.commandsFor(lgTvDevice());
+    ASSERT_GE(catalog.find(ha::kCallServiceCommandId), 0);
+    auto call = std::make_shared<const HaServiceCallSpec>(
+        HaServiceCallSpec{"webostv.button", R"({"button":"INFO","n":{"x":[1]}})"});
+    const std::weak_ptr<const HaServiceCallSpec> watch = call;
+    ExecRequest r = request(catalog, ha::kCallServiceCommandId, 1, kLgTv);
+    r.call = call;
+    EXPECT_EQ(adapter.execute(r).status, ExecStatus::Pending);
+    // Whoever compiled it lets go (a direct execute's request is freed, a
+    // config replaced): the adapter's copy still sends it, then lets go too.
+    r.call.reset();
+    call.reset();
+    EXPECT_FALSE(watch.expired());
+    integrationTask();
+    EXPECT_TRUE(watch.expired());
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 1u);
+    EXPECT_EQ(sink.results[0].second.status, ExecStatus::Accepted);
+    EXPECT_EQ(server.lastCallJson(), R"({"service":"webostv.button","entity_id":"media_player.family_room_lg_tv",)"
+                                     R"("data":{"button":"INFO","n":{"x":[1]}}})");
+    // The device's entity is the only target.
+    EXPECT_NE(server.received().back().find(R"("target":{"entity_id":"media_player.family_room_lg_tv"})"),
+              std::string::npos)
+        << server.received().back();
+
+    // A stale entity is refused unsent, as any command.
+    server.removeEntity(kLgTv);
+    bool discovered = false;
+    ASSERT_EQ(client.discover([&](ErrorCode, HaDiscovery) { discovered = true; }), ErrorCode::Ok);
+    for (int i = 0; i < 50 && !discovered; i++) integrationTask();
+    ASSERT_TRUE(client.entityStale(kLgTv));
+    const size_t calls = server.calls().size();
+    r.ticket = 2;
+    r.call = std::make_shared<const HaServiceCallSpec>(HaServiceCallSpec{"webostv.button", R"({"button":"INFO"})"});
+    EXPECT_EQ(adapter.execute(r).status, ExecStatus::Pending);
+    integrationTask();
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 2u);
+    EXPECT_EQ(sink.results[1].second.error, ErrorCode::EntityNotFound);
+    EXPECT_EQ(server.calls().size(), calls);
+}
+
+TEST_F(AdapterTest, AHomeAssistantActionCompilesAndRunsThroughTheEngine) {
+    AdapterSet adapters;
+    ASSERT_EQ(adapters.add(adapter), ErrorCode::Ok);
+    Engine::Store store;
+    Engine engine{store, adapters};
+    const ConfigSpec cfg = tvConfig({infoButton()});
+    ValidationReport report;
+    std::unique_ptr<CompiledConfig> compiled = compileConfig(cfg, adapters, &report);
+    ASSERT_TRUE(compiled) << (report.ok() ? "" : report.issues()[0].path);
+    ASSERT_NE(compiled->actions.at(0).call, nullptr);
+    EXPECT_EQ(compiled->actions.at(0).call->data, R"({"button":"INFO"})");
+    // The compiled config owns its calls: a dry run's go with it.
+    std::weak_ptr<const HaServiceCallSpec> dryRun = compileConfig(cfg, adapters, &report)->actions.at(0).call;
+    EXPECT_TRUE(dryRun.expired());
+    ASSERT_EQ(store.publish(compiled), ErrorCode::Ok);
+
+    ASSERT_EQ(engine.activate("act_tv", 1000), ErrorCode::Ok);
+    integrationTask();
+    engine.poll(1100);
+    EXPECT_TRUE(engine.executor().idle());
+    EXPECT_EQ(engine.executor().stats().completed, 1u);
+    EXPECT_EQ(server.calls(), (std::vector<std::string>{"webostv.button media_player.family_room_lg_tv button=INFO"}));
+
+    // Directly, as the execute route compiles it.
+    CompiledCommand direct;
+    ValidationReport issues;
+    const HaServiceCallSpec back{"webostv.button", R"({"button":"BACK"})"};
+    ASSERT_EQ(compileDeviceCommand(cfg, adapters, "dev_lg_tv", ha::kCallServiceCommandId, {}, &direct, &issues, &back),
+              ErrorCode::Ok);
+    ASSERT_NE(direct.action.call, nullptr);
+    EXPECT_EQ(*direct.action.call, back);
+}
+
+TEST_F(AdapterTest, AHomeAssistantActionStaysOnItsDevice) {
+    // Only the device's own integration's services (webostv.* on a webostv
+    // TV): nothing aimed at HA as a whole, in a config or run directly.
+    AdapterSet adapters;
+    ASSERT_EQ(adapters.add(adapter), ErrorCode::Ok);
+    for (const char *service : {"homeassistant.stop", "hassio.host_shutdown", "webostvx.button", "light.turn_on"}) {
+        ActionSpec action = infoButton();
+        action.call->service = service;
+        const ConfigSpec cfg = tvConfig({action});
+        ValidationReport report;
+        EXPECT_FALSE(compileConfig(cfg, adapters, &report)) << service;
+        EXPECT_TRUE(report.has(ErrorCode::ForbiddenParam, "/activities/0/startup/0/call/service")) << service;
+
+        CompiledCommand direct;
+        ValidationReport issues;
+        const HaServiceCallSpec call{service, "{}"};
+        EXPECT_EQ(compileDeviceCommand(cfg, adapters, "dev_lg_tv", ha::kCallServiceCommandId, {}, &direct, &issues,
+                                       &call),
+                  ErrorCode::ValidationFailed)
+            << service;
+        EXPECT_TRUE(issues.has(ErrorCode::ForbiddenParam, "/call/service")) << service;
+    }
+}
+
+TEST_F(AdapterTest, HomeAssistantActionsHaveASizeBudget) {
+    AdapterSet adapters;
+    ASSERT_EQ(adapters.add(adapter), ErrorCode::Ok);
+    ConfigSpec cfg = tvConfig(std::vector<ActionSpec>(limits::kMaxHaServiceCalls, infoButton()));
+    ValidationReport report;
+    EXPECT_TRUE(compileConfig(cfg, adapters, &report)) << (report.ok() ? "" : report.issues()[0].path);
+    cfg.activities[0].shutdown = {infoButton()};  // one over, anywhere in the config
+    report = ValidationReport();
+    EXPECT_FALSE(compileConfig(cfg, adapters, &report));
+    EXPECT_TRUE(report.has(ErrorCode::CapacityExceeded, "/activities/0/shutdown/0/call"));
+
+    // Not an HA device (no call_service in its catalog): unknown_command.
+    ActionSpec onTheLights = infoButton();
+    onTheLights.deviceId = "dev_lights";
+    cfg.devices.push_back(lightDevice());
+    cfg.activities[0].shutdown = {onTheLights};
+    report = ValidationReport();
+    EXPECT_FALSE(compileConfig(cfg, adapters, &report));
+    EXPECT_TRUE(report.has(ErrorCode::UnknownCommand, "/activities/0/shutdown/0/command_id"));
+
+    // The devices' custom service hints together: ha::kMaxConfigHintBytes.
+    cfg.activities[0].shutdown.clear();
+    cfg.devices = {};
+    size_t total = 0;
+    size_t crossing = 0;
+    for (size_t i = 0; total <= ha::kMaxConfigHintBytes; i++) {
+        DeviceSpec d = lgTvDevice();
+        d.id = "dev_tv_" + std::to_string(i);
+        d.haCapabilities->customServices[0].label = std::string(1500, 'h');
+        total += ha::customHintBytes(d.haCapabilities->customServices[0]);
+        crossing = i;
+        cfg.devices.push_back(std::move(d));
+    }
+    cfg.activities[0].startup.clear();
+    report = ValidationReport();
+    EXPECT_FALSE(compileConfig(cfg, adapters, &report));
+    EXPECT_TRUE(report.has(ErrorCode::CapacityExceeded,
+                           "/devices/" + std::to_string(crossing) + "/ha_capabilities/custom_services"));
+    EXPECT_EQ(report.issues().size(), 1u);
+    cfg.devices.pop_back();  // at or under the budget
+    report = ValidationReport();
+    EXPECT_TRUE(compileConfig(cfg, adapters, &report)) << (report.ok() ? "" : report.issues()[0].path);
 }

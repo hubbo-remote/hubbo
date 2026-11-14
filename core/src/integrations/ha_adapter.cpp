@@ -1,34 +1,12 @@
 #include "hubbo/integrations/ha_adapter.h"
 
+#include <optional>
+#include <string>
+
 namespace hubbo::integrations {
 
 HomeAssistantAdapter::HomeAssistantAdapter(const char *integrationId, HomeAssistantClient &client)
     : id_(integrationId), client_(client) {}
-
-CommandCatalog HomeAssistantAdapter::commandsFor(const DeviceSpec &device) const {
-    if (!device.haCapabilities) return {};
-    const std::string entityId = providerRef(device);
-    const ha::CapabilitySnapshot &snapshot = *device.haCapabilities;
-
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = byDevice_.find(device.id);
-    if (it != byDevice_.end() && it->second.entityId == entityId && it->second.snapshot == snapshot) {
-        return it->second.capabilities->catalog();
-    }
-    // New or changed: new storage; the old catalog stays valid for compiled
-    // configs that still use it.
-    storage_.push_back(ha::EntityCapabilities::fromSnapshot(entityId, snapshot));
-    byDevice_[device.id] = Cached{entityId, snapshot, &storage_.back()};
-    return storage_.back().catalog();
-}
-
-const ha::EntityCapabilities *HomeAssistantAdapter::owner(const CommandSpec *command) const {
-    for (const ha::EntityCapabilities &caps : storage_) {
-        const CommandCatalog catalog = caps.catalog();
-        if (catalog.count > 0 && command >= catalog.items && command < catalog.items + catalog.count) return &caps;
-    }
-    return nullptr;
-}
 
 ExecResult HomeAssistantAdapter::execute(const ExecRequest &request) {
     // Engine task: never waits. Not connected, or the hand-over is full: fail
@@ -42,6 +20,7 @@ ExecResult HomeAssistantAdapter::execute(const ExecRequest &request) {
     for (uint8_t i = 0; i < count && i < limits::kMaxParams; i++) call.params[i] = request.params[i];
     call.paramsPresent = request.paramsPresent;
     if (!call.entityId.assign(request.providerRef)) return ExecResult::failed(ErrorCode::AdapterFailed);
+    call.custom = request.call;
     if (!calls_.push(call)) return ExecResult::failed(ErrorCode::AdapterUnavailable);
     return ExecResult::pending();
 }
@@ -64,25 +43,47 @@ void HomeAssistantAdapter::service() {
             finish(call.ticket, ErrorCode::EntityNotFound);
             continue;
         }
-        ha::ServiceCall serviceCall;
-        ErrorCode built = ErrorCode::UnknownCommand;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            const ha::EntityCapabilities *caps = owner(call.command);
-            if (caps != nullptr && caps->entityId() == call.entityId.view()) {
-                built = caps->buildServiceCall(call.commandIndex, call.params, call.paramsPresent, &serviceCall);
-            }
-        }
-        if (built != ErrorCode::Ok) {
+        const ha::EntityCapabilities *caps = catalogs_.owner(call.command, call.entityId.view());
+        if (caps == nullptr) {
             finish(call.ticket, ErrorCode::AdapterFailed);
             continue;
         }
-        const Ticket ticket = call.ticket;
-        const ErrorCode sent = client_.callService(serviceCall, [this, ticket](ErrorCode result) {
-            finish(ticket, result);
-        });
-        if (sent != ErrorCode::Ok) finish(ticket, ErrorCode::AdapterUnavailable);  // no queueing
+        const char *attribute = call.custom ? nullptr : caps->stateAttribute(call.commandIndex);
+        if (attribute == nullptr) {
+            send(call, *caps, nullptr, HomeAssistantClient::kCommandTimeoutMs);
+            continue;
+        }
+        // Read the one attribute fresh, then send. Each press reads: two
+        // quick presses may both see the old state (accepted).
+        const uint64_t readAt = client_.nowMs();
+        const ErrorCode started = client_.readAttribute(
+            std::string(call.entityId.view()), attribute,
+            [this, call, caps, readAt](ErrorCode result, std::optional<ha::ServiceValue> value) {
+                if (result == ErrorCode::EntityNotFound || result == ErrorCode::AdapterUnavailable) {
+                    finish(call.ticket, result);  // no such entity, or no connection to send on
+                    return;
+                }
+                // The read and the call share kCommandTimeoutMs.
+                const uint64_t spent = client_.nowMs() - readAt;
+                if (spent >= HomeAssistantClient::kCommandTimeoutMs) return finish(call.ticket, ErrorCode::AdapterTimeout);
+                // A failed or timed-out read still sends, as unknown.
+                send(call, *caps, result == ErrorCode::Ok && value ? &*value : nullptr,
+                     static_cast<uint32_t>(HomeAssistantClient::kCommandTimeoutMs - spent));
+            });
+        if (started != ErrorCode::Ok) finish(call.ticket, ErrorCode::AdapterUnavailable);  // no queueing
     }
+}
+
+void HomeAssistantAdapter::send(const Call &call, const ha::EntityCapabilities &capabilities,
+                                const ha::ServiceValue *state, uint32_t timeoutMs) {
+    ha::ServiceCall serviceCall;
+    const ErrorCode built = HaCatalogs::buildCall(capabilities, call.commandIndex, call.params, call.paramsPresent,
+                                                  call.custom.get(), state, &serviceCall);
+    if (built != ErrorCode::Ok) return finish(call.ticket, ErrorCode::AdapterFailed);
+    const Ticket ticket = call.ticket;
+    const ErrorCode sent = client_.callService(
+        serviceCall, [this, ticket](ErrorCode result) { finish(ticket, result); }, timeoutMs);
+    if (sent != ErrorCode::Ok) finish(ticket, ErrorCode::AdapterUnavailable);  // no queueing
 }
 
 const char *haDeviceAvailability(const HomeAssistantClient &client, const DeviceSpec &device) {

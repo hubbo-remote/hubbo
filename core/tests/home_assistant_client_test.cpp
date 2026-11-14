@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -613,4 +614,132 @@ TEST_F(ClientTest, TheNewDomainsAttributesAreRead) {
     EXPECT_EQ(h.info.maxHumidity, 80);
     EXPECT_EQ(candidate("select.dryer_cycle").info.options,
               (std::vector<std::string>{"normal", "delicate", "towels"}));
+}
+
+// ---- one attribute, read fresh (a toggle's current state) ----------------
+
+namespace {
+
+struct Read {
+    bool done = false;
+    ErrorCode result = ErrorCode::Busy;
+    std::optional<ha::ServiceValue> value;
+    // The readAttribute callback that fills this in.
+    HomeAssistantClient::ReadDone sink() {
+        return [this](ErrorCode e, std::optional<ha::ServiceValue> v) {
+            done = true;
+            result = e;
+            value = std::move(v);
+        };
+    }
+};
+
+}  // namespace
+
+TEST_F(ClientTest, ReadAttributeReadsOneEntityAndUnsubscribes) {
+    connect();
+    FakeHaEntity denon;
+    for (const FakeHaEntity &e : server.entities()) {
+        if (e.info.entityId == "media_player.denon") denon = e;
+    }
+    ASSERT_FALSE(denon.info.entityId.empty());
+    denon.state = "on";
+    denon.attributesJson =
+        R"({"is_volume_muted":true,"volume_level":0.4,"sound_mode_raw":7,"source":"TV","gone":null,"list":[1]})";
+    server.addEntity(denon);
+
+    const auto read = [&](const char *attribute) {
+        Read r;
+        EXPECT_EQ(client.readAttribute("media_player.denon", attribute, r.sink()), ErrorCode::Ok);
+        run(200);
+        EXPECT_TRUE(r.done);
+        return r;
+    };
+    Read r = read("is_volume_muted");
+    EXPECT_EQ(r.result, ErrorCode::Ok);
+    ASSERT_TRUE(r.value);
+    EXPECT_EQ(r.value->kind, ha::ServiceValue::Kind::Bool);
+    EXPECT_TRUE(r.value->boolean);
+    // Only that entity was asked for, and the subscription was ended.
+    EXPECT_NE(server.received().back().find("unsubscribe_events"), std::string::npos);
+    bool askedForOne = false;
+    for (const std::string &m : server.received()) {
+        askedForOne |= m.find(R"("type":"subscribe_entities","entity_ids":["media_player.denon"])") != std::string::npos;
+    }
+    EXPECT_TRUE(askedForOne);
+    EXPECT_EQ(server.subscriptions(), 0u);
+
+    r = read("volume_level");
+    ASSERT_TRUE(r.value);
+    EXPECT_EQ(r.value->kind, ha::ServiceValue::Kind::Number);
+    EXPECT_NEAR(r.value->number, 0.4, 1e-6);
+    r = read("sound_mode_raw");
+    ASSERT_TRUE(r.value);
+    EXPECT_EQ(r.value->kind, ha::ServiceValue::Kind::Int);
+    EXPECT_EQ(r.value->integer, 7);
+    r = read("source");
+    ASSERT_TRUE(r.value);
+    EXPECT_EQ(r.value->kind, ha::ServiceValue::Kind::String);
+    EXPECT_EQ(r.value->string, "TV");
+    // Left out, null, or not a plain value: Ok, unknown.
+    for (const char *unknown : {"missing", "gone", "list"}) {
+        r = read(unknown);
+        EXPECT_EQ(r.result, ErrorCode::Ok) << unknown;
+        EXPECT_FALSE(r.value) << unknown;
+    }
+    EXPECT_EQ(server.subscriptions(), 0u);
+}
+
+TEST_F(ClientTest, ReadAttributeFailures) {
+    Read r;
+    const HomeAssistantClient::ReadDone done = r.sink();
+    EXPECT_EQ(client.readAttribute("media_player.denon", "is_volume_muted", done), ErrorCode::AdapterUnavailable);
+    connect();
+    EXPECT_EQ(client.readAttribute("sensor.x", "a", done), ErrorCode::InvalidId);
+    EXPECT_FALSE(r.done);
+
+    // HA has no state for it.
+    server.removeEntity("media_player.denon");
+    ASSERT_EQ(client.readAttribute("media_player.denon", "is_volume_muted", done), ErrorCode::Ok);
+    run(200);
+    EXPECT_TRUE(r.done);
+    EXPECT_EQ(r.result, ErrorCode::EntityNotFound);
+    EXPECT_EQ(server.subscriptions(), 0u);
+
+    // No answer: times out after kStateReadTimeoutMs, and ends the subscription.
+    r = Read();
+    server.answerCommands = false;
+    ASSERT_EQ(client.readAttribute("media_player.family_room_sonos", "is_volume_muted", done), ErrorCode::Ok);
+    run(HomeAssistantClient::kStateReadTimeoutMs - 200);
+    EXPECT_FALSE(r.done);
+    run(300);
+    EXPECT_TRUE(r.done);
+    EXPECT_EQ(r.result, ErrorCode::AdapterTimeout);
+    EXPECT_FALSE(r.value);
+    EXPECT_NE(server.received().back().find("unsubscribe_events"), std::string::npos);
+
+    // A drop fails a read in flight.
+    r = Read();
+    ASSERT_EQ(client.readAttribute("media_player.family_room_sonos", "is_volume_muted", done), ErrorCode::Ok);
+    tick();
+    transport.dropConnection();
+    tick();
+    EXPECT_TRUE(r.done);
+    EXPECT_EQ(r.result, ErrorCode::AdapterUnavailable);
+}
+
+TEST_F(ClientTest, AReadRunsAlongsideEntityDetailsWithoutBeingDropped) {
+    // Details finishing (forgetPending) must not end a read in flight.
+    connect();
+    Read r;
+    ErrorCode details = ErrorCode::Busy;
+    ASSERT_EQ(client.entityDetails("media_player.denon", [&](ErrorCode e, HaEntityDetails) { details = e; }),
+              ErrorCode::Ok);
+    ASSERT_EQ(client.readAttribute("media_player.denon", "is_volume_muted", r.sink()), ErrorCode::Ok);
+    run(1000);
+    EXPECT_EQ(details, ErrorCode::Ok);
+    EXPECT_TRUE(r.done);
+    EXPECT_EQ(r.result, ErrorCode::Ok);
+    ASSERT_TRUE(r.value);
+    EXPECT_FALSE(r.value->boolean);
 }
