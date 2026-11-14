@@ -2,6 +2,68 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## Setup fixes (branch `setup-fixes`; simplified, feature specs green on both; not gated yet)
+
+- **Continue saves** (Setup.tsx + `hooks/stepSave.ts`): `StepSaveContext` (a ref) is provided only
+  by the wizard. A form with unsaved edits calls `usePendingSave(save | null)` (forms:
+  `usePendingFormSave(dirty, save)`, which returns the form ref and runs `reportValidity()` first); `next()` awaits it and stays
+  only when it resolves false (the form shows why). Remote (`RemoteEndpoint`: typed and not the
+  stored endpoint; a blank field now says "Enter the channel/address"), HA and MQTT (dirty vs the
+  stored settings; `reportValidity()` first). Integration saves resolve true/false
+  (`SaveSettings.save`). No wait for the connection. Settings: no context, unchanged.
+- **MQTT step** after HA ("Optional. Shows Hubbo in Home Assistant."): `IntegrationStep type=…` for
+  both; `MqttSettings showState`; Done row "MQTT". Resume: `not_configured` **or `disabled`** counts
+  as not set up (`isUnset` in lib/health; MQTT reports `disabled` until a broker is saved). 7 steps.
+- **Add dialog stays open** for HA and profile adds: "Added <name>" status at the top, HA back to
+  the entity list (search kept: `HaCandidates search=[q, setQ]`), profile back to step 1, Cancel →
+  Done. Bluetooth adds still close and go to the device page (`onPair` in Devices.tsx; the
+  user's call: pairing lives there). Today every profile is Bluetooth, so the profile path has no e2e.
+- **Toggle mute**: `HA_NAMES['media_player.mute_toggle'] = 'Mute'`; HA_MUTE and `NamedCommand.hold`
+  are gone (mute on/off stay plain commands). wizard.spec checks Denon's mute → mute_toggle.
+- **Status Remote tile** is green (`connected`) whenever paired: one-way RF, so no presses yet is
+  healthy (detail "No presses yet"). It was yellow before the first press (found on the board).
+- **Status MQTT tile** beside HA: `healthLabel(state, 'mqtt')` (MQTT `disabled` reads "Off"; grey
+  dot), detail = core's line, or a "Set up a broker" link to Integrations when off/not set up.
+  Grid is 6 columns at lg: Remote, Bluetooth, Ethernet (2 each), then HA and MQTT (3 each); sm is 2
+  columns with Ethernet full width, so HA and MQTT share a row. Checked at 390/768/1024/1280/1536.
+- **Copy** (`lib/clipboard.ts copyText(text, from)`): navigator.clipboard only in a secure context,
+  else a hidden textarea next to the button + execCommand('copy'), focus back to the button.
+  "Copied" only on success; on failure the token is selected (`selectText`) with a short hint. The
+  token dialog was the only clipboard use. tokens.spec fakes `isSecureContext=false` and records
+  execCommand (Chromium's real copy returns true).
+- **Off binding**: mock `factoryDefaults()` seeds `off:tap` → system `off` (like core) for reset,
+  factory reset and firstRun. Checked in setup.spec, backup.spec (reset config) and a mock unit test.
+- Specs run (--both): setup, ha, ha-domains, ble, devices, mqtt, wizard, status, tokens, backup,
+  remote-page, ha-action. e2e `configureIntegration(page, id, body)` in hub.ts (connectHa and
+  status.spec use it).
+- MQTT `disabled` before a broker is saved stays (lead's call; `isUnset` covers it).
+- **Status details** come from `/status` integrations' `detail` (api added it; the same as the
+  list's), so the Overview has one poll. Core leaves MQTT's detail empty while connected or
+  connecting; the mock does the same and copies `detail` into `/status` (contract registry_flow
+  checks they agree). HA's detail is empty on the hub (the mock adds a version).
+- **HA custom action** (docs/design/ha-custom-action.md; in progress): `lib/haCall.ts` holds the
+  hub's call rules once (service pattern, data: object, ≤1024 B, ≤4 levels with the data object as
+  level 1 and arrays counting, no top-level target keys, no `{{`/`{%` anywhere), the prefill
+  (required fields with HA's example as given, "" without), the label "webostv.button · button:
+  INFO", `startCall` and `callReady`. `checkAction` (lib/activity) applies them, so the editors and
+  the mock agree; mock shape only allows the `call` key. Picker: "Home Assistant action…" under More
+  when the `call_service` command has `services`; the fields are inline (`HaAction.tsx`: Service
+  select, Data `Textarea` (ui/input) with live errors, field hints), no nested dialog (lead OK'd).
+  `TestButton` hides itself until `callReady`; Apply (bindings, sequence step) also waits for it.
+  `choices(…, 'test')` leaves the choice out (the device page). Mock: `CUSTOM_SERVICES` hints, call_service
+  on register/re-link for callable skipped services (unsupported_field/too_many_fields), execute
+  takes `call`; mock shape and the body-depth check reuse haCall's `isObject`, `TARGET_KEYS` and
+  `depth` (body limit 9 = 5 + `CALL_DATA_MAX_DEPTH`: an activity's call data sits 5 levels down).
+  Callable skips: unsupported_field, too_many_fields, too_many_services (`CALLABLE_SKIPS`, like
+  core). A call's service must be on the device's snapshot platform (`forbidden_param` at
+  `…/call/service`; none = no call): checkAction checks it when `Catalog.haPlatforms` is given
+  (the mock gives it, from `entityExtras.platform`; the editors don't, the picker offers only the
+  device's own). Tests: haCall.test, a mock unit test, e2e/ha-action.spec (mock).
+  - Types are plain aliases of the generated ones (api's `additionalProperties: true` on data).
+    ha-action.spec passes on both; on hub-sim it also checks `POST /sim/ha` → `last_call` (the
+    seed's dev_lg_tv carries custom_services, so no re-link is needed). Once a `--both` run's
+  hub-sim leg printed nothing and exited 1; a `--sim --auth` rerun passed.
+
 ## MQTT broker (branch `mqtt`; docs/design/mqtt-discovery.md; simplified, review fixed, gate green)
 
 - Integrations: an MQTT card after Home Assistant (`ORDER` in Integrations.tsx), no device count;
@@ -285,7 +347,7 @@ were deferred while iterating and are now caught up.
   capabilities via `haNames.ts`; Bluetooth from `DeviceDetail`). Rules from `profiles/buttons.json`
   (repo root, imported at build time via `rules.ts`). HA first, then Bluetooth; Bluetooth: `wait_connected`
   (15000) before its first step, power on as `press` steps; on/input delays; `key_delay_ms` wait between steps to
-  the same device; HA turn_on + input gets a 3000 ms wait; HA mute = press mutes, hold unmutes;
+  the same device; HA turn_on + input gets a 3000 ms wait; HA mute = the hub's mute_toggle (setup-fixes);
   toggle-only power gets no step; holds use press_down/press_up.
 - **Key picker**: `commandGroups`/`groupOf` (lib/keys) group Bluetooth commands as Remote commands,
   All keys, Custom code (hidden behind "Show custom codes"). Waits (`effect: wait`) are offered only
