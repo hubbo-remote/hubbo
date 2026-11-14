@@ -3,10 +3,12 @@
 #include "json_fields.h"
 #include "profile_fields.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "hubbo/domain/limits.h"
 #include "hubbo/api/remote_port.h"
+#include "hubbo/ha/capabilities.h"
 #include "hubbo/ha/snapshot_json.h"
 #include "hubbo/remote/button.h"
 #include "hubbo/remote/input.h"
@@ -27,10 +29,18 @@ bool decodeAction(JsonVariantConst json, ActionSpec *out, ValidationReport *repo
     Fields f(json, report, path);
     f.string("integration_id", &out->integrationId, true, limits::kMaxIdLength);
     f.nullableString("device_id", &out->deviceId, true, limits::kMaxIdLength);
-    f.string("command_id", &out->commandId, true, limits::kMaxCommandIdLength);
+    const bool command = f.string("command_id", &out->commandId, true, limits::kMaxCommandIdLength);
     f.nested("params", true,
              [&](JsonVariantConst v, const std::string &p) { return decodeParams(v, &out->params, report, p); });
-    return f.finish();
+    // `call` belongs to call_service alone, which needs it.
+    const bool callService = out->commandId == ha::kCallServiceCommandId;
+    out->call.reset();
+    if (callService || !command) {
+        f.nested("call", callService, [&](JsonVariantConst v, const std::string &p) {
+            return decodeHaServiceCall(v, &out->call.emplace(), report, p);
+        });
+    }
+    return f.finish();  // a call on another command is an unknown field
 }
 
 bool decodeSequence(JsonVariantConst json, std::vector<ActionSpec> *out, ValidationReport *report,
@@ -65,6 +75,11 @@ void encodeAction(const ActionSpec &action, JsonObject out) {
     }
     out["command_id"] = action.commandId;
     encodeParams(action.params, out["params"].to<JsonObject>());
+    if (action.call) {
+        JsonObject call = out["call"].to<JsonObject>();
+        call["service"] = action.call->service;
+        call["data"] = serialized(action.call->data);  // compact JSON, as decoded
+    }
 }
 
 void encodeSequence(const std::vector<ActionSpec> &actions, JsonArray out) {
@@ -242,6 +257,87 @@ ErrorCode parseJson(std::string_view text, JsonDocument &doc, size_t maxBytes, u
     return err ? ErrorCode::MalformedJson : ErrorCode::Ok;
 }
 
+namespace {
+
+// Levels of `v` (a scalar is 0, {} or [] is 1), stopping past `limit`.
+size_t depthOf(JsonVariantConst v, size_t limit) {
+    if (limit == 0) return v.is<JsonObjectConst>() || v.is<JsonArrayConst>() ? 1 : 0;
+    size_t deepest = 0;
+    if (v.is<JsonObjectConst>()) {
+        for (JsonPairConst kv : v.as<JsonObjectConst>()) deepest = std::max(deepest, depthOf(kv.value(), limit - 1));
+        return deepest + 1;
+    }
+    if (v.is<JsonArrayConst>()) {
+        for (JsonVariantConst item : v.as<JsonArrayConst>()) deepest = std::max(deepest, depthOf(item, limit - 1));
+        return deepest + 1;
+    }
+    return 0;
+}
+
+bool templated(const char *text) {
+    return text != nullptr && (std::strstr(text, "{{") != nullptr || std::strstr(text, "{%") != nullptr);
+}
+
+// The path of the first key or string with a template in it, or "".
+std::string firstTemplate(JsonVariantConst v, const std::string &path) {
+    if (v.is<JsonObjectConst>()) {
+        for (JsonPairConst kv : v.as<JsonObjectConst>()) {
+            const std::string at = child(path, kv.key().c_str());
+            if (templated(kv.key().c_str())) return at;
+            std::string found = firstTemplate(kv.value(), at);
+            if (!found.empty()) return found;
+        }
+    } else if (v.is<JsonArrayConst>()) {
+        size_t i = 0;
+        for (JsonVariantConst item : v.as<JsonArrayConst>()) {
+            std::string found = firstTemplate(item, child(path, i++));
+            if (!found.empty()) return found;
+        }
+    } else if (v.is<const char *>() && templated(v.as<const char *>())) {
+        return path;
+    }
+    return {};
+}
+
+}  // namespace
+
+bool decodeHaServiceCall(JsonVariantConst json, HaServiceCallSpec *out, ValidationReport *report,
+                         const std::string &path) {
+    Fields f(json, report, path);
+    if (f.string("service", &out->service, true, limits::kMaxHaServiceLength) && !ha::isHaServiceId(out->service)) {
+        f.failAt(ErrorCode::Pattern, "service");
+    }
+    out->data = "{}";
+    f.nested("data", false, [&](JsonVariantConst data, const std::string &p) {
+        const auto fail = [&](ErrorCode code) {
+            addIssue(report, code, p);
+            return false;
+        };
+        if (!data.is<JsonObjectConst>()) return fail(ErrorCode::WrongType);
+        if (depthOf(data, limits::kMaxHaCallDataDepth) > limits::kMaxHaCallDataDepth) return fail(ErrorCode::TooDeep);
+        std::string text;
+        serializeJson(data, text);
+        if (text.size() > limits::kMaxHaCallDataBytes) return fail(ErrorCode::TooLong);
+        // The target is the device's entity, never one from the data.
+        bool ok = true;
+        for (JsonPairConst member : data.as<JsonObjectConst>()) {
+            if (ha::isTargetKey(member.key().c_str())) {
+                addIssue(report, ErrorCode::ForbiddenParam, child(p, member.key().c_str()));
+                ok = false;
+            }
+        }
+        // HA would render a template; sent verbatim, it must not be one.
+        const std::string at = firstTemplate(data, p);
+        if (!at.empty()) {
+            addIssue(report, ErrorCode::TemplateNotSupported, at);
+            ok = false;
+        }
+        if (ok) out->data = std::move(text);
+        return ok;
+    });
+    return f.finish();
+}
+
 bool decodeParams(JsonVariantConst json, std::vector<ParamInput> *out, ValidationReport *report,
                   const std::string &path) {
     const auto object = objectWithin(json, limits::kMaxParams, report, path);
@@ -377,7 +473,7 @@ bool decodeDevice(JsonVariantConst json, DeviceShape shape, DeviceSpec *out, Val
     if (stored) {
         f.nested("ha_capabilities", false, [&](JsonVariantConst v, const std::string &p) {
             // In place, not through a snapshot on this frame (stack: the HTTP task).
-            if (ha::decodeSnapshot(v, &out->haCapabilities.emplace(), report, p)) return true;
+            if (ha::decodeSnapshot(v, &out->haCapabilities.emplace(), report, p, out->provider.entityId)) return true;
             out->haCapabilities.reset();
             return false;
         });

@@ -75,10 +75,15 @@ IntegrationResolution resolveIntegration(const ConfigSpec &config, const Adapter
 // NotFound (no such device), IntegrationDisabled, the other resolver errors,
 // UnknownCommand (issue at /command_id), ValidationFailed (HoldNotAllowed at
 // /command_id: only momentary commands execute directly; params at
-// /params/<name>, rooted at the execute request body).
+// /params/<name>, rooted at the execute request body). `call`: the body's
+// call (decodeHaServiceCall), for call_service; whether it's required or
+// allowed is the caller's check, as decodeAction's for a config. Its
+// service's domain must be the device's HA platform (forbidden_param at
+// /call/service), as in a config (.../call/service).
 ErrorCode compileDeviceCommand(const ConfigSpec &config, const AdapterSet &adapters, std::string_view deviceId,
                                std::string_view commandId, const std::vector<ParamInput> &params,
-                               CompiledCommand *out, ValidationReport *report);
+                               CompiledCommand *out, ValidationReport *report,
+                               const HaServiceCallSpec *call = nullptr);
 
 // JSON Pointer token escaping ("~" -> "~0", "/" -> "~1").
 std::string jsonPointerToken(const std::string &token);

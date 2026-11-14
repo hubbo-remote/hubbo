@@ -29,7 +29,9 @@ constexpr int kSchemaVersion = 1;      // of every stored object (Activity, Devi
 // Of the config document (the payload of the "config" record). An older
 // version is refused (no migrations before the first release).
 constexpr int kConfigFileVersion = 2;
-constexpr uint8_t kRequestNestingLimit = 8;       // api/openapi.yaml
+// api/openapi.yaml. 9: an activity's binding action's call.data at its
+// deepest (activity, bindings, list, action, call, then data's 4 levels).
+constexpr uint8_t kRequestNestingLimit = 9;
 constexpr uint8_t kFileNestingLimit = 12;
 constexpr size_t kMaxRequestBytes = 32 * 1024;    // largest API body (activities)
 constexpr size_t kMaxConfigFileBytes = 512 * 1024;
@@ -61,6 +63,15 @@ void encodeGlobalBindings(const std::vector<BindingSpec> &bindings, uint32_t rev
 bool decodeParams(JsonVariantConst json, std::vector<ParamInput> *out, ValidationReport *report,
                   const std::string &path);
 void encodeParams(const std::vector<ParamInput> &params, JsonObject out);
+// An action's `call` (HaServiceCall): `service` must match ha::isHaServiceId
+// (pattern); `data` (default {}) must be an object (wrong_type) of at most
+// limits::kMaxHaCallDataBytes compact (too_long) and kMaxHaCallDataDepth
+// levels (too_deep), with no top-level target key (forbidden_param at
+// data/<key>) and no "{{" or "{%" in any key or string
+// (template_not_supported at the first one). `out->data` is the compact
+// text. Paths are under `path` (the call's).
+bool decodeHaServiceCall(JsonVariantConst json, HaServiceCallSpec *out, ValidationReport *report,
+                         const std::string &path);
 
 // ---- devices -----------------------------------------------------------
 enum class DeviceShape : uint8_t {

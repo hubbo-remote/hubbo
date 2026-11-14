@@ -258,23 +258,57 @@ ConfigSpec seedFromBackup() {
     std::stringstream text;
     text << in.rdbuf();
     ConfigSpec seed;
-    EXPECT_EQ(config::parseBackup(text.str(), &seed).code, ErrorCode::Ok);
+    const config::ParseResult parsed = config::parseBackup(text.str(), &seed);
+    EXPECT_EQ(parsed.code, ErrorCode::Ok)
+        << (parsed.report.ok() ? "" : std::string(errorCodeName(parsed.report.issues()[0].code)) + " at " +
+                                         parsed.report.issues()[0].path);
     return seed;
 }
 
 // The largest config the limits allow: 16 activities, 32-action sequences,
 // 64 devices, max-length ids/names, a max-length enum option, 3-param
 // commands, and the compiled-action cap.
+// An HA snapshot whose custom services fill every bound: kMaxCustomServices
+// services, each field's description and example at their longest, until
+// the per-device hint budget (kMaxCustomHintBytes) is used up exactly.
+ha::CapabilitySnapshot maximalHints(const std::string &platform) {
+    ha::CapabilitySnapshot s;
+    s.platform = platform;
+    const size_t perService = ha::kMaxCustomHintBytes / ha::kMaxCustomServices;  // 128
+    for (size_t i = 0; i < ha::kMaxCustomServices; i++) {
+        ha::SnapshotCustomService service;
+        service.service = platform + ".service_" + std::to_string(i);
+        service.label = std::string(16, 'S');
+        ha::SnapshotHint hint;
+        hint.name = "field";
+        hint.required = true;
+        hint.example = "\"" + std::string(ha::kMaxHintExampleBytes - 2, 'e') + "\"";
+        service.fields.push_back(hint);
+        const size_t used = ha::customHintBytes(service);
+        service.fields[0].description = std::string(perService > used ? perService - used : 0, 'd');
+        s.customServices.push_back(std::move(service));
+    }
+    return s;
+}
+
 ConfigSpec maximalConfig() {
     ConfigSpec c = fixtureConfig();
     c.revision = 0;  // as a restore might carry
     c.globalBindings.clear();
     c.devices.push_back(haDevice("dev_limits", std::string(limits::kMaxNameLength, 'L'), "receiver",
                                  "media_player.limits_test"));
+    // Full Home Assistant action hints on filler devices up to the config's
+    // whole budget (the fixture devices keep the snapshots their actions
+    // need).
+    size_t hints = ha::configHintBytes(c.devices);
     while (c.devices.size() < limits::kMaxDevices) {
         std::string id = "dev_" + std::to_string(c.devices.size());
         id.resize(limits::kMaxIdLength, 'x');
         c.devices.push_back(haDevice(id, std::string(limits::kMaxNameLength, 'D'), "light", "light.family_room"));
+        if (hints + ha::kMaxCustomHintBytes <= ha::kMaxConfigHintBytes) {
+            c.devices.back().haCapabilities = maximalHints("lifx");
+            hints += ha::customHintBytes(*c.devices.back().haCapabilities);
+        }
     }
     c.activities.clear();
     const std::string longSource(limits::kMaxParamStringLength, 's');
@@ -308,10 +342,25 @@ ConfigSpec maximalConfig() {
 // ---- every way a config can come to exist ----------------------------------
 
 TEST(RebootRoundTrip, FreshEmptyDefaults) {
-    Box box{ConfigSpec{}};  // the board's first boot
+    Box box{ConfigSpec{}};
     EXPECT_EQ(box.report.state, ConfigState::Fresh);
     EXPECT_TRUE(box.report.saved);
     EXPECT_NE(box.hub->configService().findIntegration("ble"), nullptr);  // built-ins
+    EXPECT_REBOOT_CLEAN(box);
+}
+
+TEST(RebootRoundTrip, FactoryDefaults) {
+    Box box{factoryDefaultConfig()};  // the board's first boot
+    EXPECT_EQ(box.report.state, ConfigState::Fresh);
+    EXPECT_TRUE(box.report.saved);
+    EXPECT_NE(box.hub->configService().findIntegration("ble"), nullptr);  // built-ins
+    const std::vector<BindingSpec> &globals = box.hub->config().globalBindings;
+    ASSERT_EQ(globals.size(), 1u);
+    EXPECT_EQ(globals[0].trigger, kOffTrigger);
+    ASSERT_EQ(globals[0].actions.size(), 1u);
+    EXPECT_EQ(globals[0].actions[0].integrationId, kSystemIntegrationId);
+    EXPECT_EQ(globals[0].actions[0].commandId, "off");
+    EXPECT_FALSE(globals[0].actions[0].deviceId);
     EXPECT_REBOOT_CLEAN(box);
     EXPECT_REBOOT_CLEAN(box);
 }
@@ -323,7 +372,10 @@ TEST(RebootRoundTrip, CxxFixtures) {
 
 TEST(RebootRoundTrip, SimSeedFromApiBackup) {
     Box box{seedFromBackup()};
-    EXPECT_EQ(box.report.state, ConfigState::Fresh);
+    EXPECT_EQ(box.report.state, ConfigState::Fresh)
+        << errorCodeName(box.report.reason)
+        << (box.report.issues.ok() ? "" : " " + box.report.issues.issues()[0].path + " " +
+                                              errorCodeName(box.report.issues.issues()[0].code));
     EXPECT_REBOOT_CLEAN(box);
 }
 
@@ -348,6 +400,7 @@ TEST(RebootRoundTrip, RestoreWithZeroAndMissingRevisions) {
 
 TEST(RebootRoundTrip, ConfigAtTheLimits) {
     Box box;
+    EXPECT_EQ(ha::configHintBytes(maximalConfig().devices), ha::kMaxConfigHintBytes) << "the HA action hints fill the config's budget";
     const config::Outcome o = box.hub->configService().restore(maximalConfig());
     ASSERT_TRUE(o.ok()) << errorCodeName(o.code) << (o.issues.ok() ? "" : " " + o.issues.issues()[0].path);
     box.hub->activate(box.hub->config().activities[15].id);

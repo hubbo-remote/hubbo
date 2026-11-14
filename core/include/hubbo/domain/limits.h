@@ -38,6 +38,17 @@ constexpr size_t kMaxValidationIssues = 32;  // further issues are dropped
 constexpr size_t kMaxEnumOptions = 128;      // options of one enum param
 static_assert(kMaxParams <= 8, "the params-present mask is one byte");
 
+// A Home Assistant action (HaServiceCallSpec, config.h): "<domain>.<service>",
+// and its data as compact JSON.
+constexpr size_t kMaxHaServiceLength = 97;      // 32 + "." + 64
+constexpr size_t kMaxHaCallDataBytes = 1024;
+constexpr size_t kMaxHaCallDataDepth = 4;       // the data object is level 1
+// Actions with a call in one config: the size budget. 16 of the largest
+// (about 1.2 KB each in the record) fit one activity request
+// (config::kMaxRequestBytes) and leave the record (kMaxConfigFileBytes)
+// its room for everything else.
+constexpr size_t kMaxHaServiceCalls = 16;
+
 // system.wait
 constexpr uint32_t kMaxWaitMs = 60000;
 

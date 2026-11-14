@@ -58,6 +58,9 @@ struct ExecRequest {
     // finishes by itself. In a sequence it answers when done, so the next
     // step never overlaps it.
     bool answerAtStart;
+    // call_service: the Home Assistant action to send (CompiledAction::call);
+    // an adapter that sends it later keeps a copy. Empty otherwise.
+    HaServiceCallRef call = nullptr;
 };
 
 class CompletionSink {

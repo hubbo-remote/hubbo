@@ -220,7 +220,8 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
                                   node.providerRef.c_str(),
                                   ticket,
                                   nowMs,
-                                  /*answerAtStart=*/seq.info.origin == SequenceOrigin::Api};
+                                  /*answerAtStart=*/seq.info.origin == SequenceOrigin::Api,
+                                  action.call};
         const ExecResult result = adapter->execute(request);
         if (observer_ != nullptr) {
             observer_->onActionDispatched({seq.info, index, action, adapter->integrationId(), node.target.c_str(),
@@ -402,6 +403,7 @@ uint16_t Executor::takeNode() {
 }
 
 void Executor::freeNode(uint16_t index) {
+    pool_[index].action.call.reset();  // a free node keeps nothing alive
     pool_[index].next = freeHead_;
     freeHead_ = index;
     freeCount_++;
