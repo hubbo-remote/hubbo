@@ -168,6 +168,7 @@ def media_player_commands(features, attrs):
     if has("VOLUME_MUTE"):
         out.append(cmd("media_player.volume_mute", "Mute",
                        [p_bool("muted")]))
+        out.append(cmd("media_player.mute_toggle", "Toggle mute"))
     if has("PLAY") and has("PAUSE"):
         out.append(cmd("media_player.media_play_pause", "Play/pause"))
     if has("PLAY"):
@@ -316,6 +317,25 @@ HA_ENTITIES = {
         # webostv SUPPORT_WEBOSTV | MUTE | VOLUME_STEP (external speaker) | TURN_ON (turn-on trigger)
         "supported_features": 24505,
         "attributes": {"source_list": ["HDMI 1", "HDMI 2", "HDMI 3", "Live TV", "Netflix", "YouTube"]},
+        # webostv's services take free text, so they're custom services (a
+        # Home Assistant action), with HA's own hints (webostv services.yaml
+        # and strings.json). hub-sim's fake HA reports the same.
+        "platform": "webostv",
+        "custom_services": [
+            {"service": "webostv.button", "label": "Button", "fields": [
+                {"name": "button", "required": True, "example": "LEFT",
+                 # HA's text, cut to 160 bytes the hub's way (a word boundary, then "…")
+                 "description": "Name of the button to press. Known possible values are LEFT, RIGHT, DOWN, UP, "
+                                "HOME, MENU, BACK, ENTER, DASH, INFO, ASTERISK, CC, EXIT, MUTE, RED, …"}]},
+            {"service": "webostv.command", "label": "Command", "fields": [
+                {"name": "command", "required": True, "example": "system.launcher/open",
+                 "description": "Endpoint for the command."},
+                {"name": "payload", "required": False, "example": "target: https://www.google.com\n",
+                 "description": "An optional payload to provide to the endpoint in the format of key value pair(s)."}]},
+            {"service": "webostv.select_sound_output", "label": "Select sound output", "fields": [
+                {"name": "sound_output", "required": True, "example": "external_speaker",
+                 "description": "Name of the sound output to switch to."}]},
+        ],
     },
     "dev_xbox": {
         "entity_id": "media_player.xbox", "unique_id": "FD00112233445566",
@@ -381,6 +401,8 @@ def ha_snapshot(e):
         if key in e["attributes"]:
             snap[key] = e["attributes"][key]
     snap["services"] = []
+    if e.get("custom_services"):
+        snap["custom_services"] = e["custom_services"]
     return snap
 
 
@@ -425,12 +447,20 @@ CAPABILITIES = {"dev_apple_tv": {"device_id": "dev_apple_tv", "integration_id": 
                                  "commands": ble_commands("hubbo:apple-tv")}}
 for k, v in HA_ENTITIES.items():
     CAPABILITIES[k] = {"device_id": k, "integration_id": "ha_main", "commands": ha_commands(v)}
+    if v.get("custom_services"):  # a Home Assistant action, after the device's own commands
+        CAPABILITIES[k]["commands"].append(dict(cmd("call_service", "Home Assistant action", group="custom"),
+                                                services=v["custom_services"]))
 
 # ---------------------------------------------------------------- activities
 
 def a(device, command_id, /, **params):
     integ = "system" if device is None else next(d["integration_id"] for d in DEVICES if d["id"] == device)
     return {"integration_id": integ, "device_id": device, "command_id": command_id, "params": params}
+
+
+def ha_action(device, service, **data):
+    """A Home Assistant action: `service` with `data`, sent verbatim to the device's entity."""
+    return dict(a(device, "call_service"), call={"service": service, "data": data})
 
 
 def wait(ms):
@@ -459,7 +489,7 @@ watch_bindings.update({
     "info:hold": [a("dev_apple_tv", "key_tap", key="KEY_I")],
     "volume_up:down": [a("dev_sonos", "media_player.volume_up")],
     "volume_down:down": [a("dev_sonos", "media_player.volume_down")],
-    "mute:down": [a("dev_sonos", "media_player.volume_mute", muted=True)],
+    "mute:down": [a("dev_sonos", "media_player.mute_toggle")],
     "plus:down": [a("dev_family_room_lights", "light.brightness_step", step=32)],
     "minus:down": [a("dev_family_room_lights", "light.brightness_step", step=-32)],
     "light_1:down": [a("dev_family_room_lights", "light.turn_on", brightness=255, transition=1)],
@@ -505,8 +535,7 @@ PLAY_XBOX = {
     "bindings": {
         "volume_up:down": [a("dev_denon", "media_player.volume_up")],
         "volume_down:down": [a("dev_denon", "media_player.volume_down")],
-        "mute:tap": [a("dev_denon", "media_player.volume_mute", muted=True)],
-        "mute:hold": [a("dev_denon", "media_player.volume_mute", muted=False)],
+        "mute:down": [a("dev_denon", "media_player.mute_toggle")],
         "play:down": [a("dev_xbox", "media_player.media_play_pause")],
         "pause:down": [a("dev_xbox", "media_player.media_play_pause")],
         "skip_forward:down": [a("dev_xbox", "media_player.media_next_track")],
@@ -514,6 +543,7 @@ PLAY_XBOX = {
         "light_1:down": [a("dev_family_room_lights", "light.turn_on", brightness=255)],
         "light_2:down": [a("dev_family_room_lights", "light.turn_off")],
         "red:down": [a("dev_denon", "media_player.volume_set", level=0.35)],
+        "info:down": [ha_action("dev_lg_tv", "webostv.button", button="INFO")],
     },
     "schema_version": 1, "revision": 2,
 }
@@ -570,8 +600,7 @@ INTEGRATIONS = [
      "device_count": 1},
     {"id": "ha_main", "type": "home_assistant", "name": "Home Assistant", "enabled": True,
      "state": "connected", "detail": "Home Assistant 2026.11.1", "device_count": 5},
-    {"id": "mqtt_main", "type": "mqtt", "name": "MQTT", "enabled": True, "state": "connected",
-     "detail": "Connected to the broker", "device_count": 0},
+    {"id": "mqtt_main", "type": "mqtt", "name": "MQTT", "enabled": True, "state": "connected", "device_count": 0},
 ]
 
 HUB = {"name": "Living Room", "hostname": "living-room", "hostname_conflict": False}
@@ -583,7 +612,7 @@ STATUS = {
     "active_activity_id": "act_watch_apple_tv",
     "network": {"link": "up", "ip": "192.0.2.56", "hostname": HUB["hostname"]},
     "remote": REMOTE_STATUS,
-    "integrations": [{"id": i["id"], "type": i["type"], "state": i["state"]} for i in INTEGRATIONS],
+    "integrations": [{k: i[k] for k in ("id", "type", "state", "detail") if k in i} for i in INTEGRATIONS],
     "diagnostics": {
         "heap_free": 182340, "heap_min_free": 141020, "psram_free": 7912448, "queue_overflows": 0,
         "dispatch_latency": {"count": 1532, "p50_ms": 1.2, "p95_ms": 3.8, "p99_ms": 7.5},
@@ -848,12 +877,14 @@ BACKUP = {
     "excluded": ["admin_password", "api_tokens", "integration_secrets", "ble_bonds"],
 }
 fx("admin/backup.json", "downloadBackup", "200", BACKUP)
-# A board's first boot: nothing configured. hub-sim --seed uses it, and the
-# contract run's persistence check starts from it.
+# A board's first boot: nothing configured but the global Off binding (core's
+# factoryDefaultConfig()). hub-sim --seed uses it, and the contract run's
+# persistence check starts from it.
 fx("admin/backup.empty.json", "downloadBackup", "200", {
     "format": "hubbo-backup", "format_version": 1, "created_at": None,
     "firmware_version": "0.1.0", "board": "waveshare_esp32_s3_eth",
-    "integrations": [], "devices": [], "global_bindings": {"bindings": {}, "revision": 1},
+    "integrations": [], "devices": [],
+    "global_bindings": {"bindings": {"off:tap": [a(None, "off")]}, "revision": 1},
     "activities": [], "excluded": ["admin_password", "api_tokens", "integration_secrets", "ble_bonds"],
 })
 fx("admin/restore.request.json", "restoreBackup", "request", BACKUP)

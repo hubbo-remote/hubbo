@@ -215,7 +215,7 @@
       "schema_version": 1,
       "revision": 1,
       "ha_capabilities": {
-        "platform": "demo",
+        "platform": "webostv",
         "supported_features": 24505,
         "source_list": [
           "HDMI 1",
@@ -225,7 +225,51 @@
           "Netflix",
           "YouTube"
         ],
-        "services": []
+        "services": [],
+        "custom_services": [
+          {
+            "service": "webostv.button",
+            "label": "Button",
+            "fields": [
+              {
+                "name": "button",
+                "required": true,
+                "example": "LEFT",
+                "description": "Name of the button to press. Known possible values are LEFT, RIGHT, DOWN, UP, HOME, MENU, BACK, ENTER, DASH, INFO, ASTERISK, CC, EXIT, MUTE, RED, …"
+              }
+            ]
+          },
+          {
+            "service": "webostv.command",
+            "label": "Command",
+            "fields": [
+              {
+                "name": "command",
+                "required": true,
+                "example": "system.launcher/open",
+                "description": "Endpoint for the command."
+              },
+              {
+                "name": "payload",
+                "required": false,
+                "example": "target: https://www.google.com\n",
+                "description": "An optional payload to provide to the endpoint in the format of key value pair(s)."
+              }
+            ]
+          },
+          {
+            "service": "webostv.select_sound_output",
+            "label": "Select sound output",
+            "fields": [
+              {
+                "name": "sound_output",
+                "required": true,
+                "example": "external_speaker",
+                "description": "Name of the sound output to switch to."
+              }
+            ]
+          }
+        ]
       }
     },
     {
@@ -726,10 +770,8 @@
           {
             "integration_id": "ha_main",
             "device_id": "dev_sonos",
-            "command_id": "media_player.volume_mute",
-            "params": {
-              "muted": true
-            }
+            "command_id": "media_player.mute_toggle",
+            "params": {}
           }
         ],
         "plus:down": [
@@ -869,24 +911,12 @@
             "params": {}
           }
         ],
-        "mute:tap": [
+        "mute:down": [
           {
             "integration_id": "ha_main",
             "device_id": "dev_denon",
-            "command_id": "media_player.volume_mute",
-            "params": {
-              "muted": true
-            }
-          }
-        ],
-        "mute:hold": [
-          {
-            "integration_id": "ha_main",
-            "device_id": "dev_denon",
-            "command_id": "media_player.volume_mute",
-            "params": {
-              "muted": false
-            }
+            "command_id": "media_player.mute_toggle",
+            "params": {}
           }
         ],
         "play:down": [
@@ -946,6 +976,20 @@
             "command_id": "media_player.volume_set",
             "params": {
               "level": 0.35
+            }
+          }
+        ],
+        "info:down": [
+          {
+            "integration_id": "ha_main",
+            "device_id": "dev_lg_tv",
+            "command_id": "call_service",
+            "params": {},
+            "call": {
+              "service": "webostv.button",
+              "data": {
+                "button": "INFO"
+              }
             }
           }
         ]

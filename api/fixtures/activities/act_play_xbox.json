@@ -90,24 +90,12 @@
         "params": {}
       }
     ],
-    "mute:tap": [
+    "mute:down": [
       {
         "integration_id": "ha_main",
         "device_id": "dev_denon",
-        "command_id": "media_player.volume_mute",
-        "params": {
-          "muted": true
-        }
-      }
-    ],
-    "mute:hold": [
-      {
-        "integration_id": "ha_main",
-        "device_id": "dev_denon",
-        "command_id": "media_player.volume_mute",
-        "params": {
-          "muted": false
-        }
+        "command_id": "media_player.mute_toggle",
+        "params": {}
       }
     ],
     "play:down": [
@@ -167,6 +155,20 @@
         "command_id": "media_player.volume_set",
         "params": {
           "level": 0.35
+        }
+      }
+    ],
+    "info:down": [
+      {
+        "integration_id": "ha_main",
+        "device_id": "dev_lg_tv",
+        "command_id": "call_service",
+        "params": {},
+        "call": {
+          "service": "webostv.button",
+          "data": {
+            "button": "INFO"
+          }
         }
       }
     ]

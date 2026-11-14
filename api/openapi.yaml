@@ -39,7 +39,7 @@ info:
       limit is 16 KiB; activity bodies 32 KiB; restore 640 KiB, the largest
       saved config (512 KiB) plus headroom for the backup wrapper and
       pretty-printing; the firmware image the OTA slot, 6.25 MiB
-      (`x-hubbo-max-body`). JSON nesting deeper than 8 levels is rejected.
+      (`x-hubbo-max-body`). JSON nesting deeper than 9 levels is rejected.
     * **Errors.** Every non-2xx response has the `Error` body. Any request can
       also get `405 method_not_allowed`. A body larger than the operation
       accepts (any body, for operations that take none) is refused with
@@ -1444,7 +1444,8 @@ paths:
       summary: Reset configuration
       description: |
         Reset configuration: replaces devices, activities, global bindings
-        and integration settings with the defaults, stamped with a new
+        and integration settings with the first-boot defaults (the built-in
+        integrations and one global binding, `off:tap` → system `off`), stamped with a new
         generation (so every client's old revisions get 409). Works while the
         config is `blocked`. The login, tokens, the Home Assistant token and
         pairings are kept (`POST /admin/factory-reset` erases those too). Like a restore it never
@@ -1857,7 +1858,7 @@ components:
             `too_long`, `pattern`, `forbidden_param`, `referenced`, `id_mismatch`,
             `weak_password`).
           type: string
-          enum: [required, unknown_field, wrong_type, too_long, pattern, forbidden_param, referenced, id_mismatch, weak_password, hold_not_allowed, unpaired_hold, integration_disabled, invalid_id, invalid_name, invalid_command_id, duplicate_id, unknown_integration, unknown_device, device_required, device_not_allowed, integration_mismatch, unknown_command, unknown_param, duplicate_param, missing_param, invalid_param_type, param_out_of_range, invalid_enum_value, too_many_params, invalid_trigger, duplicate_trigger, unknown_activity, misplaced_transition, too_many_actions, too_many_activities, too_many_devices, capacity_exceeded, unsupported_schema, unknown_profile, unknown_kind, sequence_only]
+          enum: [required, unknown_field, wrong_type, too_long, pattern, forbidden_param, referenced, id_mismatch, weak_password, hold_not_allowed, unpaired_hold, integration_disabled, invalid_id, invalid_name, invalid_command_id, duplicate_id, unknown_integration, unknown_device, device_required, device_not_allowed, integration_mismatch, unknown_command, unknown_param, duplicate_param, missing_param, invalid_param_type, param_out_of_range, invalid_enum_value, too_many_params, invalid_trigger, duplicate_trigger, unknown_activity, misplaced_transition, too_many_actions, too_many_activities, too_many_devices, capacity_exceeded, unsupported_schema, unknown_profile, unknown_kind, sequence_only, too_deep, template_not_supported]
         message:
           type: string
           maxLength: 200
@@ -1986,6 +1987,10 @@ components:
               id: {$ref: '#/components/schemas/IntegrationId'}
               type: {$ref: '#/components/schemas/IntegrationType'}
               state: {$ref: '#/components/schemas/IntegrationState'}
+              detail:
+                description: The same as the integrations list's `detail`, so one poll shows both.
+                type: string
+                maxLength: 120
         diagnostics: {$ref: '#/components/schemas/Diagnostics'}
     LatencyStats:
       type: object
@@ -2230,9 +2235,18 @@ components:
             param `command`). `keys`: every named key
             on every Bluetooth device (`key_tap`, `key_down`, `key_up`).
             `custom`: a raw consumer usage, 1-1023 (`usage_tap`,
-            `usage_down`, `usage_up`).
+            `usage_down`, `usage_up`). On a Home Assistant device, `custom`
+            is `call_service` (a Home Assistant action).
           type: string
           enum: [remote, keys, custom]
+        services:
+          description: |
+            `call_service` only: the services a Home Assistant action can send
+            to this device (its snapshot's `custom_services`), with field hints.
+          type: array
+          minItems: 1
+          maxItems: 16
+          items: {$ref: '#/components/schemas/HaCustomService'}
         label: {type: string, maxLength: 48}
         description: {type: string, maxLength: 200}
         params:
@@ -2275,7 +2289,8 @@ components:
         registered device owned by `integration_id`; it is `null` only for the
         deviceless `system` commands: `wait`, `activate` and `off`. `activate`
         and `off` may only be the last action of a binding, never in
-        startup/shutdown.
+        startup/shutdown. A Home Assistant action (`call_service`) adds
+        `call` (required with it, refused on any other command: `unknown_field`).
       type: object
       additionalProperties: false
       required: [integration_id, device_id, command_id, params]
@@ -2285,6 +2300,14 @@ components:
           $ref: '#/components/schemas/NullableDeviceId'
         command_id: {$ref: '#/components/schemas/CommandId'}
         params: {$ref: '#/components/schemas/ActionParams'}
+        call: {$ref: '#/components/schemas/HaServiceCall'}
+      if: {required: [command_id], properties: {command_id: {const: call_service}}}
+      then:
+        required: [call]
+        properties:
+          device_id: {$ref: '#/components/schemas/DeviceId'}
+          params: {maxProperties: 0}
+      else: {not: {required: [call]}}
     ActionSequence:
       type: array
       maxItems: 32
@@ -2300,11 +2323,15 @@ components:
         maxItems: 32
         items: {$ref: '#/components/schemas/Action'}
     ExecuteRequest:
+      description: |
+        `call` only for `call_service` (a Home Assistant action), and required
+        there; detail paths start at the body (`/call/data/...`).
       type: object
       additionalProperties: false
       required: [params]
       properties:
         params: {$ref: '#/components/schemas/ActionParams'}
+        call: {$ref: '#/components/schemas/HaServiceCall'}
     ExecuteResult:
       type: object
       additionalProperties: false
@@ -2586,6 +2613,82 @@ components:
           type: array
           maxItems: 32
           items: {$ref: '#/components/schemas/HaServiceSnapshot'}
+        custom_services:
+          description: |
+            The integration's services for the entity that Hubbo couldn't
+            type (a text, object or other untyped field, or too many fields),
+            with HA's field hints. They make the device offer `call_service`
+            (a Home Assistant action). Response-only services are never here.
+            The hints' text (service, label, field names, examples and
+            descriptions) is at most 2048 bytes per device and 16384 across
+            the config: registering or re-linking keeps the services that
+            fit what's left, and a restore over it is `capacity_exceeded` at
+            `/devices/N/ha_capabilities/custom_services`.
+          type: array
+          maxItems: 16
+          items: {$ref: '#/components/schemas/HaCustomService'}
+    HaCustomService:
+      description: |
+        A service a Home Assistant action can send (`call_service`), with
+        what HA says about its fields. Hints only: the action's `data` is
+        written as JSON, never typed against them. Target-like fields
+        (`entity_id`, ...) are left out: the target is always the device.
+      type: object
+      additionalProperties: false
+      required: [service, fields]
+      properties:
+        service: {$ref: '#/components/schemas/HaServiceId'}
+        label: {type: string, maxLength: 48}
+        fields:
+          type: array
+          maxItems: 8
+          items: {$ref: '#/components/schemas/HaFieldHint'}
+    HaFieldHint:
+      type: object
+      additionalProperties: false
+      required: [name, required]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9_]{0,31}$'}
+        required: {type: boolean}
+        example:
+          description: |
+            HA's example for the field, as HA gives it (any JSON value: a
+            quoted `"[1, 2]"` stays a string). Absent when HA has none or it's
+            over 64 bytes as JSON.
+        description: {type: string, maxLength: 160}
+    HaServiceId:
+      description: A Home Assistant service, `<domain>.<service>`.
+      type: string
+      pattern: '^[a-z][a-z0-9_]{0,31}\.[a-z][a-z0-9_]{0,63}$'
+    HaServiceCall:
+      description: |
+        A Home Assistant action's call: `service`, sent to the device's
+        entity with `data` verbatim as its service data (HA's call_service,
+        no `return_response`). Only with command `call_service` on a Home
+        Assistant device. It reaches whatever HA allows for that service,
+        lock or alarm services included, so bind it with care.
+        Pick the service from the device's `call_service` command's
+        `services`. Its domain must be the device's own HA integration
+        (`webostv.*` on a webOS TV); any other (`homeassistant.stop`, ...) is
+        `forbidden_param` at `.../call/service`. `data` is a JSON object of
+        at most 1024 bytes (compact) and 4 levels deep; top-level target keys
+        are refused (`forbidden_param`; the target is always the device), and
+        so is template text, `{{` or `{%` anywhere (`template_not_supported`:
+        HA's call_service sends templates as plain text). Too big is
+        `too_long`, too deep `too_deep`. A config holds at most 16 actions
+        with a `call` (activities and global bindings together); one more is
+        `capacity_exceeded` at its `.../call`. Responses always carry `data`.
+      type: object
+      additionalProperties: false
+      required: [service]
+      properties:
+        service: {$ref: '#/components/schemas/HaServiceId'}
+        data:
+          type: object
+          additionalProperties: true
+          default: {}
+          propertyNames:
+            not: {enum: [entity_id, device_id, area_id, floor_id, label_id]}
     HaOptionList:
       type: array
       maxItems: 128

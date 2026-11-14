@@ -39,6 +39,12 @@
       ]
     },
     {
+      "command_id": "media_player.mute_toggle",
+      "label": "Toggle mute",
+      "effect": "momentary",
+      "params": []
+    },
+    {
       "command_id": "media_player.media_play_pause",
       "label": "Play/pause",
       "effect": "momentary",
