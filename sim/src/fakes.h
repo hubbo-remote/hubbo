@@ -26,6 +26,7 @@
 #include "hubbo/ha/capabilities.h"
 #include "hubbo/integrations/ble_hid.h"
 #include "hubbo/integrations/ble_hosts.h"
+#include "hubbo/integrations/ha_catalogs.h"
 
 namespace hubbo::sim {
 
@@ -99,7 +100,9 @@ public:
     explicit FakeHomeAssistant(std::string integrationId = "ha_main") : id_(std::move(integrationId)) {}
 
     // Registers an entity as HA would describe it (features, source lists).
-    // Devices whose provider ref names no registered entity get no commands.
+    // A device with a stored snapshot gets the commands it describes, as from
+    // the real adapter (custom services, so call_service, included); else its
+    // entity's, and none if no registered entity has its provider ref.
     void addEntity(const ha::EntityInfo &entity);
 
     const char *integrationId() const override { return id_.c_str(); }
@@ -121,8 +124,13 @@ public:
         failures_.clear();
     }
 
-    // HA service calls made, in order: "<domain>.<service> <entity> k=v".
+    // HA service calls made, in order: "<domain>.<service> <entity> k=v",
+    // and a Home Assistant action as "<service> <entity> <data json>".
     std::vector<std::string> &calls() { return calls_; }
+    // An entity's state as the calls left it: each call's data fields
+    // become its attributes (volume_mute sets is_volume_muted), which a
+    // command with a stateAttribute (mute_toggle) reads. Unset: unknown.
+    const ha::ServiceValue *attribute(const std::string &entityId, const std::string &key) const;
 
 private:
     struct Delayed {
@@ -136,12 +144,16 @@ private:
     };
 
     std::string id_;
-    std::map<std::string, ha::EntityCapabilities> entities_;  // by entity id; stable storage
+    // Every catalog handed out, as the real adapter keeps them (config task
+    // and engine task).
+    mutable integrations::HaCatalogs catalogs_;
+    std::map<std::string, const ha::EntityCapabilities *> entities_;  // addEntity's, by entity id (in catalogs_)
     uint32_t latencyMs_ = 0;
     bool available_ = true;
     std::vector<Failure> failures_;
     std::deque<Delayed> delayed_;
     std::vector<std::string> calls_;
+    std::map<std::string, std::map<std::string, ha::ServiceValue>> state_;  // entity -> key -> value
 };
 
 class FakeIr : public IntegrationAdapter {

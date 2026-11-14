@@ -50,6 +50,7 @@ void FakeHaServer::reset() {
     stallConnect = false;
     failing.clear();
     fillerEntities = 0;
+    lastCall_ = "null";
     entities_.clear();
     for (FixtureHaEntity &fixture : fixtureHaEntities()) {
         FakeHaEntity e;
@@ -82,6 +83,30 @@ void FakeHaServer::removeEntity(std::string_view entityId) {
     entities_.erase(std::remove_if(entities_.begin(), entities_.end(),
                                    [&](const FakeHaEntity &e) { return e.info.entityId == entityId; }),
                     entities_.end());
+}
+
+bool FakeHaServer::setMuted(std::string_view entityId, bool muted) {
+    if (ha::entityDomain(entityId) != ha::EntityDomain::MediaPlayer) return false;
+    for (auto &e : entities_) {
+        if (e.info.entityId == entityId) {
+            e.muted = muted;
+            return true;
+        }
+    }
+    return false;
+}
+
+std::optional<bool> FakeHaServer::muted(std::string_view entityId) const {
+    if (ha::entityDomain(entityId) != ha::EntityDomain::MediaPlayer) return std::nullopt;
+    for (const auto &e : entities_) {
+        if (e.info.entityId != entityId) continue;
+        if (e.muted || e.attributesJson.empty()) return e.muted.value_or(false);
+        JsonDocument attrs;  // captured: as HA sent it
+        deserializeJson(attrs, e.attributesJson);
+        if (attrs["is_volume_muted"].is<bool>()) return attrs["is_volume_muted"].as<bool>();
+        return std::nullopt;
+    }
+    return std::nullopt;
 }
 
 void FakeHaServer::addEntity(FakeHaEntity entity) {
@@ -129,9 +154,21 @@ std::vector<std::string> FakeHaServer::onMessage(const std::string &text) {
             line += " " + std::string(field.key().c_str()) + "=" + valueText(field.value());
         }
         calls_.push_back(line);  // received, answered or not
+        JsonDocument last;
+        last["service"] = service;
+        last["entity_id"] = doc["target"]["entity_id"];
+        if (doc["service_data"].is<JsonObjectConst>()) {
+            last["data"] = doc["service_data"];
+        } else {
+            last["data"].to<JsonObject>();
+        }
+        lastCall_ = serialize(last);
         if (!answerCommands) return {};
         // As real HA: an entity it doesn't have still gets success.
         if (failing.count(service) != 0) return {error(id, "service_validation_error")};
+        if (service == "media_player.volume_mute" && doc["service_data"]["is_volume_muted"].is<bool>()) {
+            setMuted(std::string(doc["target"]["entity_id"] | ""), doc["service_data"]["is_volume_muted"].as<bool>());
+        }
         return {result(id, "{\"context\":{\"id\":\"ctx\"},\"response\":null}")};
     }
     if (!answerCommands) return {};
@@ -181,6 +218,7 @@ std::string FakeHaServer::compressedStates(const std::vector<std::string> &ids) 
             s["s"] = e.state;
             JsonDocument attrs;
             deserializeJson(attrs, e.attributesJson);
+            if (e.muted) attrs["is_volume_muted"] = *e.muted;
             s["a"] = attrs;
             continue;
         }
@@ -190,7 +228,7 @@ std::string FakeHaServer::compressedStates(const std::vector<std::string> &ids) 
         a["friendly_name"] = e.friendlyName;
         if (player) {
             a["volume_level"] = 0.35;
-            a["is_volume_muted"] = false;
+            a["is_volume_muted"] = e.muted.value_or(false);
             if (!e.info.sourceList.empty()) a["source"] = e.info.sourceList.front();
         }
         a["supported_features"] = e.info.supportedFeatures;
@@ -264,8 +302,10 @@ namespace {
 
 std::string baseServicesJson() {
     // Domain services (the hub's own allowlist decides those), plus
-    // integration services shaped like real HA's, one per selector kind the
-    // hub maps (boolean, number, select) and one it skips (text).
+    // integration services shaped like real HA's (its services.yaml): the
+    // selector kinds the hub maps (boolean, number) and ones it skips (text:
+    // denonavr.get_command, and webostv's, which a Home Assistant action
+    // can still call).
     const auto service = [](const char *name, const char *integration, const char *fields) {
         return std::string("\"") + name + "\":{\"target\":{\"entity\":[{\"integration\":\"" + integration +
                "\",\"domain\":[\"media_player\"]}]},\"fields\":{" + fields + "}}";
@@ -288,9 +328,10 @@ std::string baseServicesJson() {
            service("set_option", "sonos",
                    R"("night_sound":{"selector":{"boolean":{}}},"speech_enhance":{"selector":{"boolean":{}}})") +
            R"(},"webostv":{)" +
+           service("button", "webostv", R"("button":{"required":true,"example":"LEFT","selector":{"text":{}}})") +
+           "," +
            service("select_sound_output", "webostv",
-                   R"("sound_output":{"required":true,"selector":{"select":{"options":)"
-                   R"(["tv_speaker","external_arc","external_optical","bt_soundbar"]}}})") +
+                   R"("sound_output":{"required":true,"example":"external_speaker","selector":{"text":{}}})") +
            "}}";
 }
 
@@ -317,6 +358,10 @@ const std::vector<std::pair<std::string, std::string>> &baseTranslations() {
         {"component.sonos.services.set_sleep_timer.fields.sleep_time.description", "Number of seconds to set the timer."},
         {"component.sonos.services.set_sleep_timer.fields.sleep_time.name", "Sleep Time"},
         {"component.sonos.services.set_sleep_timer.name", "Set timer"},
+        {"component.webostv.services.button.description", "Sends a button press command."},
+        {"component.webostv.services.button.fields.button.description", "Name of the button to press. Known possible values are LEFT, RIGHT, DOWN, UP, HOME, MENU, BACK, ENTER, DASH, INFO, ASTERISK, CC, EXIT, MUTE, RED, GREEN, BLUE, YELLOW, VOLUMEUP, VOLUMEDOWN, CHANNELUP, CHANNELDOWN, PLAY, PAUSE, NETFLIX, GUIDE, AMAZON, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9."},
+        {"component.webostv.services.button.fields.button.name", "Button"},
+        {"component.webostv.services.button.name", "Button"},
         {"component.webostv.services.select_sound_output.description", "Sends the TV the command to change sound output."},
         {"component.webostv.services.select_sound_output.fields.entity_id.description", "Name(s) of the webOS TV entities to change sound output on."},
         {"component.webostv.services.select_sound_output.fields.entity_id.name", "Entity"},

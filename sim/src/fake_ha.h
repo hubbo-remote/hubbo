@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -35,6 +36,9 @@ struct FakeHaEntity {
     // `info` ("" = build them).
     std::string state;
     std::string attributesJson;
+    // A media player's is_volume_muted: set by media_player.volume_mute
+    // calls (and /sim/ha muted=). nullopt: as built (false) or captured.
+    std::optional<bool> muted;
 };
 
 class FakeHaServer {
@@ -44,7 +48,8 @@ public:
     // plus kYamlOnlyEntity, which has a state but no registry entry.
     // Answers what the client sends: list_for_display, entity_registry/get,
     // subscribe_entities (one compressed event) and unsubscribe_events,
-    // get_services, call_service, ping.
+    // get_services, call_service (media_player.volume_mute also applies
+    // is_volume_muted to the entity's state, as a real player does), ping.
     FakeHaServer();
     static constexpr const char *kYamlOnlyEntity = "switch.patio_fountain";
 
@@ -70,14 +75,23 @@ public:
 
     void addEntity(FakeHaEntity entity);
     void removeEntity(std::string_view entityId);  // HA forgot it
+    // Sets a media player's is_volume_muted, as a volume_mute call would.
+    // False: no such entity, or it isn't a media player.
+    bool setMuted(std::string_view entityId, bool muted);
+    // Its current is_volume_muted (nullopt: no such player, or unknown).
+    std::optional<bool> muted(std::string_view entityId) const;
     // Back to construction: the fixture entities, reachable, answering, no
-    // failures, no filler. Counters and logs are kept.
+    // failures, no filler, no lastCallJson(). Counters and logs are kept.
     void reset();
     std::vector<FakeHaEntity> &entities() { return entities_; }
     const std::vector<FakeHaEntity> &entities() const { return entities_; }
 
     // What HA was asked to do, answered or not: "light.turn_on light.family_room brightness=128".
     const std::vector<std::string> &calls() const { return calls_; }
+    // The latest call_service received, answered or not:
+    // {"service":"media_player.volume_mute","entity_id":"media_player.denon",
+    // "data":{"is_volume_muted":false}}, or "null" if none since reset().
+    const std::string &lastCallJson() const { return lastCall_; }
     int connections() const { return connections_; }
     int authAttempts() const { return authAttempts_; }
     // Every message received, with any access token replaced by "<redacted>".
@@ -106,6 +120,7 @@ private:
 
     std::vector<FakeHaEntity> entities_;
     std::vector<std::string> calls_;
+    std::string lastCall_ = "null";
     std::vector<std::string> received_;
     int connections_ = 0;
     int authAttempts_ = 0;

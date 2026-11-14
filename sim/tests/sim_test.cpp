@@ -288,6 +288,35 @@ TEST(SimShowcase, EveryCapturedEntityIsADevice) {
     for (const ActivitySpec &a : hub.config().activities) EXPECT_EQ(hub.activate(a.id), ErrorCode::Ok) << a.id;
 }
 
+// `serve --showcase --ha-token`, as the API sees it: every captured HA
+// device is available, and each whose integration has services the hub
+// can't type (a webOS TV's button) offers a Home Assistant action without
+// a re-link.
+TEST(SimShowcase, CustomServicesOfferAHomeAssistantAction) {
+    if (!showcaseMissing().empty()) GTEST_SKIP() << "no local HA capture: " << showcaseMissing();
+    SimAuth a;
+    a.secrets.write(api::kHaTokenKey, "fake-ha-token");
+    const ConfigSpec seed = showcaseConfig();
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, &seed, nullptr, &a.credentials,
+                          /*realHomeAssistant=*/true);
+    runner.hub().haServer().enableShowcase();
+    SimApi api(runner, false, a.credentials, nullptr, &a.secrets);
+    runner.hub().advance(10);
+    size_t offering = 0;
+    for (const DeviceSpec &d : runner.hub().config().devices) {
+        if (d.provider.type != kHomeAssistantType) continue;
+        const std::string path = "/api/v1/devices/" + d.id;
+        EXPECT_NE(call(api, http::Method::Get, path.c_str()).body.find(R"("availability":"available")"),
+                  std::string::npos)
+            << d.id;
+        const bool custom = d.haCapabilities && !d.haCapabilities->customServices.empty();
+        const http::Response caps = call(api, http::Method::Get, (path + "/capabilities").c_str());
+        EXPECT_EQ(caps.body.find(R"("command_id":"call_service")") != std::string::npos, custom) << d.id;
+        offering += custom;
+    }
+    EXPECT_GT(offering, 0u);
+}
+
 TEST(SimSeed, ServeRestartKeepsConfig) {
     storage::MemoryStorage disk;  // stands in for --data DIR
     {
@@ -834,8 +863,9 @@ TEST(SimApi, FactoryResetErasesEverythingAfterTheRestart) {
     EXPECT_FALSE(hub.bleHosts().status(SimHub::kBondedDevice).bonded);
     EXPECT_FALSE(hub.engine().hasActiveActivity());
     EXPECT_EQ(hub.hubSettings().identity().name, kSimDefaultName);  // the name goes too
-    // The board's first boot, through bootHub(): its defaults (only the
-    // built-ins), saved as generation 1, nothing saved active.
+    // The board's first boot, through bootHub(): its defaults (the
+    // built-ins and Off bound to system off), saved as generation 1,
+    // nothing saved active.
     EXPECT_EQ(hub.lastBoot().config.state, config::ConfigState::Fresh);
     EXPECT_EQ(hub.lastBoot().credentials, auth::CredentialState::Fresh);
     EXPECT_EQ(hub.lastBoot().active, ActiveRestore::NoneSaved);
@@ -844,6 +874,19 @@ TEST(SimApi, FactoryResetErasesEverythingAfterTheRestart) {
     EXPECT_TRUE(hub.config().devices.empty());
     EXPECT_TRUE(hub.config().activities.empty());
     EXPECT_NE(hub.configService().findIntegration("ha_main"), nullptr);
+    ASSERT_EQ(hub.config().globalBindings.size(), 1u);
+    EXPECT_EQ(hub.config().globalBindings[0].trigger, "off:tap");
+    // Pressing Off on the fresh hub turns an activity off.
+    ActivitySpec watch;
+    watch.name = "Watch";
+    const config::Outcome created = hub.configService().createActivity(watch);
+    ASSERT_TRUE(created.ok());
+    ASSERT_TRUE(runner.runLine("activate " + created.id)) << runner.error();
+    hub.advance(100);
+    ASSERT_TRUE(hub.engine().hasActiveActivity());
+    hub.tap(remote::Button::Off);
+    hub.advance(100);
+    EXPECT_FALSE(hub.engine().hasActiveActivity());
     const http::Response again = call(api, http::Method::Post, "/api/v1/auth/setup", "",
                                       R"({"username":"newowner","password":"another horse battery"})");
     EXPECT_EQ(again.status, 201) << again.body;
@@ -946,6 +989,40 @@ TEST_F(RealHa, DownRefusedAndUnansweredCallsFail) {
     EXPECT_STREQ(SimRuntime(hub()).deviceAvailability(*denon), "unavailable");
 }
 
+TEST_F(RealHa, MuteTogglesThroughTheFakesState) {
+    const auto toggle = [&] {
+        return call(*api, http::Method::Post, "/api/v1/devices/dev_denon/commands/media_player.mute_toggle/execute", "",
+                    R"({"params":{}})");
+    };
+    // Bad controls: 400.
+    EXPECT_EQ(call(*api, http::Method::Post, "/sim/ha", "muted=media_player.denon").status, 400);
+    EXPECT_EQ(call(*api, http::Method::Post, "/sim/ha", "muted=media_player.denon:2").status, 400);
+    EXPECT_EQ(call(*api, http::Method::Post, "/sim/ha", "muted=light.family_room:1").status, 400);
+    EXPECT_EQ(call(*api, http::Method::Post, "/sim/ha", "muted=media_player.nope:1").status, 400);
+
+    // Start muted: the toggle unmutes, then mutes.
+    EXPECT_EQ(call(*api, http::Method::Post, "/sim/ha", "muted=media_player.denon:1").status, 200);
+    EXPECT_EQ(hub().haServer().muted("media_player.denon"), true);
+    http::Response r = toggle();
+    EXPECT_NE(r.body.find("\"accepted\""), std::string::npos) << r.body;
+    EXPECT_EQ(hub().haServer().calls().back(), "media_player.volume_mute media_player.denon is_volume_muted=false");
+    EXPECT_EQ(hub().haServer().muted("media_player.denon"), false);
+    r = toggle();
+    EXPECT_NE(r.body.find("\"accepted\""), std::string::npos) << r.body;
+    EXPECT_EQ(hub().haServer().calls().back(), "media_player.volume_mute media_player.denon is_volume_muted=true");
+    EXPECT_EQ(hub().haServer().muted("media_player.denon"), true);
+    // /sim/ha reports the latest call; /sim/reset clears it.
+    r = call(*api, http::Method::Post, "/sim/ha");
+    EXPECT_NE(r.body.find(R"("last_call":{"service":"media_player.volume_mute","entity_id":"media_player.denon",)"
+                          R"("data":{"is_volume_muted":true}})"),
+              std::string::npos)
+        << r.body;
+    call(*api, http::Method::Post, "/sim/reset");
+    r = call(*api, http::Method::Post, "/sim/ha");
+    EXPECT_NE(r.body.find(R"("last_call":null)"), std::string::npos) << r.body;
+    EXPECT_EQ(hub().haServer().muted("media_player.denon"), false);
+}
+
 TEST_F(RealHa, AnEntityHaForgotIsStale) {
     const DeviceSpec *denon = hub().configService().findDevice("dev_denon");
     ASSERT_NE(denon, nullptr);
@@ -999,8 +1076,8 @@ TEST_F(RealHa, TheFakeHomeAssistantLooksReal) {
     EXPECT_NE(r.body.find(FakeHaServer::kYamlOnlyEntity), std::string::npos) << r.body;  // pickable
     EXPECT_EQ(hub().haServer().subscriptions(), 0u);
 
-    // Commands, integration services included, one per selector kind; a
-    // text field skips its service.
+    // Commands, integration services included, per selector kind; a text
+    // field skips its service.
     IntegrationAdapter *ha = hub().adapters().at(hub().adapters().find("ha_main"));
     ConfigSpec c;
     c.devices = {sim::haDevice("dev_receiver", "Receiver", "receiver", "media_player.family_room_denon"),
@@ -1037,7 +1114,8 @@ TEST_F(RealHa, TheFakeHomeAssistantLooksReal) {
     EXPECT_EQ(sleep.unit, "s");  // HA's "seconds", shortened
     EXPECT_EQ(firstParam(c.devices[1], "sonos.set_option"), ParamType::Bool);
     EXPECT_FALSE(has(c.devices[1], "denonavr.set_dynamic_eq"));  // not its integration
-    EXPECT_EQ(firstParam(c.devices[2], "webostv.select_sound_output"), ParamType::Enum);
+    EXPECT_FALSE(has(c.devices[2], "webostv.select_sound_output"));  // text, as in real HA
+    EXPECT_FALSE(has(c.devices[2], "webostv.button"));
     EXPECT_TRUE(has(c.devices[3], "light.turn_on"));
     EXPECT_TRUE(has(c.devices[3], "light.turn_off"));
     EXPECT_EQ(firstParam(c.devices[3], "light.brightness_step"), ParamType::Int);

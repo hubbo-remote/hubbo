@@ -43,7 +43,6 @@ api::ApiContext context(auth::Credentials &credentials, auth::SessionStore &sess
                            hub.configService(),
                            runtime,
                            hubInfo(authEnabled),
-                           nullptr,
                            &hub.remote(),
                            &hub.haClient(),
                            secrets,
@@ -142,7 +141,11 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
     // 0), ?commands=0|1 (answer service calls or let them time out),
     // ?fail=<domain.service> (HA refuses it; fail=none clears), and
     // ?remove=<entity_id> (HA forgets the entity: calls get not_found, the
-    // next discovery misses it).
+    // next discovery misses it), and ?muted=<entity_id>:0|1 (a media
+    // player's is_volume_muted, as a volume_mute call sets it; 400 unless
+    // it names a media player the fake has). The answer: the client's
+    // state, the number of calls and `last_call` (FakeHaServer::lastCallJson(),
+    // null until a call; /sim/reset clears it).
     host(Method::Post, "/sim/ha", [this](auto &r, auto &, auto &out) {
         const std::string reachable = http::queryValue(r.query, "reachable");
         const std::string commands = http::queryValue(r.query, "commands");
@@ -155,6 +158,15 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
         } else if (!fail.empty()) {
             hub.haServer().failing.insert(fail);
         }
+        const std::string muted(http::queryValue(r.query, "muted"));
+        if (!muted.empty()) {
+            const size_t colon = muted.rfind(':');
+            const std::string flag = colon == std::string::npos ? "" : muted.substr(colon + 1);
+            if ((flag != "0" && flag != "1") || !hub.haServer().setMuted(muted.substr(0, colon), flag == "1")) {
+                http::jsonError(out, 400, "bad_request", "muted needs <media player entity_id>:0|1");
+                return;
+            }
+        }
         const std::string remove(http::queryValue(r.query, "remove"));
         if (!remove.empty()) hub.haServer().removeEntity(remove);
         // auth=reject: auth_failed; connect=stall: held in connecting. Reconnect
@@ -166,7 +178,8 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
         if (!auth.empty() || !connect.empty()) hub.haClient().reconnect();
         hub.serviceIntegrations();
         out.json(200, "{\"state\":" + jsonString(integrations::haStateName(hub.haClient().state())) +
-                          ",\"calls\":" + std::to_string(hub.haServer().calls().size()) + "}");
+                          ",\"calls\":" + std::to_string(hub.haServer().calls().size()) +
+                          ",\"last_call\":" + hub.haServer().lastCallJson() + "}");
     });
 
     // A host bonds in ?device=<id>'s open pairing window (POST

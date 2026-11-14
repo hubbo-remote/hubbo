@@ -122,7 +122,7 @@ void SimHub::wipe(auth::Credentials *credentials) {
     }
     (void)hubSettings_.forget();
     mqtt_.setHubName(hubSettings_.identity().name);
-    boot(ConfigSpec{}, credentials);  // the firmware's first boot and defaults
+    boot(factoryDefaultConfig(), credentials);  // the firmware's first boot and defaults
     engine_.poll(nowMs_);
 }
 
