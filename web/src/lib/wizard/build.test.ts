@@ -22,7 +22,8 @@ const [tvD, tvC] = ha('tv', [
   cmd('media_player.turn_on'),
   cmd('media_player.turn_off'),
   cmd('media_player.volume_up'),
-  cmd('media_player.volume_mute', [{ name: 'muted', type: 'bool', required: true }]),
+  cmd('media_player.volume_mute', [{ name: 'muted', type: 'bool', required: true }]), // not a button: it needs on or off
+  cmd('media_player.mute_toggle'),
   cmd('media_player.media_play_pause'),
   cmd('media_player.select_source', [{ name: 'source', type: 'enum', required: true, options: ['HDMI 1', 'HDMI 2'] }]),
 ])
@@ -66,8 +67,7 @@ describe('buildStarter', () => {
       'play:down': [press('press_down', 'PlayPause')], // the second candidate
       'play:up': [press('press_up', 'PlayPause')],
       'volume_up:down': [tv('media_player.volume_up')], // HA has no down/up: one send on press
-      'mute:tap': [tv('media_player.volume_mute', { muted: true })], // a long press: Press is the tap
-      'mute:hold': [tv('media_player.volume_mute', { muted: false })],
+      'mute:down': [tv('media_player.mute_toggle')], // the hub's toggle
     })
     expect(filled.map((f) => f.button)).not.toContain('info') // no candidate: left empty
   })

@@ -4,8 +4,8 @@
 // integration: Bluetooth devices from their profile, Home Assistant devices from what HA reports.
 import type { Action, ActivityInput, Bindings, ButtonId, Capabilities, Device, DeviceDetail, ProfileButtons, ProfileSteps } from '../../api/types.ts'
 import { isWait, waitAction as wait } from '../activity.ts'
-import { writeLongPress, writeMain } from '../commands.ts'
-import { HA_MUTE, HA_NAMES, HA_SELECT_SOURCE } from './haNames.ts'
+import { writeMain } from '../commands.ts'
+import { HA_NAMES, HA_SELECT_SOURCE } from './haNames.ts'
 
 /** One rule of profiles/buttons.json: a button's role and its candidates. */
 export interface ButtonRule {
@@ -17,10 +17,9 @@ type ProfileStep = ProfileSteps[number]
 
 // ---- The wizard's view of a device
 
-/** How a named command is sent: `tap` is the button's Press (bound as the editor binds it); `hold` is what a long press sends. */
+/** How a named command is sent: `tap` is the button's Press (bound as the editor binds it). */
 export interface NamedCommand {
   tap: Action
-  hold?: Action
   /** A profile command with its own timed hold: Press stays a tap (see lib/commands `writeMain`). */
   timed?: boolean
 }
@@ -111,8 +110,7 @@ export function buildStarter(all: WizardDevice[], answers: WizardAnswers, rules:
     const name = matchButton(d, rule)
     if (!name) continue
     const c = d.commands.get(name.toLowerCase())!
-    const timed = () => !!c.timed
-    bindings = writeLongPress(writeMain(bindings, rule.button, c.tap, timed), rule.button, c.hold ?? null, timed)
+    bindings = writeMain(bindings, rule.button, c.tap, () => !!c.timed)
     filled.push({ button: rule.button, deviceId: d.id, command: name })
   }
 
@@ -150,7 +148,6 @@ export function haDevice(d: Device, caps: Capabilities): WizardDevice {
   for (const c of caps.commands) {
     const name = HA_NAMES[c.command_id]
     if (name) commands.set(name.toLowerCase(), { tap: action(c.command_id) })
-    else if (c.command_id === HA_MUTE) commands.set('mute', { tap: action(HA_MUTE, { muted: true }), hold: action(HA_MUTE, { muted: false }) })
     else if (c.command_id === HA_SELECT_SOURCE) {
       const sources = c.params.find((p) => p.name === 'source')?.options ?? []
       inputs = sources.map((s) => ({ name: s, steps: [action(HA_SELECT_SOURCE, { source: s })] }))
