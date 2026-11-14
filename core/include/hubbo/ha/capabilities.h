@@ -29,7 +29,8 @@
 //   registration), and only from a curated allowlist: no play_media,
 //   join/unjoin (take other entity ids), browse/search, or anything taking
 //   free text or URLs. Toggle only where HA's own UI leans on it (covers,
-//   humidifiers, input booleans).
+//   humidifiers, input booleans), plus mute: HA has none, so mute_toggle
+//   reads is_volume_muted at press time and sends the opposite.
 //
 // Feature bits, attribute names and service gating were checked against
 // HA's dev branch: homeassistant/components/<domain>/const.py and
@@ -181,7 +182,19 @@ struct ServiceCall {
     std::string service;
     std::string entityId;
     std::vector<ServiceField> data;
+    // A Home Assistant action (call_service): the service_data as a JSON
+    // object's text, sent verbatim instead of `data`. "" for every other call.
+    std::string rawData;
 };
+
+// The Home Assistant action: an HA device's command for any of its custom
+// services (CapabilitySnapshot::customServices) with data the user writes.
+// Built with buildCustomCall(), never buildServiceCall().
+constexpr const char *kCallServiceCommandId = "call_service";
+
+// ^[a-z][a-z0-9_]{0,31}\.[a-z][a-z0-9_]{0,63}$: a Home Assistant action's
+// service ("webostv.button").
+bool isHaServiceId(std::string_view service);
 
 struct CommandDef;  // allowlist entry (id, label, HA service); capabilities.cpp
 struct CapabilitySnapshot;  // snapshot.h
@@ -218,8 +231,27 @@ public:
     // behaviour (e.g. light.turn_on restores the last brightness). Errors:
     // UnknownCommand (bad index or invalid entity), InvalidParamType /
     // InvalidEnumValue (values not from this catalog).
+    //
+    // `state`: the value of stateAttribute(index) in the entity's current
+    // state attributes, read just before sending; nullptr when it wasn't read,
+    // the entity left it out (HA drops it when a player is off or reports
+    // None) or it was null/an object/an array. Commands with no
+    // stateAttribute ignore it. A toggle sends the opposite; an unknown or
+    // non-bool state counts as false (mute_toggle then mutes).
     ErrorCode buildServiceCall(uint16_t index, const ParamValue *params, uint8_t present,
-                               ServiceCall *out) const;
+                               ServiceCall *out, const ServiceValue *state = nullptr) const;
+
+    // The Home Assistant action for this entity: `service`
+    // (isHaServiceId) with `dataJson`, a JSON object's text checked by the
+    // config decoder ("" = {}), sent verbatim. UnknownCommand when the
+    // catalog has no call_service (no custom services) or the service isn't
+    // shaped right.
+    ErrorCode buildCustomCall(std::string_view service, std::string_view dataJson, ServiceCall *out) const;
+
+    // The state attribute catalog command `index` reads at press time
+    // ("is_volume_muted" for media_player.mute_toggle). nullptr: it needs no
+    // state, or the index is out of range. Valid while this object is.
+    const char *stateAttribute(uint16_t index) const;
 
 private:
     EntityCapabilities() = default;
@@ -230,6 +262,8 @@ private:
         const char *id = nullptr;
         const char *domain = nullptr;  // HA service domain
         const char *service = nullptr;
+        const char *stateAttribute = nullptr;  // static (CommandDef), or nullptr
+        const char *group = nullptr;           // static (CommandDef), or nullptr
     };
 
     std::string entityId_;
@@ -252,8 +286,13 @@ const char *commandLabel(std::string_view commandId);
 // param names are ^[a-z][a-z0-9_]*$). They never appear in a catalog, so
 // resolveParams() already rejects them as unknown; the API layer uses this to
 // report `forbidden_param` instead. api/lint.sh checks the spec's ParamName
-// list against this one.
+// list (and HaServiceCall's data keys, for isTargetKey) against these.
 bool isForbiddenParamName(std::string_view name);
+
+// The target keys (entity_id, device_id, area_id, floor_id, label_id): never
+// in a Home Assistant action's data, since the target is always the device.
+// A subset of the forbidden param names.
+bool isTargetKey(std::string_view name);
 
 // ^[a-z][a-z0-9_]{0,31}$: an HA integration, service or field name as Hubbo
 // accepts it (get_services parsing, stored snapshots, the safety re-check).

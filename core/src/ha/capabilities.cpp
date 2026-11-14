@@ -16,6 +16,10 @@ struct CommandDef {
     const char *label;
     const char *domain;   // HA service domain
     const char *service;  // HA service
+    // A bool state attribute HA has no toggle for: read at press time
+    // (stateAttribute()) and sent back negated under the same key.
+    const char *stateAttribute = nullptr;
+    const char *group = nullptr;  // CommandSpec::group
 };
 
 namespace {
@@ -30,6 +34,7 @@ constexpr CommandDef kCommands[] = {
     {"media_player.volume_down", "Volume down", "media_player", "volume_down"},
     {"media_player.volume_set", "Set volume", "media_player", "volume_set"},
     {"media_player.volume_mute", "Mute", "media_player", "volume_mute"},
+    {"media_player.mute_toggle", "Toggle mute", "media_player", "volume_mute", "is_volume_muted"},
     {"media_player.media_play_pause", "Play/pause", "media_player", "media_play_pause"},
     {"media_player.media_play", "Play", "media_player", "media_play"},
     {"media_player.media_pause", "Pause", "media_player", "media_pause"},
@@ -77,6 +82,8 @@ constexpr CommandDef kCommands[] = {
     {"select.select_option", "Choose", "select", "select_option"},
     {"select.select_next", "Next", "select", "select_next"},
     {"select.select_previous", "Previous", "select", "select_previous"},
+    // No fixed service: buildCustomCall() takes it from the action.
+    {kCallServiceCommandId, "Home Assistant action", "", "", nullptr, "custom"},
 };
 
 const CommandDef *findDef(std::string_view id) {
@@ -86,10 +93,16 @@ const CommandDef *findDef(std::string_view id) {
     return nullptr;
 }
 
-constexpr const char *kForbiddenNames[] = {
-    "entity_id", "device_id", "area_id", "floor_id", "label_id",
-    "target",    "data",      "service", "service_data", "domain",
-};
+constexpr const char *kTargetKeys[] = {"entity_id", "device_id", "area_id", "floor_id", "label_id"};
+// Raw service payload names; with kTargetKeys, the forbidden param names.
+constexpr const char *kPayloadNames[] = {"target", "data", "service", "service_data", "domain"};
+
+bool listed(std::string_view name, const char *const *list, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (name == list[i]) return true;
+    }
+    return false;
+}
 
 }  // namespace
 
@@ -110,6 +123,8 @@ struct ParamDraft {
 struct CommandDraft {
     std::string id, domain, service;
     std::vector<ParamDraft> params;
+    const char *stateAttribute = nullptr;  // allowlist columns (CommandDef)
+    const char *group = nullptr;
 };
 
 // Collects the commands an entity gets: allowlist ids, then snapshot services.
@@ -118,7 +133,7 @@ struct Drafts {
 
     CommandDraft &add(const char *id, std::vector<ParamDraft> params = {}) {
         const CommandDef *def = findDef(id);
-        items.push_back({def->id, def->domain, def->service, std::move(params)});
+        items.push_back({def->id, def->domain, def->service, std::move(params), def->stateAttribute, def->group});
         return items.back();
     }
 };
@@ -161,6 +176,7 @@ void mediaPlayer(const EntityInfo &e, Drafts &out) {
     }
     if (has(f, mp::kVolumeMute)) {
         out.add("media_player.volume_mute", {{ParamSpec::boolean("muted"), "is_volume_muted", {}}});
+        out.add("media_player.mute_toggle");
     }
     if (has(f, mp::kPlay | mp::kPause)) out.add("media_player.media_play_pause");
     if (has(f, mp::kPlay)) out.add("media_player.media_play");
@@ -359,6 +375,17 @@ bool isHaName(std::string_view name) {
     return true;
 }
 
+bool isHaServiceId(std::string_view service) {
+    const size_t dot = service.find('.');
+    if (dot == std::string_view::npos || !isHaName(service.substr(0, dot))) return false;
+    const std::string_view name = service.substr(dot + 1);
+    if (name.empty() || name.size() > 64 || name[0] < 'a' || name[0] > 'z') return false;
+    for (char c : name) {
+        if (!isLowerAlnumUnderscore(c)) return false;
+    }
+    return true;
+}
+
 bool filterEnumOptions(std::vector<std::string> &options, size_t *dropped) {
     std::vector<std::string> kept;
     for (auto &option : options) {
@@ -537,6 +564,7 @@ EntityCapabilities EntityCapabilities::fromSnapshot(std::string_view entityId, c
         }
         services++;
     }
+    if (!snapshot.customServices.empty()) drafts.add(kCallServiceCommandId);
     return build(entityId, std::move(drafts));
 }
 
@@ -569,6 +597,8 @@ EntityCapabilities EntityCapabilities::build(std::string_view entityId, Drafts d
         command.id = caps.keep(std::move(draft.id));
         command.domain = caps.keep(std::move(draft.domain));
         command.service = caps.keep(std::move(draft.service));
+        command.stateAttribute = draft.stateAttribute;
+        command.group = draft.group;
         caps.owned_.push_back(command);
         caps.firstParam_.push_back(caps.params_.size());
         for (auto &param : draft.params) {
@@ -595,6 +625,7 @@ EntityCapabilities EntityCapabilities::build(std::string_view entityId, Drafts d
         const size_t end = i + 1 < caps.owned_.size() ? caps.firstParam_[i + 1] : caps.params_.size();
         caps.commands_.push_back({caps.owned_[i].id, caps.params_.data() + caps.firstParam_[i],
                                   static_cast<uint8_t>(end - caps.firstParam_[i])});
+        caps.commands_.back().group = caps.owned_[i].group;
     }
     return caps;
 }
@@ -608,13 +639,31 @@ CommandCatalog EntityCapabilities::catalog() const {
     return {commands_.data(), static_cast<uint16_t>(commands_.size())};
 }
 
+ErrorCode EntityCapabilities::buildCustomCall(std::string_view service, std::string_view dataJson,
+                                              ServiceCall *out) const {
+    if (catalog().find(kCallServiceCommandId) < 0 || !isHaServiceId(service)) return ErrorCode::UnknownCommand;
+    const size_t dot = service.find('.');
+    ServiceCall call;
+    call.domain = std::string(service.substr(0, dot));
+    call.service = std::string(service.substr(dot + 1));
+    call.entityId = entityId_;
+    call.rawData = dataJson.empty() ? std::string("{}") : std::string(dataJson);
+    *out = std::move(call);
+    return ErrorCode::Ok;
+}
+
+const char *EntityCapabilities::stateAttribute(uint16_t index) const {
+    return index < owned_.size() ? owned_[index].stateAttribute : nullptr;
+}
+
 ErrorCode EntityCapabilities::buildServiceCall(uint16_t index, const ParamValue *params, uint8_t present,
-                                               ServiceCall *out) const {
+                                               ServiceCall *out, const ServiceValue *state) const {
     // An invalid entity id produces an empty catalog, so this also covers it.
     if (index >= commands_.size()) {
         return ErrorCode::UnknownCommand;
     }
     const CommandSpec &command = commands_[index];
+    if (command.id == std::string_view(kCallServiceCommandId)) return ErrorCode::UnknownCommand;  // buildCustomCall()
     if (command.paramCount > 0 && params == nullptr) {
         return ErrorCode::MissingParam;
     }
@@ -661,6 +710,16 @@ ErrorCode EntityCapabilities::buildServiceCall(uint16_t index, const ParamValue 
         }
         call.data.push_back(std::move(field));
     }
+    if (const char *attribute = owned_[index].stateAttribute) {
+        // A toggle: the opposite of the current value. Unknown or not a bool
+        // counts as false, so the first press turns it on (mutes).
+        const bool current = state != nullptr && state->kind == ServiceValue::Kind::Bool && state->boolean;
+        ServiceField field;
+        field.key = attribute;
+        field.value.kind = ServiceValue::Kind::Bool;
+        field.value.boolean = !current;
+        call.data.push_back(std::move(field));
+    }
     *out = std::move(call);
     return ErrorCode::Ok;
 }
@@ -670,11 +729,10 @@ const char *commandLabel(std::string_view commandId) {
     return def != nullptr ? def->label : nullptr;
 }
 
+bool isTargetKey(std::string_view name) { return listed(name, kTargetKeys, std::size(kTargetKeys)); }
+
 bool isForbiddenParamName(std::string_view name) {
-    for (const char *forbidden : kForbiddenNames) {
-        if (name == forbidden) return true;
-    }
-    return false;
+    return isTargetKey(name) || listed(name, kPayloadNames, std::size(kPayloadNames));
 }
 
 }  // namespace hubbo::ha

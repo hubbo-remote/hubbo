@@ -292,9 +292,35 @@ void encodeSnapshot(const CapabilitySnapshot &s, JsonObject out) {
         JsonArray fields = o["fields"].to<JsonArray>();
         for (const auto &field : service.fields) encodeParam(field, fields.add<JsonObject>());
     }
+    if (!s.customServices.empty()) encodeCustomServices(s.customServices, out["custom_services"].to<JsonArray>());
+}
+
+void encodeCustomServices(const std::vector<SnapshotCustomService> &services, JsonArray out) {
+    for (const auto &service : services) {
+        JsonObject o = out.add<JsonObject>();
+        o["service"] = service.service;
+        if (!service.label.empty()) o["label"] = service.label;
+        JsonArray fields = o["fields"].to<JsonArray>();
+        for (const auto &hint : service.fields) {
+            JsonObject f = fields.add<JsonObject>();
+            f["name"] = hint.name;
+            f["required"] = hint.required;
+            if (!hint.example.empty()) {
+                JsonDocument example;  // a copy, so the result reads back as JSON, not raw text
+                if (!deserializeJson(example, hint.example)) f["example"] = example.as<JsonVariantConst>();
+            }
+            if (!hint.description.empty()) f["description"] = hint.description;
+        }
+    }
 }
 
 namespace {
+
+// "<platform>.<service>" of the snapshot's own platform.
+void checkServiceId(Reader &r, const std::string &id, const std::string &platform) {
+    // Only the platform's own services (capabilities.cpp re-checks).
+    if (!isHaServiceId(id) || id.substr(0, id.find('.')) != platform) r.failAt(ErrorCode::InvalidCommandId, "service");
+}
 
 // One entry of `services`, decoded in place onto the end of `services` (and
 // dropped again on false).
@@ -305,14 +331,7 @@ bool decodeService(JsonVariantConst item, const std::string &platform, std::vect
     sr.only({"service", "label", "fields"});
     SnapshotService &service = services->emplace_back();
     if (sr.string("service", &service.service, limits::kMaxCommandIdLength, true)) {
-        const size_t dot = service.service.find('.');
-        const bool shaped = dot != std::string::npos &&
-                            isHaName(std::string_view(service.service).substr(0, dot)) &&
-                            isHaName(std::string_view(service.service).substr(dot + 1));
-        // Only the platform's own services (capabilities.cpp re-checks).
-        if (!shaped || service.service.substr(0, dot) != platform) {
-            sr.failAt(ErrorCode::InvalidCommandId, "service");
-        }
+        checkServiceId(sr, service.service, platform);
     }
     sr.string("label", &service.label, kMaxSnapshotLabelLength);
     JsonVariantConst fields = sr.get("fields", true);
@@ -342,15 +361,69 @@ bool decodeService(JsonVariantConst item, const std::string &platform, std::vect
     return false;
 }
 
+bool decodeHint(JsonVariantConst item, std::vector<SnapshotHint> *hints, ValidationReport *report, std::string where) {
+    Reader r(item, report, std::move(where));
+    if (!r.ok()) return false;
+    r.only({"name", "required", "example", "description"});
+    SnapshotHint &hint = hints->emplace_back();
+    if (r.string("name", &hint.name, 32, true) && (!isHaName(hint.name) || isForbiddenParamName(hint.name))) {
+        r.failAt(ErrorCode::InvalidId, "name");
+    }
+    r.boolean("required", &hint.required, true);
+    const JsonVariantConst example = r.get("example", false);
+    if (!example.isUnbound()) {
+        serializeJson(example, hint.example);
+        if (example.isNull() || hint.example.size() > kMaxHintExampleBytes) r.failAt(ErrorCode::TooLong, "example");
+    }
+    r.string("description", &hint.description, kMaxSnapshotDescriptionLength);
+    for (size_t k = 0; k + 1 < hints->size(); k++) {
+        if ((*hints)[k].name == hint.name) r.failAt(ErrorCode::DuplicateParam, "name");
+    }
+    if (r.ok()) return true;
+    hints->pop_back();
+    return false;
+}
+
+bool decodeCustomService(JsonVariantConst item, const std::string &platform,
+                         std::vector<SnapshotCustomService> *services, ValidationReport *report, std::string where) {
+    Reader r(item, report, std::move(where));
+    if (!r.ok()) return false;
+    r.only({"service", "label", "fields"});
+    SnapshotCustomService &service = services->emplace_back();
+    if (r.string("service", &service.service, limits::kMaxCommandIdLength, true)) {
+        checkServiceId(r, service.service, platform);
+    }
+    for (size_t k = 0; k + 1 < services->size(); k++) {
+        if ((*services)[k].service == service.service) r.failAt(ErrorCode::DuplicateId, "service");
+    }
+    r.string("label", &service.label, kMaxSnapshotLabelLength);
+    JsonVariantConst fields = r.get("fields", true);
+    if (!fields.isUnbound()) {
+        if (!fields.is<JsonArrayConst>()) {
+            r.failAt(ErrorCode::WrongType, "fields");
+        } else if (fields.size() > kMaxCustomFields) {
+            r.failAt(ErrorCode::TooLong, "fields");
+        } else {
+            int f = 0;
+            for (JsonVariantConst field : fields.as<JsonArrayConst>()) {
+                if (!decodeHint(field, &service.fields, report, r.at("fields", f++))) r.taint();
+            }
+        }
+    }
+    if (r.ok()) return true;
+    services->pop_back();
+    return false;
+}
+
 }  // namespace
 
 bool decodeSnapshot(JsonVariantConst json, CapabilitySnapshot *out, ValidationReport *report,
-                    const std::string &path) {
+                    const std::string &path, std::string_view entityId) {
     Reader r(json, report, path);
     if (!r.ok()) return false;
     r.only({"platform", "supported_features", "source_list", "sound_mode_list", "supported_color_modes",
             "min_color_temp_kelvin", "max_color_temp_kelvin", "preset_modes", "percentage_step", "min_humidity",
-            "max_humidity", "available_modes", "options", "services"});
+            "max_humidity", "available_modes", "options", "services", "custom_services"});
     CapabilitySnapshot &s = *out;  // decoded in place: no snapshot on this frame
     if (r.string("platform", &s.platform, 32, true) && !isPlatform(s.platform)) {
         r.failAt(ErrorCode::InvalidId, "platform");
@@ -388,6 +461,24 @@ bool decodeSnapshot(JsonVariantConst json, CapabilitySnapshot *out, ValidationRe
                     r.taint();
                 }
             }
+        }
+    }
+    JsonVariantConst custom = r.get("custom_services", false);
+    if (!custom.isUnbound()) {
+        if (!offersIntegrationServices(entityId)) {
+            r.failAt(ErrorCode::UnknownField, "custom_services");  // never offered (a scene, ...)
+        } else if (!custom.is<JsonArrayConst>()) {
+            r.failAt(ErrorCode::WrongType, "custom_services");
+        } else if (custom.size() > kMaxCustomServices) {
+            r.failAt(ErrorCode::TooLong, "custom_services");
+        } else {
+            int i = 0;
+            for (JsonVariantConst item : custom.as<JsonArrayConst>()) {
+                if (!decodeCustomService(item, s.platform, &s.customServices, report, r.at("custom_services", i++))) {
+                    r.taint();
+                }
+            }
+            if (customHintBytes(s) > kMaxCustomHintBytes) r.failAt(ErrorCode::TooLong, "custom_services");
         }
     }
     return r.ok();

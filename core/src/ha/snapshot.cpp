@@ -1,5 +1,6 @@
 #include "hubbo/ha/snapshot.h"
 
+#include "hubbo/domain/config.h"
 #include "hubbo/ha/capabilities.h"
 #include "hubbo/ha/services.h"
 
@@ -15,13 +16,45 @@ bool SnapshotService::operator==(const SnapshotService &o) const {
     return service == o.service && label == o.label && fields == o.fields;
 }
 
+bool SnapshotHint::operator==(const SnapshotHint &o) const {
+    return name == o.name && required == o.required && example == o.example && description == o.description;
+}
+
+bool SnapshotCustomService::operator==(const SnapshotCustomService &o) const {
+    return service == o.service && label == o.label && fields == o.fields;
+}
+
+size_t customHintBytes(const SnapshotCustomService &s) {
+    size_t n = s.service.size() + s.label.size();
+    for (const SnapshotHint &h : s.fields) n += h.name.size() + h.example.size() + h.description.size();
+    return n;
+}
+
+size_t customHintBytes(const CapabilitySnapshot &snapshot) {
+    size_t n = 0;
+    for (const SnapshotCustomService &s : snapshot.customServices) n += customHintBytes(s);
+    return n;
+}
+
+void trimCustomServices(std::vector<SnapshotCustomService> *services, size_t budget) {
+    size_t used = 0;
+    std::vector<SnapshotCustomService> kept;
+    for (SnapshotCustomService &s : *services) {
+        const size_t bytes = customHintBytes(s);
+        if (kept.size() >= kMaxCustomServices || used + bytes > budget) continue;
+        used += bytes;
+        kept.push_back(std::move(s));
+    }
+    *services = std::move(kept);
+}
+
 bool CapabilitySnapshot::operator==(const CapabilitySnapshot &o) const {
     return platform == o.platform && supportedFeatures == o.supportedFeatures && sourceList == o.sourceList &&
            soundModeList == o.soundModeList && supportedColorModes == o.supportedColorModes &&
            minColorTempKelvin == o.minColorTempKelvin && maxColorTempKelvin == o.maxColorTempKelvin &&
            presetModes == o.presetModes && percentageStep == o.percentageStep && minHumidity == o.minHumidity &&
            maxHumidity == o.maxHumidity && availableModes == o.availableModes && options == o.options &&
-           services == o.services;
+           services == o.services && customServices == o.customServices;
 }
 
 namespace {
@@ -61,11 +94,20 @@ CapabilitySnapshot makeSnapshot(const EntityInfo &entity, const std::string &pla
     s.maxColorTempKelvin = kelvin(entity.maxColorTempKelvin);
     ServiceDirectory::Offer offer = services.offerFor(entity.entityId, s.platform, entity.supportedFeatures);
     s.services = std::move(offer.services);
+    s.customServices = std::move(offer.custom);
     if (offered != nullptr) {
         offered->skipped = std::move(offer.skipped);
         offered->droppedOptions = offer.droppedOptions + dropped;
     }
     return s;
+}
+
+size_t configHintBytes(const std::vector<DeviceSpec> &devices, std::string_view exceptId) {
+    size_t total = 0;
+    for (const DeviceSpec &device : devices) {
+        if (device.haCapabilities && device.id != exceptId) total += customHintBytes(*device.haCapabilities);
+    }
+    return total;
 }
 
 }  // namespace hubbo::ha

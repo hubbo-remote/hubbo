@@ -356,18 +356,18 @@ TEST(HaCapabilities, FanGating) {
 
 TEST(HaCapabilities, RealEntitiesMatchFixtures) {
     EXPECT_EQ(ids(EntityCapabilities::fromEntity(denon())),
-              mp({"turn_on", "turn_off", "volume_up", "volume_down", "volume_set", "volume_mute",
+              mp({"turn_on", "turn_off", "volume_up", "volume_down", "volume_set", "volume_mute", "mute_toggle",
                   "select_source", "select_sound_mode"}));
     EXPECT_EQ(ids(EntityCapabilities::fromEntity(sonos())),
-              mp({"volume_up", "volume_down", "volume_set", "volume_mute", "media_play_pause",
+              mp({"volume_up", "volume_down", "volume_set", "volume_mute", "mute_toggle", "media_play_pause",
                   "media_play", "media_pause", "media_stop", "media_next_track",
                   "media_previous_track", "select_source", "shuffle_set", "repeat_set"}));
     EXPECT_EQ(ids(EntityCapabilities::fromEntity(lgTv())),
-              mp({"turn_on", "turn_off", "volume_up", "volume_down", "volume_mute",
+              mp({"turn_on", "turn_off", "volume_up", "volume_down", "volume_mute", "mute_toggle",
                   "media_play_pause", "media_play", "media_pause", "media_stop",
                   "media_next_track", "media_previous_track", "select_source"}));
     EXPECT_EQ(ids(EntityCapabilities::fromEntity(xbox())),
-              mp({"turn_on", "turn_off", "volume_up", "volume_down", "volume_mute",
+              mp({"turn_on", "turn_off", "volume_up", "volume_down", "volume_mute", "mute_toggle",
                   "media_play_pause", "media_play", "media_pause", "media_next_track",
                   "media_previous_track"}));
     const auto light = EntityCapabilities::fromEntity(hue());
@@ -402,7 +402,10 @@ TEST(HaCapabilities, FeatureGating) {
     for (const auto &id : ids(EntityCapabilities::fromEntity(e))) {
         EXPECT_EQ(id.find("play_media"), std::string::npos);
         EXPECT_EQ(id.find("join"), std::string::npos);
-        EXPECT_EQ(id.find("toggle"), std::string::npos);
+        // No power toggle; mute_toggle (from state, HA has none) is the one exception.
+        if (id != "media_player.mute_toggle") {
+            EXPECT_EQ(id.find("toggle"), std::string::npos) << id;
+        }
         EXPECT_EQ(id.find("seek"), std::string::npos);
         EXPECT_EQ(id.find("clear_playlist"), std::string::npos);
         EXPECT_EQ(id.find("announce"), std::string::npos);
@@ -496,6 +499,64 @@ TEST(HaServiceCall, VolumeSetAndSelectSource) {
               ErrorCode::Ok);
     EXPECT_EQ(c.data[0].key, "is_volume_muted");
     EXPECT_TRUE(c.data[0].value.boolean);
+}
+
+TEST(HaServiceCall, MuteToggleSendsTheOppositeOfTheState) {
+    const auto caps = EntityCapabilities::fromEntity(sonos());
+    const int index = caps.catalog().find("media_player.mute_toggle");
+    ASSERT_GE(index, 0);
+    const auto at = static_cast<uint16_t>(index);
+    EXPECT_STREQ(caps.catalog().items[at].id, "media_player.mute_toggle");
+    EXPECT_EQ(caps.catalog().items[at].paramCount, 0);
+    EXPECT_STREQ(commandLabel("media_player.mute_toggle"), "Toggle mute");
+    EXPECT_STREQ(caps.stateAttribute(at), "is_volume_muted");
+
+    auto sent = [&](const ServiceValue *state) {
+        ServiceCall c;
+        EXPECT_EQ(caps.buildServiceCall(at, nullptr, 0, &c, state), ErrorCode::Ok);
+        EXPECT_EQ(c.domain, "media_player");
+        EXPECT_EQ(c.service, "volume_mute");
+        EXPECT_EQ(c.entityId, "media_player.family_room_sonos");
+        EXPECT_EQ(c.data.size(), 1u);
+        if (c.data.size() != 1u) return -1;
+        EXPECT_EQ(c.data[0].key, "is_volume_muted");
+        EXPECT_EQ(c.data[0].value.kind, ServiceValue::Kind::Bool);
+        return c.data[0].value.boolean ? 1 : 0;
+    };
+    ServiceValue muted;
+    muted.kind = ServiceValue::Kind::Bool;
+    muted.boolean = true;
+    EXPECT_EQ(sent(&muted), 0) << "muted: unmute";
+    ServiceValue unmuted = muted;
+    unmuted.boolean = false;
+    EXPECT_EQ(sent(&unmuted), 1) << "unmuted: mute";
+    EXPECT_EQ(sent(nullptr), 1) << "unknown (off, not reported, read failed): mute";
+    ServiceValue text;
+    text.kind = ServiceValue::Kind::String;
+    text.string = "true";
+    EXPECT_EQ(sent(&text), 1) << "not a bool counts as unknown";
+}
+
+TEST(HaServiceCall, OnlyStateTogglesReadState) {
+    const auto caps = EntityCapabilities::fromEntity(denon());
+    const CommandCatalog c = caps.catalog();
+    for (uint16_t i = 0; i < c.count; i++) {
+        if (std::string(c.items[i].id) == "media_player.mute_toggle") continue;
+        EXPECT_EQ(caps.stateAttribute(i), nullptr) << c.items[i].id;
+    }
+    EXPECT_EQ(caps.stateAttribute(999), nullptr);
+    // The state never changes a command that reads none.
+    ServiceValue muted;
+    muted.kind = ServiceValue::Kind::Bool;
+    muted.boolean = true;
+    const int index = c.find("media_player.volume_up");
+    ServiceCall out;
+    ASSERT_EQ(caps.buildServiceCall(static_cast<uint16_t>(index), nullptr, 0, &out, &muted), ErrorCode::Ok);
+    EXPECT_TRUE(out.data.empty());
+    EntityInfo noMute = denon();
+    noMute.supportedFeatures &= ~media_player_feature::kVolumeMute;
+    EXPECT_LT(EntityCapabilities::fromEntity(noMute).catalog().find("media_player.mute_toggle"), 0)
+        << "gated on VOLUME_MUTE, like volume_mute";
 }
 
 TEST(HaServiceCall, OmittedOptionalParamsAreNotSent) {
@@ -630,7 +691,9 @@ TEST(HaServiceCall, OnlyAllowlistedKeysEverReachHomeAssistant) {
             ASSERT_EQ(resolveParams(c.items[i], inputs, values, &unused, nullptr, &present), ErrorCode::Ok);
             ServiceCall sc;
             ASSERT_EQ(caps.buildServiceCall(i, values, present, &sc), ErrorCode::Ok) << c.items[i].id;
-            EXPECT_EQ(sc.data.size(), c.items[i].paramCount) << "every supplied param is sent";
+            // Every supplied param is sent, plus a state toggle's own field.
+            EXPECT_EQ(sc.data.size(), c.items[i].paramCount + (caps.stateAttribute(i) != nullptr ? 1u : 0u))
+                << c.items[i].id;
             EXPECT_EQ(sc.entityId, e.entityId);
             EXPECT_EQ(sc.domain, e.entityId.substr(0, e.entityId.find('.')));
             for (const auto &field : sc.data) {

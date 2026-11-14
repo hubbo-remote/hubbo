@@ -3,12 +3,14 @@
 
 #include <cstring>
 #include <memory>
+#include <optional>
 
 #include "hubbo/config/json.h"
 #include "hubbo/config/profile.h"
 #include "hubbo/config/service.h"
 #include "hubbo/domain/system.h"
 #include "hubbo/ha/capabilities.h"
+#include "hubbo/ha/snapshot_json.h"
 #include "hubbo/integrations/ha_client.h"
 #include "routes.h"
 #include "support.h"
@@ -104,6 +106,10 @@ void putCommands(JsonArray out, CommandCatalog catalog, const DeviceSpec *device
         if (c.group != nullptr) cmd["group"] = c.group;
         JsonArray params = cmd["params"].to<JsonArray>();
         for (uint8_t p = 0; p < c.paramCount; p++) putParam(params.add<JsonObject>(), c.params[p]);
+        // The Home Assistant action's choices: the snapshot's custom services, with their field hints.
+        if (device != nullptr && device->haCapabilities && std::string_view(c.id) == ha::kCallServiceCommandId) {
+            ha::encodeCustomServices(device->haCapabilities->customServices, cmd["services"].to<JsonArray>());
+        }
     }
 }
 
@@ -171,6 +177,10 @@ bool snapshotFor(ApiContext &ctx, ProviderSpec *provider, std::string_view selfI
     }
     provider->uniqueId = d->uniqueId;
     *out = d->snapshot;
+    // The Home Assistant action's hints share one budget across the config:
+    // take what's left (other devices'), so adding a device never fails on them.
+    const size_t used = ha::configHintBytes(ctx.config.config().devices, selfId);
+    ha::trimCustomServices(&out->customServices, used < ha::kMaxConfigHintBytes ? ha::kMaxConfigHintBytes - used : 0);
     return true;
 }
 
@@ -243,15 +253,27 @@ std::unique_ptr<config::DeviceUpdate> deviceUpdate(ApiContext &ctx, const http::
 }
 
 // POST .../execute: {params}, or false after sending 422.
-bool execParams(const http::Request &request, std::vector<ParamInput> *params, http::Response &out) {
+// The execute body: {params} and, for call_service (a Home Assistant
+// action) only and always there, its `call`.
+bool execParams(const http::Request &request, std::string_view commandId, std::vector<ParamInput> *params,
+                std::optional<HaServiceCallSpec> *call, http::Response &out) {
     JsonDocument doc;
     if (!readJson(request, out, doc)) return false;
     ValidationReport report;
-    if (checkObject(doc.as<JsonVariantConst>(), {{"params", Field::Kind::Object, true}}, &report)) {
+    const bool custom = commandId == ha::kCallServiceCommandId;
+    if (checkObject(doc.as<JsonVariantConst>(),
+                    {{"params", Field::Kind::Object, true}, {"call", Field::Kind::Object, custom}}, &report)) {
         config::decodeParams(doc["params"], params, &report, "/params");
+        if (!doc["call"].isUnbound()) {
+            if (!custom) {
+                report.add(ErrorCode::UnknownField, "/call");
+            } else {
+                config::decodeHaServiceCall(doc["call"], &call->emplace(), &report, "/call");
+            }
+        }
     }
     if (report.ok()) return true;
-    sendIssues(out, report, "Send {params: {...}}");
+    sendIssues(out, report, custom ? "Send {params: {}, call: {service, data}}" : "Send {params: {...}}");
     return false;
 }
 
@@ -298,13 +320,15 @@ void addRegistryRoutes(RouteSink &sink, ApiContext &ctx) {
     sink.add("/api/v1/devices/{device_id}/commands/{command_id}/execute", auth::Operation::ExecuteCommand,
              [&ctx](auto &request, auto &p, auto &out) {
                  std::vector<ParamInput> params;
-                 if (!execParams(request, &params, out)) return;
+                 std::optional<HaServiceCallSpec> call;
+                 if (!execParams(request, p[1], &params, &call, out)) return;
                  // Checked first so a missing device isn't reported as a missing command.
                  if (requireDevice(ctx, p[0], out) == nullptr) return;
                  const auto run = std::make_unique<EngineRequest>();
                  {
                      CompiledCommand command;
-                     const config::Outcome compiled = ctx.config.compileCommand(p[0], p[1], params, &command);
+                     const config::Outcome compiled =
+                         ctx.config.compileCommand(p[0], p[1], params, &command, call ? &*call : nullptr);
                      if (!compiled.ok()) return sendOutcome(out, compiled, "command");
                      run->execute(command);
                  }
@@ -340,8 +364,6 @@ void addRegistryRoutes(RouteSink &sink, ApiContext &ctx) {
             JsonObject i = putIntegrationSummary(list, ctx, &integration);
             i["name"] = integration.name;
             i["enabled"] = integration.enabled;
-            const std::string detail = ctx.runtime.integrationDetail(integration.id);
-            if (!detail.empty()) i["detail"] = detail;
             i["device_count"] = deviceCounts[n];
         }
         sendJson(out, 200, doc);

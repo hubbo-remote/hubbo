@@ -84,8 +84,8 @@ void addBackupRoutes(RouteSink &sink, ApiContext &ctx) {
     });
 
     sink.add("/api/v1/admin/reset", auth::Operation::ResetConfiguration, [&ctx](auto &, auto &, auto &out) {
-        const ConfigSpec empty;
-        const ConfigSpec &defaults = ctx.factoryDefaults ? *ctx.factoryDefaults : empty;
+        // The board's first-boot config: the built-ins and the global Off binding.
+        const ConfigSpec defaults = factoryDefaultConfig();
         if (!forgetSecretsForNewEndpoints(ctx, defaults, out)) return;
         const config::Outcome outcome = ctx.config.reset(defaults);
         reapplyIntegrations(ctx, true);

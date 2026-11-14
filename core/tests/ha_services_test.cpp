@@ -77,6 +77,27 @@ const char *kServices = R"({
       "fields": {"rooms": {"selector": {"select": {"multiple": true, "options": ["a", "b"]}}}}
     }
   },
+  "webostv": {
+    "button": {
+      "fields": {
+        "entity_id": {"required": true, "selector": {"entity": {"integration": "webostv", "domain": "media_player"}}},
+        "button": {"required": true, "example": "LEFT", "selector": {"text": {}},
+                   "description": "Name of the button to press."}
+      }
+    },
+    "command": {
+      "fields": {
+        "entity_id": {"required": true, "selector": {"entity": {"integration": "webostv", "domain": "media_player"}}},
+        "command": {"required": true, "example": "system.launcher/open", "selector": {"text": {}}},
+        "payload": {"example": {"target": "https://www.google.com", "padding": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},
+                    "selector": {"object": {}}}
+      }
+    },
+    "get_info": {
+      "response": {"optional": false},
+      "fields": {"entity_id": {"selector": {"entity": {"integration": "webostv"}}}}
+    }
+  },
   "denonavr": {
     "get_command": {
       "target": {"entity": [{"integration": "denonavr", "domain": ["media_player"]}]},
@@ -107,7 +128,7 @@ std::vector<std::string> skips(const ServiceDirectory::Offer &offer) {
     JsonDocument back;
     if (deserializeJson(back, text)) return ::testing::AssertionFailure() << "unparseable: " << text;
     ValidationReport report;
-    if (!decodeSnapshot(back.as<JsonVariantConst>(), decoded, &report, "/ha")) {
+    if (!decodeSnapshot(back.as<JsonVariantConst>(), decoded, &report, "/ha", "media_player.x")) {
         return ::testing::AssertionFailure() << (report.issues().empty() ? "" : report.issues()[0].path) << " in " << text;
     }
     if (!(*decoded == snapshot)) return ::testing::AssertionFailure() << "changed: " << text;
@@ -121,10 +142,12 @@ TEST(HaServices, OffersTargetedTypedServicesOfTheEntitysIntegration) {
     const auto offer = dir.offerFor("media_player.kitchen", "sonos", /*features=*/4);
     EXPECT_EQ(ids(offer.services),
               (std::vector<std::string>{"sonos.clear_sleep_timer", "sonos.set_eq", "sonos.set_sleep_timer",
-                                        "sonos.volume_feature"}));
+                                        "sonos.snapshot", "sonos.volume_feature"}));
+    // `snapshot` names its target the older way (an entity_id field with an
+    // entity selector): that's its target, not a field, so it's offered with none.
+    EXPECT_TRUE(offer.services[3].fields.empty());
     // Matching the entity but not offerable: a time selector, five fields,
-    // a target-like field name, a multiple select. `snapshot` has no entity
-    // target at all, so it's neither offered nor counted.
+    // a target-like field name, a multiple select.
     EXPECT_EQ(skips(offer), (std::vector<std::string>{"sonos.multi unsupported_field", "sonos.sneaky unsupported_field",
                                                       "sonos.too_many too_many_fields",
                                                       "sonos.update_alarm unsupported_field"}));
@@ -147,18 +170,19 @@ TEST(HaServices, OffersTargetedTypedServicesOfTheEntitysIntegration) {
     EXPECT_EQ(eq.fields[3].options, (std::vector<std::string>{"flat", "voice"}));
 
     // A field whose own feature filter the entity doesn't meet is left out.
-    const SnapshotService &volume = offer.services[3];
+    const SnapshotService &volume = offer.services[4];
     ASSERT_EQ(volume.fields.size(), 1u);
     EXPECT_EQ(volume.fields[0].name, "level");
     EXPECT_EQ(volume.fields[0].type, SnapshotParamType::Number);
-    EXPECT_EQ(dir.offerFor("media_player.kitchen", "sonos", 4 | 8).services[3].fields.size(), 2u);
+    EXPECT_EQ(dir.offerFor("media_player.kitchen", "sonos", 4 | 8).services[4].fields.size(), 2u);
 }
 
 TEST(HaServices, TargetFilterDecidesWhoGetsAService) {
     const ServiceDirectory dir = ServiceDirectory::parse(kServices, {"sonos", "denonavr"});
     // Without the feature its target requires, volume_feature isn't offered.
     EXPECT_EQ(ids(dir.offerFor("media_player.kitchen", "sonos", 0).services),
-              (std::vector<std::string>{"sonos.clear_sleep_timer", "sonos.set_eq", "sonos.set_sleep_timer"}));
+              (std::vector<std::string>{"sonos.clear_sleep_timer", "sonos.set_eq", "sonos.set_sleep_timer",
+                                        "sonos.snapshot"}));
     // Another domain of the same integration: only domain-less filters match.
     const auto sw = dir.offerFor("switch.kitchen_crossfade", "sonos", 0);
     for (const auto &s : sw.services) EXPECT_NE(s.service, "sonos.set_sleep_timer");
@@ -329,7 +353,7 @@ TEST(HaSnapshot, RoundTripsAndBuildsCommands) {
     entity.supportedFeatures = media_player_feature::kVolumeSet | media_player_feature::kSelectSource;
     entity.sourceList = {"TV", "Line-in"};
     const CapabilitySnapshot snapshot = makeSnapshot(entity, "sonos", dir);
-    ASSERT_EQ(snapshot.services.size(), 4u);
+    ASSERT_EQ(snapshot.services.size(), 5u);
 
     CapabilitySnapshot decoded;
     ASSERT_TRUE(roundTrip(snapshot, &decoded));
@@ -379,7 +403,7 @@ TEST(HaSnapshot, DecodeIsStrict) {
         EXPECT_FALSE(deserializeJson(doc, json)) << json;
         CapabilitySnapshot s;
         ValidationReport report;
-        const bool ok = decodeSnapshot(doc.as<JsonVariantConst>(), &s, &report, "/d");
+        const bool ok = decodeSnapshot(doc.as<JsonVariantConst>(), &s, &report, "/d", "media_player.x");
         if (!report.ok()) {
             *firstIssue = std::string(errorCodeName(report.issues()[0].code)) + " " + report.issues()[0].path;
         }
@@ -560,4 +584,137 @@ TEST(HaSnapshot, OneBuiltFromMessyAttributesAlwaysDecodes) {
             EXPECT_TRUE(snapshot.services.empty()) << "no services without a valid platform";
         }
     }
+}
+
+// What Hubbo can't type is still callable as a Home Assistant action: the
+// custom services, with field hints, minus response-only ones.
+TEST(HaServices, UntypedServicesBecomeCustomServices) {
+    const ServiceDirectory dir = ServiceDirectory::parse(kServices, {"sonos", "webostv"});
+    const auto tv = dir.offerFor("media_player.lg", "webostv", 0);
+    EXPECT_TRUE(tv.services.empty());
+    EXPECT_EQ(skips(tv), (std::vector<std::string>{"webostv.button unsupported_field",
+                                                   "webostv.command unsupported_field",
+                                                   "webostv.get_info response_only"}));
+    ASSERT_EQ(tv.custom.size(), 2u) << "response-only isn't callable";
+    const SnapshotCustomService &button = tv.custom[0];
+    EXPECT_EQ(button.service, "webostv.button");
+    EXPECT_EQ(button.label, "Button");
+    ASSERT_EQ(button.fields.size(), 1u) << "entity_id is the target, not a field";
+    EXPECT_EQ(button.fields[0].name, "button");
+    EXPECT_TRUE(button.fields[0].required);
+    EXPECT_EQ(button.fields[0].example, "\"LEFT\"") << "HA's example, as JSON";
+    EXPECT_EQ(button.fields[0].description, "Name of the button to press.");
+    const SnapshotCustomService &command = tv.custom[1];
+    ASSERT_EQ(command.fields.size(), 2u);
+    EXPECT_EQ(command.fields[1].name, "payload");
+    EXPECT_EQ(command.fields[1].example, "") << "an example over 64 bytes is dropped";
+    // Another integration's entity gets none of these.
+    for (const auto &c : dir.offerFor("media_player.kitchen", "sonos", 0).custom) {
+        EXPECT_EQ(c.service.rfind("sonos.", 0), 0u) << c.service;
+    }
+
+    // Stored with the snapshot, and back.
+    EntityInfo entity;
+    entity.entityId = "media_player.lg";
+    const CapabilitySnapshot snapshot = makeSnapshot(entity, "webostv", dir);
+    ASSERT_EQ(snapshot.customServices.size(), 2u);
+    CapabilitySnapshot decoded;
+    ASSERT_TRUE(roundTrip(snapshot, &decoded));
+    EXPECT_EQ(decoded.customServices[0].fields[0].example, "\"LEFT\"");
+
+    // They make the device offer the Home Assistant action, built from the
+    // action's own service and data.
+    const EntityCapabilities caps = EntityCapabilities::fromSnapshot(entity.entityId, decoded);
+    const int index = caps.catalog().find(kCallServiceCommandId);
+    ASSERT_GE(index, 0);
+    EXPECT_STREQ(caps.catalog().items[index].group, "custom");
+    EXPECT_EQ(caps.catalog().items[index].paramCount, 0);
+    ServiceCall call;
+    EXPECT_EQ(caps.buildServiceCall(static_cast<uint16_t>(index), nullptr, 0, &call), ErrorCode::UnknownCommand)
+        << "only buildCustomCall builds it";
+    ASSERT_EQ(caps.buildCustomCall("webostv.button", R"({"button":"INFO"})", &call), ErrorCode::Ok);
+    EXPECT_EQ(call.domain, "webostv");
+    EXPECT_EQ(call.service, "button");
+    EXPECT_EQ(call.entityId, "media_player.lg");
+    EXPECT_EQ(call.rawData, R"({"button":"INFO"})");
+    EXPECT_TRUE(call.data.empty());
+    ASSERT_EQ(caps.buildCustomCall("webostv.button", "", &call), ErrorCode::Ok);
+    EXPECT_EQ(call.rawData, "{}");
+    EXPECT_EQ(caps.buildCustomCall("webostv", "{}", &call), ErrorCode::UnknownCommand);
+    EXPECT_EQ(caps.buildCustomCall("Webostv.button", "{}", &call), ErrorCode::UnknownCommand);
+
+    // No custom services: no Home Assistant action.
+    CapabilitySnapshot plain = decoded;
+    plain.customServices.clear();
+    EXPECT_LT(EntityCapabilities::fromSnapshot(entity.entityId, plain).catalog().find(kCallServiceCommandId), 0);
+    ServiceCall none;
+    EXPECT_EQ(EntityCapabilities::fromSnapshot(entity.entityId, plain).buildCustomCall("webostv.button", "{}", &none),
+              ErrorCode::UnknownCommand);
+}
+
+TEST(HaServices, ServiceIdShape) {
+    EXPECT_TRUE(isHaServiceId("webostv.button"));
+    EXPECT_TRUE(isHaServiceId("a.b"));
+    EXPECT_TRUE(isHaServiceId("abcdefghijklmnopqrstuvwxyz012345." + std::string(64, 'x')));
+    EXPECT_FALSE(isHaServiceId("abcdefghijklmnopqrstuvwxyz0123456.x")) << "domain over 32";
+    EXPECT_FALSE(isHaServiceId("a." + std::string(65, 'x')));
+    EXPECT_FALSE(isHaServiceId("webostv"));
+    EXPECT_FALSE(isHaServiceId("webostv."));
+    EXPECT_FALSE(isHaServiceId("webostv.button.x"));
+    EXPECT_FALSE(isHaServiceId("webostv.1button"));
+    EXPECT_FALSE(isHaServiceId("WebOS.button"));
+}
+
+TEST(HaSnapshot, CustomServicesDecodeStrictly) {
+    auto decodeIssue = [](const char *json, const char *entityId = "media_player.tv") {
+        JsonDocument doc;
+        deserializeJson(doc, json);
+        CapabilitySnapshot s;
+        ValidationReport report;
+        decodeSnapshot(doc.as<JsonVariantConst>(), &s, &report, "", entityId);
+        return report.issues().empty() ? std::string("ok") : report.issues()[0].path + " " + errorCodeName(report.issues()[0].code);
+    };
+    const std::string base = R"({"platform":"webostv","supported_features":0,"services":[],"custom_services":)";
+    EXPECT_EQ(decodeIssue((base + R"([{"service":"webostv.button","label":"Button","fields":[{"name":"button","required":true,"example":"LEFT"}]}]})").c_str()), "ok");
+    EXPECT_EQ(decodeIssue((base + R"([{"service":"sonos.x","fields":[]}]})").c_str()), "/custom_services/0/service invalid_command_id");
+    // A domain that never offers integration services never has any (a restored scene).
+    EXPECT_EQ(decodeIssue((base + R"([{"service":"webostv.button","fields":[]}]})").c_str(), "scene.movie"),
+              "/custom_services unknown_field");
+    EXPECT_EQ(decodeIssue((base + R"([{"service":"webostv.button","fields":[{"name":"entity_id","required":true}]}]})").c_str()), "/custom_services/0/fields/0/name invalid_id");
+    EXPECT_EQ(decodeIssue((base + R"([{"service":"webostv.button","fields":[{"name":"b","required":true,"example":")" + std::string(70, 'x') + R"("}]}]})").c_str()), "/custom_services/0/fields/0/example too_long");
+    EXPECT_EQ(decodeIssue((base + R"([{"service":"webostv.button","fields":[],"x":1}]})").c_str()), "/custom_services/0/x unknown_field");
+    EXPECT_EQ(decodeIssue((base + R"([{"service":"webostv.button","fields":[]},{"service":"webostv.button","fields":[]}]})").c_str()), "/custom_services/1/service duplicate_id");
+}
+
+TEST(HaSnapshot, TrimKeepsTheCustomServicesThatFit) {
+    auto make = [](std::initializer_list<size_t> sizes) {
+        std::vector<SnapshotCustomService> out;
+        for (size_t bytes : sizes) {
+            SnapshotCustomService c;
+            c.service = "webostv." + std::string(1, static_cast<char>('a' + out.size()));
+            c.label = std::string(bytes - c.service.size(), 'x');
+            out.push_back(c);
+        }
+        return out;
+    };
+    auto names = [](const std::vector<SnapshotCustomService> &v) {
+        std::string out;
+        for (const auto &c : v) out += c.service.substr(8);
+        return out;
+    };
+    std::vector<SnapshotCustomService> t = make({100, 100, 100});
+    EXPECT_EQ(customHintBytes(t[0]), 100u);
+    trimCustomServices(&t, 250);
+    EXPECT_EQ(names(t), "ab");
+    trimCustomServices(&t, 0);
+    EXPECT_TRUE(t.empty());
+    t = make({100, 200, 50});
+    trimCustomServices(&t, 160);
+    EXPECT_EQ(names(t), "ac") << "one that doesn't fit is skipped, not the end";
+    t = make({100, 100, 100});
+    trimCustomServices(&t, 300);
+    EXPECT_EQ(names(t), "abc");
+    t.assign(kMaxCustomServices + 2, make({10})[0]);
+    trimCustomServices(&t, kMaxCustomHintBytes);
+    EXPECT_EQ(t.size(), kMaxCustomServices) << "and at most kMaxCustomServices";
 }

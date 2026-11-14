@@ -63,7 +63,7 @@ void putTimestamp(JsonObject obj, const char *key, int64_t unixSeconds);
 // obj[key] = id, or null if id is empty.
 void putNullableId(JsonObject obj, const char *key, std::string_view id);
 
-// Appends {id, type, state} for an integration (nullptr = the built-in
+// Appends {id, type, state, detail?} for an integration (nullptr = the built-in
 // system integration) and returns it for callers that add more fields.
 JsonObject putIntegrationSummary(JsonArray list, const ApiContext &ctx, const IntegrationSpec *integration);
 

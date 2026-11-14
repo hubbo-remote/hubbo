@@ -1,8 +1,14 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
+
+namespace hubbo {
+struct DeviceSpec;  // domain/config.h
+}
 
 // What Home Assistant reported about one entity when it was registered or
 // re-linked: the device's stored capabilities (docs/design/phase3-home-
@@ -49,6 +55,33 @@ struct SnapshotService {
     bool operator==(const SnapshotService &other) const;
 };
 
+// What HA says about one field of a custom service: a hint for writing its
+// data, never a typed param.
+struct SnapshotHint {
+    std::string name;  // the HA service data key
+    bool required = false;
+    std::string example;      // HA's example as compact JSON text; "" none (or over kMaxHintExampleBytes)
+    std::string description;  // HA's field description (a tooltip), "" if none
+
+    bool operator==(const SnapshotHint &other) const;
+};
+
+// An integration service matching the entity that Hubbo couldn't type (a
+// text, object or other untyped field, or too many fields). It can still be
+// sent as a Home Assistant action (command call_service) with data the user
+// writes as JSON. Response-only services are never here.
+struct SnapshotCustomService {
+    std::string service;  // "<platform>.<service>"
+    std::string label;
+    std::vector<SnapshotHint> fields;  // target-like fields left out
+
+    bool operator==(const SnapshotCustomService &other) const;
+};
+
+// What one custom service costs against kMaxCustomHintBytes: its strings'
+// bytes (service, label, and each hint's name, example and description).
+size_t customHintBytes(const SnapshotCustomService &service);
+
 struct CapabilitySnapshot {
     std::string platform;  // HA integration behind the entity ("sonos"), "" if unknown
     uint32_t supportedFeatures = 0;
@@ -64,13 +97,37 @@ struct CapabilitySnapshot {
     std::vector<std::string> availableModes;  // humidifier
     std::vector<std::string> options;         // select
     std::vector<SnapshotService> services;
+    std::vector<SnapshotCustomService> customServices;  // custom_services
 
     bool operator==(const CapabilitySnapshot &other) const;
 };
+
+// All of a snapshot's custom services' customHintBytes().
+size_t customHintBytes(const CapabilitySnapshot &snapshot);
+// Keeps, in order, the custom services that fit: each one is kept if it still
+// fits in `budget` bytes and kMaxCustomServices, else skipped (a smaller one
+// after it may fit). The one budget rule: ServiceDirectory's offer
+// (kMaxCustomHintBytes) and registration and re-link (what's left of the
+// config's kMaxConfigHintBytes).
+void trimCustomServices(std::vector<SnapshotCustomService> *services, size_t budget);
+// customHintBytes() summed over the config's HA devices, leaving out the one
+// with id `exceptId` ("" = none). The total kMaxConfigHintBytes caps.
+size_t configHintBytes(const std::vector<DeviceSpec> &devices, std::string_view exceptId = {});
 
 constexpr size_t kMaxSnapshotServices = 32;
 constexpr size_t kMaxSnapshotLabelLength = 48;  // service and field labels (HA's `name`)
 constexpr size_t kMaxSnapshotUnitLength = 16;   // number fields' unit_of_measurement
 constexpr size_t kMaxSnapshotDescriptionLength = 160;  // field descriptions (bytes)
+// Custom services' bounds: services and fields kept in order until either
+// count or the hint budget (the strings' bytes, per device) runs out.
+constexpr size_t kMaxCustomServices = 16;
+constexpr size_t kMaxCustomFields = 8;
+constexpr size_t kMaxCustomHintBytes = 2048;  // a webOS TV's three take about 1 KB
+constexpr size_t kMaxHintExampleBytes = 64;  // serialized
+// All HA devices' hints together (customHintBytes() summed over the config):
+// core's config validation refuses more (capacity_exceeded at
+// /devices/N/ha_capabilities/custom_services); registration and re-link
+// trim a new snapshot's custom services to what's left.
+constexpr size_t kMaxConfigHintBytes = 16384;
 
 }  // namespace hubbo::ha

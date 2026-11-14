@@ -215,6 +215,8 @@ JsonObject putIntegrationSummary(JsonArray list, const ApiContext &ctx, const In
         i["id"] = integration->id;
         i["type"] = integration->type;
         i["state"] = integration->enabled ? ctx.runtime.integrationState(integration->id) : "disabled";
+        const std::string detail = ctx.runtime.integrationDetail(integration->id);
+        if (!detail.empty()) i["detail"] = detail;
     }
     return i;
 }

@@ -3,6 +3,8 @@
 #include <ArduinoJson.h>
 
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "hubbo/engine/compiler.h"
 #include "hubbo/ha/snapshot.h"
@@ -12,6 +14,10 @@
 namespace hubbo::ha {
 
 void encodeSnapshot(const CapabilitySnapshot &snapshot, JsonObject out);
+
+// The `custom_services` array (HaCustomService); also a call_service
+// command's `services` in the API.
+void encodeCustomServices(const std::vector<SnapshotCustomService> &services, JsonArray out);
 
 // HA's `default` for a typed param: kept (hasDefault, defaultNumber or
 // defaultOption set) only when it fits the type, range and options. The one
@@ -24,7 +30,9 @@ bool applyDefault(JsonVariantConst value, SnapshotParam *param);
 // a fresh (default) `out`, with no copy on the HTTP task's small stack, so
 // on false `out` holds a partial snapshot the caller drops. What the snapshot offers is re-checked
 // again when the device's commands are built (EntityCapabilities::fromSnapshot).
+// `entityId`: the device's entity; custom_services on one whose domain never
+// offers integration services (offersIntegrationServices) is unknown_field.
 bool decodeSnapshot(JsonVariantConst json, CapabilitySnapshot *out, ValidationReport *report,
-                    const std::string &path);
+                    const std::string &path, std::string_view entityId);
 
 }  // namespace hubbo::ha

@@ -210,7 +210,7 @@ protected:
     integrations::MqttBridge mqtt{mqttTransport, "hubbo_02000000534d",
                                   {[] { return 0u; }, [] { return std::string(); },
                                    [] { return integrations::MqttDeviceInfo{}; }, [](const std::string &) {}, [] {}}};
-    api::Api api{api::ApiContext{creds, sessions, clock, hub.configService(), runtime, {}, nullptr, &remote,
+    api::Api api{api::ApiContext{creds, sessions, clock, hub.configService(), runtime, {}, &remote,
                                  &haClient, &secrets, nullptr, &ble, &firmware, &factoryReset, &hubSettings,
                                  &restart, &mqtt}};
     http::Router router;
@@ -905,7 +905,7 @@ TEST_F(ApiTest, HubNameAndRestart) {
 // Without HubSettings the name routes answer 503 and /status still names
 // the hub (hubbo.name is required): the default.
 TEST_F(ApiTest, StatusNamesAHubWithoutSettings) {
-    api::Api bare{api::ApiContext{creds, sessions, clock, hub.configService(), runtime, {}, nullptr, nullptr,
+    api::Api bare{api::ApiContext{creds, sessions, clock, hub.configService(), runtime, {}, nullptr,
                                   nullptr, nullptr, nullptr}};
     http::Router bareRouter;
     bare.registerRoutes(bareRouter);
@@ -1386,6 +1386,15 @@ TEST_F(ApiTest, TheMqttPasswordIsWriteOnly) {
     ASSERT_EQ(call(http::Method::Post, "/api/v1/admin/reset", "").status, 200);
     EXPECT_EQ(secrets.read(api::kMqttPasswordKey, &stored), auth::SecretRead::NotFound);
     EXPECT_STREQ(mqtt.state(), "disabled");
+
+    // The reset config is the first-boot one: the built-ins plus off:tap -> system off.
+    Reply globals = call(http::Method::Get, "/api/v1/global-bindings");
+    ASSERT_EQ(globals.status, 200) << dump(globals);
+    JsonObjectConst bindings = globals.json["bindings"];
+    EXPECT_EQ(bindings.size(), 1u) << dump(globals);
+    EXPECT_EQ(bindings["off:tap"][0]["integration_id"], "system");
+    EXPECT_EQ(bindings["off:tap"][0]["command_id"], "off");
+    EXPECT_TRUE(bindings["off:tap"][0]["device_id"].isNull());
 }
 
 TEST_F(ApiTest, DiscoveryIsAsyncAndFiltered) {
