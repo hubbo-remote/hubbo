@@ -19,7 +19,7 @@
 #                             against a fresh hub-sim that it starts and stops itself
 #   bin/hubbo web e2e --both <specs>  those specs on the mock, then on hub-sim --auth
 #                             (the feature check while working)
-#   bin/hubbo profiles sync [dir]  copy the built-in profiles from hubbo-devices (default ../hubbo-devices)
+#   bin/hubbo profiles sync [dir]  copy the built-in profiles from hubbo-profiles (default ../hubbo-profiles)
 #   bin/hubbo gate <core|api|web|fw|all>  an area's full phase-end gate, as one command
 #   bin/hubbo gate web --failed  rerun only the e2e spec files the last web gate saw fail
 set -euo pipefail
@@ -230,15 +230,17 @@ case "$cmd" in
         ;;
     profiles)
         # Copy the built-in profiles, kinds.json and buttons.json from
-        # hubbo-devices into profiles/, byte for byte, after its validator
-        # passes, and write profiles/index.json (id, revision, sha256 per file).
-        [ "${1:-}" = sync ] || { echo "usage: bin/hubbo profiles sync [hubbo-devices dir]" >&2; exit 2; }
-        src="$(cd "${2:-../hubbo-devices}" && pwd)"
-        "$src/bin/validate" >/dev/null
-        hashes="$("$src/bin/validate" --hashes profiles)"
+        # hubbo-profiles into profiles/, byte for byte, after its validator
+        # passes (--hashes validates too), and write profiles/index.json (id, revision, sha256 per file).
+        [ "${1:-}" = sync ] || { echo "usage: bin/hubbo profiles sync [hubbo-profiles dir]" >&2; exit 2; }
+        src="$(cd "${2:-../hubbo-profiles}" && pwd)"
+        hashes="$("$src/tools/bin/validate" --hashes profiles/hubbo)"
+        [ -n "$hashes" ] || { echo "profiles: no profiles in $src/profiles/hubbo" >&2; exit 1; }
+        # The hub reads only complete profiles; a codeset reference is the repo's storage form.
+        ! grep -l '"codeset"' "$src"/profiles/hubbo/*.json >&2 || { echo "profiles: the files above reference a codeset" >&2; exit 1; }
         rm -f profiles/*.json
         mkdir -p profiles
-        cp "$src"/profiles/*.json "$src/kinds.json" "$src/buttons.json" profiles/
+        cp "$src"/profiles/hubbo/*.json "$src/docs/schema/v1/kinds.json" "$src/docs/schema/v1/buttons.json" profiles/
         printf '%s\n' "$hashes" | awk -F'\t' '
             BEGIN { print "[" }
             { n = split($4, p, "/"); printf "%s  {\"file\": \"%s\", \"id\": \"%s\", \"revision\": %s, \"sha256\": \"%s\"}", (NR > 1 ? ",\n" : ""), p[n], $1, $2, $3 }
