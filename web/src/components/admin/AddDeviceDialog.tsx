@@ -24,9 +24,10 @@ const matches = (p: ProfileSummary, q: string) => `${p.manufacturer} ${p.model}`
 
 /**
  * One list: the built-in profiles (search by manufacturer and model) and "From Home Assistant".
- * A profile → its name; Home Assistant → an entity → its name. Bluetooth pairs on the device's page.
+ * A profile → its name; Home Assistant → an entity → its name. It stays open to add the next one;
+ * a Bluetooth device goes to its page instead (`onPair`), where it pairs.
  */
-export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onClose: () => void; onAdded?: (d: Device) => void }) {
+export function AddDeviceDialog({ open, onClose, onPair }: { open: boolean; onClose: () => void; onPair?: (d: Device) => void }) {
   const integrations = useIntegrations()
   const enabled = (type: string) => (integrations.data ?? []).filter((i) => i.type === type && i.enabled)
   const ha = enabled('home_assistant')
@@ -45,6 +46,8 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
   const [kind, setKind] = useState<DeviceKind>('other')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [added, setAdded] = useState<string | null>(null) // the last one added, while the dialog stays open
+  const [haQuery, setHaQuery] = useState('') // the entity search, kept while one is picked and added
   // Bumped per details load, so a load for an entity the user moved on from is dropped.
   const loadId = useRef(0)
   const cancelDetails = () => void loadId.current++
@@ -69,8 +72,10 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
       setIntegration(null)
       setPick(null)
       setQuery('')
+      setHaQuery('')
       setName('')
       setError(null)
+      setAdded(null)
     }
   }, [open])
 
@@ -86,8 +91,13 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
     try {
       const d = await api.registerDevice('profile' in pick ? { profile_id: pick.profile.id, name: name.trim(), kind } : { integration_id: integration!, provider: pick.provider, name: name.trim(), kind })
       invalidate('devices', 'discover', 'caps-all', 'integrations')
-      onAdded?.(d)
-      onClose()
+      if (d.provider.type === 'ble_hid' && onPair) {
+        onPair(d)
+        return onClose()
+      }
+      // Ready for the next one: HA back to its entities (the added one drops out), a profile to the start.
+      setAdded(d.name)
+      setPick(null)
     } catch (e) {
       // Already a device (e.g. the entity was renamed in HA): reload the details, which name it.
       if ('provider' in pick && toApiError(e).details.some((d) => d.code === 'duplicate_id')) return void loadDetails(pick.provider.entity_id)
@@ -102,7 +112,10 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
   const back = () => {
     setPick(null)
     if (haPick) cancelDetails()
-    else setIntegration(null)
+    else {
+      setIntegration(null)
+      setHaQuery('')
+    }
   }
   const shown = offered.filter((p) => matches(p, query))
   return (
@@ -119,7 +132,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
             </Button>
           )}
           <Button variant="ghost" onClick={onClose}>
-            Cancel
+            {added ? 'Done' : 'Cancel'}
           </Button>
           {step === 3 && (
             <Button onClick={submit} disabled={busy || !name.trim() || (!!haPick?.details && (!loaded || !loaded.supported || !!loaded.registered_device_id))}>
@@ -130,6 +143,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
         </>
       }
     >
+      {added && <Alert variant="success" title={`Added ${added}`} className="mb-4" />}
       {step === 1 && (
         <div className="grid gap-2">
           {(integrations.loading || profiles.loading) && <Skeleton className="h-24" />}
@@ -149,6 +163,7 @@ export function AddDeviceDialog({ open, onClose, onAdded }: { open: boolean; onC
       {step === 2 && (
         <HaCandidates
           integration={integration!}
+          search={[haQuery, setHaQuery]}
           onPick={(c) => {
             setPick({ provider: c.provider, label: c.name })
             setName(c.name.slice(0, 64))

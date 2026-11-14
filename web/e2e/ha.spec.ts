@@ -102,7 +102,7 @@ test('the token is write-only, and changing the URL says it clears the token', a
   expect(JSON.stringify(await api(page).get('/admin/integrations/ha_main'))).not.toContain('e2e-ha-token-not-real')
 })
 
-test('add an HA device: discover, search, preview its commands, register', async ({ page }) => {
+test('add an HA device: discover, search, preview its commands, register; the dialog stays for the next', async ({ page }) => {
   const dialog = await openAddHa(page)
   const list = dialog.getByRole('list', { name: 'Devices found' })
   await expect(list).toBeVisible() // discovery started on its own and finished
@@ -115,9 +115,16 @@ test('add an HA device: discover, search, preview its commands, register', async
   const preview = dialog.getByRole('region', { name: 'Commands' })
   await expect(preview).toContainText(T.freeCommand)
 
+  await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeVisible()
   await dialog.getByLabel('Name').fill('E2E device')
   await dialog.getByRole('button', { name: 'Add device', exact: true }).click()
+  // Still open, back on the entities with the search kept; the one just added is gone from them.
+  await expect(dialog.getByRole('status').filter({ hasText: 'Added E2E device' })).toBeVisible()
+  await expect(dialog.getByLabel('Search devices')).toHaveValue(T.free)
+  await expect(dialog.getByText('Nothing matches.')).toBeVisible()
+  await dialog.getByRole('button', { name: 'Done' }).click()
   await expect(dialog).toBeHidden()
+  await page.getByRole('link', { name: /E2E device/ }).click() // already in the list
   await expect(page.getByRole('heading', { name: 'E2E device' })).toBeVisible() // its page, with the stored commands
   await expect(page.getByRole('group', { name: /^(Turn|Power) on$/ }).first().getByRole('button', { name: 'Test' })).toBeVisible()
 })
@@ -184,7 +191,7 @@ test('a YAML-only entity (no registry entry) registers, without integration serv
   const preview = dialog.getByRole('region', { name: 'Commands' })
   await expect(preview).toContainText('switch.turn_on')
   await dialog.getByRole('button', { name: 'Add device', exact: true }).click()
-  await expect(dialog).toBeHidden()
+  await expect(dialog.getByRole('status').filter({ hasText: /^Added / })).toBeVisible()
   const { devices } = (await api(page).get('/devices')) as { devices: { provider: { entity_id?: string; unique_id?: string } }[] }
   const d = devices.find((x) => x.provider.entity_id === 'switch.patio_fountain')
   expect(d).toBeDefined()

@@ -61,7 +61,7 @@ export default function Devices() {
       <AddDeviceDialog
         open={adding}
         onClose={() => setAdding(false)}
-        onAdded={(d) => {
+        onPair={(d) => {
           toast(`Added ${d.name}`, { variant: 'success' })
           navigate(`/devices/${d.id}`)
         }}
