@@ -6,7 +6,7 @@ Approved 2026-11-10. Built and board-tested 2026-11-11 (see "Board test results"
 - **Adding a device is picking a profile** ("Apple TV", "Android TV / Google TV", "Fire TV", and later anything from the catalog).
 - **The new-activity wizard builds a starter activity** from the devices you pick: the remote's buttons, the inputs and the power steps. You review it, save it, and then change anything.
 
-The spec and the profiles live in `~/src/hubbo-devices` (`docs/spec.md`), owned by the spec agent. Research: `research-device-catalog.md`.
+The spec and the profiles live in `~/src/hubbo-profiles` (`docs/spec.md`), owned by the spec agent. Research: `research-device-catalog.md`.
 
 ## 1. A profile is a device
 
@@ -52,7 +52,7 @@ The descriptor doesn't change, so no host needs pairing again for this.
 
 ## 3. Built-in profiles
 
-**What's bundled.** The hub ships copies of the generic profiles from hubbo-devices: Apple TV, Android TV / Google TV, Fire TV and Other.
+**What's bundled.** The hub ships copies of the generic profiles from hubbo-profiles: Apple TV, Android TV / Google TV, Fire TV and Other.
 - They're kept in the hubbo repo as the same files, under `profiles/`, refreshed by a small sync script.
 - They're built into the firmware and hub-sim.
 - The web admin lists them through the API.
@@ -101,7 +101,7 @@ A step-by-step wizard. It ends on a review page, and saving creates an ordinary 
 - A profile's `buttons` overrides the table. For example, streamers map Menu to Home.
 - A button with no match stays empty.
 
-**Where the button table lives.** It moves from prose in the spec into a data file in hubbo-devices (`buttons.json`). It's bundled like the profiles, so the hub and the catalog read the same table.
+**Where the button table lives.** It moves from prose in the spec into a data file in hubbo-profiles (`buttons.json`). It's bundled like the profiles, so the hub and the catalog read the same table.
 
 **HA devices:** a small hub-side table maps HA commands to the same names (`media_player` volume up → `VolumeUp`, and so on). It's kept with the web admin, next to the wizard.
 
@@ -137,7 +137,7 @@ For HA devices, power on is `turn_on` and the input is `select_source`. An HA de
 - the wait-for-connected rule.
 
 **At the end of the phase:**
-- hubbo-devices is committed with everything else;
+- hubbo-profiles is committed with everything else;
 - the hub's copy of the profiles is synced from it;
 - `bin/validate` must pass.
 
@@ -169,7 +169,7 @@ For HA devices, power on is `turn_on` and the input is `select_source`. An HA de
 
 ## Gate
 
-- The four area gates and `bin/validate` in hubbo-devices.
+- The four area gates and `bin/validate` in hubbo-profiles.
 - **Board test:**
   1. Add the Apple TV and the Fire TV from their profiles and pair them.
   2. Build "Watch Apple TV" with the wizard (HA TV and receiver plus the Apple TV) and run it.

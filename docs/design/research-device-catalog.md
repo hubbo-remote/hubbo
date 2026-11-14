@@ -125,7 +125,7 @@ validate files in CI.
    hold Home 2 s, then Select). The user can add them to an activity's startup or shutdown.
 5. **Hosting: later.** It can carry community traffic: adding a device is a few requests; the free
    tier allows about 100k requests a day, and $5/month allows 10M a month.
-6. **Contributions: yes, lightly.** Profiles live in hubbo-devices. People can improve them, or add specific devices as complete profiles, with pull requests or feedback.
+6. **Contributions: yes, lightly.** Profiles live in hubbo-profiles. People can improve them, or add specific devices as complete profiles, with pull requests or feedback.
 7. **A profile is a device.** The hub's device record mirrors the profile, and both use the hub's platforms (`ble_hid`, later `ir`). No inheritance and no aliases. The generic Bluetooth profiles (Apple TV, Android TV / Google TV, Fire TV, Other) are ordinary profiles, and the hub bundles copies.
 
 ## 5. Notes from discussion (2026-11-10)

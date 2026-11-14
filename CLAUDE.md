@@ -19,7 +19,8 @@ compaction. Nobody needs to ask for it or explain it.
   | `hubbo-api` | the HTTP API, auth, `ha/` capabilities, `api/` (spec, fixtures, contract), `docs/security.md`, `docs/agent-api.md`, `docs/ha-capabilities.md` |
   | `hubbo-firmware` | `firmware/`, `docs/hardware/`, the dev board |
   | `hubbo-frontend` | `web/` (the web admin, its mock and e2e) |
-  | `hubbo-spec` | the device profile spec, its schema and the profiles, in `~/src/hubbo-devices` |
+  | `hubbo-spec` | the open profile spec, its schema, the profile data and its tools, in `~/src/hubbo-profiles` |
+  | `hubbo-site` | the Hubbo site (homepage, device catalog and the spec's pages), in `~/src/hubbo-site` |
 
 - At the start of a session, or when work begins, the lead spawns the agents the work needs. If an
   agent from this session is still alive, the lead messages it instead.
