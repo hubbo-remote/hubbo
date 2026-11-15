@@ -258,9 +258,14 @@ Current as of the smart-buttons branch. Not a log: rewrite sections as they chan
 - **HA settings changes drop discovery and details.** `reapplyHomeAssistant(ctx, haChanged)` on a
   URL, token, enabled or verify_tls change, and every restore or reset. `syncDiscovery` also
   treats a Done cache from another `discoveryGeneration()` (new settings, reconnect) as gone.
-- **One device per entity:** `registeredDevice()` matches entity_id, else unique_id within the
-  platform (HA renames). Candidates have no unique_id, so they match by entity_id only; the
-  details find a renamed entity, and register refuses it (422 `duplicate_id`; re-link instead).
+- **One device per entity:** `registeredDevice()` matches entity_id first. Failing that, to
+  follow HA renames, it matches unique_id within the same domain and platform
+  (`ha::entityDomainName`). HA keys its registry by (domain, platform, unique_id), and Android TV
+  Remote gives a TV's media_player and its remote the same unique_id (the TV's MAC). Without the
+  domain check, adding the remote said it was already added as the TV (fix-ha-unique-id; test
+  SameUniqueIdInAnotherDomainIsAnotherDevice). Candidates have no unique_id, so they match by
+  entity_id only. The details find a renamed entity, and register refuses it (422
+  `duplicate_id`; re-link instead).
 - **verify_tls stays** (the user's decision): false means encrypted but the server isn't
   verified. `ca_cert_pem` is gone: a PUT rejects it, and core's stored and backup decoders
   accept and drop it.
