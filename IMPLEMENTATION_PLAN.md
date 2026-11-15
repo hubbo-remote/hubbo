@@ -239,6 +239,9 @@ the Phase 4 board gate, where the user set up a wiped board on an iPhone:
 - **Mobile:** a full pass on a phone (layout, tap targets, keyboards, focus rings).
 - **Fewer notes:** the UI has far too many explanatory notes and descriptions (user, 2026-11-09). Cut them down; say what matters in the controls and states themselves. This includes what a restore leaves out (HA token, Bluetooth pairing).
 
+## Home Assistant remotes (user, 2026-11-14)
+HA's `remote` domain, added like any other domain: any `remote.*` entity is its own device. Turn on, Turn off and Toggle are typed; everything else (`remote.send_command`, ...) goes through the Home Assistant action, which on a remote also accepts `remote.*` services. Nothing else changes. Design: `docs/design/ha-remote.md`. Smart buttons is finished and stashed on `smart-buttons`, waiting for its board test.
+
 ## Post-MVP backlog
 - **Parallel e2e:** one hub per Playwright worker (a mock per worker, or a hub-sim port per worker), so e2e can run with several workers or shards. Today it's `workers: 1` against one shared hub.
 - **Discover an unknown remote's address without a Hub:** nRF24 promiscuous sniffing (research).
