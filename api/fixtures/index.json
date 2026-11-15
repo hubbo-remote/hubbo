@@ -317,6 +317,11 @@
       "kind": "200"
     },
     {
+      "file": "integrations/ha_main.entities/remote.living_room_tv.capabilities.json",
+      "operation": "getDeviceCapabilities",
+      "kind": "200"
+    },
+    {
       "file": "integrations/ha_main.discover.json",
       "operation": "discoverIntegration",
       "kind": "202"

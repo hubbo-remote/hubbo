@@ -353,6 +353,38 @@ HA_ENTITIES = {
 }
 
 
+# HA's remote services (remote/services.yaml, labels and descriptions from
+# remote/strings.json, cut to 160 bytes the hub's way) as a remote's custom
+# services: send_command first, then by id. hub-sim's fake HA serves the same get_services.
+REMOTE_CUSTOM_SERVICES = [
+    {"service": "remote.send_command", "label": "Send remote command", "fields": [
+        {"name": "device", "required": False, "example": "32756745", "description": "Device ID to send command to."},
+        {"name": "command", "required": True, "example": "Play",
+         "description": "A single command or a list of commands to send."},
+        {"name": "num_repeats", "required": False,
+         "description": "The number of times you want to repeat the commands."},
+        {"name": "delay_secs", "required": False,
+         "description": "The time you want to wait in between repeated commands."},
+        {"name": "hold_secs", "required": False,
+         "description": "The time you want to have it held before the release is send."}]},
+    {"service": "remote.delete_command", "label": "Delete remote command", "fields": [
+        {"name": "device", "required": False, "example": "television",
+         "description": "Device from which commands will be deleted."},
+        {"name": "command", "required": True, "example": "Mute",
+         "description": "The single command or the list of commands to be deleted."}]},
+    {"service": "remote.learn_command", "label": "Learn remote command", "fields": [
+        {"name": "device", "required": False, "example": "television",
+         "description": "Device ID to learn command from."},
+        {"name": "command", "required": False, "example": "Turn on",
+         "description": "A single command or a list of commands to learn."},
+        {"name": "command_type", "required": False, "description": "The type of command to be learned."},
+        {"name": "alternative", "required": False,
+         "description": "If code must be stored as an alternative. This is useful for discrete codes. Discrete "
+                        "codes are used for toggles that only perform one function. For example…"},
+        {"name": "timeout", "required": False, "description": "Timeout for the command to be learned."}]},
+]
+
+
 # Made-up entities of the newer domains (never a real home's names): discovery
 # candidates, not registered, each with the capabilities registering it
 # gives (integrations/ha_main.entities/<entity_id>.capabilities.json, for
@@ -374,6 +406,10 @@ NEW_DOMAIN_ENTITIES = [
      "attributes": {"available_modes": ["normal", "eco", "sleep"], "min_humidity": 30, "max_humidity": 80}},
     {"entity_id": "select.dryer_cycle", "name": "Dryer Cycle", "domain": "select", "state": "normal",
      "supported_features": 0, "attributes": {"options": ["normal", "delicate", "towels"]}},
+    # A remote: HA's own remote services beyond the allowlist are custom
+    # services (a Home Assistant action); "demo" adds none of its own.
+    {"entity_id": "remote.living_room_tv", "name": "Living Room TV", "domain": "remote", "state": "on",
+     "supported_features": 0, "attributes": {}, "custom_services": REMOTE_CUSTOM_SERVICES},
 ]
 
 
@@ -435,7 +471,18 @@ def ha_commands(e):
         return humidifier_commands(e["supported_features"], e["attributes"])
     if e["domain"] == "select":
         return select_commands(e["attributes"])
+    if e["domain"] == "remote":  # turn_on's activity is text: untyped, so no param
+        return [cmd("remote.turn_on", "Turn on"), cmd("remote.turn_off", "Turn off"), cmd("remote.toggle", "Toggle")]
     return []
+
+
+def device_commands(e):
+    """A registered entity's commands: its own, then a Home Assistant action
+    if it has custom services."""
+    out = ha_commands(e)
+    if e.get("custom_services"):
+        out.append(dict(cmd("call_service", "Home Assistant action", group="custom"), services=e["custom_services"]))
+    return out
 
 
 # Detail form (GET /devices/{id}); `light()` gives the list form.
@@ -446,10 +493,7 @@ DEVICES = [
 CAPABILITIES = {"dev_apple_tv": {"device_id": "dev_apple_tv", "integration_id": "ble",
                                  "commands": ble_commands("hubbo:apple-tv")}}
 for k, v in HA_ENTITIES.items():
-    CAPABILITIES[k] = {"device_id": k, "integration_id": "ha_main", "commands": ha_commands(v)}
-    if v.get("custom_services"):  # a Home Assistant action, after the device's own commands
-        CAPABILITIES[k]["commands"].append(dict(cmd("call_service", "Home Assistant action", group="custom"),
-                                                services=v["custom_services"]))
+    CAPABILITIES[k] = {"device_id": k, "integration_id": "ha_main", "commands": device_commands(v)}
 
 # ---------------------------------------------------------------- activities
 
@@ -786,7 +830,7 @@ for e in NEW_DOMAIN_ENTITIES:
                            device_class=e.get("device_class", "")))
     fx(f"integrations/ha_main.entities/{e['entity_id']}.capabilities.json", "getDeviceCapabilities", "200",
        {"device_id": "dev_" + e["entity_id"].split(".", 1)[1], "integration_id": "ha_main",
-        "commands": ha_commands(e)})
+        "commands": device_commands(e)})
 cands.append(candidate("switch.tv_backlight", "TV Backlight", "switch", "zha", switch_commands()))
 cands.append(candidate("switch.porch_light", "Porch Light", "switch", None, switch_commands()))  # YAML-only
 cands.append(candidate("media_player.kitchen_display", "Kitchen Display", "media_player", "cast", []))

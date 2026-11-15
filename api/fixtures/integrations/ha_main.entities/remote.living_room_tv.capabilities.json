@@ -1,0 +1,117 @@
+{
+  "device_id": "dev_living_room_tv",
+  "integration_id": "ha_main",
+  "commands": [
+    {
+      "command_id": "remote.turn_on",
+      "label": "Turn on",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "remote.turn_off",
+      "label": "Turn off",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "remote.toggle",
+      "label": "Toggle",
+      "effect": "momentary",
+      "params": []
+    },
+    {
+      "command_id": "call_service",
+      "label": "Home Assistant action",
+      "effect": "momentary",
+      "params": [],
+      "group": "custom",
+      "services": [
+        {
+          "service": "remote.send_command",
+          "label": "Send remote command",
+          "fields": [
+            {
+              "name": "device",
+              "required": false,
+              "example": "32756745",
+              "description": "Device ID to send command to."
+            },
+            {
+              "name": "command",
+              "required": true,
+              "example": "Play",
+              "description": "A single command or a list of commands to send."
+            },
+            {
+              "name": "num_repeats",
+              "required": false,
+              "description": "The number of times you want to repeat the commands."
+            },
+            {
+              "name": "delay_secs",
+              "required": false,
+              "description": "The time you want to wait in between repeated commands."
+            },
+            {
+              "name": "hold_secs",
+              "required": false,
+              "description": "The time you want to have it held before the release is send."
+            }
+          ]
+        },
+        {
+          "service": "remote.delete_command",
+          "label": "Delete remote command",
+          "fields": [
+            {
+              "name": "device",
+              "required": false,
+              "example": "television",
+              "description": "Device from which commands will be deleted."
+            },
+            {
+              "name": "command",
+              "required": true,
+              "example": "Mute",
+              "description": "The single command or the list of commands to be deleted."
+            }
+          ]
+        },
+        {
+          "service": "remote.learn_command",
+          "label": "Learn remote command",
+          "fields": [
+            {
+              "name": "device",
+              "required": false,
+              "example": "television",
+              "description": "Device ID to learn command from."
+            },
+            {
+              "name": "command",
+              "required": false,
+              "example": "Turn on",
+              "description": "A single command or a list of commands to learn."
+            },
+            {
+              "name": "command_type",
+              "required": false,
+              "description": "The type of command to be learned."
+            },
+            {
+              "name": "alternative",
+              "required": false,
+              "description": "If code must be stored as an alternative. This is useful for discrete codes. Discrete codes are used for toggles that only perform one function. For example…"
+            },
+            {
+              "name": "timeout",
+              "required": false,
+              "description": "Timeout for the command to be learned."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
