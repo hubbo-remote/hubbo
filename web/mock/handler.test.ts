@@ -352,12 +352,12 @@ describe('mock behaviour', () => {
     expect(errorOf(await m.handle(sized(640 * 1024 + 1))).code).toBe('payload_too_large')
   })
 
-  it('nesting: requests allow 9 levels, a restore (a file) 12, like the hub', async () => {
+  it('nesting: requests allow 10 levels, a restore (a file) 12, like the hub', async () => {
     const m = createMock()
     const nested = (n: number): unknown => (n === 0 ? 1 : { a: nested(n - 1) })
     const raw = (path: string, n: number): MockRequest => ({ ...req('POST', path), headers: { 'content-type': 'application/json' }, rawBody: new TextEncoder().encode(JSON.stringify(nested(n))) })
-    expect(errorOf(await m.handle(raw('/activities', 9))).code).not.toBe('malformed_json')
-    expect(errorOf(await m.handle(raw('/activities', 10))).code).toBe('malformed_json')
+    expect(errorOf(await m.handle(raw('/activities', 10))).code).not.toBe('malformed_json')
+    expect(errorOf(await m.handle(raw('/activities', 11))).code).toBe('malformed_json')
     expect(errorOf(await m.handle(raw('/admin/restore?dry_run=true', 12))).code).not.toBe('malformed_json')
     expect(errorOf(await m.handle(raw('/admin/restore?dry_run=true', 13))).code).toBe('malformed_json')
   })

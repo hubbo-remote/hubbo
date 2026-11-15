@@ -138,9 +138,10 @@ const EDITS = [/^\/activities(\/(?!validate$)[^/]+)?$/, /^\/activities\/[^/]+\/a
 const MAX_BODY = 32 * 1024
 /**
  * Like the hub's JSON reader: deeper nesting is malformed (a restore is a file, so it gets the file
- * limit). 9: an activity's call data sits 5 levels down (bindings → trigger → action → call), at its deepest.
+ * limit). 10: one past the deepest legal body (an activity's call data, 5 levels down at its deepest), so
+ * call data one level too deep reaches validation and gets `too_deep` at its path, like the hub.
  */
-const MAX_JSON_DEPTH = 5 + CALL_DATA_MAX_DEPTH
+const MAX_JSON_DEPTH = 5 + CALL_DATA_MAX_DEPTH + 1
 const MAX_FILE_DEPTH = 12
 /** The HA entity domains Hubbo offers (api/openapi.yaml), and how the hub's messages list them. */
 type HaDomain = NonNullable<NonNullable<operations['getDiscovery']['parameters']['query']>['domain']>
