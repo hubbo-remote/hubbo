@@ -120,9 +120,10 @@ void putSecretFollowUps(JsonArray out, const ConfigSpec &restored);
 // registering or re-linking it stores), or null: fetch them first.
 const EntityDetails *completedDetails(ApiContext &ctx, std::string_view entityId);
 // The HA device registered for this entity: by entity_id, else (an entity
-// renamed in HA) by unique_id within its platform, since HA keeps unique_id
-// unique only per platform. Discovery candidates have no unique_id, so they
-// match by entity_id only; the details find a renamed one.
+// renamed in HA) by unique_id within its domain and platform, since HA keeps
+// unique_id unique only per (domain, platform): Android TV Remote gives a
+// TV's media_player and remote the same one. Discovery candidates have no
+// unique_id, so they match by entity_id only; the details find a renamed one.
 const DeviceSpec *registeredDevice(const ApiContext &ctx, std::string_view entityId, std::string_view uniqueId = {},
                                    std::string_view platform = {});
 void addRemoteRoutes(RouteSink &sink, ApiContext &ctx);       // remote endpoint and pair scan

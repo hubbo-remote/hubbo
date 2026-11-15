@@ -31,7 +31,8 @@ const DeviceSpec *registeredDevice(const ApiContext &ctx, std::string_view entit
         if (d.integrationId != kHaIntegrationId || d.provider.type != kHomeAssistantType) continue;
         if (d.provider.entityId == entityId) return &d;
         if (byUniqueId == nullptr && !uniqueId.empty() && d.provider.uniqueId == uniqueId && d.haCapabilities &&
-            d.haCapabilities->platform == platform) {
+            d.haCapabilities->platform == platform &&
+            ha::entityDomainName(d.provider.entityId) == ha::entityDomainName(entityId)) {
             byUniqueId = &d;
         }
     }
