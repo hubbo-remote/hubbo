@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Activity } from '../api/types'
 import { fixture, loadSeed } from '../../mock/fixtures.ts'
 import type { ParamSpec } from '../api/types'
-import { bindsButton, buttonForPath, defaultParams, hubboCommands, mostUsedDevice, drawerParams, fanSpeeds, fieldLabel, speedLabel, speedOf, speedOptions, paramLabel, parseTrigger, percentLabel, percentOptions, percentScale, validateActivity, validateBindings, waitAction, systemAction, type Catalog } from './activity'
+import { bindsButton, buttonForPath, defaultParams, hubboCommands, mostUsedDevice, drawerParams, fanSpeeds, fieldLabel, speedLabel, speedOf, speedOptions, paramLabel, parseTrigger, percentLabel, percentDefault, percentOptions, percentScale, validateActivity, validateBindings, waitAction, systemAction, type Catalog } from './activity'
 
 const s = loadSeed()
 const cat: Catalog = {
@@ -93,6 +93,10 @@ describe('params as people see them', () => {
     expect([percentLabel(st, opts[0]!), percentLabel(st, 26)]).toEqual(['−100%', '+10%'])
 
     expect(percentScale('fan.set_percentage', brightness)).toBeNull() // only lights
+
+    // A ±100 % step (a cover's Change position), +10% to start.
+    const pos = percentScale('cover.position_step', { name: 'step', type: 'int', required: true, minimum: -100, maximum: 100, step: 1, unit: '%' })!
+    expect([percentLabel(pos, 10), percentLabel(pos, -10), percentDefault(pos)]).toEqual(['+10%', '−10%', 10])
     expect(percentScale('light.turn_on', { ...brightness, maximum: 100 })).toBeNull()
   })
 

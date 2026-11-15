@@ -146,7 +146,7 @@ ParamInput in(const char *name, ParamLiteral value) { return {name, std::move(va
 
 // Resolve like the core does, then build the HA call.
 ErrorCode call(const EntityCapabilities &caps, const char *id, const std::vector<ParamInput> &inputs,
-               ServiceCall *out, std::string *bad = nullptr) {
+               ServiceCall *out, std::string *bad = nullptr, const ServiceValue *state = nullptr) {
     const CommandCatalog c = caps.catalog();
     const int index = c.find(id);
     if (index < 0) return ErrorCode::UnknownCommand;
@@ -156,7 +156,7 @@ ErrorCode call(const EntityCapabilities &caps, const char *id, const std::vector
     const ErrorCode code = resolveParams(c.items[index], inputs, values, &badParam, nullptr, &present);
     if (bad) *bad = badParam;
     if (code != ErrorCode::Ok) return code;
-    return caps.buildServiceCall(static_cast<uint16_t>(index), values, present, out);
+    return caps.buildServiceCall(static_cast<uint16_t>(index), values, present, out, state);
 }
 
 }  // namespace
@@ -207,7 +207,8 @@ TEST(HaCapabilities, NewerDomains) {
     EXPECT_EQ(ids(EntityCapabilities::fromEntity(plain("input_boolean.guest_mode"))),
               (V{"input_boolean.turn_on", "input_boolean.turn_off", "input_boolean.toggle"}));
     EXPECT_EQ(ids(EntityCapabilities::fromEntity(blinds())),
-              (V{"cover.open_cover", "cover.close_cover", "cover.stop_cover", "cover.toggle", "cover.set_cover_position"}));
+              (V{"cover.open_cover", "cover.close_cover", "cover.stop_cover", "cover.toggle", "cover.set_cover_position",
+                 "cover.position_step"}));
     EntityInfo tilt = blinds();
     tilt.supportedFeatures = 1 | 16 | 32 | 64 | 128;  // OPEN alone: no toggle
     EXPECT_EQ(ids(EntityCapabilities::fromEntity(tilt)),
@@ -439,6 +440,13 @@ TEST(HaCapabilities, LightModes) {
     EXPECT_EQ(command(fixed, "light.turn_on").params[1].minInt, kDefaultMinKelvin);
 }
 
+TEST(HaCapabilities, EntityDomainNameIsTheTextBeforeTheDot) {
+    EXPECT_EQ(entityDomainName("light.lamp"), "light");
+    EXPECT_EQ(entityDomainName("vacuum.roomba"), "vacuum") << "any domain";
+    EXPECT_EQ(entityDomainName("nodot"), "nodot");
+    EXPECT_EQ(entityDomainName(""), "");
+}
+
 TEST(HaCapabilities, UnsupportedDomainsAndBadIdsGetNothing) {
     for (const char *id : {"climate.hallway", "lock.front_door", "vacuum.kitchen",
                            "alarm_control_panel.home", "valve.main", "scene.all", "group.all_lights", "homeassistant.restart",
@@ -564,6 +572,62 @@ TEST(HaServiceCall, OnlyStateTogglesReadState) {
     noMute.supportedFeatures &= ~media_player_feature::kVolumeMute;
     EXPECT_LT(EntityCapabilities::fromEntity(noMute).catalog().find("media_player.mute_toggle"), 0)
         << "gated on VOLUME_MUTE, like volume_mute";
+}
+
+TEST(HaCapabilities, PositionStepNeedsSetPosition) {
+    const auto caps = EntityCapabilities::fromEntity(blinds());
+    const CommandSpec &step = command(caps, "cover.position_step");
+    ASSERT_EQ(step.paramCount, 1);
+    EXPECT_STREQ(step.params[0].name, "step");
+    EXPECT_EQ(step.params[0].type, ParamType::Int);
+    EXPECT_TRUE(step.params[0].required);
+    EXPECT_EQ(step.params[0].minInt, -100);
+    EXPECT_EQ(step.params[0].maxInt, 100);
+    EXPECT_STREQ(step.params[0].unit, "%");
+    EXPECT_STREQ(commandLabel("cover.position_step"), "Change position");
+    EXPECT_STREQ(caps.stateAttribute(static_cast<uint16_t>(caps.catalog().find("cover.position_step"))),
+                 "current_position");
+
+    EntityInfo noSet = blinds();
+    noSet.supportedFeatures &= ~cover_feature::kSetPosition;
+    EXPECT_LT(EntityCapabilities::fromEntity(noSet).catalog().find("cover.position_step"), 0);
+}
+
+TEST(HaServiceCall, PositionStepSendsTheNewPositionClamped) {
+    const auto caps = EntityCapabilities::fromEntity(blinds());
+    auto sent = [&](int32_t step, const ServiceValue *state, ServiceCall *c) {
+        return call(caps, "cover.position_step", {in("step", ParamLiteral::ofInt(step))}, c, nullptr, state);
+    };
+    ServiceValue at;
+    at.kind = ServiceValue::Kind::Int;
+    at.integer = 40;
+    ServiceCall c;
+    ASSERT_EQ(sent(10, &at, &c), ErrorCode::Ok);
+    EXPECT_EQ(c.domain, "cover");
+    EXPECT_EQ(c.service, "set_cover_position");
+    EXPECT_EQ(c.entityId, "cover.office_blinds");
+    ASSERT_EQ(c.data.size(), 1u);
+    EXPECT_EQ(c.data[0].key, "position") << "never `step`";
+    EXPECT_EQ(c.data[0].value.kind, ServiceValue::Kind::Int);
+    EXPECT_EQ(c.data[0].value.integer, 50);
+    ASSERT_EQ(sent(-50, &at, &c), ErrorCode::Ok);
+    EXPECT_EQ(c.data[0].value.integer, 0) << "clamped at 0";
+    at.integer = 95;
+    ASSERT_EQ(sent(10, &at, &c), ErrorCode::Ok);
+    EXPECT_EQ(c.data[0].value.integer, 100) << "clamped at 100";
+    ServiceValue number;
+    number.kind = ServiceValue::Kind::Number;
+    number.number = 33.6;
+    ASSERT_EQ(sent(-10, &number, &c), ErrorCode::Ok);
+    EXPECT_EQ(c.data[0].value.integer, 24) << "rounded first";
+
+    EXPECT_EQ(sent(10, nullptr, &c), ErrorCode::StateUnavailable) << "unknown or unavailable";
+    ServiceValue text;
+    text.kind = ServiceValue::Kind::String;
+    text.string = "40";
+    EXPECT_EQ(sent(10, &text, &c), ErrorCode::StateUnavailable);
+    number.number = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_EQ(sent(10, &number, &c), ErrorCode::StateUnavailable);
 }
 
 TEST(HaServiceCall, OmittedOptionalParamsAreNotSent) {
@@ -697,10 +761,14 @@ TEST(HaServiceCall, OnlyAllowlistedKeysEverReachHomeAssistant) {
             uint8_t present = 0;
             ASSERT_EQ(resolveParams(c.items[i], inputs, values, &unused, nullptr, &present), ErrorCode::Ok);
             ServiceCall sc;
-            ASSERT_EQ(caps.buildServiceCall(i, values, present, &sc), ErrorCode::Ok) << c.items[i].id;
-            // Every supplied param is sent, plus a state toggle's own field.
-            EXPECT_EQ(sc.data.size(), c.items[i].paramCount + (caps.stateAttribute(i) != nullptr ? 1u : 0u))
-                << c.items[i].id;
+            ServiceValue state;  // a position for a step; a toggle reads it as unknown
+            state.kind = ServiceValue::Kind::Int;
+            state.integer = 50;
+            ASSERT_EQ(caps.buildServiceCall(i, values, present, &sc, &state), ErrorCode::Ok) << c.items[i].id;
+            // Every supplied param is sent, plus a state toggle's own field
+            // (a step sends its param, as the new value).
+            const bool toggle = caps.stateAttribute(i) != nullptr && c.items[i].paramCount == 0;
+            EXPECT_EQ(sc.data.size(), c.items[i].paramCount + (toggle ? 1u : 0u)) << c.items[i].id;
             EXPECT_EQ(sc.entityId, e.entityId);
             EXPECT_EQ(sc.domain, e.entityId.substr(0, e.entityId.find('.')));
             for (const auto &field : sc.data) {

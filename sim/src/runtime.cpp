@@ -38,6 +38,7 @@ api::RuntimeSnapshot SimRuntime::snapshot() const {
     Engine &engine = hub_.engine();
     s.uptimeMs = hub_.nowMs();
     if (engine.hasActiveActivity()) s.activeActivityId = engine.activeActivityId();
+    s.selectedSlot = engine.selectedSlotShared();
     s.ip = "127.0.0.1";
     s.remote.paired = true;
     s.remote.held = hub_.input().held();

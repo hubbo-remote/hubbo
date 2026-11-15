@@ -166,10 +166,17 @@ Positions are int 0–100 with unit `%`. Gating mirrors `cover/services.py`.
 | `cover.stop_cover` (Stop) | `stop_cover` | STOP | |
 | `cover.toggle` (Toggle) | `toggle` | OPEN and CLOSE | |
 | `cover.set_cover_position` (Set position) | `set_cover_position` | SET_POSITION | `position` |
+| `cover.position_step` (Change position) | `set_cover_position` | SET_POSITION | `step` int −100..100, unit `%`; sends `position` = current + `step`, clamped to 0..100 |
 | `cover.open_cover_tilt`, `.close_cover_tilt`, `.stop_cover_tilt` | the same | OPEN_TILT, CLOSE_TILT, STOP_TILT | |
 | `cover.set_cover_tilt_position` (Set tilt) | `set_cover_tilt_position` | SET_TILT_POSITION | `tilt_position` |
 
 The open/close `speed` field isn't offered (free text).
+
+Change position is the smart buttons' +/- for a cover. Like Toggle mute, it reads one attribute
+at press time (`stateAttribute()` = `current_position`; the `CommandDef` row's `stateUse` (Step) marks
+it): the adapter reads the entity and `buildServiceCall()` adds the step, rounding a fractional
+position first. With no numeric `current_position` (unknown, unavailable) nothing is sent and the
+press reports `state_unavailable`.
 
 ### humidifier
 
@@ -392,6 +399,7 @@ Home Assistant action (below).
     (`ha::kMaxCustomHintBytes`, `kMaxConfigHintBytes`); registration and re-link keep what fits.
   An action can reach anything HA allows for a service of the device's own integration (and, on
   a remote, of the `remote` domain), so it's the one place the "only allowlisted calls" rule doesn't hold; security.md says so.
-- **Hue rate.** Hue handles about one command per second (Harmonizer/HANDOFF.md). Bursts of
-  `light.brightness_step` should be coalesced by the HA adapter's queue rather than sent one by
-  one.
+- **Hue rate.** Hue handles about one command per second. Quick taps on a smart button's + or −
+  whose action has a `step` (Change brightness, Change position) merge in the engine into one call
+  with `step` × the count, clamped to the param's range (docs/design/smart-buttons.md). Every other
+  press is sent at once: there is no queue in the adapter.

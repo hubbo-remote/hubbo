@@ -21,6 +21,9 @@ import type {
   FirmwareStatus,
   Hub,
   GlobalBindings,
+  SmartButtons,
+  SmartButtonsInput,
+  SmartSlotActions,
   Integration,
   IntegrationConfig,
   IntegrationConfigUpdate,
@@ -217,6 +220,10 @@ export const api = {
   off: () => post<TransitionResult>('/activities/off'),
   globalBindings: () => get<GlobalBindings>('/global-bindings'),
   replaceGlobalBindings: (g: GlobalBindings) => put<GlobalBindings>('/global-bindings', g),
+  smartButtons: () => get<SmartButtons>('/smart-buttons'),
+  replaceSmartButtons: (s: SmartButtonsInput) => put<SmartButtons>('/smart-buttons', s),
+  /** What a slot would do with this device (the hub's derivation); nothing is saved. */
+  smartButtonActions: (deviceId: string) => get<SmartSlotActions>(`/smart-buttons/actions?device_id=${enc(deviceId)}`),
 
   // integrations
   integrations: async () => (await get<{ integrations: Integration[] }>('/integrations')).integrations,

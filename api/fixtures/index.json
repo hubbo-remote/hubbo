@@ -227,6 +227,41 @@
       "kind": "200"
     },
     {
+      "file": "smart_buttons/get.json",
+      "operation": "getSmartButtons",
+      "kind": "200"
+    },
+    {
+      "file": "smart_buttons/replace.request.json",
+      "operation": "replaceSmartButtons",
+      "kind": "request"
+    },
+    {
+      "file": "smart_buttons/replace.json",
+      "operation": "replaceSmartButtons",
+      "kind": "200"
+    },
+    {
+      "file": "smart_buttons/actions.dev_family_room_lights.json",
+      "operation": "getSmartButtonActions",
+      "kind": "200"
+    },
+    {
+      "file": "smart_buttons/actions.dev_lg_tv.json",
+      "operation": "getSmartButtonActions",
+      "kind": "200"
+    },
+    {
+      "file": "errors/smart_buttons_revision_conflict.json",
+      "operation": "replaceSmartButtons",
+      "kind": "409"
+    },
+    {
+      "file": "errors/smart_buttons_unknown_device.json",
+      "operation": "replaceSmartButtons",
+      "kind": "422"
+    },
+    {
       "file": "activities/validate.valid.json",
       "operation": "validateActivity",
       "kind": "200"

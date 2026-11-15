@@ -60,6 +60,7 @@ void FakeHaServer::reset() {
         e.platform = std::move(fixture.platform);
         e.state = std::move(fixture.state);
         e.deviceClass = std::move(fixture.deviceClass);
+        if (ha::entityDomain(e.info.entityId) == ha::EntityDomain::Cover) e.position = kFakeCoverPosition;
         addEntity(std::move(e));
     }
     // A template switch from configuration.yaml: a state, no registry entry.
@@ -166,6 +167,12 @@ std::vector<std::string> FakeHaServer::onMessage(const std::string &text) {
         if (!answerCommands) return {};
         // As real HA: an entity it doesn't have still gets success.
         if (failing.count(service) != 0) return {error(id, "service_validation_error")};
+        if (service == "cover.set_cover_position" && doc["service_data"]["position"].is<int>()) {
+            const std::string target = doc["target"]["entity_id"] | "";
+            for (auto &e : entities_) {
+                if (e.info.entityId == target && e.position) e.position = doc["service_data"]["position"].as<int>();
+            }
+        }
         if (service == "media_player.volume_mute" && doc["service_data"]["is_volume_muted"].is<bool>()) {
             setMuted(std::string(doc["target"]["entity_id"] | ""), doc["service_data"]["is_volume_muted"].as<bool>());
         }
@@ -245,6 +252,7 @@ std::string FakeHaServer::compressedStates(const std::vector<std::string> &ids) 
         list("preset_modes", e.info.presetModes);
         if (e.info.percentageStep != 0.0) a["percentage_step"] = e.info.percentageStep;
         if (!e.deviceClass.empty()) a["device_class"] = e.deviceClass;
+        if (e.position) a["current_position"] = *e.position;
         list("available_modes", e.info.availableModes);
         list("options", e.info.options);
         if (e.info.minHumidity < e.info.maxHumidity) {  // else not reported

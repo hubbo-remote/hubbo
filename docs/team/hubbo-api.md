@@ -1,6 +1,6 @@
 # hubbo-api: working notes
 
-Current as of the mqtt branch (Hubbo as an HA device over MQTT discovery). Not a log: rewrite sections as they change.
+Current as of the smart-buttons branch. Not a log: rewrite sections as they change.
 
 ## State
 
@@ -447,6 +447,58 @@ Current as of the mqtt branch (Hubbo as an HA device over MQTT discovery). Not a
   list. MQTT's detail is empty while connected or connecting (core), and the fixtures match.
 - **Remote keys per integration:** designed, parked for a later phase. It uses a per-integration
   `ha-keys.json` that turns into a profile-shaped `press` command; the HA action is the fallback.
+
+- **Smart buttons (smart-buttons branch; docs/design/smart-buttons.md). Simplified on 2026-11-15
+  after the board test:** a slot is only a device id. The hub derives the actions, and repeat is gone.
+  - Routes in `smart_button_routes.cpp`: GET /smart-buttons gives `{slots, actions, revision}`.
+    PUT takes `SmartButtonsInput` `{slots, revision}` (token, 4 KiB; sending `actions` back is
+    `unknown_field` at /actions) and answers like GET. `actions` per slot comes from core's
+    `smartSlotActions(device, catalogFor(ctx, device))` (engine/smart_actions.h, the table that
+    used to be `fillDefaults`). A null slot gets `SmartSlotActions{}`. It's encoded with
+    `config::encodeSmartActions`. GET /smart-buttons/actions?device_id= (`getSmartButtonActions`, token) previews one
+    device's actions, nothing saved, for the web's instant preview on Global: 422 `required` or
+    `invalid_id` at /device_id, 404 for an unknown device, empty presses for a non-HA device or
+    another kind. The route shares `actionsFor()` with GET. Fixtures:
+    smart_buttons/actions.{dev_family_room_lights,dev_lg_tv}.json, which the contract compares
+    on every mode. I re-derive rather than reading the compiled slots: the compiled
+    form isn't ActionSpec. GET /smart-buttons/defaults is removed (spec, policy row, route).
+  - gen_fixtures.py writes only the actions it needs: `light_actions()` (the lights) and
+    `no_actions()`, so it no longer mirrors core's table (/simplify). The other kinds are
+    checked by ApiTest and the contract on hub-sim. Fixtures: get.json (light_1 =
+    dev_family_room_lights, rev 7), replace.request.json and replace.json (switch_2 = dev_lg_tv,
+    a kind with no actions), errors/smart_buttons_unknown_device.json. The backups carry
+    `{slots: ids, revision}`, with no actions. hub-sim's showcase seed (core's) must match get.json.
+  - Light +/- is tap only, `brightness_step` ±26 (10%). That was the user's call after the board test.
+  - `/status` `selected_slot` comes from `RuntimeSnapshot::selectedSlot`.
+  - Errors: an unknown device is `unknown_device` at /slots/<slot>. Deleting a slot's device is
+    409 `device_in_use` with a detail at /smart_buttons/slots/<slot>, "Used by smart buttons"
+    (`Referrer::owner`).
+  - Backup `smart_buttons` is optional (missing = four empty slots, user-approved).
+  - `cover.position_step` "Change position": `CommandDef::step` column; `step` param's data key
+    is `position`; buildServiceCall adds round(state) and clamps 0..100, no numeric state →
+    `ErrorCode::StateUnavailable` (`state_unavailable`, ExecuteResult.message). Offered whenever
+    SET_POSITION is supported (review fix: a `reports_position` gate left covers saved earlier,
+    including the daily-use hub's, without it until a re-link; it's gone from the snapshot).
+  - Contract: `smart_buttons_flow` (all modes) covers the seeded slots and actions, the replace's
+    actions against replace.json, 409, and `refused_at` for unknown_device and for `actions`
+    sent back. It also checks the delete is refused, and selected_slot. The restore without
+    smart_buttons (four empty slots) is in persistence_flow (hub modes only).
+    `new_domain_actions` (sim only) sets Light 2 once, reads GET per kind, then clears it so the
+    device can be deleted: the cover (plus a position_step execute 50→60), and input_boolean as
+    other, then switch, then light. snapshot() includes /smart-buttons.
+  - ApiTest: SmartButtonsReplaceWithRevisions, StatusShowsTheSelectedSlot,
+    SmartButtonActionsByKindFromTheOfferedCommands (every kind and fallback, through PUT and GET).
+  - `StateUse {Toggle, Step}` (capabilities.h); `ha::entityDomainName()`.
+  - `kRequestNestingLimit` is 10 (lowered from 11 at the lead's request, in core's json.h, with
+    the spec text). The deepest legal body is a binding's call.data, 9 deep. The extra level
+    makes data one level too deep a 422 `too_deep` at its path, not a 400. Contract: "binding
+    data too deep" in ha_action_flow. A restore parses as a file (kFileNestingLimit 12).
+  - Docs: agent-api.md covers slots as ids, the derived actions, release, a hold that fires
+    once, the +/- tap merge, and a global +/- binding that runs only while the selected slot has
+    no +/- actions. ha-capabilities.md's Hue note now describes the engine's tap merge (no
+    adapter queue).
+  - Open: no fake-HA cover without SET_POSITION, so the cover fallback is ApiTest-only. The mock
+    modes need the frontend's mock to serve the new routes, selected_slot and restore.
 
 - **Stale coverage:** no API-level test drives `stale` yet. A fresh-hub-sim contract case
   (`/sim/ha?remove=`, discover, `GET /devices/{id}`, execute → `entity_not_found`) would cover

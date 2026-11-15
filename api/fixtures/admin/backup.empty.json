@@ -19,6 +19,15 @@
     },
     "revision": 1
   },
+  "smart_buttons": {
+    "slots": {
+      "light_1": null,
+      "light_2": null,
+      "switch_1": null,
+      "switch_2": null
+    },
+    "revision": 1
+  },
   "activities": [],
   "excluded": [
     "admin_password",

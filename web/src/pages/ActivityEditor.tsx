@@ -3,6 +3,7 @@ import { useMemo, useRef, useState } from 'react'
 import type { Activity, ActivityDraft, ValidationIssue } from '@/api/types'
 import { SequenceEditor } from '@/components/actions/SequenceEditor'
 import { BindingsEditor } from '@/components/bindings/BindingsEditor'
+import { smartOf } from '@/lib/smartButtons'
 import { ErrorState, PageHeader } from '@/components/common'
 import { ConflictDialog } from '@/components/ConflictDialog'
 import { Alert } from '@/components/ui/alert'
@@ -12,7 +13,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input, ShowErrors } from '@/components/ui/input'
 import { Kbd, Skeleton } from '@/components/ui/misc'
 import { Tabs } from '@/components/ui/tabs'
-import { retryFailed, useActivity, useCatalog, useGlobalBindings } from '@/hooks/data'
+import { retryFailed, useActivity, useCatalog, useGlobalBindings, useSmartButtons } from '@/hooks/data'
 import { activityStore, toDraft, useDraft } from '@/hooks/draft'
 import { buttonForPath, LIMITS, parseTrigger, type Catalog } from '@/lib/activity'
 import { cn, plural } from '@/lib/utils'
@@ -44,6 +45,8 @@ function Editor({ activity, catalog, globalBindings }: { activity: Activity; cat
   const { update, errors } = ed
   const [selected, setSelected] = useState<string | null>(null)
   const [tab, setTab] = useState('buttons')
+  const smartData = useSmartButtons().data
+  const smart = useMemo(() => smartOf(smartData), [smartData])
   const countFor = (prefix: string) => errors.filter((e) => e.path.startsWith(prefix)).length
 
   const jumpTo = (issue: ValidationIssue) => {
@@ -142,6 +145,7 @@ function Editor({ activity, catalog, globalBindings }: { activity: Activity; cat
             selected={selected}
             onSelect={setSelected}
             set={{ source: 'activity', globals: globalBindings }}
+            smart={smart}
           />
         )}
         {tab === 'startup' && (

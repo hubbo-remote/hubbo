@@ -1622,3 +1622,175 @@ TEST_F(ApiTest, NewHomeAssistantSettingsDropTheOldDiscovery) {
                  std::to_string(hub.configService().findIntegration("ha_main")->revision) + "}");
     EXPECT_EQ(r.status, 422);
 }
+
+namespace {
+
+// The `command_id`s of one press list ("tap"), "" joined by spaces, with
+// each action's `step` if it has one ("light.brightness_step:26").
+std::string actions(JsonVariantConst list) {
+    std::string out;
+    for (JsonVariantConst a : list.as<JsonArrayConst>()) {
+        if (!out.empty()) out += " ";
+        out += a["command_id"].as<std::string>();
+        if (!a["params"]["step"].isNull()) out += ":" + std::to_string(a["params"]["step"].as<int>());
+    }
+    return out;
+}
+
+// One slot's actions as "button: tap / hold / release | plus: ... | minus: ...".
+std::string slotText(JsonVariantConst slot) {
+    std::string out;
+    for (const char *press : {"button", "plus", "minus"}) {
+        JsonVariantConst p = slot[press];
+        if (!out.empty()) out += " | ";
+        out += std::string(press) + ": " + actions(p["tap"]) + " / " + actions(p["hold"]) + " / " +
+               actions(p["release"]);
+    }
+    return out;
+}
+
+const char *const kNoActions = "button:  /  /  | plus:  /  /  | minus:  /  / ";
+
+// A PUT body: `light1` (a JSON value: "null" or a quoted id) as Light 1,
+// the others null.
+std::string smartBody(const std::string &light1, uint32_t revision) {
+    return R"({"revision":)" + std::to_string(revision) + R"(,"slots":{"light_1":)" + light1 +
+           R"(,"light_2":null,"switch_1":null,"switch_2":null}})";
+}
+
+}  // namespace
+
+TEST_F(ApiTest, SmartButtonsReplaceWithRevisions) {
+    Reply r = call(http::Method::Get, "/api/v1/smart-buttons");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["slots"].size(), 4u);
+    for (const char *slot : {"light_1", "light_2", "switch_1", "switch_2"}) {
+        EXPECT_FALSE(r.json["actions"][slot].isNull()) << slot;
+    }
+    const uint32_t revision = r.json["revision"];
+
+    r = call(http::Method::Put, "/api/v1/smart-buttons", smartBody(R"("dev_lights")", revision));
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["slots"]["light_1"], "dev_lights");
+    EXPECT_TRUE(r.json["slots"]["light_2"].isNull());
+    EXPECT_EQ(slotText(r.json["actions"]["light_2"]), kNoActions) << "a null slot";
+    const uint32_t next = r.json["revision"];
+    EXPECT_GT(next, revision);
+    EXPECT_EQ(dump(call(http::Method::Get, "/api/v1/smart-buttons")), dump(r)) << "GET reads what PUT answered";
+
+    // The old base is stale.
+    r = call(http::Method::Put, "/api/v1/smart-buttons", smartBody("null", revision));
+    EXPECT_EQ(r.status, 409) << dump(r);
+    EXPECT_EQ(r.code(), "revision_conflict");
+    EXPECT_EQ(r.json["error"]["current_revision"], next);
+
+    // A slot is a registered device.
+    r = call(http::Method::Put, "/api/v1/smart-buttons", smartBody(R"("dev_nope")", next));
+    EXPECT_EQ(r.status, 422) << dump(r);
+    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/slots/light_1") << dump(r);
+    EXPECT_EQ(r.json["error"]["details"][0]["code"], "unknown_device") << dump(r);
+
+    // A slot's device can't be deleted from under it.
+    r = call(http::Method::Delete, "/api/v1/admin/devices/dev_lights?revision=" +
+                                       std::to_string(hub.configService().findDevice("dev_lights")->revision));
+    EXPECT_EQ(r.status, 409) << dump(r);
+    EXPECT_EQ(r.code(), "device_in_use");
+    bool named = false;
+    for (JsonVariant d : r.json["error"]["details"].as<JsonArray>()) {
+        if (d["path"] == "/smart_buttons/slots/light_1") {
+            named = true;
+            EXPECT_EQ(d["message"], "Used by smart buttons");
+        }
+    }
+    EXPECT_TRUE(named) << dump(r);
+}
+
+TEST_F(ApiTest, StatusShowsTheSelectedSlot) {
+    Reply r = call(http::Method::Get, "/api/v1/status");
+    ASSERT_EQ(r.status, 200);
+    EXPECT_EQ(r.json["selected_slot"], "light_1") << "SimRuntime's default, as after a reboot";
+}
+
+TEST_F(ApiTest, SmartButtonActionsByKindFromTheOfferedCommands) {
+    // Each as an HA device of `kind` over an entity the scripted HA serves,
+    // by name (`ids`: the assigned id).
+    std::map<std::string, std::string> ids{{"dev_apple_tv", "dev_apple_tv"}};
+    auto add = [&](const std::string &name, const char *kind, ha::EntityInfo info) {
+        hub.homeAssistant().addEntity(info);
+        const config::Outcome o = hub.configService().createDevice(sim::haDevice("", name, kind, info.entityId));
+        ASSERT_TRUE(o.ok()) << errorCodeName(o.code);
+        ids[name] = o.id;
+    };
+    auto entity = [](const char *id, uint32_t features) {
+        ha::EntityInfo e;
+        e.entityId = id;
+        e.supportedFeatures = features;
+        return e;
+    };
+    ha::EntityInfo dimmable = entity("light.lamp", 0);
+    dimmable.supportedColorModes = {"brightness"};
+    add("dev_lamp", "light", dimmable);
+    ha::EntityInfo onoff = entity("light.porch", 0);
+    onoff.supportedColorModes = {"onoff"};
+    add("dev_porch", "light", onoff);
+    add("dev_fan", "fan", entity("fan.ceiling", 49));       // SET_SPEED | TURN_OFF | TURN_ON
+    add("dev_plain_fan", "fan", entity("fan.plain", 48));   // TURN_OFF | TURN_ON
+    add("dev_blinds", "cover", entity("cover.blinds", 15));  // OPEN | CLOSE | SET_POSITION | STOP
+    add("dev_garage", "cover", entity("cover.garage", 11));  // OPEN | CLOSE | STOP
+    add("dev_kettle", "switch", entity("switch.kettle", 0));
+    add("dev_guest", "switch", entity("input_boolean.guest", 0));  // the kind decides, not the domain
+    add("dev_movie", "scene", entity("scene.movie", 0));
+
+    // The preview for the device, and the same in Light 1 once saved.
+    auto slotActions = [&](const std::string &name) {
+        const std::string id = ids.at(name);
+        Reply preview = call(http::Method::Get, "/api/v1/smart-buttons/actions?device_id=" + id);
+        EXPECT_EQ(preview.status, 200) << id << " " << dump(preview);
+        for (JsonVariant a : preview.json["button"]["tap"].as<JsonArray>()) {
+            EXPECT_EQ(a["integration_id"], "ha_main");
+            EXPECT_EQ(a["device_id"], id);
+        }
+        const uint32_t revision = call(http::Method::Get, "/api/v1/smart-buttons").json["revision"];
+        Reply r = call(http::Method::Put, "/api/v1/smart-buttons", smartBody("\"" + id + "\"", revision));
+        EXPECT_EQ(r.status, 200) << id << " " << dump(r);
+        EXPECT_EQ(slotText(r.json["actions"]["light_1"]), slotText(preview.json)) << id << ": saved as previewed";
+        return slotText(preview.json);
+    };
+    EXPECT_EQ(slotActions("dev_lamp"),
+              "button: light.turn_on / light.turn_off /  | "
+              "plus: light.brightness_step:26 /  /  | "
+              "minus: light.brightness_step:-26 /  / ");
+    EXPECT_EQ(slotActions("dev_porch"), "button: light.turn_on / light.turn_off /  | plus:  /  /  | minus:  /  / ")
+        << "no brightness: no +/-";
+    EXPECT_EQ(slotActions("dev_fan"),
+              "button: fan.turn_on / fan.turn_off /  | plus: fan.increase_speed /  /  | "
+              "minus: fan.decrease_speed /  / ");
+    EXPECT_EQ(slotActions("dev_plain_fan"), "button: fan.turn_on / fan.turn_off /  | plus:  /  /  | minus:  /  / ")
+        << "no speed: no +/-";
+    EXPECT_EQ(slotActions("dev_blinds"),
+              "button: cover.open_cover / cover.close_cover /  | "
+              "plus: cover.position_step:10 / cover.open_cover / cover.stop_cover | "
+              "minus: cover.position_step:-10 / cover.close_cover / cover.stop_cover");
+    EXPECT_EQ(slotActions("dev_garage"),
+              "button: cover.open_cover / cover.close_cover /  | plus: cover.open_cover /  /  | "
+              "minus: cover.close_cover /  / ")
+        << "no position: open and close";
+    EXPECT_EQ(slotActions("dev_kettle"),
+              "button: switch.turn_on / switch.turn_off /  | plus:  /  /  | minus:  /  / ");
+    EXPECT_EQ(slotActions("dev_guest"),
+              "button: input_boolean.turn_on / input_boolean.turn_off /  | plus:  /  /  | minus:  /  / ");
+    EXPECT_EQ(slotActions("dev_movie"), kNoActions) << "another kind";
+    EXPECT_EQ(slotActions("dev_apple_tv"), kNoActions) << "not Home Assistant";
+
+    Reply r = call(http::Method::Get, "/api/v1/smart-buttons/actions?device_id=dev_nope");
+    EXPECT_EQ(r.status, 404) << dump(r);
+    r = call(http::Method::Get, "/api/v1/smart-buttons/actions");
+    EXPECT_EQ(r.status, 422);
+    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/device_id");
+    EXPECT_EQ(r.json["error"]["details"][0]["code"], "required");
+    for (const char *bad : {"lamp", "dev_", "dev_Lamp", "dev_a.b"}) {
+        r = call(http::Method::Get, std::string("/api/v1/smart-buttons/actions?device_id=") + bad);
+        EXPECT_EQ(r.status, 422) << bad;
+        EXPECT_EQ(r.json["error"]["details"][0]["code"], "invalid_id") << bad;
+    }
+}

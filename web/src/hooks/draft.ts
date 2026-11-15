@@ -1,23 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '@/api/client'
 import { invalidate, setQueryData } from '@/api/hooks'
-import type { Activity, ActivityDraft, GlobalBindings, ValidationIssue } from '@/api/types'
+import type { Activity, ActivityDraft, GlobalBindings, LocalValidation, SmartButtons, ValidationIssue } from '@/api/types'
 import { toast, toastError } from '@/components/ui/toast'
 import { useConfigLock } from '@/hooks/data'
-import { validateActivity, validateBindings, type Catalog } from '@/lib/activity'
+import { parseTrigger, validateActivity, validateBindings, type Catalog } from '@/lib/activity'
+import { SLOTS, validateSmartButtons } from '@/lib/smartButtons'
+import { buttonLabel } from '@/lib/buttons'
 import { plural, same } from '@/lib/utils'
 
-/** Something with bindings that saves as a whole: an activity, or the global buttons. */
+/** A doc with bindings: an activity, or the global buttons. */
 export type Doc = ActivityDraft | GlobalBindings
+/** Anything saved whole against a revision. */
+type Revisioned = { revision: number }
 
-/** Where a doc is cached, and how it saves and reloads. */
-export interface Store<T extends Doc> {
+/** Where a doc is cached, and how it saves, reloads, checks itself and tells two copies apart. */
+export interface Store<T extends Revisioned> {
   /** The query key of its saved copy; also the draft's identity. */
   key: string
   /** Writes it (the hub checks `revision`) and updates the caches; resolves to the saved copy. */
   save: (doc: T, revision: number) => Promise<T>
   /** The hub's current copy, to show in a conflict. */
   latest: () => Promise<T>
+  /** The client's own checks; the hub is authoritative. */
+  validate: (doc: T, catalog: Catalog) => Pick<LocalValidation, 'errors' | 'warnings'>
+  /** What differs between my draft and the copy someone else saved, one line per part. */
+  diff: (mine: T, theirs: T) => string[]
 }
 
 export const toDraft = (a: Activity): ActivityDraft => ({ id: a.id, revision: a.revision, name: a.name, startup: a.startup, shutdown: a.shutdown, bindings: a.bindings })
@@ -31,6 +39,13 @@ export const activityStore = (id: string): Store<ActivityDraft> => ({
     return toDraft(r)
   },
   latest: async () => toDraft(await api.activity(id)),
+  validate: validateActivity,
+  diff: (mine, theirs) => [
+    ...(mine.name !== theirs.name ? [`Name: “${theirs.name}” saved, “${mine.name}” here`] : []),
+    ...(!same(mine.startup, theirs.startup) ? [`Startup: ${plural(theirs.startup.length, 'step')} saved, ${mine.startup.length} here`] : []),
+    ...(!same(mine.shutdown, theirs.shutdown) ? [`Shutdown: ${plural(theirs.shutdown.length, 'step')} saved, ${mine.shutdown.length} here`] : []),
+    ...bindingsDiff(mine, theirs),
+  ],
 })
 
 export const globalStore: Store<GlobalBindings> = {
@@ -41,17 +56,40 @@ export const globalStore: Store<GlobalBindings> = {
     return r
   },
   latest: () => api.globalBindings(),
+  validate: (d, catalog) => {
+    const errors: ValidationIssue[] = []
+    const warnings: ValidationIssue[] = []
+    validateBindings(d.bindings, catalog, errors, warnings)
+    return { errors, warnings }
+  },
+  diff: bindingsDiff,
 }
 
-function validate(d: Doc, catalog: Catalog) {
-  if ('name' in d) return validateActivity(d, catalog)
-  const errors: ValidationIssue[] = []
-  const warnings: ValidationIssue[] = []
-  validateBindings(d.bindings, catalog, errors, warnings)
-  return { errors, warnings }
+export const smartStore: Store<SmartButtons> = {
+  key: 'smart-buttons',
+  save: async (d, revision) => {
+    const r = await api.replaceSmartButtons({ slots: d.slots, revision })
+    setQueryData('smart-buttons', r)
+    return r
+  },
+  latest: () => api.smartButtons(),
+  validate: validateSmartButtons,
+  diff: (mine, theirs) => {
+    const changed = SLOTS.filter((s) => !same(mine.slots[s], theirs.slots[s]))
+    return changed.length ? [`${changed.map(buttonLabel).join(', ')}: changed`] : []
+  },
 }
 
-const fresh = <T extends Doc>(key: string, doc: T) => ({ key, saved: doc, draft: doc, serverIssues: null as ValidationIssue[] | null, attempted: false })
+/** How many buttons' bindings differ. */
+function bindingsDiff(mine: Doc, theirs: Doc): string[] {
+  const keys = new Set([...Object.keys(mine.bindings), ...Object.keys(theirs.bindings)])
+  const changed = new Set([...keys].filter((k) => !same(mine.bindings[k], theirs.bindings[k])).map((k) => parseTrigger(k)?.button ?? k))
+  return changed.size ? [`Buttons: ${plural(changed.size, 'button')} ${changed.size === 1 ? 'differs' : 'differ'}`] : []
+}
+
+const NO_ISSUES = { errors: [] as ValidationIssue[], warnings: [] as ValidationIssue[] }
+
+const fresh = <T extends Revisioned>(key: string, doc: T) => ({ key, saved: doc, draft: doc, serverIssues: null as ValidationIssue[] | null, attempted: false })
 
 /**
  * The edit state of one saved doc, shared by every page that edits bindings: the draft and its saved
@@ -61,8 +99,9 @@ const fresh = <T extends Doc>(key: string, doc: T) => ({ key, saved: doc, draft:
  * `server` is the saved copy for `store.key`, or undefined while it loads; until it arrives the last
  * draft stays (`pending`). The draft starts over when the key changes, or when the saved copy gets a
  * new revision while there are no unsaved changes, so a background refetch never wipes edits.
+ * `saveKey: false` leaves Cmd/Ctrl+S to the page (one that saves several drafts in order).
  */
-export function useDraft<T extends Doc>(store: Store<T>, server: T | undefined, catalog: Catalog) {
+export function useDraft<T extends Revisioned>(store: Store<T>, server: T | undefined, catalog: Catalog, { saveKey = true }: { saveKey?: boolean } = {}) {
   const [s, setS] = useState(() => server && fresh(store.key, server))
   const dirty = !!s && !same(s.draft, s.saved)
   if (server && (!s || s.key !== store.key || (server.revision !== s.saved.revision && !dirty))) setS(fresh(store.key, server))
@@ -73,28 +112,35 @@ export function useDraft<T extends Doc>(store: Store<T>, server: T | undefined, 
   const keyNow = useRef(store.key)
   useEffect(() => void (keyNow.current = store.key))
 
-  const local = useMemo(() => (s ? validate(s.draft, catalog) : { errors: [], warnings: [] }), [s?.draft, catalog]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Only the store's own draft: until the next set loads, the last one (another kind of doc) stays on show.
+  const local = useMemo(() => (s && s.key === store.key ? store.validate(s.draft, catalog) : NO_ISSUES), [s?.draft, s?.key, store, catalog]) // eslint-disable-line react-hooks/exhaustive-deps
   const showErrors = !!s && (s.attempted || s.serverIssues !== null)
   const errors = showErrors ? (s.serverIssues ?? local.errors) : []
   const canSave = !!s && dirty && !busy && !pending && !lock.locked
 
-  const update = (patch: Partial<T>) => setS((x) => x && { ...x, draft: { ...x.draft, ...patch }, serverIssues: null })
+  /** A patch, or one made from the latest draft (for edits that land after an await). */
+  const update = (patch: Partial<T> | ((draft: T) => Partial<T>)) => setS((x) => x && { ...x, draft: { ...x.draft, ...(typeof patch === 'function' ? patch(x.draft) : patch) }, serverIssues: null })
 
-  const save = async (overwriteRevision?: number) => {
-    if (!s || pending) return
+  /**
+   * Saves the draft (as `prepare` makes it, if given); resolves to whether the hub took it. A refusal (a
+   * conflict, the hub's or the client's checks) shows here and resolves false.
+   */
+  const save = async ({ revision, prepare }: { revision?: number; prepare?: (draft: T) => T } = {}): Promise<boolean> => {
+    if (!s || pending) return false
     const at = s.key
-    const draft = s.draft
+    const draft = prepare ? prepare(s.draft) : s.draft
     setS((x) => x && { ...x, attempted: true })
-    if (local.errors.length) return
+    if (local.errors.length) return false
     setBusy(true)
     try {
-      const r = await store.save(draft, overwriteRevision ?? s.saved.revision)
+      const r = await store.save(draft, revision ?? s.saved.revision)
       // The picker may have moved on while this saved; only the doc it saved takes the result.
       setS((x) => (x?.key === at ? fresh(at, r) : x))
       setConflict(null)
       toast('Saved', { variant: 'success' })
+      return true
     } catch (e) {
-      if (keyNow.current !== at) return
+      if (keyNow.current !== at) return false
       if (e instanceof ApiError && e.code === 'revision_conflict') {
         // The 409 only carries current_revision; fetch the hub's copy to show what changed.
         try {
@@ -109,10 +155,14 @@ export function useDraft<T extends Doc>(store: Store<T>, server: T | undefined, 
       } else {
         toastError('Couldn’t save', e)
       }
+      return false
     } finally {
       setBusy(false)
     }
   }
+
+  /** Drop unsaved changes (back to the saved copy). */
+  const discard = () => setS((x) => x && fresh(x.key, x.saved))
 
   const loadTheirs = () => {
     if (!conflict) return
@@ -122,6 +172,8 @@ export function useDraft<T extends Doc>(store: Store<T>, server: T | undefined, 
     toast('Loaded the latest version')
   }
 
+  const conflictDiff = useMemo(() => (s && conflict ? store.diff(s.draft, conflict) : []), [s?.draft, conflict]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Unsaved-changes guard for tab close / reload.
   useEffect(() => {
     if (!dirty) return
@@ -130,26 +182,13 @@ export function useDraft<T extends Doc>(store: Store<T>, server: T | undefined, 
     return () => removeEventListener('beforeunload', h)
   }, [dirty])
 
-  // Cmd/Ctrl+S saves. The listener is attached once and reads the latest state through a ref.
-  const onSaveKey = useRef<() => void>(() => {})
-  useEffect(() => {
-    onSaveKey.current = () => canSave && void save()
-  })
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
-        e.preventDefault()
-        onSaveKey.current()
-      }
-    }
-    addEventListener('keydown', h)
-    return () => removeEventListener('keydown', h)
-  }, [])
+  useSaveKey(() => saveKey && canSave && void save())
 
   return {
     /** The draft being edited, or undefined before the first load. */
     draft: s?.draft,
     update,
+    discard,
     dirty,
     pending,
     busy,
@@ -160,6 +199,22 @@ export function useDraft<T extends Doc>(store: Store<T>, server: T | undefined, 
     /** True once a Save was tried: errors show from then on. */
     showErrors,
     save,
-    conflict: { mine: s?.draft, theirs: conflict, close: () => setConflict(null), loadTheirs, overwrite: () => conflict && void save(conflict.revision) },
+    conflict: { diff: conflictDiff, open: !!conflict, close: () => setConflict(null), loadTheirs, overwrite: () => conflict && void save({ revision: conflict.revision }) },
   }
+}
+
+/** Cmd/Ctrl+S runs `onSave`. The listener is attached once and calls the latest `onSave` through a ref. */
+export function useSaveKey(onSave: () => void) {
+  const latest = useRef(onSave)
+  useEffect(() => void (latest.current = onSave))
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault()
+        latest.current()
+      }
+    }
+    addEventListener('keydown', h)
+    return () => removeEventListener('keydown', h)
+  }, [])
 }

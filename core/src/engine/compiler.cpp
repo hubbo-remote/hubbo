@@ -7,6 +7,7 @@
 #include "hubbo/domain/ids.h"
 #include "hubbo/domain/system.h"
 #include "hubbo/domain/trigger.h"
+#include "hubbo/engine/smart_actions.h"
 #include "hubbo/ha/capabilities.h"
 
 namespace hubbo {
@@ -270,12 +271,33 @@ public:
                 unpairedHolds(*table, button, *paths[t]);
                 continue;
             }
-            const ActionSpan &span = table->at(button, kind);
-            for (uint8_t i = 0; i < span.count; i++) {
-                const CompiledAction &hold = actions_[span.offset + i];
-                if (hold.command == nullptr || hold.command->effect != CommandEffect::Hold) continue;
-                report_.add(ErrorCode::HoldNotAllowed, *paths[t] + "/" + std::to_string(i) + "/command_id");
+            rejectHolds(table->at(button, kind), *paths[t]);
+        }
+    }
+
+    // Smart buttons: a slot's device must be registered; its actions are
+    // derived from the device (smart_actions.h) and compiled as bindings
+    // (a transition only last) with no hold-effect command, since nothing
+    // pairs its release. A device that doesn't compile gives no actions:
+    // its own issue is reported under /devices.
+    void smartButtons(const SmartButtonsSpec &spec, const std::string &prefix, CompiledSmartSlot *out) {
+        for (size_t s = 0; s < kSmartSlotCount; s++) {
+            const std::optional<std::string> &deviceId = spec.slots[s];
+            if (!deviceId) continue;
+            const std::string path = prefix + "/slots/" + smartSlotName(static_cast<SmartSlot>(s));
+            const bool valid = isValidId(*deviceId);
+            const int index = valid ? indexOfId(config_->devices, *deviceId) : -1;
+            if (index < 0) {
+                report_.add(valid ? ErrorCode::UnknownDevice : ErrorCode::InvalidId, path);
+                continue;
             }
+            const DeviceInfo &info = info_[static_cast<size_t>(index)];
+            if (!info.valid) continue;
+            const SmartSlotActions actions =
+                smartSlotActions(config_->devices[static_cast<size_t>(index)], info.catalog);
+            smartPress(actions.button, path + "/button", false, &out[s].at(SmartPress::Button));
+            smartPress(actions.plus, path + "/plus", true, &out[s].at(SmartPress::Plus));
+            smartPress(actions.minus, path + "/minus", true, &out[s].at(SmartPress::Minus));
         }
     }
 
@@ -319,6 +341,40 @@ public:
     }
 
 private:
+    // + and - (`merges`): each tap action's int `step` param is marked, so
+    // quick taps can go as one call (the engine's tap merge).
+    void smartPress(const SmartPressActions &press, const std::string &prefix, bool merges, CompiledSmartPress *out) {
+        smartList(press.tap, prefix + "/tap", &out->tap);
+        // One action (as derived): the engine's merge copies just that one.
+        for (uint8_t i = 0; merges && out->tap.count == 1 && i < out->tap.count; i++) {
+            CompiledAction &action = actions_[out->tap.offset + i];
+            if (action.command == nullptr) continue;
+            for (uint8_t p = 0; p < action.command->paramCount; p++) {
+                const ParamSpec &spec = action.command->params[p];
+                if (spec.type == ParamType::Int && std::string_view(spec.name) == "step") {
+                    action.stepParam = static_cast<int8_t>(p);
+                    out->merges = true;
+                }
+            }
+        }
+        smartList(press.hold, prefix + "/hold", &out->hold);
+        smartList(press.release, prefix + "/release", &out->release);
+    }
+
+    void smartList(const std::vector<ActionSpec> &actions, const std::string &path, ActionSpan *span) {
+        sequence(actions, /*isBinding=*/true, path, span);
+        rejectHolds(*span, path);
+    }
+
+    // A hold command where no :up binding pairs its release.
+    void rejectHolds(const ActionSpan &span, const std::string &path) {
+        for (uint8_t i = 0; i < span.count; i++) {
+            const CompiledAction &hold = actions_[span.offset + i];
+            if (hold.command == nullptr || hold.command->effect != CommandEffect::Hold) continue;
+            report_.add(ErrorCode::HoldNotAllowed, path + "/" + std::to_string(i) + "/command_id");
+        }
+    }
+
     // system.activate/off are allowed only as the last action of a binding;
     // hold commands only in bindings (checked in bindings()).
     void sequence(const std::vector<ActionSpec> &actions, bool isBinding, const std::string &prefix,
@@ -475,6 +531,7 @@ std::unique_ptr<CompiledConfig> compileConfig(const ConfigSpec &config, const Ad
         compiler.activity(a, path, &out->activities[i]);
     }
     compiler.bindings(config.globalBindings, "/global_bindings", &out->globals);
+    compiler.smartButtons(config.smartButtons, "/smart_buttons", out->smartSlots);
     compiler.finish();
 
     if (!r.ok()) {

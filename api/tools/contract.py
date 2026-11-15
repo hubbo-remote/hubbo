@@ -1306,11 +1306,136 @@ def ha_action_flow(c):
                 ("binding data names a target", {"call": {"service": "webostv.button", "data": {"device_id": "x"}}},
                  "forbidden_param", "/bindings/info:tap/0/call/data/device_id"),
                 ("binding service of another integration", {"call": {"service": "hassio.host_shutdown"}},
-                 "forbidden_param", "/bindings/info:tap/0/call/service")):
+                 "forbidden_param", "/bindings/info:tap/0/call/service"),
+                # 10 levels, the request limit: still parsed, so too_deep at its path.
+                ("binding data too deep", {"call": {"service": "webostv.button", "data": deep}},
+                 "too_deep", "/bindings/info:tap/0/call/data")):
             refused_at(c, label, bind(dict(act, **extra)), code, at, **put)
         stray = {"integration_id": "system", "device_id": None, "command_id": "off", "params": {}, "call": info}
         refused_at(c, "call on another command, in a binding", bind(stray), "unknown_field",
                    "/bindings/info:tap/0/call", **put)
+
+
+def command_ids(press):
+    """A press as {list: [command_id(:step)]}, for short messages."""
+    out = {}
+    for key in ("tap", "hold", "release"):
+        out[key] = [a["command_id"] + (f":{a['params']['step']}" if "step" in a["params"] else "")
+                    for a in press[key]]
+    return out
+
+
+def smart_buttons_flow(c):
+    """The four slots: as seeded with their derived actions, a replace and
+    its actions, revision conflicts, an unknown device, a slot's device
+    refused deletion, and selected_slot. persistence_flow restores a backup
+    without smart_buttons (four empty slots)."""
+    _, sb, _ = c.call("getSmartButtons", "GET", "/smart-buttons", expect=200)
+    if not sb:
+        return
+    seeded = fixture("smart_buttons/get.json")
+    expect({k: sb[k] for k in ("slots", "actions")} == {k: seeded[k] for k in ("slots", "actions")},
+           f"smart buttons as seeded: {diff(sb, seeded)}")
+    _, st, _ = c.call("getStatus", "GET", "/status", expect=200, label="selected slot")
+    expect(st and st.get("selected_slot") == "light_1", f"selected_slot after boot: {st and st.get('selected_slot')}")
+
+    for name in sorted(os.listdir(os.path.join(FIXTURES, "smart_buttons"))):
+        if not name.startswith("actions."):
+            continue
+        dev_id = name[len("actions."):-len(".json")]
+        _, got, _ = c.call("getSmartButtonActions", "GET", f"/smart-buttons/actions?device_id={dev_id}",
+                           expect=200, label=f"preview for {dev_id}")
+        want = fixture(f"smart_buttons/{name}")
+        expect(got == want, f"preview for {dev_id}: {diff(got, want)}")
+    c.call("getSmartButtonActions", "GET", "/smart-buttons/actions?device_id=dev_nope", expect=404,
+           label="preview for a missing device")
+    _, e, _ = c.call("getSmartButtonActions", "GET", "/smart-buttons/actions", expect=422,
+                     label="preview without a device")
+    expect(("required", "/device_id") in [(d["code"], d["path"]) for d in error_details(e)],
+           f"preview without a device: {e}")
+
+    body = dict(fixture("smart_buttons/replace.request.json"), revision=sb["revision"])
+    _, put, _ = c.call("replaceSmartButtons", "PUT", "/smart-buttons", body, expect=200)
+    current = put["revision"] if put else sb["revision"] + 1
+    want = fixture("smart_buttons/replace.json")
+    expect(put and put["slots"] == body["slots"] and put["actions"] == want["actions"]
+           and current > sb["revision"], f"replaced smart buttons: {put and diff(put, want)}")
+    _, conflict, _ = c.call("replaceSmartButtons", "PUT", "/smart-buttons", body, expect=409,
+                            label="stale smart buttons")
+    expect(error_code(conflict) == "revision_conflict" and conflict["error"].get("current_revision") == current,
+           f"stale smart buttons: {conflict}")
+    put_op = {"path": "/smart-buttons", "op": "replaceSmartButtons", "method": "PUT"}
+    refused_at(c, "a slot with an unknown device", {"revision": current, "slots": dict(body["slots"], light_2="dev_nope")},
+               "unknown_device", "/slots/light_2", **put_op)
+    refused_at(c, "actions sent back (read-only)", dict(body, revision=current, actions=put["actions"] if put else {}),
+               "unknown_field", "/actions", **put_op)
+
+    lights = body["slots"]["light_1"]
+    _, dev, _ = c.call("getDevice", "GET", f"/devices/{lights}", expect=200, label="a slot's device")
+    if dev:
+        _, e, _ = c.call("deleteDevice", "DELETE", f"/admin/devices/{lights}?revision={dev['revision']}",
+                         expect=409, label="delete a slot's device")
+        expect(error_code(e) == "device_in_use"
+               and "/smart_buttons/slots/light_1" in [d["path"] for d in error_details(e)],
+               f"delete a slot's device: {e}")
+    c.call("replaceSmartButtons", "PUT", "/smart-buttons", {"slots": sb["slots"], "revision": current},
+           expect=200, label="smart buttons back as seeded")
+
+    _, backup, _ = c.call("downloadBackup", "GET", "/admin/backup", expect=200, label="backup for smart buttons")
+    expect((backup or {}).get("smart_buttons", {}).get("slots") == seeded["slots"],
+           "the backup carries the smart buttons' slots")
+
+
+def new_domain_actions(c, entity_id, dev):
+    """Actions by kind on a registered newer-domain device, set in Light 2:
+    the cover with a position steps it, and a kind decides whatever the
+    domain (an input_boolean as a switch, then as a light without
+    brightness). Light 2 is empty again after, so the device can go."""
+    if entity_id not in ("cover.office_blinds", "input_boolean.guest_mode"):
+        return
+    _, sb, _ = c.call("getSmartButtons", "GET", "/smart-buttons", expect=200, label=f"{entity_id} in Light 2")
+    if not sb:
+        return
+    _, put, _ = c.call("replaceSmartButtons", "PUT", "/smart-buttons",
+                       {"slots": dict(sb["slots"], light_2=dev["id"]), "revision": sb["revision"]},
+                       expect=200, label=f"{entity_id} in Light 2")
+    if not put:
+        return
+
+    def slot_actions(label):
+        _, got, _ = c.call("getSmartButtons", "GET", "/smart-buttons", expect=200, label=label)
+        return {p: command_ids(got["actions"]["light_2"][p]) for p in ("button", "plus", "minus")} if got else {}
+
+    if entity_id == "cover.office_blinds":
+        got = slot_actions("actions for a cover")
+        want = {"button": {"tap": ["cover.open_cover"], "hold": ["cover.close_cover"], "release": []},
+                "plus": {"tap": ["cover.position_step:10"], "hold": ["cover.open_cover"],
+                         "release": ["cover.stop_cover"]},
+                "minus": {"tap": ["cover.position_step:-10"], "hold": ["cover.close_cover"],
+                          "release": ["cover.stop_cover"]}}
+        expect(got == want, f"actions for a cover: {got}")
+        # Change position reads current_position (the fake's starts at 50).
+        path = f"/devices/{dev['id']}/commands/cover.position_step/execute"
+        _, r, _ = c.call("executeCommand", "POST", path, {"params": {"step": 10}}, expect=200, label="change position")
+        expect((r or {}).get("status") == "accepted", f"change position: {r}")
+        _, reply = c.host_call("POST", "/sim/ha")
+        last = (reply or {}).get("last_call")
+        want_call = {"service": "cover.set_cover_position", "entity_id": entity_id, "data": {"position": 60}}
+        expect(last == want_call, f"change position sent {last}, want {want_call}")
+    else:
+        got = slot_actions("actions for another kind")
+        expect(all(not any(p.values()) for p in got.values()), f"an `other` device gets empty presses: {got}")
+        rev = dev["revision"]
+        for kind in ("switch", "light"):
+            _, upd, _ = c.call("updateDevice", "PUT", f"/admin/devices/{dev['id']}", {"kind": kind, "revision": rev},
+                               expect=200, label=f"guest mode as a {kind}")
+            rev = upd["revision"] if upd else rev
+            got = slot_actions(f"actions for an input_boolean as a {kind}")
+            expect(got.get("button", {}).get("tap") == ["input_boolean.turn_on"] and not any(got.get("plus", {}).values()),
+                   f"an input_boolean as a {kind}: {got}")
+        dev["revision"] = rev
+    c.call("replaceSmartButtons", "PUT", "/smart-buttons", {"slots": sb["slots"], "revision": put["revision"]},
+           expect=200, label=f"Light 2 empty again after {entity_id}")
 
 
 # One made-up entity per newer domain (gen_fixtures.py NEW_DOMAIN_ENTITIES);
@@ -1348,6 +1473,7 @@ def new_domains_flow(c):
         expect_fixture_commands(entity_id, caps, f"integrations/ha_main.entities/{name}")
         if entity_id.startswith("remote."):
             remote_action(c, dev["id"], entity_id)
+        new_domain_actions(c, entity_id, dev)
         c.call("deleteDevice", "DELETE", f"/admin/devices/{dev['id']}?revision={dev['revision']}", expect=204,
                label=f"remove {entity_id}")
 
@@ -1543,6 +1669,7 @@ def noauth(c, checker):
     registry_flow(c)
     execute_flow(c)
     activity_flow(c)
+    smart_buttons_flow(c)
     remote_flow(c)
     ble_pairing_flow(c)
     candidate = ha_flow(c)
@@ -1633,6 +1760,7 @@ def auth_mode(c, checker):
         _, token, _ = c.call("createToken", "POST", "/admin/tokens", {"name": "contract agent"}, expect=201)
         registry_flow(c)
         activity_flow(c)
+        smart_buttons_flow(c)
         remote_flow(c)
         ble_pairing_flow(c)
         ha_flow(c)
@@ -1726,6 +1854,7 @@ def snapshot(c):
     state = {}
     state["activities"] = c.call("listActivities", "GET", "/activities", expect=200)[1]
     state["global_bindings"] = c.call("getGlobalBindings", "GET", "/global-bindings", expect=200)[1]
+    state["smart_buttons"] = c.call("getSmartButtons", "GET", "/smart-buttons", expect=200)[1]
     state["integrations"] = c.call("listIntegrations", "GET", "/integrations", expect=200)[1]
     devices = c.call("listDevices", "GET", "/devices", expect=200)[1] or {"devices": []}
     state["devices"] = devices
@@ -1956,6 +2085,15 @@ def persistence_flow(c, hub, relogin=None):
     no_ble = fixture("admin/backup.json")
     no_ble["integrations"] = [i for i in no_ble["integrations"] if i["id"] != "ble"]
     restore_agrees(c, no_ble, "backup without the built-in ble integration", 200)
+    # A backup without smart_buttons restores to four empty slots. (Here, not
+    # in smart_buttons_flow: a restore drops the Bluetooth bonds later flows
+    # compare.)
+    older = {k: x for k, x in fixture("admin/backup.json").items() if k != "smart_buttons"}
+    restore_agrees(c, older, "backup without smart_buttons", 200)
+    _, empty, _ = c.call("getSmartButtons", "GET", "/smart-buttons", expect=200, label="after an older restore")
+    four_empty = fixture("admin/backup.empty.json")["smart_buttons"]["slots"]
+    expect(empty and empty["slots"] == four_empty,
+           f"a restore without smart_buttons leaves four empty slots: {empty and diff(empty['slots'], four_empty)}")
     huge = fixture("admin/backup.json")
     for n in range(11):  # 11 x 192 triggers > limits::kMaxCompiledActions (2048)
         huge["activities"].append({

@@ -16,10 +16,11 @@ struct CommandDef {
     const char *label;
     const char *domain;   // HA service domain
     const char *service;  // HA service
-    // A bool state attribute HA has no toggle for: read at press time
-    // (stateAttribute()) and sent back negated under the same key.
+    // A state attribute read at press time (stateAttribute()), used as
+    // `stateUse` says.
     const char *stateAttribute = nullptr;
     const char *group = nullptr;  // CommandSpec::group
+    StateUse stateUse = StateUse::Toggle;
 };
 
 namespace {
@@ -66,6 +67,8 @@ constexpr CommandDef kCommands[] = {
     {"cover.stop_cover", "Stop", "cover", "stop_cover"},
     {"cover.toggle", "Toggle", "cover", "toggle"},
     {"cover.set_cover_position", "Set position", "cover", "set_cover_position"},
+    {"cover.position_step", "Change position", "cover", "set_cover_position", "current_position", nullptr,
+     StateUse::Step},
     {"cover.open_cover_tilt", "Open tilt", "cover", "open_cover_tilt"},
     {"cover.close_cover_tilt", "Close tilt", "cover", "close_cover_tilt"},
     {"cover.stop_cover_tilt", "Stop tilt", "cover", "stop_cover_tilt"},
@@ -128,6 +131,7 @@ struct CommandDraft {
     std::vector<ParamDraft> params;
     const char *stateAttribute = nullptr;  // allowlist columns (CommandDef)
     const char *group = nullptr;
+    StateUse stateUse = StateUse::Toggle;
 };
 
 // Collects the commands an entity gets: allowlist ids, then snapshot services.
@@ -136,7 +140,9 @@ struct Drafts {
 
     CommandDraft &add(const char *id, std::vector<ParamDraft> params = {}) {
         const CommandDef *def = findDef(id);
-        items.push_back({def->id, def->domain, def->service, std::move(params), def->stateAttribute, def->group});
+        items.push_back(
+            {def->id, def->domain, def->service, std::move(params), def->stateAttribute, def->group,
+             def->stateUse});
         return items.back();
     }
 };
@@ -240,8 +246,11 @@ void light(const EntityInfo &e, Drafts &out) {
 
 // An int percentage (HA: Coerce(int), 0..100 or the entity's range); a
 // fan's `step` from fanSpeedStep().
-ParamDraft percentParam(const char *name, bool required, int32_t step = 0, int32_t lo = 0, int32_t hi = 100) {
-    return {ParamSpec::integer(name, lo, hi, required).described(nullptr, "%", static_cast<float>(step)), name, {}};
+// `field`: the HA data key, if not `name`.
+ParamDraft percentParam(const char *name, bool required, int32_t step = 0, int32_t lo = 0, int32_t hi = 100,
+                        const char *field = nullptr) {
+    return {ParamSpec::integer(name, lo, hi, required).described(nullptr, "%", static_cast<float>(step)),
+            field != nullptr ? field : name, {}};
 }
 
 void fanEntity(const EntityInfo &e, Drafts &out) {
@@ -284,7 +293,12 @@ void coverEntity(const EntityInfo &e, Drafts &out) {
     if (has(f, c::kClose)) out.add("cover.close_cover");
     if (has(f, c::kStop)) out.add("cover.stop_cover");
     if (has(f, c::kOpen | c::kClose)) out.add("cover.toggle");
-    if (has(f, c::kSetPosition)) out.add("cover.set_cover_position", {percentParam("position", true)});
+    if (has(f, c::kSetPosition)) {
+        out.add("cover.set_cover_position", {percentParam("position", true)});
+        // Reads current_position at press time (none: state_unavailable,
+        // nothing sent) and sends the new `position`.
+        out.add("cover.position_step", {percentParam("step", true, 0, -100, 100, "position")});
+    }
     if (has(f, c::kOpenTilt)) out.add("cover.open_cover_tilt");
     if (has(f, c::kCloseTilt)) out.add("cover.close_cover_tilt");
     if (has(f, c::kStopTilt)) out.add("cover.stop_cover_tilt");
@@ -448,6 +462,8 @@ EntityDomain entityDomain(std::string_view id) {
     if (!isValidEntityId(id)) return EntityDomain::Unsupported;
     return domainNamed(id.substr(0, id.find('.')));
 }
+
+std::string_view entityDomainName(std::string_view entityId) { return entityId.substr(0, entityId.find('.')); }
 
 EntityDomain domainNamed(std::string_view domain) {
     for (size_t i = 0; i < std::size(kEntityDomains); i++) {
@@ -632,6 +648,7 @@ EntityCapabilities EntityCapabilities::build(std::string_view entityId, Drafts d
         command.service = caps.keep(std::move(draft.service));
         command.stateAttribute = draft.stateAttribute;
         command.group = draft.group;
+        command.stateUse = draft.stateUse;
         caps.owned_.push_back(command);
         caps.firstParam_.push_back(caps.params_.size());
         for (auto &param : draft.params) {
@@ -743,7 +760,18 @@ ErrorCode EntityCapabilities::buildServiceCall(uint16_t index, const ParamValue 
         }
         call.data.push_back(std::move(field));
     }
-    if (const char *attribute = owned_[index].stateAttribute) {
+    const char *attribute = owned_[index].stateAttribute;
+    if (attribute != nullptr && owned_[index].stateUse == StateUse::Step) {
+        // A step: the one param (required) plus the current value, clamped
+        // to 0..100 (a percentage), sent under the param's own key.
+        if (state == nullptr || (state->kind != ServiceValue::Kind::Int && state->kind != ServiceValue::Kind::Number)) {
+            return ErrorCode::StateUnavailable;
+        }
+        const double current = state->kind == ServiceValue::Kind::Int ? state->integer : std::round(state->number);
+        if (!(current >= -1e6 && current <= 1e6)) return ErrorCode::StateUnavailable;  // NaN too
+        ServiceValue &value = call.data.front().value;
+        value.integer = static_cast<int32_t>(std::clamp(current + value.integer, 0.0, 100.0));
+    } else if (attribute != nullptr) {
         // A toggle: the opposite of the current value. Unknown or not a bool
         // counts as false, so the first press turns it on (mutes).
         const bool current = state != nullptr && state->kind == ServiceValue::Kind::Bool && state->boolean;

@@ -1,0 +1,9 @@
+{
+  "slots": {
+    "light_1": "dev_family_room_lights",
+    "light_2": null,
+    "switch_1": null,
+    "switch_2": "dev_lg_tv"
+  },
+  "revision": 7
+}

@@ -66,7 +66,8 @@ void HomeAssistantAdapter::service() {
                 // The read and the call share kCommandTimeoutMs.
                 const uint64_t spent = client_.nowMs() - readAt;
                 if (spent >= HomeAssistantClient::kCommandTimeoutMs) return finish(call.ticket, ErrorCode::AdapterTimeout);
-                // A failed or timed-out read still sends, as unknown.
+                // A failed or timed-out read still sends, as unknown (a toggle
+                // mutes; a step refuses: StateUnavailable).
                 send(call, *caps, result == ErrorCode::Ok && value ? &*value : nullptr,
                      static_cast<uint32_t>(HomeAssistantClient::kCommandTimeoutMs - spent));
             });
@@ -79,7 +80,11 @@ void HomeAssistantAdapter::send(const Call &call, const ha::EntityCapabilities &
     ha::ServiceCall serviceCall;
     const ErrorCode built = HaCatalogs::buildCall(capabilities, call.commandIndex, call.params, call.paramsPresent,
                                                   call.custom.get(), state, &serviceCall);
-    if (built != ErrorCode::Ok) return finish(call.ticket, ErrorCode::AdapterFailed);
+    // A stepped command with no current state (a cover's unknown position)
+    // sends nothing and says why; anything else is the adapter's fault.
+    if (built != ErrorCode::Ok) {
+        return finish(call.ticket, built == ErrorCode::StateUnavailable ? built : ErrorCode::AdapterFailed);
+    }
     const Ticket ticket = call.ticket;
     const ErrorCode sent = client_.callService(
         serviceCall, [this, ticket](ErrorCode result) { finish(ticket, result); }, timeoutMs);

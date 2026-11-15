@@ -366,6 +366,15 @@
     },
     "revision": 6
   },
+  "smart_buttons": {
+    "slots": {
+      "light_1": "dev_family_room_lights",
+      "light_2": null,
+      "switch_1": null,
+      "switch_2": null
+    },
+    "revision": 7
+  },
   "activities": [
     {
       "id": "act_watch_apple_tv",

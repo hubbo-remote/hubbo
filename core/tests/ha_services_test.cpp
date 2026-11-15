@@ -493,6 +493,16 @@ TEST(HaSnapshot, FanRoundTripsAndBuildsItsCommands) {
     EXPECT_GE(catalog.find("fan.set_direction"), 0);
 }
 
+TEST(HaSnapshot, AStoredCoverOffersChangePosition) {
+    // A snapshot saved before Change position existed: SET_POSITION is enough.
+    JsonDocument doc;
+    ASSERT_FALSE(deserializeJson(doc, R"({"platform":"demo","supported_features":15,"services":[]})"));
+    CapabilitySnapshot stored;
+    ValidationReport report;
+    ASSERT_TRUE(decodeSnapshot(doc.as<JsonVariantConst>(), &stored, &report, "", "cover.office_blinds"));
+    EXPECT_GE(EntityCapabilities::fromSnapshot("cover.office_blinds", stored).catalog().find("cover.position_step"), 0);
+}
+
 TEST(HaSnapshot, NewerDomainsRoundTripAndBuildTheirCommands) {
     EntityInfo humidifier;
     humidifier.entityId = "humidifier.bedroom_humidifier";

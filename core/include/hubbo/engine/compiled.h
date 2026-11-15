@@ -46,6 +46,9 @@ struct CompiledAction {
     // of this action (executor nodes, the adapter's hand-over), so work that
     // outlives a config publish still has it. Empty for every other command.
     HaServiceCallRef call;
+    // A smart +/- tap's int `step` param (light.brightness_step,
+    // cover.position_step), which merged taps scale; -1 everywhere else.
+    int8_t stepParam = -1;
 };
 
 // One registered device command compiled for direct execution
@@ -87,6 +90,27 @@ struct CompiledActivity {
     TriggerTable table;
 };
 
+// A smart-button press (SmartPressActions): Tap, Hold and the Up after a Hold.
+struct CompiledSmartPress {
+    ActionSpan tap;
+    ActionSpan hold;
+    ActionSpan release;
+    bool merges = false;  // + or -, and a tap action has a step: quick taps merge
+
+    // Has any actions: then this press owns its button (no global binding).
+    bool set() const { return tap.count != 0 || hold.count != 0 || release.count != 0; }
+};
+
+// A slot's presses: its own button, and + and - while it's selected.
+enum class SmartPress : uint8_t { Button, Plus, Minus, Count };
+
+struct CompiledSmartSlot {
+    CompiledSmartPress presses[static_cast<size_t>(SmartPress::Count)];
+
+    CompiledSmartPress &at(SmartPress p) { return presses[static_cast<size_t>(p)]; }
+    const CompiledSmartPress &at(SmartPress p) const { return presses[static_cast<size_t>(p)]; }
+};
+
 struct CompiledConfig {
     uint32_t revision = 0;
     // Set only by an activity delete (ConfigService): if this was the active
@@ -97,6 +121,7 @@ struct CompiledConfig {
     std::vector<CompiledDevice> devices;      // sized once at compile time
     std::vector<CompiledActivity> activities;
     TriggerTable globals;
+    CompiledSmartSlot smartSlots[kSmartSlotCount];  // in SmartSlot order
     std::vector<CompiledAction> actions;      // every span points in here
 
     int findActivity(std::string_view id) const;  // index or -1 (cold path)
@@ -111,6 +136,17 @@ struct CompiledConfig {
     // reports which table answered.
     ActionSpan lookup(int activity, remote::Button button, remote::EventKind kind,
                       bool *fromGlobal = nullptr) const;
+
+    // Whether the activity binds any trigger of the button (it then owns
+    // the button: no smart button or global binding applies). -1: none.
+    bool activityBinds(int activity, remote::Button button) const;
+
+    // The smart-button press that owns `button` when the activity doesn't:
+    // a slot button's own, or `selected`'s +/-; nullptr when it has no
+    // actions (the global bindings then apply) or isn't a smart button.
+    // `slot` and `press` (optional) say which it is.
+    const CompiledSmartPress *smartPress(remote::Button button, SmartSlot selected, SmartSlot *slot = nullptr,
+                                         SmartPress *press = nullptr) const;
 };
 
 }  // namespace hubbo

@@ -214,6 +214,11 @@ void SimulatedBleHosts::record(std::string_view deviceId, std::string report) {
 
 void FakeHomeAssistant::addEntity(const ha::EntityInfo &entity) {
     entities_[entity.entityId] = &catalogs_.keep(ha::EntityCapabilities::fromEntity(entity));
+    if (ha::entityDomain(entity.entityId) == ha::EntityDomain::Cover) {  // half open, as the fake server's
+        ha::ServiceValue position;
+        position.integer = kFakeCoverPosition;
+        state_[entity.entityId]["current_position"] = position;
+    }
 }
 
 CommandCatalog FakeHomeAssistant::commandsFor(const DeviceSpec &device) const {
@@ -263,6 +268,12 @@ ExecResult FakeHomeAssistant::execute(const ExecRequest &request) {
     }
     if (result.status == ExecStatus::Accepted) {  // HA applied it
         for (const auto &field : call.data) state_[call.entityId][field.key] = field.value;
+        // A cover reports the position it was sent as its current_position.
+        if (call.domain == "cover" && call.service == "set_cover_position") {
+            if (const ha::ServiceValue *position = attribute(call.entityId, "position")) {
+                state_[call.entityId]["current_position"] = *position;
+            }
+        }
     }
     if (latencyMs_ == 0) return result;
     delayed_.push_back({request.ticket, request.nowMs + latencyMs_, result});

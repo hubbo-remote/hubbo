@@ -48,7 +48,8 @@
 namespace hubbo {
 
 enum class Lane : uint8_t { Transition, Input, Count };
-enum class SequenceOrigin : uint8_t { Startup, Shutdown, Binding, GlobalBinding, Api };
+// SmartButton: a smart-button slot's press (docs/design/smart-buttons.md).
+enum class SequenceOrigin : uint8_t { Startup, Shutdown, Binding, GlobalBinding, Api, SmartButton };
 enum class SequenceOutcome : uint8_t { Completed, Failed, Cancelled, Rejected };
 
 const char *sequenceOriginName(SequenceOrigin origin);
@@ -60,7 +61,7 @@ struct SequenceInfo {
     uint32_t id = 0;  // assigned by enqueue()
     Lane lane = Lane::Input;
     SequenceOrigin origin = SequenceOrigin::Binding;
-    Trigger trigger;  // Binding/GlobalBinding only
+    Trigger trigger;  // Binding/GlobalBinding/SmartButton only
     IdString activityId;  // owning activity, if any
     uint32_t generation = 0;
     uint8_t actionCount = 0;

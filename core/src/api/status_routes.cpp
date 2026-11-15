@@ -81,6 +81,7 @@ void addStatusRoutes(RouteSink &sink, ApiContext &ctx) {
         putConfigState(doc["config"].to<JsonObject>(), ctx);
         doc["auth_state"] = auth::credentialStateName(ctx.credentials.state());
         putNullableId(root, "active_activity_id", snap.activeActivityId);
+        root["selected_slot"] = smartSlotName(snap.selectedSlot);
         JsonObject network = doc["network"].to<JsonObject>();
         network["link"] = snap.linkUp ? "up" : "down";
         if (!snap.ip.empty()) network["ip"] = snap.ip;

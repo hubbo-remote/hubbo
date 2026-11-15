@@ -179,7 +179,8 @@
         "cover.close_cover",
         "cover.stop_cover",
         "cover.toggle",
-        "cover.set_cover_position"
+        "cover.set_cover_position",
+        "cover.position_step"
       ],
       "dropped_options": 0,
       "registered_device_id": null,

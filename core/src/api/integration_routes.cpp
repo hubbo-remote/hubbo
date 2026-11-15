@@ -498,7 +498,7 @@ void fillDetails(EntityDetails *out, integrations::HaEntityDetails in) {
     out->droppedOptions = offer.droppedOptions + caps.droppedOptions();
     out->uniqueId = std::move(in.uniqueId);
     out->name = std::move(in.name);
-    out->domain = std::string(in.entityId.substr(0, in.entityId.find('.')));
+    out->domain = std::string(ha::entityDomainName(in.entityId));
     out->platform = out->snapshot.platform;  // as normalized and stored ("" if invalid)
 }
 

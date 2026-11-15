@@ -25,6 +25,9 @@ import type {
   ButtonId,
   ExecuteResult,
   GlobalBindings,
+  SlotId,
+  SmartButtons,
+  SmartButtonsInput,
   Hub,
   IntegrationConfig,
   IntegrationConfigUpdate,
@@ -44,13 +47,15 @@ import type {
   FirmwareStatus,
 } from '../src/api/types.ts'
 import { BLE_MAX_DEVICES, BLE_PAIR_WINDOW_MAX_S, BLE_PAIR_WINDOW_MIN_S, BLE_PAIR_WINDOW_S, REMOTE_CHANNEL_MAX, REMOTE_SCAN_TIMEOUT_S } from '../src/api/constants.ts'
-import { forEachAction, validateActivity, validateBindings, type Catalog } from '../src/lib/activity.ts'
+import { bindsButton, forEachAction, validateActivity, validateBindings, type Catalog } from '../src/lib/activity.ts'
 import { CALL_DATA_MAX_DEPTH, CALL_SERVICE, depth } from '../src/lib/haCall.ts'
 import { addressProblem } from '../src/lib/remote.ts'
 import { GUIDE_PATH, loadDocs, sendDoc } from './docs.ts'
 import { checkFirmwareImage } from './firmware.ts'
 import { fixture, fixtureBytes, loadSeed, type Seed } from './fixtures.ts'
-import { activityShape, bindingsShape } from './shape.ts'
+import { activityShape, bindingsShape, DEVICE_ID, smartButtonsShape, unknownFields } from './shape.ts'
+import { emptySmartButtons, isSlot, SLOTS, validateSmartButtons } from '../src/lib/smartButtons.ts'
+import { noActions, slotActions } from './smartActions.ts'
 
 export interface MockRequest {
   method: string
@@ -129,13 +134,14 @@ const CONTROL = /[\x00-\x1f\x7f-\x9f]/u
 /** Sessions last 7 days, absolute (or until the hub reboots). */
 const SESSION_S = 604_800
 /** Requests refused while the config is blocked or unwritable (validate is a dry run, so it isn't one). */
-const EDITS = [/^\/activities(\/(?!validate$)[^/]+)?$/, /^\/activities\/[^/]+\/activate$/, /^\/global-bindings$/, /^\/admin\/devices/]
+const EDITS = [/^\/activities(\/(?!validate$)[^/]+)?$/, /^\/activities\/[^/]+\/activate$/, /^\/global-bindings$/, /^\/smart-buttons$/, /^\/admin\/devices/]
 const MAX_BODY = 32 * 1024
 /**
  * Like the hub's JSON reader: deeper nesting is malformed (a restore is a file, so it gets the file
- * limit). 9: an activity's call data sits 5 levels down (bindings → trigger → action → call), at its deepest.
+ * limit). 10: one past the deepest legal body (an activity's call data, 5 levels down at its deepest), so
+ * call data one level too deep reaches validation and gets `too_deep` at its path, like the hub.
  */
-const MAX_JSON_DEPTH = 5 + CALL_DATA_MAX_DEPTH
+const MAX_JSON_DEPTH = 5 + CALL_DATA_MAX_DEPTH + 1
 const MAX_FILE_DEPTH = 12
 /** The HA entity domains Hubbo offers (api/openapi.yaml), and how the hub's messages list them. */
 type HaDomain = NonNullable<NonNullable<operations['getDiscovery']['parameters']['query']>['domain']>
@@ -172,8 +178,6 @@ const BLOCKED_RECORD = 'admin/restore.blocked-raw.request.json'
 const BLOCKED_RECORD_SCHEMA = fixture<{ schema_version: number }>(BLOCKED_RECORD).schema_version
 /** An error response straight from api/fixtures/errors. */
 const fixtureError = (status: number, file: string): MockResponse => ({ status, body: fixture(file) })
-/** The hub's refusal of fields a body may not carry, at `at` (e.g. `/devices/0`). */
-const unknownFields = (keys: string[], at = '') => keys.map((k) => ({ path: `${at}/${k}`, code: 'unknown_field' as const, message: `Unknown field ${k}` }))
 
 const err = (status: number, code: ErrorCode, message: string, extra: Record<string, unknown> = {}): MockResponse => ({ status, body: { error: { code, message, ...extra } } })
 const invalid = (details: ValidationIssue[], message = details[0]?.message ?? 'Invalid request') => err(422, 'validation_failed', message, { details: details.slice(0, 32) })
@@ -244,6 +248,8 @@ export function createMock(opts: MockOptions = {}) {
   let lastEventAt: number
   /** The last remote event (POST /__mock/remote/…); the fixture's until then. */
   let lastEvent: { button: ButtonId; kind: EventKind } | null
+  /** The smart button slot + and − act on (RAM only, like the hub): Light 1 after a reboot. */
+  let selectedSlot: SlotId
   // The config generation: every committed change bumps it, and the changed
   // object's revision is that generation (api/openapi.yaml ConfigState).
   let configGen: number
@@ -314,7 +320,8 @@ export function createMock(opts: MockOptions = {}) {
     transitions = 17
     lastEventAt = Date.now() - 5230
     lastEvent = null
-    configGen = Math.max(1, db.globalBindings.revision, ...db.activities.map((a) => a.revision), ...db.devices.map((d) => d.revision), ...[...db.configs.values()].map((c) => c.revision))
+    selectedSlot = 'light_1'
+    configGen = Math.max(1, db.globalBindings.revision, db.smartButtons.revision, ...db.activities.map((a) => a.revision), ...db.devices.map((d) => d.revision), ...[...db.configs.values()].map((c) => c.revision))
     config = { state: 'ok', generation: configGen }
     if (mode.firstRun) {
       db.tokens = []
@@ -340,6 +347,7 @@ export function createMock(opts: MockOptions = {}) {
     db.activities = []
     db.activeActivityId = null
     db.globalBindings = { bindings: { 'off:tap': [{ integration_id: 'system', device_id: null, command_id: 'off', params: {} }] }, revision: configGen }
+    db.smartButtons = emptySmartButtons(configGen)
     db.discover.candidates.forEach((c) => (c.registered_device_id = null))
     const ha = db.configs.get('ha_main')!
     ha.settings = { type: 'home_assistant', url: 'http://homeassistant.local:8123', verify_tls: false, has_access_token: false }
@@ -354,6 +362,7 @@ export function createMock(opts: MockOptions = {}) {
     db.activities = db.activities.map((a) => ({ ...a, revision: g }))
     db.devices = db.devices.map((d) => ({ ...d, revision: g }))
     db.globalBindings = { ...db.globalBindings, revision: g }
+    db.smartButtons = { ...db.smartButtons, revision: g }
     for (const c of db.configs.values()) c.revision = g
     // Restore and reset never start (or stop) an activity: the active one stays only if its id survived.
     if (!db.activities.some((a) => a.id === db.activeActivityId)) db.activeActivityId = null
@@ -694,12 +703,24 @@ export function createMock(opts: MockOptions = {}) {
     return { ...db.firmware, update: { state, progress, error: fw.state === 'failed' ? fw.error : null } }
   }
 
+  /** GET /smart-buttons: the slots, and what each does with its device (derived like the hub; read-only). */
+  function smartButtons(): SmartButtons {
+    const actions = Object.fromEntries(
+      SLOTS.map((id) => {
+        const d = db.devices.find((x) => x.id === db.smartButtons.slots[id])
+        return [id, d ? slotActions(d, db.capabilities.get(d.id)?.commands ?? []) : noActions()]
+      }),
+    ) as SmartButtons['actions']
+    return { ...db.smartButtons, actions }
+  }
+
   function status(): Status {
     const s = structuredClone(db.status)
     const jitter = (v: number) => Math.round(v * (0.85 + rand() * 0.3) * 10) / 10
     s.uptime_s = db.status.uptime_s + Math.round((Date.now() - bootedAt) / 1000)
     s.time = isoNow()
     s.active_activity_id = db.activeActivityId
+    s.selected_slot = selectedSlot
     s.config = config
     s.auth_state = authState()
     s.integrations = integrations().map(({ id, type, state, detail }) => ({ id, type, state, ...(detail ? { detail } : {}) }))
@@ -889,6 +910,25 @@ export function createMock(opts: MockOptions = {}) {
       return ok(r)
     }],
     ['GET', /^\/global-bindings$/, 'token', () => ok(db.globalBindings)],
+    ['GET', /^\/smart-buttons$/, 'token', () => ok(smartButtons())],
+    ['GET', /^\/smart-buttons\/actions$/, 'token', (req) => {
+      const id = req.query.get('device_id')
+      if (!id) return invalid([{ path: '/device_id', code: 'required', message: 'Send ?device_id=' }])
+      if (!DEVICE_ID.test(id)) return invalid([{ path: '/device_id', code: 'invalid_id', message: 'device_id must be a hub device ID (dev_…)' }])
+      const d = db.devices.find((x) => x.id === id)
+      if (!d) return err(404, 'not_found', 'No such device')
+      return ok(slotActions(d, db.capabilities.get(d.id)?.commands ?? []))
+    }],
+    ['PUT', /^\/smart-buttons$/, 'token', (req) => {
+      const shape = smartButtonsShape(req.body)
+      if (shape.length) return invalid(shape)
+      const b = req.body as SmartButtonsInput
+      if (b.revision !== db.smartButtons.revision) return err(409, 'revision_conflict', 'Changed since the revision you sent; GET it again and reapply', { current_revision: db.smartButtons.revision })
+      const { errors } = validateSmartButtons(b, catalog())
+      if (errors.length) return invalid(errors, 'The smart buttons are invalid')
+      db.smartButtons = { slots: b.slots, revision: commit() }
+      return ok(smartButtons())
+    }],
     ['PUT', /^\/global-bindings$/, 'token', (req) => {
       const b = req.body as GlobalBindings
       const shape: ValidationIssue[] = []
@@ -1078,6 +1118,8 @@ export function createMock(opts: MockOptions = {}) {
       if (missing) return missing
       if (revisionOf(req) !== d.revision) return err(409, 'revision_conflict', 'Device changed since you loaded it', { current_revision: d.revision })
       const refs = references((x) => x.device_id === d.id)
+      // A slot's own device counts too (core: deleting it would leave the slot pointing at nothing).
+      for (const id of SLOTS) if (db.smartButtons.slots[id] === d.id) refs.push({ path: `/smart_buttons/slots/${id}`, code: 'referenced', message: 'Used by smart buttons' })
       if (refs.length) return err(409, 'device_in_use', 'The device is used elsewhere; remove those references first', { details: refs.slice(0, 32) })
       db.devices = db.devices.filter((x) => x.id !== d.id)
       pruneBonds() // deleting a device forgets its host
@@ -1161,6 +1203,7 @@ export function createMock(opts: MockOptions = {}) {
         devices: db.devices.map(({ availability: _a, platform: _p, ...stored }) => stored), // StoredDevice: no live state, and platform is provider.type
         activities: db.activities,
         global_bindings: db.globalBindings,
+        smart_buttons: db.smartButtons,
         integrations: [...db.configs.values()].map((c) => ({
           id: c.id,
           type: c.type,
@@ -1201,6 +1244,7 @@ export function createMock(opts: MockOptions = {}) {
         pruneBonds() // a restored device keeps its bond on this hub; others are dropped
         db.activities = b.activities.map((a) => ({ ...a, schema_version: 1 as const, revision: 0 }))
         db.globalBindings = { bindings: b.global_bindings?.bindings ?? {}, revision: 0 }
+        db.smartButtons = b.smart_buttons ? { slots: b.smart_buttons.slots, revision: 0 } : emptySmartButtons(0)
         // Integration settings come back without secrets (a backup never has the HA token). Like the
         // hub, the stored token survives only when the URL stays the same.
         for (const i of b.integrations ?? []) {
@@ -1355,6 +1399,10 @@ export function createMock(opts: MockOptions = {}) {
     ['POST', /^\/__mock\/remote\/([a-z0-9_]+)\/(press|release|tap)$/, 'public', (_req, m) => {
       const action = m[2]
       lastEvent = { button: m[1] as ButtonId, kind: action === 'press' ? 'down' : action === 'release' ? 'up' : 'tap' }
+      // A slot's button selects its slot (core: on Down, even when the slot is empty), unless the active activity owns that button.
+      const active = db.activities.find((a) => a.id === db.activeActivityId)
+      const pressed = m[1]!
+      if (action !== 'release' && isSlot(pressed) && !(active && bindsButton(active.bindings, pressed))) selectedSlot = pressed
       lastEventAt = Date.now()
       return ok()
     }],

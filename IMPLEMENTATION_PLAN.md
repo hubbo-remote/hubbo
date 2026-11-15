@@ -240,7 +240,22 @@ the Phase 4 board gate, where the user set up a wiped board on an iPhone:
 - **Fewer notes:** the UI has far too many explanatory notes and descriptions (user, 2026-11-09). Cut them down; say what matters in the controls and states themselves. This includes what a restore leaves out (HA token, Bluetooth pairing).
 
 ## Home Assistant remotes (user, 2026-11-14)
-HA's `remote` domain, added like any other domain: any `remote.*` entity is its own device. Turn on, Turn off and Toggle are typed; everything else (`remote.send_command`, ...) goes through the Home Assistant action, which on a remote also accepts `remote.*` services. Nothing else changes. Design: `docs/design/ha-remote.md`. Smart buttons is finished and stashed on `smart-buttons`, waiting for its board test.
+HA's `remote` domain, added like any other domain: any `remote.*` entity is its own device. Turn on, Turn off and Toggle are typed; everything else (`remote.send_command`, ...) goes through the Home Assistant action, which on a remote also accepts `remote.*` services. Nothing else changes. Design: `docs/design/ha-remote.md`.
+
+## Smart buttons (user, 2026-11-14; simplified 2026-11-15)
+Light 1/2 and Switch 1/2 each take a device; the hub derives what the button and +/- do from its type.
+Set on the Global remote; activities override like any button. Quick +/- step taps merge into one
+call. Also fixes boot using up internal RAM (the saved config now loads into PSRAM). Design:
+`docs/design/smart-buttons.md`.
+
+## Firmware robustness (queued, user 2026-11-14)
+Found on a second board whose nRF24 lacked its capacitor: after a power-related reset the hub kept
+running (remote, Bluetooth) but never came back on the network.
+- **Retry Ethernet start:** `EthernetLink::begin` tries `ETH.begin` once at boot. If the W5500 doesn't
+  answer, the hub stays off the network until a power cycle. Retry every few seconds until it starts.
+- **Show why the hub last reset:** today the reset reason is only on the serial console. Keep it (and
+  the time since boot) somewhere the web admin can show, so a brownout or crash can be diagnosed
+  without a cable.
 
 ## Post-MVP backlog
 - **Parallel e2e:** one hub per Playwright worker (a mock per worker, or a hub-sim port per worker), so e2e can run with several workers or shards. Today it's `workers: 1` against one shared hub.

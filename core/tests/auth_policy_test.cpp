@@ -50,7 +50,8 @@ TEST(AuthPolicy, RoleMatrix) {
         "getStatus", "getRemoteStatus", "listRemoteButtons", "listDevices", "getDevice",
         "getDeviceCapabilities", "executeCommand", "listActivities", "createActivity",
         "validateActivity", "activitiesOff", "getActivity", "replaceActivity", "deleteActivity",
-        "activateActivity", "getGlobalBindings", "replaceGlobalBindings", "listIntegrations",
+        "activateActivity", "getGlobalBindings", "replaceGlobalBindings", "getSmartButtons",
+        "replaceSmartButtons", "getSmartButtonActions", "listIntegrations",
     };
     const char *adminOnly[] = {
         "listProfiles", "getProfile", "listKinds",

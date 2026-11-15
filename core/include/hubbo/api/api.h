@@ -44,6 +44,7 @@ namespace hubbo::api {
 struct RuntimeSnapshot {
     uint64_t uptimeMs = 0;
     std::string activeActivityId;  // "" = none
+    SmartSlot selectedSlot = SmartSlot::Light1;  // what +/- act on (Engine::selectedSlotShared())
     bool linkUp = true;
     std::string ip;
 

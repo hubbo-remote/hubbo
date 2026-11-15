@@ -52,3 +52,18 @@ export function actionText(a: Action, cat: Catalog): string {
   const p = actionParts(a, cat)
   return `${p.device ? `${p.device} → ` : ''}${p.command}${p.summary ? ` ${p.summary}` : ''}`
 }
+
+/**
+ * An action in plain words: "Change brightness" with "+10%" reads "Brightness up 10%"; anything else is its
+ * command and settings ("Open", "Increase speed").
+ */
+export function plainAction(a: Action, cat: Catalog): string {
+  const p = actionParts(a, cat)
+  const step = /^([+−])(\d+%)$/.exec(p.summary)
+  const noun = /^change (.+)$/i.exec(p.command)?.[1]
+  if (step && noun) return `${noun[0]!.toUpperCase()}${noun.slice(1)} ${step[1] === '+' ? 'up' : 'down'} ${step[2]}`
+  return p.summary ? `${p.command} ${p.summary}` : p.command
+}
+
+/** Several actions in plain words, in order: "Turn on, then Brightness up 10%". */
+export const plainActions = (list: Action[], cat: Catalog) => list.map((a) => plainAction(a, cat)).join(', then ')

@@ -14,6 +14,8 @@ import type {
   ExecuteResult,
   FirmwareStatus,
   GlobalBindings,
+  SmartButtons,
+  SmartButtonsInput,
   Integration,
   IntegrationConfig,
   Kind,
@@ -45,6 +47,8 @@ export interface Seed {
   activities: Activity[]
   activeActivityId: string | null
   globalBindings: GlobalBindings
+  /** Stored: each slot's device; GET derives the actions. */
+  smartButtons: SmartButtonsInput
   tokens: TokenSummary[]
   /** The entities a discovery finds (fixture: integrations/ha_main.discovery.json). */
   discover: { candidates: DiscoverCandidate[] }
@@ -64,6 +68,9 @@ export interface Seed {
 
 const ENTITIES = 'integrations/ha_main.entities'
 const CAPS = '.capabilities.json'
+
+/** What the hub stores of GET /smart-buttons: the slots (it derives the actions). */
+const storedSmartButtons = ({ slots, revision }: SmartButtons): SmartButtonsInput => ({ slots, revision })
 
 export function loadSeed(): Seed {
   const devices = fixture<{ devices: { id: string }[] }>('devices/list.json').devices.map((d) => fixture<DeviceDetail>(`devices/${d.id}.json`))
@@ -86,6 +93,7 @@ export function loadSeed(): Seed {
     activities: acts.activities,
     activeActivityId: null, // a freshly started hub (like hub-sim) has no active activity
     globalBindings: fixture('activities/global_bindings.json'),
+    smartButtons: storedSmartButtons(fixture('smart_buttons/get.json')),
     tokens: fixture<{ tokens: TokenSummary[] }>('admin/tokens.json').tokens,
     discover: fixture('integrations/ha_main.discovery.json'),
     entityCapabilities: new Map(

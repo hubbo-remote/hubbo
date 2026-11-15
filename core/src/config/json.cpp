@@ -193,6 +193,8 @@ void encodeIntegrationAs(const IntegrationSpec &integration, IntegrationShape sh
 
 bool decodeGlobalBindingsAs(JsonVariantConst json, bool backup, std::vector<BindingSpec> *bindings,
                             uint32_t *revision, ValidationReport *report, const std::string &path);
+bool decodeSmartButtonsAs(JsonVariantConst json, bool backup, SmartButtonsSpec *out, ValidationReport *report,
+                          const std::string &path);
 
 // The sections config.json and backups share: integrations, devices,
 // global_bindings, activities.
@@ -220,6 +222,15 @@ void decodeSections(Fields &f, IntegrationShape integrations, ConfigSpec *config
     f.nested("global_bindings", true, [&](JsonVariantConst v, const std::string &p) {
         return decodeGlobalBindingsAs(v, backup, &config->globalBindings, &config->globalBindingsRevision, r, p);
     });
+    // Optional, the one tolerance for an older record: hubs in daily use
+    // have saved configs (and backups) from before smart buttons. Absent:
+    // four empty slots, with the config's revision. Always written.
+    bool smartButtons = false;
+    f.nested("smart_buttons", false, [&](JsonVariantConst v, const std::string &p) {
+        smartButtons = true;
+        return decodeSmartButtonsAs(v, backup, &config->smartButtons, r, p);
+    });
+    if (!smartButtons) config->smartButtons.revision = config->revision;  // a backup's is 0: restore stamps it
     f.nested("activities", true, [&](JsonVariantConst v, const std::string &p) {
         return decodeList(v, limits::kMaxActivities, &config->activities, r, p,
                           [&](JsonVariantConst j, ActivitySpec *o, const std::string &at) {
@@ -236,6 +247,7 @@ void encodeSections(const ConfigSpec &config, IntegrationShape integrations, Jso
     for (const auto &d : config.devices) encodeDevice(d, devices.add<JsonObject>());
     encodeGlobalBindings(config.globalBindings, config.globalBindingsRevision,
                          doc["global_bindings"].to<JsonObject>());
+    encodeSmartButtons(config.smartButtons, doc["smart_buttons"].to<JsonObject>());
     JsonArray activities = doc["activities"].to<JsonArray>();
     for (const auto &a : config.activities) encodeActivity(a, activities.add<JsonObject>());
 }
@@ -441,6 +453,56 @@ bool decodeGlobalBindings(JsonVariantConst json, std::vector<BindingSpec> *bindi
 void encodeGlobalBindings(const std::vector<BindingSpec> &bindings, uint32_t revision, JsonObject out) {
     encodeBindings(bindings, out["bindings"].to<JsonObject>());
     out["revision"] = revision;
+}
+
+namespace {
+
+// The revision is required (config file, PUT), as global_bindings'; a
+// backup's is optional (restore stamps it).
+bool decodeSmartButtonsAs(JsonVariantConst json, bool backup, SmartButtonsSpec *out, ValidationReport *report,
+                          const std::string &path) {
+    Fields f(json, report, path);
+    f.nested("slots", true, [&](JsonVariantConst v, const std::string &p) {
+        Fields slots(v, report, p);  // all four, nothing else
+        for (size_t i = 0; i < kSmartSlotCount; i++) {
+            slots.nullableString(smartSlotName(static_cast<SmartSlot>(i)), &out->slots[i], true, limits::kMaxIdLength);
+        }
+        return slots.finish();
+    });
+    f.revision("revision", &out->revision, !backup, backup);
+    return f.finish();
+}
+
+void encodeSmartPress(const SmartPressActions &press, JsonObject out) {
+    encodeSequence(press.tap, out["tap"].to<JsonArray>());
+    encodeSequence(press.hold, out["hold"].to<JsonArray>());
+    encodeSequence(press.release, out["release"].to<JsonArray>());
+}
+
+}  // namespace
+
+bool decodeSmartButtons(JsonVariantConst json, SmartButtonsSpec *out, ValidationReport *report,
+                        const std::string &path) {
+    return decodeSmartButtonsAs(json, /*backup=*/false, out, report, path);
+}
+
+void encodeSmartButtons(const SmartButtonsSpec &spec, JsonObject out) {
+    out["revision"] = spec.revision;
+    JsonObject slots = out["slots"].to<JsonObject>();
+    for (size_t i = 0; i < kSmartSlotCount; i++) {
+        const char *name = smartSlotName(static_cast<SmartSlot>(i));
+        if (spec.slots[i]) {
+            slots[name] = *spec.slots[i];
+        } else {
+            slots[name] = nullptr;
+        }
+    }
+}
+
+void encodeSmartActions(const SmartSlotActions &actions, JsonObject out) {
+    encodeSmartPress(actions.button, out["button"].to<JsonObject>());
+    encodeSmartPress(actions.plus, out["plus"].to<JsonObject>());
+    encodeSmartPress(actions.minus, out["minus"].to<JsonObject>());
 }
 
 bool decodeDevice(JsonVariantConst json, DeviceShape shape, DeviceSpec *out, ValidationReport *report,

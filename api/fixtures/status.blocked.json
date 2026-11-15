@@ -15,6 +15,7 @@
     "reason": "config.json schema_version 2 is newer than this firmware (1)"
   },
   "active_activity_id": null,
+  "selected_slot": "light_1",
   "network": {
     "link": "up",
     "ip": "192.0.2.56",

@@ -423,6 +423,43 @@ of remote lag during the write are accepted.
   | Default | 89,680 B | 2,293,587 B | 2,336,208 B |
   | OTA | 97,896 B | 2,314,983 B | 2,358,384 B (36.0% of the 0x640000 slot) |
 
+## Smart buttons (branch `smart-buttons`, built, the lead does the board; design `docs/design/smart-buttons.md`)
+
+- Firmware's only change: `EngineRuntime::snapshot()` fills `selectedSlot` from
+  `engine_.selectedSlotShared()` (as the sim). The console status `engine:` line shows `slot <name>`.
+- Repeats need nothing here: core drives them in `engine.poll(nowMs)`, which the loop calls every
+  iteration (about 1 ms), so 300 ms repeats are late by a loop gap at most. Each repeat goes to the
+  executor like any press (a full lane skips it), so the RF loop never waits on HA.
+- Gate passed. `_ota` image: 2,353,343 bytes flash (35.9%), 98,064 bytes static RAM; default env
+  2,334,375 bytes (35.6%), 89,848 bytes.
+- To check on the board: loop max gap and over-5 ms while holding + on a light slot (a repeat every
+  300 ms for up to 12 s).
+
+## Boot heap (smart-buttons, 2026-11-15; on .196, in this phase's commit)
+
+- Symptom: .196 sent no frame over about 190 B (ping 160 B+ 100% loss, GET / and login stalled);
+  RX and small replies worked. Cause: internal RAM starved, 9,880 B free (min 6,604, largest
+  3,572) with Ethernet unplugged, flat over time. `bootState()` ran before
+  `heap_caps_malloc_extmem_enable(0)`, so the whole saved config and its compiled form sat in
+  internal RAM, growing with the user's config. lwIP and the W5500 path then fail big sends.
+- Fix in `setup()`: `extmem_enable(0)` before `bootState()`, back to
+  `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` (4096) after it, so the drivers started next behave as
+  before. `printMemory(label)` logs `boot: before config` / `boot: after config` mem lines, showing what the config costs (keep
+  them: they show config growth). `printMemory()` (boot and every status) adds
+  `mem: WARNING internal RAM low ...` under 20 KB internal free. A log line only; no restart.
+- On .196, everything up (PoE, HA, MQTT): internal free 78 KB, min 76.6 KB, largest 36.8 KB.
+  86,820 B at 30 s with no Ethernet. Loop max gap 2.6 ms, 0 over 5 ms. The old build had 9,880 B.
+- Final build on .196: internal RAM about 151 KB through the config load, loop max gap 2.4 ms, 0 over 5 ms.
+- Phase gate (fw) passed: default RAM 90,320 B, flash 2,335,367 B (35.6%); `_ota` RAM 98,536 B,
+  flash 2,356,327 B (36.0%).
+- Traps from this round:
+  - A hand-built `_ota` image needs `HUBBO_OTA_PASSWORD` in the environment, or ArduinoOTA is
+    compiled out (`ota disabled` in status) and `bin/hubbo ota` can't reach it. The lead supplies it.
+  - Never flash a merged .bin at 0x0 to a board whose NVS must survive: merge-bin pads 0x9000-0xdfff
+    with 0xFF. Flash `boot_app0.bin` at 0xe000 and `firmware.bin` at 0x10000 instead.
+  - The size-cliff probe: `ping -s N` sweep. To read a long response from a sick board, a small
+    advertised MSS doesn't help when the board can't allocate.
+
 ## Moving a board from other firmware to Hubbo over USB
 
 - Use USB when the board runs other firmware. An OTA can't change the bootloader or the partition

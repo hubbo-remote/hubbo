@@ -2,7 +2,53 @@
 
 Current state, not a log. Update when a piece of work lands.
 
-## HA remotes (branch `ha-remote`; docs/design/ha-remote.md; spec green on both, not gated)
+## Smart buttons (branch `smart-buttons`; docs/design/smart-buttons.md; simplified 2026-11-15 after the .196 board test)
+
+- **Global**: Light 1/2 and Switch 1/2's panel starts with a Device select (`SlotDevice`; None + lights,
+  fans, covers, switches, plus the current one). With a device: read-only "What Light 1 does" rows
+  (`SlotActions`; + / − long press only when present), no binding rows, no Advanced. Saving a slot's
+  first device drops that button's global bindings, and the first device anywhere drops + / −'s (all
+  triggers; `withoutSmartButtons(bindings, saved, draft)`, applied at save time, so a pick undone
+  before saving strips nothing), so None comes back empty. + and − once any slot has a device: not bindable; `Follows` explains them
+  (lead line, a `SmartCards` card per slot with `plainActions` text, a muted line for a slot giving them
+  nothing, a footnote). Remote keys show bound from the slots' actions. No slot devices: ordinary rows.
+- **Activities** (Remote with an activity, and the activity editor): precedence activity > smart > Global
+  (`smartFor`). An untouched slot with a device, or + / − once any slot has one, shows inherited
+  (`SourceTag` "Smart button", `SmartInherited` / `Follows` cards), never Global's; the rows stay to
+  override (verb Bind). Owned: rows + a muted "This activity's own…" line.
+- **No table in the web**: the browser never derives a slot's actions. A device picked on Global but not
+  saved gets the hub's at once from `GET /smart-buttons/actions?device_id=` (`useSmartActions(pickedDevices(…))`,
+  keepPrevious; a skeleton / "…" while loading); `smartOf(GET, draftSlots, picked)` serves saved slots from
+  GET and picks from that map. The table lives only in `mock/smartActions.ts` (plays the hub; the mock
+  serves both routes from it: 404 unknown, 422 required / invalid_id at /device_id).
+- Wire: GET `{slots, actions, revision}`; GET `/smart-buttons/actions?device_id=` → SmartSlotActions; PUT `SmartButtonsInput {slots, revision}` (actions → 422
+  unknown_field /actions; unknown device → 422 unknown_device /slots/<slot>). No defaults route. Deleting
+  a slot's device: 409 device_in_use, detail `/smart_buttons/slots/<slot>`.
+- Remote.tsx: Global runs two `useDraft`s (globalStore + smartStore, both `saveKey: false`), one Save and
+  one page `useSaveKey`: smart first; only if it succeeds (`save()` resolves true/false), the bindings with
+  `prepare` stripping (sent even when only the strip changes them). Each toasts and has its own
+  ConflictDialog; a bindings 409 overwrite after the smart save doesn't re-strip (edge, accepted).
+  `canSave = (ed.canSave || sd.canSave) && !busy`.
+  An effect calls `sd.discard()` (useDraft) whenever Global is left, however.
+  `BindingsEditor` takes `smart` (a `SmartSet`) and, on Global only, `onPickSlot`.
+- `lib/smartButtons.ts`: SLOTS, SLOT_KINDS, `isSlot`, `emptySmartButtons`, `validateSmartButtons`,
+  `SmartSet`/`smartOf`, `withoutSmartButtons` (unit tests in smartButtons.test.ts). `plainAction` /
+  `plainActions` in components/actions/describe.ts ("Change brightness +10%" → "Brightness up 10%").
+- **Mock**: stores `{slots, revision}` (seed = get.json's slots); GET/PUT derive actions; SmartButtonsInput
+  shape check; 409; device delete refused; backup/restore/reset; `selected_slot`. Re-link doesn't check
+  smart buttons (nothing in config to break).
+- /simplify (2026-11-15) done. Skipped: one `layerFor` resolver for own/smart/Global (three call sites
+  of `smartFor` are fine for now); a `useDrafts` combiner or a Global-only child owning the smart draft
+  (would make `discard` unnecessary; worth it if Global gets a third doc); `DeviceSelect` for
+  `SlotDevice` (needs filter/None props on a shared picker); `domainOf` in the mock (lib/commands pulls
+  in `@/` imports the mock can't resolve); `isGlobal` for `'name' in draft` in Remote (the draft shown
+  can lag the picker while loading, deliberately).
+- Tests: e2e `smart-buttons.spec` (Light 1 pick → save → read-only, reload; bound Light 1 → device → its
+  globals gone, None → empty rows; first device clears global +/−, + cards, no rows; activity inherits
+  Light 1 and +, binding owns it; pick then None is not dirty and strips nothing; a smart 409 saves no
+  bindings), mock + hub-sim green 2026-11-15; mock unit tests vs fixtures.
+
+## HA remotes (merged to main; docs/design/ha-remote.md; gate 2026-11-14 green)
 
 - `remote` is just another HA domain. **No UI change**: Add device, the picker and the existing
   Home Assistant action editor show what the hub gives (remote.turn_on/off/toggle, then

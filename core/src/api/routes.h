@@ -133,6 +133,7 @@ void addAuthRoutes(RouteSink &sink, ApiContext &ctx);      // setup, login, logo
 void addRegistryRoutes(RouteSink &sink, ApiContext &ctx);  // devices, capabilities, execute, integrations
 void addProfileRoutes(RouteSink &sink, ApiContext &ctx);   // built-in profiles, kinds
 void addActivityRoutes(RouteSink &sink, ApiContext &ctx);  // activities, global bindings, activate, off
+void addSmartButtonRoutes(RouteSink &sink, ApiContext &ctx);  // the four slots, their derived actions, a preview for a device
 void addStatusRoutes(RouteSink &sink, ApiContext &ctx);    // status, remote status/buttons
 void addBackupRoutes(RouteSink &sink, ApiContext &ctx);    // backup download, restore
 void addFirmwareRoutes(RouteSink &sink, ApiContext &ctx);  // firmware status and update, factory reset

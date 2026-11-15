@@ -157,10 +157,21 @@ void sendOutcome(http::Response &out, const config::Outcome &outcome, std::strin
                     ["details"].to<JsonArray>();
             for (const auto &r : outcome.referrers) {
                 JsonObject d = details.add<JsonObject>();
-                d["path"] = (r.activityId.empty() ? std::string("/global_bindings") : "/activities/" + r.activityId) +
-                            r.path;
                 d["code"] = "referenced";
-                d["message"] = r.activityId.empty() ? std::string("Used by global buttons") : "Used by " + r.activityName;
+                switch (r.owner) {
+                    case config::ReferrerOwner::Activity:
+                        d["path"] = "/activities/" + r.activityId + r.path;
+                        d["message"] = "Used by " + r.activityName;
+                        break;
+                    case config::ReferrerOwner::GlobalBindings:
+                        d["path"] = "/global_bindings" + r.path;
+                        d["message"] = "Used by global buttons";
+                        break;
+                    case config::ReferrerOwner::SmartButtons:
+                        d["path"] = "/smart_buttons" + r.path;
+                        d["message"] = "Used by smart buttons";
+                        break;
+                }
             }
             return sendJson(out, 409, doc);
         }
@@ -335,6 +346,12 @@ bool queryRevision(const http::Request &request, http::Response &out, uint32_t *
     }
     *revision = static_cast<uint32_t>(value);
     return true;
+}
+
+CommandCatalog catalogFor(const ApiContext &ctx, const DeviceSpec &device) {
+    const AdapterSet &adapters = ctx.runtime.adapters();
+    const int index = adapters.find(device.integrationId);
+    return index < 0 ? CommandCatalog{} : adapters.at(static_cast<size_t>(index))->commandsFor(device);
 }
 
 const DeviceSpec *requireDevice(const ApiContext &ctx, std::string_view id, http::Response &out) {

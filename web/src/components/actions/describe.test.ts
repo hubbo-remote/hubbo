@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Action, Command, Device } from '@/api/types'
 import type { Catalog } from '@/lib/activity'
-import { actionText, commandLabel, paramSummary } from './describe'
+import { actionText, commandLabel, paramSummary, plainAction } from './describe'
 
 const pct = { name: 'percentage', type: 'int', minimum: 0, maximum: 100, step: 33, unit: '%' } as const
 const commands: Command[] = [
@@ -45,5 +45,16 @@ describe('an action as one line', () => {
     const fan: Catalog = { ...cat, devices: new Map([['dev_fan', { id: 'dev_fan', name: 'Fan' } as Device]]) }
     expect(actionText(act('fan.set_percentage', { percentage: 66 }), fan)).toBe('Fan → Set speed 2 of 3')
     expect(actionText({ integration_id: 'system', device_id: null, command_id: 'wait', params: { duration_ms: 1500 } }, fan)).toBe('wait 1.5 s')
+  })
+})
+
+describe('plainAction', () => {
+  it('says a signed percent step as up or down', () => {
+    expect(plainAction(act('light.brightness_step', { step: 26 }), cat)).toBe('Brightness up 10%')
+    expect(plainAction(act('light.brightness_step', { step: -26 }), cat)).toBe('Brightness down 10%')
+  })
+  it('says anything else as its command and settings', () => {
+    expect(plainAction(act('fan.turn_on', {}), cat)).toBe('Turn on')
+    expect(plainAction(act('cover.set_cover_position', { position: 50 }), cat)).toBe('Set position 50%')
   })
 })

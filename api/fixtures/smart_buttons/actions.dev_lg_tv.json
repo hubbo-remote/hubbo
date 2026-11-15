@@ -1,0 +1,17 @@
+{
+  "button": {
+    "tap": [],
+    "hold": [],
+    "release": []
+  },
+  "plus": {
+    "tap": [],
+    "hold": [],
+    "release": []
+  },
+  "minus": {
+    "tap": [],
+    "hold": [],
+    "release": []
+  }
+}

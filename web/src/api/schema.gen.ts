@@ -530,6 +530,83 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/smart-buttons": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The Light 1, Light 2, Switch 1 and Switch 2 slots
+         * @description Each of the four buttons is a slot that holds a device, or null. The
+         *     hub works out what the slot's own button and `plus`/`minus` do from
+         *     the device's `kind` and the commands it offers; `actions` shows the
+         *     result, read-only:
+         *
+         *     | Kind | button tap | button hold | plus | minus |
+         *     |---|---|---|---|---|
+         *     | light | Turn on | Turn off | tap: Change brightness (`step` +26, 10%) | tap: `step` −26 |
+         *     | fan | Turn on | Turn off | tap: Speed up | tap: Slow down |
+         *     | cover | Open | Close | tap: Change position (`step` +10); hold: Open; release: Stop | tap: `step` −10; hold: Close; release: Stop |
+         *     | switch | Turn on | Turn off | none | none |
+         *
+         *     Each action is there only if the device offers that command, so the
+         *     kind works whatever the entity's domain (an `input_boolean` set to
+         *     `switch` gets its own Turn on and Turn off). A light without
+         *     brightness gets no plus/minus; a cover without a position gets tap
+         *     Open on plus and tap Close on minus. Any other kind, a device that
+         *     isn't Home Assistant, or a null slot, gets empty presses.
+         *
+         *     A press of a slot's button selects it (see `/status`
+         *     `selected_slot`; `light_1` after a reboot), unless the active
+         *     activity binds that button. For light_1, light_2, switch_1,
+         *     switch_2, plus and minus, the first that has actions wins: the
+         *     active activity's bindings for that button, then the slot (the
+         *     slot's own button, or the selected slot's `plus`/`minus`), then the
+         *     global bindings. Quick taps on plus or minus with a `step` merge
+         *     into one call.
+         */
+        get: operations["getSmartButtons"];
+        /**
+         * Atomically replace the four slots
+         * @description `{slots, revision}`: `revision` is the one the body is based on, and
+         *     a stale one is `409 revision_conflict`. Each slot is a registered
+         *     device's id or null; an unknown one is `unknown_device` at
+         *     `/slots/<slot>`. `actions` isn't sent: the hub derives it. Answers
+         *     as `GET` does.
+         */
+        put: operations["replaceSmartButtons"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/smart-buttons/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What a slot would do with a device
+         * @description The actions a slot gets from `device_id`, by the table in
+         *     `GET /smart-buttons`, without saving anything: a preview before
+         *     `PUT /smart-buttons`. A device that isn't Home Assistant, or of
+         *     another kind, gets empty presses.
+         */
+        get: operations["getSmartButtonActions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/integrations": {
         parameters: {
             query?: never;
@@ -1307,6 +1384,11 @@ export interface components {
             auth_state: components["schemas"]["AuthState"];
             config: components["schemas"]["ConfigState"];
             active_activity_id: components["schemas"]["NullableActivityId"];
+            /**
+             * @description The smart button slot `plus`/`minus` act on: the slot whose button
+             *     was pressed last. `light_1` after a reboot.
+             */
+            selected_slot: components["schemas"]["SmartSlotId"];
             network: {
                 /** @enum {string} */
                 link: "up" | "down";
@@ -1542,7 +1624,9 @@ export interface components {
              *     `adapter_failed` (it refused the call), `adapter_timeout` (no
              *     answer within the action timeout), `entity_not_found` (the HA
              *     entity is missing from the latest discovery, see `availability:
-             *     stale`; not sent), `queue_full`.
+             *     stale`; not sent), `state_unavailable` (a step needs the entity's
+             *     current value, such as a cover's `current_position`, and Home
+             *     Assistant reports none; not sent), `queue_full`.
              */
             message?: string;
         };
@@ -1594,6 +1678,54 @@ export interface components {
         GlobalBindings: {
             bindings: components["schemas"]["Bindings"];
             revision: components["schemas"]["Revision"];
+        };
+        /** @enum {string} */
+        SmartSlotId: "light_1" | "light_2" | "switch_1" | "switch_2";
+        /** @description All four, always. Each is the slot's device, or null. */
+        SmartSlotDevices: {
+            light_1: components["schemas"]["NullableDeviceId"];
+            light_2: components["schemas"]["NullableDeviceId"];
+            switch_1: components["schemas"]["NullableDeviceId"];
+            switch_2: components["schemas"]["NullableDeviceId"];
+        };
+        SmartPressActions: {
+            tap: components["schemas"]["Action"][];
+            /** @description When Hold fires (`GET /remote/buttons` `hold_ms`). It fires once. */
+            hold: components["schemas"]["Action"][];
+            /**
+             * @description When the button comes up after a hold (never after a tap),
+             *     including a release the hub supplies after a lost packet. Stops a
+             *     moving cover.
+             */
+            release: components["schemas"]["Action"][];
+        };
+        /** @description Empty lists mean the slot does nothing there (the global binding, if any, applies). */
+        SmartSlotActions: {
+            /** @description The slot's own button. */
+            button: components["schemas"]["SmartPressActions"];
+            /** @description What `plus` does while this slot is selected. */
+            plus: components["schemas"]["SmartPressActions"];
+            /** @description What `minus` does while this slot is selected. */
+            minus: components["schemas"]["SmartPressActions"];
+        };
+        SmartButtonsInput: {
+            slots: components["schemas"]["SmartSlotDevices"];
+            revision: components["schemas"]["Revision"];
+        };
+        SmartButtons: {
+            slots: components["schemas"]["SmartSlotDevices"];
+            /** @description Each slot's actions, derived from its device. Read-only. */
+            actions: {
+                light_1: components["schemas"]["SmartSlotActions"];
+                light_2: components["schemas"]["SmartSlotActions"];
+                switch_1: components["schemas"]["SmartSlotActions"];
+                switch_2: components["schemas"]["SmartSlotActions"];
+            };
+            revision: components["schemas"]["Revision"];
+        };
+        BackupSmartButtons: {
+            slots: components["schemas"]["SmartSlotDevices"];
+            revision?: components["schemas"]["BackupRevision"];
         };
         ValidationResult: {
             valid: boolean;
@@ -1727,8 +1859,8 @@ export interface components {
              * @description The integration's services for the entity that Hubbo couldn't
              *     type (a text, object or other untyped field, or too many fields),
              *     with HA's field hints. A remote (`remote.*`) also gets HA's
-             *     `remote` services that match it (`remote.send_command`, ...),
-             *     after the integration's; `remote.turn_on` only when the entity
+             *     `remote` services that match it, ahead of the integration's
+             *     (`remote.send_command` first); `remote.turn_on` only when the entity
              *     has ACTIVITY, for its `activity` field; a remote with no integration
              *     (YAML) gets only those. They make the device offer `call_service`
              *     (a Home Assistant action). Response-only services are never here.
@@ -2246,6 +2378,8 @@ export interface components {
             integrations: components["schemas"]["BackupIntegration"][];
             devices: components["schemas"]["StoredDevice"][];
             global_bindings: components["schemas"]["BackupGlobalBindings"];
+            /** @description Always written. A restore without it gets four empty slots. */
+            smart_buttons?: components["schemas"]["BackupSmartButtons"];
             activities: components["schemas"]["BackupActivity"][];
             /** @description What a restore will not bring back. */
             excluded: ("admin_password" | "api_tokens" | "integration_secrets" | "ble_bonds")[];
@@ -3184,6 +3318,87 @@ export interface operations {
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
             500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    getSmartButtons: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The four slots and their actions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SmartButtons"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    replaceSmartButtons: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SmartButtonsInput"];
+            };
+        };
+        responses: {
+            /** @description Replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SmartButtons"];
+                };
+            };
+            400: components["responses"]["MalformedJson"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["ValidationFailed"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    getSmartButtonActions: {
+        parameters: {
+            query: {
+                device_id: components["schemas"]["DeviceId"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The slot's actions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SmartSlotActions"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationFailed"];
             503: components["responses"]["Unavailable"];
         };
     };

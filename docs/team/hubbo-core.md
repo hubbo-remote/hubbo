@@ -1,12 +1,66 @@
 # hubbo-core: working notes
 
-Current as of the ha-remote branch (setup-fixes, mqtt and everything before are committed).
-Design: `docs/design/mqtt-discovery.md`; the profile spec is `~/src/hubbo-devices/docs/spec.md`.
+Current as of the smart-buttons branch (ha-remote, setup-fixes and everything before are committed).
+Design: `docs/design/smart-buttons.md`; the profile spec is `~/src/hubbo-devices/docs/spec.md`.
 This file covers state, decisions and traps only.
 
 ## State
 
-- HA remotes (ha-remote, uncommitted; design docs/design/ha-remote.md, kept deliberately small). An
+- Smart buttons (smart-buttons, uncommitted; docs/design/smart-buttons.md). Simplified 2026-11-15
+  after the board test: a slot is only a device id; nothing else is configurable. Repeat is gone.
+  - Model: `domain/smart_buttons.h` (`SmartSlot`, `smartSlotName`, `smartSlotForButton`); `SmartButtonsSpec` {slots: vector<optional<string>> always sized 4,
+    revision} in domain/config.h; `ConfigSpec::smartButtons`. The old slot object (presses, repeat)
+    is just invalid now (no compat).
+  - Derivation: `engine/smart_actions.h` `smartSlotActions(DeviceSpec, CommandCatalog)` ->
+    `SmartSlotActions` {button, plus, minus} of `SmartPressActions` {tap, hold, release}. The table
+    moved verbatim from api's old fillDefaults (light on/off, ±26 tap; fan on/off, speed; switch
+    on/off; cover open/close, position_step ±10 + hold open/close + release stop, else open/close
+    taps). Only commands the catalog offers; non-HA or other kinds: none. api uses it for GET's
+    read-only actions with `config::encodeSmartActions`.
+  - JSON: `decodeSmartButtons` / `encodeSmartButtons` ({revision, slots: {light_1: "dev_x"|null,
+    ...}}, all four required). In config.json and backups `smart_buttons` is OPTIONAL (the user's
+    one tolerance); absent = four nulls with the config's revision. Present, revision required in
+    config.json, optional in backups. Nesting: request 10 (api's change; a binding's call.data is 9,
+    +1 for too_deep), file 12 (11 + 1); both checked by the owner.
+  - Compile: a slot's device must exist (unknown_device / invalid_id at /smart_buttons/slots/<slot>,
+    the PUT re-roots to /slots/<slot>). Actions come from smartSlotActions against the device's
+    adapter catalog and compile as bindings (no hold-effect commands). A device that fails its own
+    checks gives no actions (its issue is under /devices). `CompiledSmartPress` {tap, hold, release}.
+  - Service: `replaceSmartButtons(spec, base)` (own revision). Deleting a slot's device is refused
+    like any reference: device_in_use, referrer path `/slots/<slot>` (owner SmartButtons; api
+    prefixes /smart_buttons). Slots have no actions in forEachAction any more.
+  - Engine: resolution per button (activity binds any trigger > the slot press if `set()` >
+    globals), decided at Down and kept in `pressed_[button]` until the next Down; selection on Down
+    of a slot button the activity doesn't bind; `selected_` atomic, Light 1 at boot. `holdFired_`
+    gives `release` on the Up after Hold. `SequenceOrigin::SmartButton`; its Up never sets
+    upSequence_.
+  - Tap merge: the compiler marks + and - taps (`Compiler::smartPress`): a single tap action with an
+    int `step` param sets `CompiledAction::stepParam` and `CompiledSmartPress::merges`. The first
+    such Tap copies that action with its device into `step_.command` (a self-contained
+    CompiledCommand); later taps only count. `kSmartStepWindowMs` 300 after the last Tap, poll()
+    sends it via `Executor::enqueueCommand` with step × taps, clamped to the param's min/max. No
+    timer while that button is down (`held_`). Flushed at once by a tap the other way, a slot
+    change, a Hold of + or -, a config change (syncConfig, before the new config is used: always
+    as tapped, never what the slot holds after the save) and `endActivity()` (the one teardown
+    shared by transition() and syncConfig's "active activity gone"; after cancelAll, under the new
+    generation, so it isn't dropped). The executor knows nothing about merging.
+  - Known and accepted (lead review 2026-11-15): a save that empties a cover's slot mid-hold
+    skips its Stop (the release is read from the running config by slot and press, as documented).
+    Capturing it at Hold would need another copied command per button; left.
+  - Not taken from /simplify (2026-11-15): `holdFired_` duplicating RemoteInput's (would need an
+    `afterHold` on RemoteEvent, outside this phase); slots derived by `kind` not entity domain (as
+    the design and api's old fillDefaults); `smartPress()` out-params.
+  - Showcase: light_1 = the first captured dimmable light's id. fixtureConfig() has four nulls,
+    revision 1.
+  - Tests: core/tests/smart_buttons_test.cpp (SmartButtonsConfig.* incl.
+    ActionsComeFromTheDeviceKindAndItsCommands on a hand-built catalog: every kind, no brightness,
+    no position, another kind, non-HA; SmartButtonsEngine.* with Light 1 = dev_lights and Switch 1
+    = a cover, incl. the tap merge: count, clamp, window, paused while down, every flush, a fan's
+    instant taps (a test-built fan snapshot), a config save sending pending taps as tapped),
+    AdapterTest.PositionStep*.
+  - cover.position_step: api's catalog; no or non-numeric state -> `ErrorCode::StateUnavailable`;
+    the adapter passes it through. Fakes: `kFakeCoverPosition` 50, FakeHaEntity::position.
+- HA remotes (ha-remote, committed; design docs/design/ha-remote.md, kept deliberately small). An
   earlier, bigger attempt (a text param type, kMaxParams 6, text plumbing) was thrown away as
   over-designed: don't bring any of it back. Core's part:
   - `serviceOnDevice` (compiler.cpp) is api's `ha::isDeviceService(entityId, platform, service)`,
@@ -30,7 +84,7 @@ This file covers state, decisions and traps only.
   top-level target keys (forbidden_param, api's `ha::isTargetKey`), `{{`/`{%` anywhere (template_not_supported, first
   one). decodeAction: call required with `call_service`, unknown_field on any other command.
   New ErrorCodes: pattern, forbidden_param, too_deep, template_not_supported.
-  `kRequestNestingLimit` is 9 (an activity binding's call.data at depth 4 needs it).
+  `kRequestNestingLimit` is 11 now (smart buttons; an activity binding alone needed 9).
   - Compile: `CompiledAction::call` is a `HaServiceCallRef` (shared_ptr<const HaServiceCallSpec>,
     domain/config.h), made by the compile and owned by the compiled config or direct
     CompiledCommand, plus every copy still carrying it (executor nodes, `ExecRequest::call`, the
@@ -59,7 +113,7 @@ This file covers state, decisions and traps only.
   (api's backup_routes.cpp, `ctx.factoryDefaults` unset) and `backup.empty.json` are api's.
   `emptyConfig()` (run-nothing, service.cpp) stays empty on purpose.
 
-- MQTT discovery (mqtt, uncommitted). Hubbo is an HA device over the user's broker.
+- MQTT discovery (mqtt, committed). Hubbo is an HA device over the user's broker.
   - Port `integrations/mqtt_transport.h` (WebSocket pattern: callbacks only in poll(), the transport
     reconnects, clean session so resubscribe on each onConnected). Firmware: esp-mqtt.
   - `integrations/mqtt_bridge.{h,cpp}`: device-based discovery on
@@ -518,6 +572,10 @@ This file covers state, decisions and traps only.
   around sim types.
 
 ## Open items
+
+- The fakes special-case state that calls write (volume_mute -> is_volume_muted,
+  set_cover_position -> current_position) in two places; a shared table would scale better if
+  more state-reading commands come.
 
 - Measure the lean discovery and an entity-details fetch on the board (expected about 7 s and about
   2 s). The firmware logs `elapsedMs`.

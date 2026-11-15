@@ -96,6 +96,9 @@ bool checkObject(JsonVariantConst value, std::initializer_list<Field> fields, Va
 // or not a positive integer.
 bool queryRevision(const http::Request &request, http::Response &out, uint32_t *revision);
 
+// The commands the device's integration offers for it (empty if none).
+CommandCatalog catalogFor(const ApiContext &ctx, const DeviceSpec &device);
+
 // The device/activity with this id, or nullptr after sending 404.
 const DeviceSpec *requireDevice(const ApiContext &ctx, std::string_view id, http::Response &out);
 const ActivitySpec *requireActivity(const ApiContext &ctx, std::string_view id, http::Response &out);

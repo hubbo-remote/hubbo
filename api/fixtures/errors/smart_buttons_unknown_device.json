@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "The smart buttons are invalid",
+    "details": [
+      {
+        "path": "/slots/light_2",
+        "code": "unknown_device",
+        "message": "No device with that id"
+      }
+    ]
+  }
+}

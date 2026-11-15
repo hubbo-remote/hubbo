@@ -113,12 +113,6 @@ void putCommands(JsonArray out, CommandCatalog catalog, const DeviceSpec *device
     }
 }
 
-CommandCatalog catalogFor(const ApiContext &ctx, const DeviceSpec &device) {
-    const AdapterSet &adapters = ctx.runtime.adapters();
-    const int index = adapters.find(device.integrationId);
-    return index < 0 ? CommandCatalog{} : adapters.at(static_cast<size_t>(index))->commandsFor(device);
-}
-
 // `detail`: Full (GET /devices/{id} and the admin answers) or Summary (the list).
 void putDevice(JsonObject out, const ApiContext &ctx, const DeviceSpec &device,
                config::DeviceDetail detail = config::DeviceDetail::Full) {

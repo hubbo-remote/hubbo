@@ -83,14 +83,17 @@ private:
 };
 const char *configStateName(ConfigState state);  // "fresh", "ok", "blocked", "storage_unavailable"
 
-// Where something refers to a device or activity: the activity id ("" for
-// the global bindings), a JSON Pointer inside that document and the
-// activity's name, e.g.
-// {"act_watch_apple_tv", "/bindings/volume_up:down/0", "Watch Apple TV"}.
+// Where something refers to a device or activity: who (an activity, the
+// global bindings or the smart buttons), the activity id and name ("" for
+// the others) and a JSON Pointer inside that document, e.g.
+// {"act_watch_apple_tv", "/bindings/volume_up:down/0", "Watch Apple TV"},
+// or for a smart-button slot's device "/slots/light_1".
+enum class ReferrerOwner : uint8_t { Activity, GlobalBindings, SmartButtons };
 struct Referrer {
     std::string activityId;
     std::string path;
-    std::string activityName;  // "" for the global bindings
+    std::string activityName;  // "" unless owner is Activity
+    ReferrerOwner owner = ReferrerOwner::Activity;
 };
 
 struct Outcome {
@@ -172,6 +175,9 @@ public:
     ValidationReport validateActivity(const ActivitySpec &activity) const;
 
     Outcome replaceGlobalBindings(std::vector<BindingSpec> bindings, uint32_t baseRevision);
+    // PUT /smart-buttons: all four slots. `spec.revision` is ignored (the
+    // commit stamps it). Issues are rooted at the body (/slots/light_1/...).
+    Outcome replaceSmartButtons(SmartButtonsSpec &&spec, uint32_t baseRevision);
 
     // ---- devices (admin) ----
     // The device is checked before anything is built (ValidationFailed, issues

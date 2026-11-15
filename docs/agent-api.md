@@ -34,9 +34,9 @@ Send `Content-Type: application/json` with every body. A token needs no cookies.
 creates tokens in Settings → API tokens, and each is shown once. A `401` means the token is
 missing, wrong or revoked; its error carries `"docs": "/api/v1/agent.md"`.
 
-A token can read everything below, run commands, and manage activities and global bindings. It
-can't add or change devices, integrations, pairing, tokens, backups or firmware (`403
-forbidden`): ask the admin for those.
+A token can read everything below, run commands, and manage activities, global bindings and
+smart buttons. It can't add or change devices, integrations, pairing, tokens, backups or firmware
+(`403 forbidden`): ask the admin for those.
 
 ## Devices and their commands
 
@@ -359,6 +359,35 @@ curl -s -X PUT -H "$H" -H 'Content-Type: application/json' -d @b.json $HUBBO/act
 
 `PUT /global-bindings` takes `{bindings, revision}` the same way. It has no dry run: a mistake
 gets `422` with the same `details`, and nothing is saved.
+
+### Smart buttons
+
+Light 1, Light 2, Switch 1 and Switch 2 are **slots** (`GET /smart-buttons`,
+`#/components/schemas/SmartButtons`). Each holds a device id or `null`, and that's all you set. The
+hub works out what the slot's button does, and what +/- do while it's the **selected** slot
+(`GET /status` `selected_slot`: the slot whose button was pressed last; `light_1` after a reboot),
+from the device's kind and the commands it offers. A light gets on/off and ±10% brightness, a fan
+on/off and speed, a cover open/close and ±10 position, and a switch on/off. Other devices get
+nothing. `actions` in the answer shows the result, read-only, as `{button, plus, minus}`, each
+`{tap, hold, release}`: `release` runs when the button comes up after a hold (it stops a moving
+cover). A hold fires once. Quick taps on + or − whose action has a `step` merge into one call
+(`step` × the taps, clamped), sent about 300 ms after the last tap.
+`GET /smart-buttons/actions?device_id=dev_lamp` previews what a slot would do with a device,
+without saving (`#/components/schemas/SmartSlotActions`).
+
+For those six buttons the active activity wins (per button, as above), then the slot, then the
+global bindings. An empty slot leaves its button to your bindings. A global binding on + or −
+still saves, but it only runs while the selected slot has no +/- actions. To set a slot, send back
+`slots` with the `revision` (not `actions`):
+
+```sh
+curl -s -H "$H" $HUBBO/smart-buttons \
+  | jq '{slots: (.slots | .light_2 = "dev_lamp"), revision}' > sb.json
+curl -s -X PUT -H "$H" -H 'Content-Type: application/json' -d @sb.json $HUBBO/smart-buttons
+```
+
+A stale `revision` gets `409 revision_conflict`; an unknown device gets `422 unknown_device` at
+`/slots/light_2`. A slot's device can't be deleted while the slot holds it (`409 device_in_use`).
 
 ### Start and stop
 
