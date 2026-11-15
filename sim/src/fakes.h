@@ -95,6 +95,9 @@ private:
     std::vector<std::string> reportDevices_;
 };
 
+// A fake cover's current_position until something moves it (both fakes).
+constexpr int32_t kFakeCoverPosition = 50;
+
 class FakeHomeAssistant : public IntegrationAdapter {
 public:
     explicit FakeHomeAssistant(std::string integrationId = "ha_main") : id_(std::move(integrationId)) {}
@@ -128,8 +131,10 @@ public:
     // and a Home Assistant action as "<service> <entity> <data json>".
     std::vector<std::string> &calls() { return calls_; }
     // An entity's state as the calls left it: each call's data fields
-    // become its attributes (volume_mute sets is_volume_muted), which a
-    // command with a stateAttribute (mute_toggle) reads. Unset: unknown.
+    // become its attributes (volume_mute sets is_volume_muted;
+    // set_cover_position also sets current_position), which a command with a
+    // stateAttribute (mute_toggle, position_step) reads. Unset: unknown. A
+    // cover starts at kFakeCoverPosition.
     const ha::ServiceValue *attribute(const std::string &entityId, const std::string &key) const;
 
 private:

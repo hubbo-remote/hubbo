@@ -39,6 +39,10 @@ struct FakeHaEntity {
     // A media player's is_volume_muted: set by media_player.volume_mute
     // calls (and /sim/ha muted=). nullopt: as built (false) or captured.
     std::optional<bool> muted;
+    // A cover's current_position (kFakeCoverPosition at reset), set by
+    // cover.set_cover_position calls. nullopt: HA reports none (unknown), or
+    // it isn't a cover.
+    std::optional<int32_t> position;
 };
 
 class FakeHaServer {
@@ -49,7 +53,8 @@ public:
     // Answers what the client sends: list_for_display, entity_registry/get,
     // subscribe_entities (one compressed event) and unsubscribe_events,
     // get_services, call_service (media_player.volume_mute also applies
-    // is_volume_muted to the entity's state, as a real player does), ping.
+    // is_volume_muted to the entity's state, as a real player does, and
+    // cover.set_cover_position a cover's current_position), ping.
     FakeHaServer();
     static constexpr const char *kYamlOnlyEntity = "switch.patio_fountain";
 

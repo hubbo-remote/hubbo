@@ -82,6 +82,9 @@ enum class ErrorCode : uint8_t {
     ForbiddenParam,        // a target key in call.data (entity_id, device_id, ...)
     TooDeep,               // call.data nested deeper than limits::kMaxHaCallDataDepth
     TemplateNotSupported,  // "{{" or "{%" in call.data
+    // A command that needs the entity's current state (cover.position_step's
+    // current_position) couldn't get it: unknown, unavailable or unread.
+    StateUnavailable,
 
     Count
 };

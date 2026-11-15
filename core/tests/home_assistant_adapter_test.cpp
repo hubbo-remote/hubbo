@@ -200,6 +200,7 @@ TEST_F(AdapterTest, TheNewDomainsRoundTripAndCallTheRightServices) {
     ConfigSpec cfg;
     cfg.revision = 1;
     cfg.globalBindingsRevision = 1;
+    cfg.smartButtons.revision = 1;
     cfg.integrations = {sim::integration("ha_main", kHomeAssistantType, "Home Assistant")};
     struct Case {
         const char *entityId;
@@ -658,4 +659,66 @@ TEST_F(AdapterTest, HomeAssistantActionsHaveASizeBudget) {
     cfg.devices.pop_back();  // at or under the budget
     report = ValidationReport();
     EXPECT_TRUE(compileConfig(cfg, adapters, &report)) << (report.ok() ? "" : report.issues()[0].path);
+}
+
+namespace {
+
+constexpr const char *kBlinds = "cover.office_blinds";
+
+DeviceSpec blindsDevice() {
+    DeviceSpec d = sim::haDevice("dev_blinds", "Office Blinds", "blind", kBlinds);
+    ha::CapabilitySnapshot snapshot;
+    snapshot.platform = "demo";
+    snapshot.supportedFeatures = 15;  // open, close, set position, stop
+    d.haCapabilities = snapshot;
+    return d;
+}
+
+std::vector<std::string> coverCalls(const FakeHaServer &server) {
+    std::vector<std::string> out;
+    for (const std::string &call : server.calls()) {
+        if (call.rfind("cover.", 0) == 0) out.push_back(call);
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST_F(AdapterTest, PositionStepReadsThePositionThenSendsItClamped) {
+    const CommandCatalog catalog = adapter.commandsFor(blindsDevice());
+    ASSERT_GE(catalog.find("cover.position_step"), 0);
+    const auto step = [&](Ticket ticket, int32_t by) {
+        ExecRequest r = request(catalog, "cover.position_step", ticket, kBlinds);
+        params_[0].integer = by;
+        r.paramsPresent = 1;
+        EXPECT_EQ(adapter.execute(r).status, ExecStatus::Pending);
+        integrationTask(300);  // read, then call
+    };
+    step(1, 30);   // 50 -> 80
+    step(2, 30);   // 80 -> 110, clamped to 100
+    step(3, -100); // 100 -> 0
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 3u);
+    for (const auto &result : sink.results) EXPECT_EQ(result.second.status, ExecStatus::Accepted);
+    EXPECT_EQ(coverCalls(server), (std::vector<std::string>{"cover.set_cover_position cover.office_blinds position=80",
+                                                            "cover.set_cover_position cover.office_blinds position=100",
+                                                            "cover.set_cover_position cover.office_blinds position=0"}));
+    EXPECT_EQ(server.subscriptions(), 0u);
+}
+
+TEST_F(AdapterTest, PositionStepWithNoPositionSendsNothing) {
+    for (sim::FakeHaEntity &e : server.entities()) {
+        if (e.info.entityId == kBlinds) e.position.reset();  // HA reports none (unknown)
+    }
+    const CommandCatalog catalog = adapter.commandsFor(blindsDevice());
+    ExecRequest r = request(catalog, "cover.position_step", 1, kBlinds);
+    params_[0].integer = 10;
+    r.paramsPresent = 1;
+    EXPECT_EQ(adapter.execute(r).status, ExecStatus::Pending);
+    integrationTask(300);
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 1u);
+    EXPECT_EQ(sink.results[0].second.status, ExecStatus::Failed);
+    EXPECT_EQ(sink.results[0].second.error, ErrorCode::StateUnavailable);
+    EXPECT_TRUE(coverCalls(server).empty());
 }

@@ -16,11 +16,6 @@ bool supportedDomain(std::string_view entityId) {
     return ha::entityDomain(entityId) != ha::EntityDomain::Unsupported;
 }
 
-std::string domainOf(std::string_view entityId) {
-    const size_t dot = entityId.find('.');
-    return std::string(dot == std::string_view::npos ? entityId : entityId.substr(0, dot));
-}
-
 std::string serialize(const JsonDocument &doc) {
     std::string out;
     serializeJson(doc, out);
@@ -529,7 +524,7 @@ void HomeAssistantClient::parseStateEntry(std::string_view id, std::string_view 
     JsonVariantConst attrs = doc["a"];
     HaCandidate c;
     c.entityId = entityId;
-    c.domain = domainOf(entityId);
+    c.domain = std::string(ha::entityDomainName(entityId));
     c.state = stringOr(doc["s"]);
     c.deviceClass = stringOr(attrs["device_class"]);
     c.info = entityInfo(entityId, attrs);
