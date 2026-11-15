@@ -80,6 +80,12 @@ config allocations used up the ~100 KB of internal RAM. The next internal alloca
 aborted (the core dump showed lwIP's mDNS logging an out-of-memory error). Drivers that need
 internal or DMA memory ask for it explicitly.
 
+The boot config parse (`bootState()`) runs under the same rule, bracketed back to the 4 KB default
+for the drivers started after it. The parsed and compiled config live for the whole uptime: in
+internal RAM they grew with the user's config until lwIP couldn't send frames over about 190 B
+(9.9 KB internal free). The `boot: before/after config` mem lines show what it costs, and every
+`mem:` line warns under 20 KB internal free.
+
 ## Storage
 
 | Where | What |

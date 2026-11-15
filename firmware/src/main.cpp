@@ -736,15 +736,22 @@ void publishRuntime() {
 
 // --- Serial console ------------------------------------------------------------
 
-void printMemory() {
-    con.printf("mem: heap free %lu min %lu largest %lu | internal free %lu min %lu | psram free %lu"
+// Under this, lwIP and the W5500 can't allocate big sends: frames over about
+// 190 B stop going out (seen at 9.9 KB free, with a 3.5 KB largest block).
+constexpr size_t kLowInternalHeapBytes = 20 * 1024;
+
+void printMemory(const char *label = "") {
+    const size_t internalFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    con.printf("%smem: heap free %lu min %lu largest %lu | internal free %lu min %lu | psram free %lu"
                   " | loop stack left %lu\n",
-                  static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()),
-                  static_cast<unsigned long>(ESP.getMaxAllocHeap()),
-                  static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                  label, static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()),
+                  static_cast<unsigned long>(ESP.getMaxAllocHeap()), static_cast<unsigned long>(internalFree),
                   static_cast<unsigned long>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)),
                   static_cast<unsigned long>(ESP.getFreePsram()),
                   static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
+    if (internalFree < kLowInternalHeapBytes) {
+        con.println("mem: WARNING internal RAM low; large network sends will stall");
+    }
 }
 
 void printStatus() {
@@ -1167,7 +1174,13 @@ void setup() {
         con.println("engine: no config reader slot; remote input is inert");
     }
     engine.setObserver(&engineLog);
+    // The config lives for the whole uptime: parse it into PSRAM, keeping
+    // internal RAM for lwIP and the drivers started below (prebuilt rule).
+    printMemory("boot: before config ");
+    heap_caps_malloc_extmem_enable(0);
     bootState();
+    heap_caps_malloc_extmem_enable(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL);
+    printMemory("boot: after config ");
     runtime.setConfig(configService.get());
     runtime.setBleHosts(&bleHosts);
     runtime.setMqtt(&mqttBridge);
