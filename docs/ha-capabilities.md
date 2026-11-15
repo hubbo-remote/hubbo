@@ -22,6 +22,8 @@ Every feature bit and service rule below was checked against Home Assistant's ow
   each service's required features and schema (cover positions and humidity are `Coerce(int)` +
   `Percentage()`; humidifier `min_humidity`/`max_humidity` default 0/100; select
   `select_next`/`select_previous` take an optional `cycle`, default true).
+- `homeassistant/components/remote/const.py`, `services.yaml` and `strings.json` (dev, checked
+  2026-11-14): `RemoteEntityFeature`, the six services, their fields and English strings.
 - `homeassistant/helpers/service.py`: how `required_features` is applied.
 - The fixture masks come from the integrations themselves: `denonavr/media_player.py`
   (`SUPPORT_DENON`), `sonos/media_player.py`, `webostv/media_player.py` (`SUPPORT_WEBOSTV`,
@@ -68,6 +70,10 @@ STOP_TILT 64, SET_TILT_POSITION 128 (SPEED 256 is unused).
 
 `HumidifierEntityFeature`: MODES 1. Scene, script, button, input_boolean and select have no
 feature bits.
+
+`RemoteEntityFeature`: LEARN_COMMAND 1, DELETE_COMMAND 2, ACTIVITY 4. Hubbo gates nothing on
+them itself; HA's `get_services` filters (turn_on's `activity` field needs ACTIVITY) apply to the
+hints.
 
 ## The allowlist
 
@@ -181,11 +187,23 @@ The open/close `speed` field isn't offered (free text).
 `select.select_previous` (Previous). A select with no options gets nothing. `cycle` is left to
 HA's default (true).
 
+### remote
+
+| Command | HA service | Needs | Params |
+|---|---|---|---|
+| `remote.turn_on` (Turn on), `.turn_off` (Turn off), `.toggle` (Toggle) | the same | | |
+
+Every remote, no params: turn_on's `activity` is text, which Hubbo doesn't type. Everything else
+goes through the Home Assistant action: HA's other `remote` services that match the entity
+(`remote.send_command`, `remote.learn_command`, `remote.delete_command`, and `remote.turn_on`
+with an `activity`), as custom services; see "Integration-specific services". Every command is
+momentary: one press, one call.
+
 ### Suggested kind
 
 Discovery candidates carry `suggested_kind`, from `ha::suggestedKind(domain, platform,
 device_class)`: light, switch, fan, cover, scene and script are their own kinds (garage doors and
-gates too are `cover`); humidifier is `climate`; button, input_boolean and select
+gates too are `cover`); humidifier is `climate`; button, input_boolean, select and remote
 are `other`. A media player is `receiver` or `speaker` by its device class (or `speaker` for the alexa_media and group
 platforms), `streamer` for apple_tv, and otherwise `tv`. hub-sim's showcase uses the same
 function.
@@ -193,8 +211,8 @@ function.
 ## Deliberately not offered
 
 - **toggle** (media_player, light, switch, fan, script): the architecture prefers explicit
-  on/off. Toggles break as soon as the hub and the device disagree. Covers, humidifiers and input
-  booleans get one too, as HA's own UI does.
+  on/off. Toggles break as soon as the hub and the device disagree. Covers, humidifiers, input
+  booleans and remotes get one too, as HA has it for them.
 - **Mute toggle is the one exception, and it doesn't guess.** HA has no mute toggle
   (`volume_mute` needs `is_volume_muted`), and a remote's mute key toggles. So
   `media_player.mute_toggle` sits next to Mute/Unmute: `EntityCapabilities::stateAttribute()`
@@ -211,13 +229,13 @@ function.
   `effect_list`; colours need array params, which the param model doesn't have.
 - **Integration-specific services** (`webostv.button`, `sonos.*`, `denonavr.*`): not hand-curated.
   They're resolved from HA's own service metadata; see below.
-- **Domains** remote, climate, lock, alarm_control_panel, camera, vacuum, valve, water_heater,
+- **Domains** climate, lock, alarm_control_panel, camera, vacuum, valve, water_heater,
   the other input_*, group, automation and everything else: no commands until added here with
-  tests. Remote and climate were dropped from the 2026-11-13 pass.
-  - `remote.send_command` takes arbitrary command strings. If it's ever added it needs a
-    per-device allowlist of command names chosen by the admin.
+  tests.
+- **Typed `remote.send_command`**: its `command` is free text or a list, so it's a Home Assistant
+  action (docs/design/ha-remote.md, 2026-11-14), not a typed command.
 - **Integration services for the newer domains** (scene through select): only media players,
-  lights, switches and fans get them (`offersIntegrationServices()`).
+  lights, switches, fans and remotes get them (`offersIntegrationServices()`).
 
 ## Safety rules (enforced in code)
 
@@ -288,6 +306,15 @@ Home Assistant action (below).
   supported. Only P's own services are considered (never the entity domain's, which are the
   allowlist above), and never when P is the entity's domain. Services with no entity target
   (domain-wide, device-only) are never offered.
+- **The remote exception** (docs/design/ha-remote.md): a `remote.*` entity also gets HA's
+  `remote` services whose target matches it; of the allowlisted ones only turn_on, and only
+  when it has fields left for the entity (`activity`, with ACTIVITY 4). They're always custom
+  services (never typed, never in `skipped_services`), ahead of P's with `remote.send_command`
+  first, so a long list of P's hints can't push it out of the 2048-byte budget. A YAML-only
+  remote (no platform) gets only these. `ha::serviceDomains(entity_id, platform)` (`remote`
+  first for a remote, then P) is the one rule: the `get_services` domains to parse, the order
+  offered, and what `ha::isDeviceService` lets an action send. Translations are fetched for
+  `remote` too.
 - Field selectors map to typed params; a field with its own feature filter the entity doesn't
   meet is dropped:
   - `boolean` → `bool`
@@ -350,9 +377,12 @@ Home Assistant action (below).
   lists them as `services`. An action picks one and writes its `data` as a JSON object, sent
   verbatim (`ha::EntityCapabilities::buildCustomCall`, `ServiceCall::rawData`):
   - the target is always the device's entity; the service must be `^[a-z][a-z0-9_]{0,31}\.[a-z][a-z0-9_]{0,63}$`
-    (`ha::isHaServiceId`), and its domain the snapshot's platform (`webostv.*` on a webOS TV;
-    else `forbidden_param` at `.../call/service`, checked when core compiles the action; a
-    device with no snapshot or platform takes none). Any service of that integration passes,
+    (`ha::isHaServiceId`), and its domain the snapshot's platform (`webostv.*` on a webOS TV),
+    or on a remote also `remote` (`{"service": "remote.send_command", "data": {"command":
+    "DPAD_UP"}}`); else `forbidden_param` at `.../call/service`, checked when core compiles the
+    action. A device with no snapshot takes none, and one with no platform takes none unless
+    it's a remote. One rule, `ha::isDeviceService(entity_id, platform, service)`, serves the
+    compiler and the snapshot decoder (custom services). Any service of that integration passes,
     not only the listed ones; the UI offers the list;
   - `data`: at most 1024 bytes compact and 4 levels; no top-level `entity_id`, `device_id`,
     `area_id`, `floor_id`, `label_id` (`forbidden_param`); no `{{` or `{%` anywhere
@@ -360,8 +390,8 @@ Home Assistant action (below).
   - at most 16 such actions per config (`capacity_exceeded`);
   - hints: up to 16 services and 8 fields, 2048 bytes per device and 16384 per config
     (`ha::kMaxCustomHintBytes`, `kMaxConfigHintBytes`); registration and re-link keep what fits.
-  An action can reach anything HA allows for a service of the device's own integration, so
-  it's the one place the "only allowlisted calls" rule doesn't hold; security.md says so.
+  An action can reach anything HA allows for a service of the device's own integration (and, on
+  a remote, of the `remote` domain), so it's the one place the "only allowlisted calls" rule doesn't hold; security.md says so.
 - **Hue rate.** Hue handles about one command per second (Harmonizer/HANDOFF.md). Bursts of
   `light.brightness_step` should be coalesced by the HA adapter's queue rather than sent one by
   one.
