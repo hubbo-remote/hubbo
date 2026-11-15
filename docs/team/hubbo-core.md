@@ -1,11 +1,28 @@
 # hubbo-core: working notes
 
-Current as of the mqtt branch (ha-domains, hub-name and everything before are committed).
+Current as of the ha-remote branch (setup-fixes, mqtt and everything before are committed).
 Design: `docs/design/mqtt-discovery.md`; the profile spec is `~/src/hubbo-devices/docs/spec.md`.
 This file covers state, decisions and traps only.
 
 ## State
 
+- HA remotes (ha-remote, uncommitted; design docs/design/ha-remote.md, kept deliberately small). An
+  earlier, bigger attempt (a text param type, kMaxParams 6, text plumbing) was thrown away as
+  over-designed: don't bring any of it back. Core's part:
+  - `serviceOnDevice` (compiler.cpp) is api's `ha::isDeviceService(entityId, platform, service)`,
+    the one rule (snapshot decode uses it too): the platform's services, plus `remote.*` on a
+    `remote.*` device even with no platform (YAML-only). Other devices unchanged.
+  - Client: get_translations' integration list is api's `ha::serviceDomains(entityId, platform)`
+    ({platform} plus "remote" on a remote), and the request is skipped only when that's empty.
+    showcase.cpp and addFakeHaSnapshots pass the same list to `ServiceDirectory::parse`.
+  - Fake HA: `remote.living_room_tv` ("Living Room TV", platform demo, features 0, state on; api's
+    NEW_DOMAIN_ENTITIES); the `remote` domain's get_services entries and component.remote.*
+    translations copied verbatim from the real HA capture (generic HA strings, no personal data).
+    The showcase picks the remote up as a fake-only domain.
+  - Tests: AdapterTest.ARemoteTakesTheRemoteDomainsServices, ARemoteCommandIsSentAsWritten, the
+    new-domains round trip (turn_on, toggle, and the three custom services with HA's labels),
+    ClientTest.EntityDetailsAreFetchedForOneEntity (remote and YAML-only remote translations),
+    SimShowcase.EveryCapturedEntityIsADevice.
 - Home Assistant action (setup-fixes, docs/design/ha-custom-action.md): `ActionSpec::call`
   (`HaServiceCallSpec` {service, data as compact JSON text}). `config::decodeHaServiceCall()` is
   the one checker (config decode, backup/restore and api's execute route): pattern via api's

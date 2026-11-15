@@ -315,6 +315,8 @@ std::string baseServicesJson() {
            R"("select_source":{"fields":{"source":{"required":true,"selector":{"text":{}}}}}},)"
            R"("light":{"turn_on":{"fields":{"brightness":{"selector":{"number":{"min":0,"max":255}}}}},"turn_off":{"fields":{}}},)"
            R"("switch":{"turn_on":{"fields":{}},"turn_off":{"fields":{}}},)"
+           // HA's remote domain, verbatim from a real HA (2026.11).
+           R"("remote":{"turn_off":{"fields":{},"target":{"entity":[{"domain":["remote"]}]}},"turn_on":{"fields":{"activity":{"example":"BedroomTV","filter":{"supported_features":[4]},"selector":{"text":{"multiline":false,"multiple":false}}}},"target":{"entity":[{"domain":["remote"]}]}},"toggle":{"fields":{},"target":{"entity":[{"domain":["remote"]}]}},"send_command":{"fields":{"device":{"example":"32756745","selector":{"text":{"multiline":false,"multiple":false}}},"command":{"required":true,"example":"Play","selector":{"object":{"multiple":false}}},"num_repeats":{"default":1,"selector":{"number":{"min":0.0,"max":255.0,"step":1.0,"mode":"slider"}}},"delay_secs":{"default":0.4,"selector":{"number":{"min":0.0,"max":60.0,"step":0.1,"unit_of_measurement":"seconds","mode":"slider"}}},"hold_secs":{"default":0,"selector":{"number":{"min":0.0,"max":60.0,"step":0.1,"unit_of_measurement":"seconds","mode":"slider"}}}},"target":{"entity":[{"domain":["remote"]}]}},"learn_command":{"fields":{"device":{"example":"television","selector":{"text":{"multiline":false,"multiple":false}}},"command":{"example":"Turn on","selector":{"object":{"multiple":false}}},"command_type":{"default":"ir","selector":{"select":{"options":["ir","rf"],"multiple":false,"custom_value":false,"sort":false}}},"alternative":{"selector":{"boolean":{}}},"timeout":{"selector":{"number":{"min":0.0,"max":60.0,"step":5.0,"unit_of_measurement":"seconds","mode":"slider"}}}},"target":{"entity":[{"domain":["remote"]}]}},"delete_command":{"fields":{"device":{"example":"television","selector":{"text":{"multiline":false,"multiple":false}}},"command":{"required":true,"example":"Mute","selector":{"object":{"multiple":false}}}},"target":{"entity":[{"domain":["remote"]}]}}},)"
            R"("denonavr":{)" +
            service("set_dynamic_eq", "denonavr", R"("dynamic_eq":{"required":true,"selector":{"boolean":{}}})") + "," +
            service("update_audyssey", "denonavr", "") + "," +
@@ -350,6 +352,44 @@ const std::vector<std::pair<std::string, std::string>> &baseTranslations() {
         {"component.denonavr.services.set_dynamic_eq.name", "Set dynamic equalizer"},
         {"component.denonavr.services.update_audyssey.description", "Updates Audyssey settings."},
         {"component.denonavr.services.update_audyssey.name", "Update Audyssey"},
+        {"component.remote.services.delete_command.description", "Deletes a command or a list of commands from a remote's database."},
+        {"component.remote.services.delete_command.fields.command.description", "The single command or the list of commands to be deleted."},
+        {"component.remote.services.delete_command.fields.command.name", "Command"},
+        {"component.remote.services.delete_command.fields.device.description", "Device from which commands will be deleted."},
+        {"component.remote.services.delete_command.fields.device.name", "Device"},
+        {"component.remote.services.delete_command.name", "Delete remote command"},
+        {"component.remote.services.learn_command.description", "Teaches a remote a command or list of commands from a device."},
+        {"component.remote.services.learn_command.fields.alternative.description", "If code must be stored as an alternative. This is useful for discrete codes. Discrete codes are used for toggles that only perform one function. For example, a code to only turn a device on. If it is on already, sending the code won't change the state."},
+        {"component.remote.services.learn_command.fields.alternative.name", "Alternative"},
+        {"component.remote.services.learn_command.fields.command.description", "A single command or a list of commands to learn."},
+        {"component.remote.services.learn_command.fields.command.name", "Command"},
+        {"component.remote.services.learn_command.fields.command_type.description", "The type of command to be learned."},
+        {"component.remote.services.learn_command.fields.command_type.name", "Command type"},
+        {"component.remote.services.learn_command.fields.device.description", "Device ID to learn command from."},
+        {"component.remote.services.learn_command.fields.device.name", "Device"},
+        {"component.remote.services.learn_command.fields.timeout.description", "Timeout for the command to be learned."},
+        {"component.remote.services.learn_command.fields.timeout.name", "Timeout"},
+        {"component.remote.services.learn_command.name", "Learn remote command"},
+        {"component.remote.services.send_command.description", "Sends a command or a list of commands to a device."},
+        {"component.remote.services.send_command.fields.command.description", "A single command or a list of commands to send."},
+        {"component.remote.services.send_command.fields.command.name", "Command"},
+        {"component.remote.services.send_command.fields.delay_secs.description", "The time you want to wait in between repeated commands."},
+        {"component.remote.services.send_command.fields.delay_secs.name", "Delay seconds"},
+        {"component.remote.services.send_command.fields.device.description", "Device ID to send command to."},
+        {"component.remote.services.send_command.fields.device.name", "Device"},
+        {"component.remote.services.send_command.fields.hold_secs.description", "The time you want to have it held before the release is send."},
+        {"component.remote.services.send_command.fields.hold_secs.name", "Hold seconds"},
+        {"component.remote.services.send_command.fields.num_repeats.description", "The number of times you want to repeat the commands."},
+        {"component.remote.services.send_command.fields.num_repeats.name", "Repeats"},
+        {"component.remote.services.send_command.name", "Send remote command"},
+        {"component.remote.services.toggle.description", "Sends the toggle command."},
+        {"component.remote.services.toggle.name", "Toggle via remote"},
+        {"component.remote.services.turn_off.description", "Sends the turn off command."},
+        {"component.remote.services.turn_off.name", "Turn off via remote"},
+        {"component.remote.services.turn_on.description", "Sends the turn on command."},
+        {"component.remote.services.turn_on.fields.activity.description", "Activity ID or activity name to be started."},
+        {"component.remote.services.turn_on.fields.activity.name", "Activity"},
+        {"component.remote.services.turn_on.name", "Turn on via remote"},
         {"component.sonos.services.play_queue.description", "Starts playing the queue from the first item."},
         {"component.sonos.services.play_queue.fields.queue_position.description", "Position of the song in the queue to start playing from."},
         {"component.sonos.services.play_queue.fields.queue_position.name", "Queue position"},
@@ -471,10 +511,12 @@ void FakeHaTransport::poll(uint32_t timeoutMs) {
 }
 
 void addFakeHaSnapshots(ConfigSpec *config, const FakeHaServer &server) {
-    std::vector<std::string> platforms;
-    for (const FakeHaEntity &e : server.entities()) platforms.push_back(e.platform);
+    std::vector<std::string> domains;
+    for (const FakeHaEntity &e : server.entities()) {
+        for (std::string &domain : ha::serviceDomains(e.info.entityId, e.platform)) domains.push_back(std::move(domain));
+    }
     const ha::ServiceDirectory services =
-        ha::ServiceDirectory::parse(server.servicesJson(), platforms, server.translationsJson(platforms));
+        ha::ServiceDirectory::parse(server.servicesJson(), domains, server.translationsJson(domains));
     for (DeviceSpec &device : config->devices) {
         if (device.provider.type != kHomeAssistantType || device.haCapabilities) continue;
         for (const FakeHaEntity &e : server.entities()) {

@@ -219,6 +219,13 @@ TEST(HaCapabilities, NewerDomains) {
     EXPECT_EQ(ids(EntityCapabilities::fromEntity(dryerCycle())),
               (V{"select.select_option", "select.select_next", "select.select_previous"}));
     EXPECT_TRUE(EntityCapabilities::fromEntity(plain("select.empty")).empty()) << "no options: nothing to choose";
+    // Every remote, no params (turn_on's activity is text: a Home Assistant action).
+    const auto remote = EntityCapabilities::fromEntity(plain("remote.living_room_tv"));
+    EXPECT_EQ(ids(remote), (V{"remote.turn_on", "remote.turn_off", "remote.toggle"}));
+    for (const char *id : {"remote.turn_on", "remote.turn_off", "remote.toggle"}) {
+        EXPECT_EQ(command(remote, id).paramCount, 0) << id;
+    }
+    EXPECT_TRUE(offersIntegrationServices("remote.living_room_tv"));
 }
 
 TEST(HaCapabilities, NewerDomainParams) {
@@ -433,7 +440,7 @@ TEST(HaCapabilities, LightModes) {
 }
 
 TEST(HaCapabilities, UnsupportedDomainsAndBadIdsGetNothing) {
-    for (const char *id : {"remote.living_room_hub", "climate.hallway", "lock.front_door", "vacuum.kitchen",
+    for (const char *id : {"climate.hallway", "lock.front_door", "vacuum.kitchen",
                            "alarm_control_panel.home", "valve.main", "scene.all", "group.all_lights", "homeassistant.restart",
                            "light.all", "light.none", "all", "light.a,light.b", "Light.Kitchen",
                            "light.", ".kitchen", "light.kit chen", "light.kitchen\n", ""}) {

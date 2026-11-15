@@ -88,22 +88,43 @@ Current as of the mqtt branch (Hubbo as an HA device over MQTT discovery). Not a
   anyway. Core parses the attributes (ha_client, fake_ha). Fans get the `fan` kind.
   `fanSpeedStep()` (capabilities.h) is the one rounding rule, used by the snapshot and the commands.
 - **Newer domains** (ha-domains, docs/design/ha-domains.md; HA dev checked 2026-11-13):
-  scene, script, cover, button, input_boolean, humidifier, select. Remote and climate were
-  dropped by the user mid-pass (no send_command: it needs free text). `cover_feature` and
+  scene, script, cover, button, input_boolean, humidifier, select (remote came later, below).
+  Climate was dropped by the user. `cover_feature` and
   `humidifier_feature` bits are in capabilities.h. EntityInfo/snapshot add `availableModes`,
   `options` and `minHumidity`/`maxHumidity` (snapshot: whole percent via `humidityRange()`, the
   one rule; 0/0 = not reported, HA's 0..100). Every new id is `<domain>.<service>`. Toggle is
   offered for cover, humidifier and input_boolean. `offersIntegrationServices()` keeps platform
-  services to media_player/light/switch/fan (offerFor and fromSnapshot both check). Per-domain
+  services to media_player/light/switch/fan/remote (offerFor and fromSnapshot both check). Per-domain
   facts (suggested kind, integration services) are one `kDomainTraits` table in EntityDomain
   order, beside `kEntityDomains` (which stays a plain name array: validate.py parses it).
+- **Remote domain** (ha-remote, docs/design/ha-remote.md, 2026-11-14). An earlier, bigger
+  ha-remote attempt was discarded as over-designed; this one is "just bring in remote":
+  - `EntityDomain::Remote` / `"remote"` last in kEntityDomains, kind `other`, integration
+    services on. Allowlist `remote.turn_on/turn_off/toggle`, no params (activity is text).
+  - The one exception to "platform's services only": a remote.* also gets HA's `remote` services
+    that target it, always as custom services (never typed, not in `skipped`); an allowlisted one
+    only with fields left (`ha::isAllowlistedService`; turn_on's activity with ACTIVITY 4, the
+    fixture remote has 0, so none). They come before the platform's, send_command first, so the
+    2048-byte hint trim keeps them. YAML remote (platform ""): only those.
+  - The one rule is `ha::serviceDomains(entityId, platform)` (capabilities.h; services.h
+    includes it): "remote" first for a remote, then the platform unless it's the entity's own
+    domain. It's the parse list (fillDetails, showcase, fake_ha, ha_client), offerFor's loop and
+    order, and `ha::isDeviceService` (domain in it): the snapshot decoder's custom services
+    (typed `services` stay platform-only) and core's serviceOnDevice.
+  - Fixture `remote.living_room_tv` (NEW_DOMAIN_ENTITIES, demo, features 0) with
+    REMOTE_CUSTOM_SERVICES (HA's real services.yaml + strings.json, the hub's 160-byte cut);
+    matches core's fake HA. Contract: new_domains_flow runs `remote_action()` on it (send_command
+    reaches last_call; webostv.button is forbidden_param); ha_action_flow refuses
+    remote.send_command on the LG TV (all modes, so the mock must refuse it too).
+  - Tests: HaServices.RemoteGetsTheRemoteDomainsServicesAsCustomServices,
+    HaSnapshot.RemoteServicesDecodeOnlyOnARemote, ApiTest.YamlRemoteGetsTheRemoteDomainsServices.
 - **`suggestedKind(domain, platform, deviceClass)`** (capabilities.h) is the one kind rule:
   candidates carry `suggested_kind` (required, DeviceKind; candidates only, not details),
   hub-sim's showcase calls it, and gen_fixtures.py `suggested_kind()` mirrors it.
   Core's `HaCandidate::deviceClass` feeds it.
 - Fixtures: `integrations/ha_main.entities/<entity_id>.capabilities.json` holds the catalog that
   registering each made-up newer-domain entity gives (NEW_DOMAIN_ENTITIES; the web mock serves
-  these). Fake HA has the same 7 entities, and contract `new_domains_flow` (sim only) registers
+  these). Fake HA has the same 8 entities, and contract `new_domains_flow` (sim only) registers
   each, compares its capabilities and suggested_kind with the fixtures, then deletes it.
 - One default rule: `applyDefault()` (snapshot_json.h) serves both `parse()` (which drops a default
   that doesn't fit) and `decodeSnapshot()` (which refuses it). contract.py's `HA_DOMAINS` comes

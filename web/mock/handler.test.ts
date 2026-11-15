@@ -110,6 +110,20 @@ describe('mock matches hub-sim', () => {
     expect(errorOf(await run({ params: {}, call: { service: 'sonos.snapshot', data: {} } })).details?.map((d) => `${d.code} ${d.path}`)).toEqual(['forbidden_param /call/service'])
   })
 
+  it('a remote takes `remote` services through the Home Assistant action; other devices refuse them', async () => {
+    const m = createMock({ discoverDelayMs: 0 })
+    const call = { service: 'remote.send_command', data: { command: 'DPAD_UP' } }
+    const run = (id: string) => m.handle(req('POST', `/devices/${id}/commands/call_service/execute`, { params: {}, call }))
+    expect(errorOf(await run('dev_lg_tv')).details?.map((d) => `${d.code} ${d.path}`)).toEqual(['forbidden_param /call/service'])
+    await loadDetails(m, 'remote.living_room_tv')
+    const r = await m.handle(req('POST', '/admin/devices', { integration_id: 'ha_main', provider: { type: 'home_assistant', entity_id: 'remote.living_room_tv' }, name: 'Living Room TV', kind: 'other' }))
+    const { id } = r.body as { id: string }
+    expect(((await run(id)).body as ExecuteResult).status).toBe('accepted')
+    const g = (await m.handle(req('GET', '/global-bindings'))).body as { revision: number }
+    const put = await m.handle(req('PUT', '/global-bindings', { revision: g.revision, bindings: { 'info:tap': [{ integration_id: 'ha_main', device_id: id, command_id: 'call_service', params: {}, call }] } }))
+    expect(put.status).toBe(200)
+  })
+
   it('405 for a known path with the wrong method', async () => {
     const r = await createMock().handle(req('PATCH', '/devices'))
     expect(r.status).toBe(405)
@@ -448,7 +462,7 @@ describe('mock behaviour', () => {
 
   it('registering one of the newer domains stores its fixture’s commands, typed params and all', async () => {
     const m = createMock({ discoverDelayMs: 0 })
-    for (const entityId of ['scene.movie_night', 'script.goodnight', 'cover.office_blinds', 'button.restart_router', 'input_boolean.guest_mode', 'humidifier.bedroom_humidifier', 'select.dryer_cycle']) {
+    for (const entityId of ['scene.movie_night', 'script.goodnight', 'cover.office_blinds', 'button.restart_router', 'input_boolean.guest_mode', 'humidifier.bedroom_humidifier', 'select.dryer_cycle', 'remote.living_room_tv']) {
       await loadDetails(m, entityId)
       const r = await m.handle(req('POST', '/admin/devices', { integration_id: 'ha_main', provider: { type: 'home_assistant', entity_id: entityId }, name: entityId, kind: 'other' }))
       expect(r.status).toBe(201)
@@ -511,7 +525,7 @@ describe('mock behaviour', () => {
     await m.handle(req('POST', '/__mock/ha?rename=media_player.family_room_lg_tv&to=media_player.living_room_lg_tv'))
     expect(((await m.handle(req('GET', '/devices/dev_lg_tv'))).body as { availability: string }).availability).toBe('available') // not yet noticed
     await m.handle(req('POST', '/admin/integrations/ha_main/discover'))
-    expect(((await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body as DiscoverStatus).total).toBe(17) // renamed, not removed
+    expect(((await m.handle(req('GET', '/admin/integrations/ha_main/discover'))).body as DiscoverStatus).total).toBe(18) // renamed, not removed
     expect(((await m.handle(req('GET', '/devices/dev_lg_tv'))).body as { availability: string }).availability).toBe('stale')
     const exec = await m.handle(req('POST', '/devices/dev_lg_tv/commands/media_player.turn_on/execute', { params: {} }))
     expect([exec.status, exec.body]).toEqual([200, expect.objectContaining({ status: 'failed', message: 'entity_not_found' })])

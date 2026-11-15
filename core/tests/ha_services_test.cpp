@@ -106,7 +106,8 @@ const char *kServices = R"({
   }
 })";
 
-std::vector<std::string> ids(const std::vector<SnapshotService> &services) {
+template <typename Service>  // SnapshotService or SnapshotCustomService
+std::vector<std::string> ids(const std::vector<Service> &services) {
     std::vector<std::string> out;
     for (const auto &s : services) out.push_back(s.service);
     return out;
@@ -117,6 +118,17 @@ std::vector<std::string> skips(const ServiceDirectory::Offer &offer) {
     std::vector<std::string> out;
     for (const auto &s : offer.skipped) out.push_back(s.service + " " + ServiceDirectory::skipReasonName(s.reason));
     return out;
+}
+
+// The first issue decoding `json` for `entityId` ("<path> <code>"), or "ok".
+std::string decodeIssue(const std::string &json, const char *entityId = "media_player.tv") {
+    JsonDocument doc;
+    deserializeJson(doc, json);
+    CapabilitySnapshot s;
+    ValidationReport report;
+    decodeSnapshot(doc.as<JsonVariantConst>(), &s, &report, "", entityId);
+    return report.issues().empty() ? std::string("ok")
+                                   : report.issues()[0].path + " " + errorCodeName(report.issues()[0].code);
 }
 
 // encode -> text -> decode: the decode must pass and give back the same snapshot.
@@ -666,14 +678,6 @@ TEST(HaServices, ServiceIdShape) {
 }
 
 TEST(HaSnapshot, CustomServicesDecodeStrictly) {
-    auto decodeIssue = [](const char *json, const char *entityId = "media_player.tv") {
-        JsonDocument doc;
-        deserializeJson(doc, json);
-        CapabilitySnapshot s;
-        ValidationReport report;
-        decodeSnapshot(doc.as<JsonVariantConst>(), &s, &report, "", entityId);
-        return report.issues().empty() ? std::string("ok") : report.issues()[0].path + " " + errorCodeName(report.issues()[0].code);
-    };
     const std::string base = R"({"platform":"webostv","supported_features":0,"services":[],"custom_services":)";
     EXPECT_EQ(decodeIssue((base + R"([{"service":"webostv.button","label":"Button","fields":[{"name":"button","required":true,"example":"LEFT"}]}]})").c_str()), "ok");
     EXPECT_EQ(decodeIssue((base + R"([{"service":"sonos.x","fields":[]}]})").c_str()), "/custom_services/0/service invalid_command_id");
@@ -717,4 +721,179 @@ TEST(HaSnapshot, TrimKeepsTheCustomServicesThatFit) {
     t.assign(kMaxCustomServices + 2, make({10})[0]);
     trimCustomServices(&t, kMaxCustomHintBytes);
     EXPECT_EQ(t.size(), kMaxCustomServices) << "and at most kMaxCustomServices";
+}
+
+namespace {
+
+// HA's remote/services.yaml and harmony's, as get_services gives them
+// (normalized selectors; RemoteEntityFeature.ACTIVITY = 4).
+const char *kRemoteServices = R"({
+  "remote": {
+    "turn_on": {"name": "Turn on via remote", "target": {"entity": [{"domain": ["remote"]}]},
+                "fields": {"activity": {"example": "BedroomTV", "filter": {"supported_features": [4]},
+                                        "selector": {"text": {"multiline": false, "multiple": false}}}}},
+    "toggle": {"name": "Toggle via remote", "target": {"entity": [{"domain": ["remote"]}]}, "fields": {}},
+    "turn_off": {"name": "Turn off via remote", "target": {"entity": [{"domain": ["remote"]}]}, "fields": {}},
+    "send_command": {
+      "name": "Send remote command", "target": {"entity": [{"domain": ["remote"]}]},
+      "fields": {
+        "device": {"example": "32756745", "selector": {"text": {"multiline": false, "multiple": false}},
+                   "description": "Device ID to send command to."},
+        "command": {"required": true, "example": "Play", "selector": {"object": {"multiple": false}},
+                    "description": "A single command or a list of commands to send."},
+        "num_repeats": {"default": 1, "selector": {"number": {"min": 0, "max": 255, "step": 1, "mode": "slider"}}},
+        "delay_secs": {"default": 0.4, "selector": {"number": {"min": 0, "max": 60, "step": 0.1, "mode": "slider",
+                                                               "unit_of_measurement": "seconds"}}},
+        "hold_secs": {"default": 0, "selector": {"number": {"min": 0, "max": 60, "step": 0.1, "mode": "slider",
+                                                            "unit_of_measurement": "seconds"}}}
+      }
+    },
+    "learn_command": {
+      "name": "Learn remote command", "target": {"entity": [{"domain": ["remote"]}]},
+      "fields": {
+        "device": {"example": "television", "selector": {"text": {"multiline": false, "multiple": false}}},
+        "command": {"example": "Turn on", "selector": {"object": {"multiple": false}}},
+        "command_type": {"default": "ir", "selector": {"select": {"options": ["ir", "rf"]}}},
+        "alternative": {"selector": {"boolean": {}}},
+        "timeout": {"selector": {"number": {"min": 0, "max": 60, "step": 5, "mode": "slider",
+                                            "unit_of_measurement": "seconds"}}}
+      }
+    },
+    "delete_command": {
+      "name": "Delete remote command", "target": {"entity": [{"domain": ["remote"]}]},
+      "fields": {
+        "device": {"example": "television", "selector": {"text": {"multiline": false, "multiple": false}}},
+        "command": {"required": true, "example": "Mute", "selector": {"object": {"multiple": false}}}
+      }
+    }
+  },
+  "harmony": {
+    "sync": {"name": "Sync", "target": {"entity": [{"integration": "harmony", "domain": ["remote"]}]}, "fields": {}},
+    "change_channel": {
+      "name": "Change channel", "target": {"entity": [{"integration": "harmony", "domain": ["remote"]}]},
+      "fields": {"channel": {"required": true, "selector": {"number": {"min": 0, "max": 9999, "mode": "box"}}}}
+    }
+  },
+  "webostv": {
+    "button": {
+      "fields": {
+        "entity_id": {"required": true, "selector": {"entity": {"integration": "webostv", "domain": "media_player"}}},
+        "button": {"required": true, "example": "LEFT", "selector": {"text": {}}}
+      }
+    }
+  }
+})";
+
+}  // namespace
+
+TEST(HaServices, RemoteGetsTheRemoteDomainsServicesAsCustomServices) {
+    using V = std::vector<std::string>;
+    EXPECT_EQ(serviceDomains("remote.tv", "harmony"), (V{"remote", "harmony"})) << "remote first";
+    EXPECT_EQ(serviceDomains("remote.tv", ""), V{"remote"}) << "a YAML remote";
+    EXPECT_EQ(serviceDomains("remote.tv", "remote"), V{"remote"});
+    EXPECT_EQ(serviceDomains("media_player.tv", "webostv"), V{"webostv"});
+    EXPECT_TRUE(serviceDomains("media_player.tv", "").empty());
+    EXPECT_TRUE(serviceDomains("media_player.tv", "media_player").empty()) << "the domain's own: the allowlist";
+    EXPECT_TRUE(isDeviceService("remote.tv", "harmony", "remote.send_command"));
+    EXPECT_TRUE(isDeviceService("remote.tv", "harmony", "harmony.sync"));
+    EXPECT_TRUE(isDeviceService("remote.yaml", "", "remote.send_command"));
+    EXPECT_FALSE(isDeviceService("media_player.tv", "webostv", "remote.send_command"));
+    EXPECT_FALSE(isDeviceService("remote.tv", "harmony", "homeassistant.stop"));
+    EXPECT_FALSE(isDeviceService("media_player.tv", "", "webostv.button"));
+
+    const ServiceDirectory dir = ServiceDirectory::parse(kRemoteServices, serviceDomains("remote.tv", "harmony"));
+    const auto offer = dir.offerFor("remote.tv", "harmony", 0);
+    EXPECT_EQ(ids(offer.services), (V{"harmony.change_channel", "harmony.sync"})) << "the platform's, typed";
+    EXPECT_EQ(ids(offer.custom), (V{"remote.send_command", "remote.delete_command", "remote.learn_command"}))
+        << "send_command first; no ACTIVITY: turn_on has no fields left, so the typed one is enough";
+    EXPECT_TRUE(offer.skipped.empty()) << "the remote domain's are offered, not skipped";
+    const SnapshotCustomService &send = offer.custom[0];
+    EXPECT_EQ(send.label, "Send remote command");
+    V fields;
+    for (const auto &f : send.fields) fields.push_back(f.name);
+    EXPECT_EQ(fields, (V{"device", "command", "num_repeats", "delay_secs", "hold_secs"}));
+    EXPECT_TRUE(send.fields[1].required);
+    EXPECT_EQ(send.fields[1].example, "\"Play\"");
+    EXPECT_EQ(send.fields[1].description, "A single command or a list of commands to send.");
+
+    // With ACTIVITY, turn_on's activity survives its filter: turn_on is
+    // listed too (the typed turn_on stays). Never turn_off/toggle (no fields).
+    const auto activity = dir.offerFor("remote.tv", "harmony", 4);
+    EXPECT_EQ(ids(activity.custom),
+              (V{"remote.send_command", "remote.delete_command", "remote.learn_command", "remote.turn_on"}));
+    ASSERT_EQ(activity.custom[3].fields.size(), 1u);
+    EXPECT_EQ(activity.custom[3].fields[0].name, "activity");
+    EXPECT_EQ(activity.custom[3].fields[0].example, "\"BedroomTV\"");
+
+    // A YAML remote (no platform) still gets them; a media player never does.
+    EXPECT_EQ(ids(dir.offerFor("remote.yaml", "", 0).custom), ids(offer.custom));
+    EXPECT_TRUE(dir.offerFor("remote.yaml", "", 0).services.empty());
+    const ServiceDirectory both = ServiceDirectory::parse(kRemoteServices, {"remote", "webostv"});
+    EXPECT_EQ(ids(both.offerFor("media_player.lg", "webostv", 0).custom), V{"webostv.button"});
+    EXPECT_TRUE(both.offerFor("light.x", "", 0).custom.empty());
+
+    // Stored and decoded for the remote: the Home Assistant action (ApiTest
+    // YamlRemoteGetsTheRemoteDomainsServices sends one).
+    EntityInfo entity;
+    entity.entityId = "remote.yaml";
+    const CapabilitySnapshot snapshot = makeSnapshot(entity, "", dir);
+    ASSERT_EQ(snapshot.customServices.size(), 3u);
+    JsonDocument doc;
+    encodeSnapshot(snapshot, doc.to<JsonObject>());
+    CapabilitySnapshot decoded;
+    ValidationReport report;
+    ASSERT_TRUE(decodeSnapshot(doc.as<JsonVariantConst>(), &decoded, &report, "/ha", entity.entityId));
+    EXPECT_EQ(decoded, snapshot);
+    const EntityCapabilities caps = EntityCapabilities::fromSnapshot(entity.entityId, decoded);
+    for (const char *id : {"remote.turn_on", "remote.turn_off", "remote.toggle", kCallServiceCommandId}) {
+        EXPECT_GE(caps.catalog().find(id), 0) << id;
+    }
+}
+
+TEST(HaSnapshot, RemoteServicesDecodeOnlyOnARemote) {
+    const std::string custom =
+        R"({"platform":"","supported_features":0,"services":[],"custom_services":[{"service":"remote.send_command","fields":[{"name":"command","required":true}]}]})";
+    EXPECT_EQ(decodeIssue(custom, "remote.yaml"), "ok");
+    EXPECT_EQ(decodeIssue(custom, "media_player.tv"), "/custom_services/0/service invalid_command_id");
+    const std::string harmony =
+        R"({"platform":"harmony","supported_features":0,"services":[],"custom_services":[{"service":"remote.send_command","fields":[]},{"service":"harmony.x","fields":[]}]})";
+    EXPECT_EQ(decodeIssue(harmony, "remote.tv"), "ok");
+    // Typed services stay the platform's own.
+    const std::string typed =
+        R"({"platform":"harmony","supported_features":0,"services":[{"service":"remote.send_command","fields":[]}]})";
+    EXPECT_EQ(decodeIssue(typed, "remote.tv"), "/services/0/service invalid_command_id");
+}
+
+TEST(HaServices, RemoteServicesComeFirstInTheHintBudget) {
+    // A platform whose untyped services' hints alone overflow the 2048 bytes.
+    std::string big = R"({"remote":)";
+    {
+        JsonDocument doc;
+        deserializeJson(doc, kRemoteServices);
+        std::string remote;
+        serializeJson(doc["remote"], remote);
+        big += remote;
+    }
+    big += R"(,"chatty":{)";
+    const std::string description(150, 'd');
+    for (int s = 0; s < 3; s++) {
+        big += std::string(s ? "," : "") + "\"say_" + std::to_string(s) + R"(":{"target":{"entity":[{"integration":"chatty"}]},"fields":{)";
+        for (int f = 0; f < 6; f++) {
+            big += std::string(f ? "," : "") + "\"f" + std::to_string(f) + R"(":{"description":")" + description +
+                   R"(","selector":{"text":{}}})";
+        }
+        big += "}}";
+    }
+    big += "}}";
+    const ServiceDirectory dir = ServiceDirectory::parse(big, serviceDomains("remote.tv", "chatty"));
+    const auto offer = dir.offerFor("remote.tv", "chatty", 0);
+    ASSERT_GE(offer.custom.size(), 3u);
+    EXPECT_EQ(offer.custom[0].service, "remote.send_command");
+    EXPECT_EQ(offer.custom[1].service, "remote.delete_command");
+    EXPECT_EQ(offer.custom[2].service, "remote.learn_command");
+    EXPECT_LT(offer.custom.size(), 6u) << "some of chatty's were trimmed";
+    size_t bytes = 0;
+    for (const auto &c : offer.custom) bytes += customHintBytes(c);
+    EXPECT_LE(bytes, kMaxCustomHintBytes);
+    EXPECT_EQ(dir.offerFor("media_player.tv", "chatty", 0).custom.size(), 2u) << "without remote, two chatty fit";
 }

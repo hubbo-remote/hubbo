@@ -384,14 +384,16 @@ bool decodeHint(JsonVariantConst item, std::vector<SnapshotHint> *hints, Validat
     return false;
 }
 
-bool decodeCustomService(JsonVariantConst item, const std::string &platform,
+// A custom service: the platform's own, or on a remote HA's `remote` ones.
+bool decodeCustomService(JsonVariantConst item, const std::string &platform, std::string_view entityId,
                          std::vector<SnapshotCustomService> *services, ValidationReport *report, std::string where) {
     Reader r(item, report, std::move(where));
     if (!r.ok()) return false;
     r.only({"service", "label", "fields"});
     SnapshotCustomService &service = services->emplace_back();
-    if (r.string("service", &service.service, limits::kMaxCommandIdLength, true)) {
-        checkServiceId(r, service.service, platform);
+    if (r.string("service", &service.service, limits::kMaxCommandIdLength, true) &&
+        !isDeviceService(entityId, platform, service.service)) {
+        r.failAt(ErrorCode::InvalidCommandId, "service");
     }
     for (size_t k = 0; k + 1 < services->size(); k++) {
         if ((*services)[k].service == service.service) r.failAt(ErrorCode::DuplicateId, "service");
@@ -474,7 +476,8 @@ bool decodeSnapshot(JsonVariantConst json, CapabilitySnapshot *out, ValidationRe
         } else {
             int i = 0;
             for (JsonVariantConst item : custom.as<JsonArrayConst>()) {
-                if (!decodeCustomService(item, s.platform, &s.customServices, report, r.at("custom_services", i++))) {
+                if (!decodeCustomService(item, s.platform, entityId, &s.customServices, report,
+                                         r.at("custom_services", i++))) {
                     r.taint();
                 }
             }

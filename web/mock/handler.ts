@@ -140,7 +140,7 @@ const MAX_FILE_DEPTH = 12
 /** The HA entity domains Hubbo offers (api/openapi.yaml), and how the hub's messages list them. */
 type HaDomain = NonNullable<NonNullable<operations['getDiscovery']['parameters']['query']>['domain']>
 // Every domain of the spec's list, once (the compiler says when they drift).
-const DOMAINS: Record<HaDomain, true> = { media_player: true, light: true, switch: true, fan: true, scene: true, script: true, cover: true, button: true, input_boolean: true, humidifier: true, select: true }
+const DOMAINS: Record<HaDomain, true> = { media_player: true, light: true, switch: true, fan: true, scene: true, script: true, cover: true, button: true, input_boolean: true, humidifier: true, select: true, remote: true }
 const HA_DOMAINS: readonly string[] = Object.keys(DOMAINS)
 const DOMAIN_LIST = `${HA_DOMAINS.slice(0, -1).join(', ')} or ${HA_DOMAINS.at(-1)}`
 /** Entity → platform, the integration services Hubbo would offer, and the ones it skips. */
@@ -366,10 +366,16 @@ export function createMock(opts: MockOptions = {}) {
     capabilities: db.capabilities,
     systemCommands: db.integrations.find((i) => i.id === 'system')?.commands ?? [],
     activities: db.activities.map((a) => ({ id: a.id, name: a.name })),
-    haPlatforms: new Map(db.devices.flatMap((d) => (d.provider.type === 'home_assistant' ? [[d.id, entityPlatform(d.provider.entity_id)] as const] : []))),
+    haServiceDomains: new Map(db.devices.flatMap((d) => (d.provider.type === 'home_assistant' ? [[d.id, serviceDomains(d.provider.entity_id)] as const] : []))),
   })
-  /** An entity's HA integration (its snapshot's platform; kept after HA forgets it), '' for none (YAML-only). */
-  const entityPlatform = (entityId: string) => entityExtras.get(entityId)?.platform ?? ''
+  /** An entity's Home Assistant action domains (core's serviceOnDevice): its platform, kept after HA forgets it, plus `remote` on a remote. */
+  const serviceDomains = (entityId: string) => {
+    const domains: string[] = []
+    const platform = entityExtras.get(entityId)?.platform
+    if (platform) domains.push(platform)
+    if (entityId.startsWith('remote.')) domains.push('remote')
+    return domains
+  }
 
   function integrationState(id: string): IntegrationState {
     const c = db.configs.get(id)
@@ -490,6 +496,9 @@ export function createMock(opts: MockOptions = {}) {
     const services = (entityExtras.get(c.entity_id!)?.skipped ?? [])
       .filter((x) => CALLABLE_SKIPS.has(x.reason))
       .map((x) => CUSTOM_SERVICES[x.service] ?? { service: x.service, fields: [] })
+    // Then the entity's own call_service's (a remote's `remote` services from its fixture), once each.
+    const own = (all.get(CALL_SERVICE)?.services ?? []).filter((x) => !services.some((y) => y.service === x.service))
+    services.push(...own)
     if (services.length) commands.push({ command_id: CALL_SERVICE, label: 'Home Assistant action', effect: 'momentary', group: 'custom', params: [], services })
     return commands
   }
@@ -1045,7 +1054,7 @@ export function createMock(opts: MockOptions = {}) {
           const commands = haCommands(c)
           const cat = catalog()
           cat.capabilities = new Map(cat.capabilities).set(d.id, { device_id: d.id, integration_id: d.integration_id, commands })
-          cat.haPlatforms = new Map(cat.haPlatforms).set(d.id, entityPlatform(p.entity_id))
+          cat.haServiceDomains = new Map(cat.haServiceDomains).set(d.id, serviceDomains(p.entity_id))
           const broken = db.activities.flatMap((a, ai) => validateActivity(a, cat).errors.map((x) => ({ ...x, path: `/activities/${ai}${x.path}` })))
           const global: ValidationIssue[] = []
           validateBindings(db.globalBindings.bindings, cat, global, [])

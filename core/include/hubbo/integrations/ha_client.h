@@ -94,12 +94,13 @@ struct HaEntityDetails {
     // hundred KB (large allocations go to PSRAM on the board); free it once
     // normalized.
     std::string services;
-    // frontend/get_translations' `resources` for `platform` (category
-    // services, English), as HA sent it: a flat JSON object,
-    // "component.<platform>.services.<service>.name" (and .description,
-    // .fields.<field>.name, ...) -> string. "" when there's no platform or
-    // the fetch failed: the services' own names are the fallback. Free it
-    // once normalized, like `services`.
+    // frontend/get_translations' `resources` for ha::serviceDomains(entityId,
+    // platform) (category services, English): the platform, plus `remote` on
+    // a remote entity (a YAML-only remote too, with no platform). As HA sent
+    // it: a flat JSON object, "component.<domain>.services.<service>.name"
+    // (and .description, .fields.<field>.name, ...) -> string. "" when there
+    // are no such domains or the fetch failed: the services' own names are
+    // the fallback. Free it once normalized, like `services`.
     std::string translations;
 };
 

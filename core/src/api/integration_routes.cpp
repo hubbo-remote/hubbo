@@ -483,10 +483,10 @@ std::string detailsError(ErrorCode code, const std::string &entityId) {
 
 // Normalizes fetched details: the snapshot registration stores.
 void fillDetails(EntityDetails *out, integrations::HaEntityDetails in) {
-    const std::vector<std::string> platforms{in.platform};
     ha::ServiceDirectory::Offer offer;
     {
-        const ha::ServiceDirectory services = ha::ServiceDirectory::parse(in.services, platforms, in.translations);
+        const ha::ServiceDirectory services =
+            ha::ServiceDirectory::parse(in.services, ha::serviceDomains(in.entityId, in.platform), in.translations);
         std::string().swap(in.services);  // about 230 KB
         std::string().swap(in.translations);
         out->snapshot = ha::makeSnapshot(in.info, in.platform, services, &offer);

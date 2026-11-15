@@ -1,6 +1,6 @@
 {
   "state": "done",
-  "total": 15,
+  "total": 16,
   "truncated": 0,
   "elapsed_ms": 1840,
   "candidates": [
@@ -256,6 +256,25 @@
         "select.select_option",
         "select.select_next",
         "select.select_previous"
+      ],
+      "dropped_options": 0,
+      "registered_device_id": null,
+      "suggested_kind": "other"
+    },
+    {
+      "provider": {
+        "type": "home_assistant",
+        "entity_id": "remote.living_room_tv"
+      },
+      "name": "Living Room TV",
+      "domain": "remote",
+      "platform": "demo",
+      "state": "on",
+      "supported": true,
+      "command_ids": [
+        "remote.turn_on",
+        "remote.turn_off",
+        "remote.toggle"
       ],
       "dropped_options": 0,
       "registered_device_id": null,

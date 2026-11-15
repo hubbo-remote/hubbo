@@ -2,6 +2,23 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## HA remotes (branch `ha-remote`; docs/design/ha-remote.md; spec green on both, not gated)
+
+- `remote` is just another HA domain. **No UI change**: Add device, the picker and the existing
+  Home Assistant action editor show what the hub gives (remote.turn_on/off/toggle, then
+  `call_service` with HA's `remote.*` services and their hints). Nothing remote-specific in `src/`.
+- An earlier, bigger attempt (a text param type, typed webostv services, titleCase exceptions) was
+  thrown away as over-designed. Don't bring any of it back.
+- `Catalog.haPlatforms` became `haServiceDomains` (device → allowed service domains): the platform
+  (none when YAML-only), plus `remote` on a `remote.*` device, like core's serviceOnDevice. Only
+  the mock passes it; other `remote.*` calls are `forbidden_param` at `…/call/service`.
+- Mock: `remote` in DOMAINS; `haCommands` appends the services of the entity's own `call_service`
+  (from its fixture, deduped by service) after the skipped-service ones, so a remote stores its
+  fixture's capabilities exactly. Discovery total is now 18 (a unit test counts it).
+- Tests: mock unit (the remote registers to its fixture; remote.send_command refused on dev_lg_tv,
+  accepted and bindable on the remote); e2e `ha-remote.spec` (desktop; add the remote, bind Info
+  to remote.send_command `{"command": "DPAD_UP"}`, save, reload, reads back), green on mock and hub-sim.
+
 ## Setup fixes (branch `setup-fixes`; simplified, feature specs green on both; not gated yet)
 
 - **Continue saves** (Setup.tsx + `hooks/stepSave.ts`): `StepSaveContext` (a ref) is provided only

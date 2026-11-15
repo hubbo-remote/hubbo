@@ -897,7 +897,7 @@ paths:
         - name: domain
           in: query
           required: false
-          schema: {type: string, enum: [media_player, light, switch, fan, scene, script, cover, button, input_boolean, humidifier, select]}
+          schema: {type: string, enum: [media_player, light, switch, fan, scene, script, cover, button, input_boolean, humidifier, select, remote]}
         - name: available
           in: query
           required: false
@@ -2609,7 +2609,7 @@ components:
         services:
           description: |
             Integration-specific services offered for the entity, already
-            typed. Media players, lights, switches and fans only.
+            typed. Media players, lights, switches, fans and remotes only.
           type: array
           maxItems: 32
           items: {$ref: '#/components/schemas/HaServiceSnapshot'}
@@ -2617,7 +2617,11 @@ components:
           description: |
             The integration's services for the entity that Hubbo couldn't
             type (a text, object or other untyped field, or too many fields),
-            with HA's field hints. They make the device offer `call_service`
+            with HA's field hints. A remote (`remote.*`) also gets HA's
+            `remote` services that match it, ahead of the integration's
+            (`remote.send_command` first); `remote.turn_on` only when the entity
+            has ACTIVITY, for its `activity` field; a remote with no integration
+            (YAML) gets only those. They make the device offer `call_service`
             (a Home Assistant action). Response-only services are never here.
             The hints' text (service, label, field names, examples and
             descriptions) is at most 2048 bytes per device and 16384 across
@@ -2669,7 +2673,8 @@ components:
         lock or alarm services included, so bind it with care.
         Pick the service from the device's `call_service` command's
         `services`. Its domain must be the device's own HA integration
-        (`webostv.*` on a webOS TV); any other (`homeassistant.stop`, ...) is
+        (`webostv.*` on a webOS TV), or on a remote also `remote`
+        (`remote.send_command` with `{"command": "DPAD_UP"}`); any other (`homeassistant.stop`, ...) is
         `forbidden_param` at `.../call/service`. `data` is a JSON object of
         at most 1024 bytes (compact) and 4 levels deep; top-level target keys
         are refused (`forbidden_param`; the target is always the device), and
@@ -3144,8 +3149,8 @@ components:
           description: |
             The kind a new device of this entity starts with: by domain
             (light, switch, fan, cover, scene and script are their own kinds,
-            `humidifier` is `climate`, `button`, `input_boolean` and `select`
-            are `other`), and for a media player by its device class or
+            `humidifier` is `climate`, `button`, `input_boolean`, `select` and
+            `remote` are `other`), and for a media player by its device class or
             integration (`apple_tv` is `streamer`).
           $ref: '#/components/schemas/DeviceKind'
         name: {type: string, maxLength: 100}

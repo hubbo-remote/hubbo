@@ -318,72 +318,102 @@ ServiceDirectory ServiceDirectory::parse(std::string_view json, const std::vecto
     return directory;
 }
 
-void ServiceDirectory::addCustom(const Service &service, uint32_t supportedFeatures, Offer *offer) {
+namespace {
+
+// A matching service as a custom service: HA's hints for the fields left for
+// this entity (feature filters met, never a target), at most kMaxCustomFields.
+SnapshotCustomService customService(const ServiceDirectory::Service &service, uint32_t supportedFeatures) {
     SnapshotCustomService custom;
     custom.service = service.domain + "." + service.service;
     custom.label = service.label;
-    for (const Field &field : service.fields) {
+    for (const ServiceDirectory::Field &field : service.fields) {
         if (custom.fields.size() >= kMaxCustomFields) break;
         if (!field.unknownFilter && !featuresMatch(field.features, supportedFeatures)) continue;  // not for this entity
         if (!isHaName(field.param.name) || isForbiddenParamName(field.param.name)) continue;  // never a target
         custom.fields.push_back({field.param.name, field.param.required, field.example, field.param.description});
     }
-    offer->custom.push_back(std::move(custom));  // offerFor() trims them all once
+    return custom;
 }
+
+// The service's entity target matches the entity: `platform`'s, in `domain`,
+// with `supportedFeatures`.
+bool targets(const ServiceDirectory::Service &service, std::string_view platform, std::string_view domain,
+             uint32_t supportedFeatures) {
+    for (const ServiceDirectory::EntityFilter &f : service.targets) {
+        const bool integration = f.integration.empty() || f.integration == platform;
+        const bool inDomain =
+            f.domains.empty() || std::find(f.domains.begin(), f.domains.end(), domain) != f.domains.end();
+        if (integration && inDomain && !f.unknownFeature && featuresMatch(f.features, supportedFeatures)) return true;
+    }
+    return false;  // not for this entity (or no entity target at all)
+}
+
+}  // namespace
 
 ServiceDirectory::Offer ServiceDirectory::offerFor(std::string_view entityId, std::string_view platform,
                                                    uint32_t supportedFeatures) const {
     Offer offer;
     const size_t dot = entityId.find('.');
-    if (dot == std::string_view::npos || platform.empty() || !offersIntegrationServices(entityId)) return offer;
+    if (dot == std::string_view::npos || !offersIntegrationServices(entityId)) return offer;
     const std::string_view domain = entityId.substr(0, dot);
-    if (platform == domain) return offer;  // the domain's own services are the curated allowlist
 
-    // services_ is sorted by domain: only the platform's own run.
-    const auto first = std::lower_bound(services_.begin(), services_.end(), platform,
-                                        [](const Service &s, std::string_view p) { return s.domain < p; });
-    for (auto it = first; it != services_.end() && it->domain == platform; ++it) {
-        const Service &service = *it;
-        bool targeted = false;
-        for (const EntityFilter &f : service.targets) {
-            const bool integration = f.integration.empty() || f.integration == platform;
-            const bool inDomain =
-                f.domains.empty() || std::find(f.domains.begin(), f.domains.end(), domain) != f.domains.end();
-            targeted = targeted ||
-                       (integration && inDomain && !f.unknownFeature && featuresMatch(f.features, supportedFeatures));
-        }
-        if (!targeted) continue;  // not for this entity (or no entity target at all)
-
-        const std::string id = service.domain + "." + service.service;
-        SnapshotService offered;
-        offered.service = id;
-        offered.label = service.label;
-        bool usable = service.nameValid;
-        for (const Field &field : service.fields) {
-            if (field.unknownFilter) {
-                usable = false;
-                continue;
+    // serviceDomains() order is the hint budget's: what comes first is kept.
+    for (const std::string &from : serviceDomains(entityId, platform)) {
+        // services_ is sorted by domain: this domain's run.
+        auto it = std::lower_bound(services_.begin(), services_.end(), from,
+                                   [](const Service &s, const std::string &d) { return s.domain < d; });
+        if (from == domain) {
+            // The entity's own domain (a remote's remote.*): custom services
+            // only, past the allowlist. An allowlisted one only with fields
+            // left (turn_on's activity); send_command first, what a remote is for.
+            const size_t first = offer.custom.size();
+            for (; it != services_.end() && it->domain == from; ++it) {
+                if (!it->nameValid || it->responseOnly || !targets(*it, platform, domain, supportedFeatures)) continue;
+                SnapshotCustomService custom = customService(*it, supportedFeatures);
+                if (custom.fields.empty() && isAllowlistedService(it->domain, it->service)) continue;
+                offer.custom.push_back(std::move(custom));
             }
-            if (!featuresMatch(field.features, supportedFeatures)) continue;  // not for this entity
-            usable = usable && field.supported;
-            offered.fields.push_back(field.param);
-        }
-        // The first reason that applies, in this order; none: offered.
-        const std::optional<SkipReason> reason =
-            service.responseOnly                              ? SkipReason::ResponseOnly
-            : !usable                                         ? SkipReason::UnsupportedField
-            : offered.fields.size() > limits::kMaxParams      ? SkipReason::TooManyFields
-            : offer.services.size() >= kMaxSnapshotServices   ? std::optional<SkipReason>(SkipReason::TooManyServices)
-                                                              : std::nullopt;
-        if (reason) {
-            if (offer.skipped.size() < kMaxSnapshotServices) offer.skipped.push_back({id, *reason});
-            if (*reason != SkipReason::ResponseOnly && service.nameValid) addCustom(service, supportedFeatures, &offer);
+            std::stable_partition(offer.custom.begin() + static_cast<std::ptrdiff_t>(first), offer.custom.end(),
+                                  [](const SnapshotCustomService &c) { return c.service == "remote.send_command"; });
             continue;
         }
-        offer.droppedOptions += service.droppedOptions;
-        offer.services.push_back(std::move(offered));
+        for (; it != services_.end() && it->domain == from; ++it) {
+            const Service &service = *it;
+            if (!targets(service, platform, domain, supportedFeatures)) continue;
+
+            const std::string id = service.domain + "." + service.service;
+            SnapshotService offered;
+            offered.service = id;
+            offered.label = service.label;
+            bool usable = service.nameValid;
+            for (const Field &field : service.fields) {
+                if (field.unknownFilter) {
+                    usable = false;
+                    continue;
+                }
+                if (!featuresMatch(field.features, supportedFeatures)) continue;  // not for this entity
+                usable = usable && field.supported;
+                offered.fields.push_back(field.param);
+            }
+            // The first reason that applies, in this order; none: offered.
+            const std::optional<SkipReason> reason =
+                service.responseOnly                              ? SkipReason::ResponseOnly
+                : !usable                                         ? SkipReason::UnsupportedField
+                : offered.fields.size() > limits::kMaxParams      ? SkipReason::TooManyFields
+                : offer.services.size() >= kMaxSnapshotServices   ? std::optional<SkipReason>(SkipReason::TooManyServices)
+                                                                  : std::nullopt;
+            if (reason) {
+                if (offer.skipped.size() < kMaxSnapshotServices) offer.skipped.push_back({id, *reason});
+                if (*reason != SkipReason::ResponseOnly && service.nameValid) {
+                    offer.custom.push_back(customService(service, supportedFeatures));
+                }
+                continue;
+            }
+            offer.droppedOptions += service.droppedOptions;
+            offer.services.push_back(std::move(offered));
+        }
     }
-    trimCustomServices(&offer.custom, kMaxCustomHintBytes);
+    trimCustomServices(&offer.custom, kMaxCustomHintBytes);  // all at once, in order
     return offer;
 }
 

@@ -68,11 +68,14 @@ A device's capabilities list its commands and their params
 **Home Assistant devices** (`integration_id: "ha_main"`) offer their domain's commands
 (`media_player.turn_on`, `media_player.select_source {source}`, `light.turn_on`,
 `cover.set_cover_position {position}`, `scene.turn_on`...). The domains are media_player, light,
-switch, fan, scene, script, cover, button, input_boolean, humidifier and select. Media players,
-lights, switches and fans often add their integration's own services (`sonos.set_sleep_timer`),
+switch, fan, scene, script, cover, button, input_boolean, humidifier, select and remote (`remote.turn_on`,
+`.turn_off`, `.toggle`). Media players, lights, switches, fans and remotes often add their
+integration's own services (`sonos.set_sleep_timer`),
 typed from HA's metadata (labels, units, defaults, descriptions). Response-only services and
 `play_media` aren't offered. Services Hubbo can't type (free text, objects: `webostv.button`)
-are offered through one command, `call_service` ("Home Assistant action", see Actions). A device whose entity disappeared
+are offered through one command, `call_service` ("Home Assistant action", see Actions). A remote's
+`call_service` also lists HA's `remote` services (`remote.send_command`, `remote.learn_command`,
+`remote.delete_command`, and `remote.turn_on` for its `activity` when the remote has activities). A device whose entity disappeared
 shows `availability: stale`; its commands fail until an admin re-links it.
 
 **Bluetooth devices** (`integration_id: "ble"`, an Apple TV, a Fire TV...) were added from a
@@ -125,8 +128,9 @@ adds `call` (`#/components/schemas/HaServiceCall`):
 `data` goes to Home Assistant as is, aimed at the device's entity: at most 1024 bytes, 4 levels
 deep, no target keys (`entity_id`, `device_id`, ...: `forbidden_param`), no templates (`{{`, `{%`:
 `template_not_supported`). Use a service from the list. Its domain must be the device's own
-integration (`webostv.*` for this TV): any other, such as `homeassistant.stop`, is `forbidden_param`
-at `/call/service`. HA answers `failed` for one the entity doesn't have. A config holds at most 16 of them.
+integration (`webostv.*` for this TV), or on a remote also `remote`
+(`{"service": "remote.send_command", "data": {"command": "DPAD_UP"}}`): any other, such as
+`homeassistant.stop`, is `forbidden_param` at `/call/service`. HA answers `failed` for one the entity doesn't have. A config holds at most 16 of them.
 
 **Try one** before you put it in an activity:
 

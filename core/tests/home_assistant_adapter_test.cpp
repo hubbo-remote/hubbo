@@ -190,6 +190,8 @@ TEST_F(AdapterTest, AnActivityDrivesHaThroughTheEngine) {
     EXPECT_EQ(server.calls(), (std::vector<std::string>{"light.turn_on light.family_room"}));
 }
 
+constexpr const char *kRemoteEntity = "remote.living_room_tv";
+
 // Each new domain end to end (the fake's made-up entities): the snapshot
 // registration stores, through a saved config and back, then a command with
 // params to the right HA service with the right data.
@@ -223,6 +225,8 @@ TEST_F(AdapterTest, TheNewDomainsRoundTripAndCallTheRightServices) {
         {"select.dryer_cycle", "select.select_option", {text("option", "towels")},
          "select.select_option select.dryer_cycle option=towels"},
         {"select.dryer_cycle", "select.select_next", {}, "select.select_next select.dryer_cycle"},
+        {kRemoteEntity, "remote.turn_on", {}, "remote.turn_on remote.living_room_tv"},
+        {kRemoteEntity, "remote.toggle", {}, "remote.toggle remote.living_room_tv"},
     };
     for (const Case &c : cases) {
         if (std::any_of(cfg.devices.begin(), cfg.devices.end(),
@@ -231,8 +235,22 @@ TEST_F(AdapterTest, TheNewDomainsRoundTripAndCallTheRightServices) {
         const std::string id = c.entityId;
         cfg.devices.push_back(sim::haDevice("dev_" + id.substr(id.find('.') + 1), "Test", "other", id));
     }
-    ASSERT_EQ(cfg.devices.size(), 7u);  // one per new domain
+    ASSERT_EQ(cfg.devices.size(), 8u);  // one per new domain
     sim::addFakeHaSnapshots(&cfg, server);
+    // A remote's other remote services (HA's real ones, the fake serves them
+    // verbatim) are Home Assistant actions, with HA's labels.
+    const auto remote = std::find_if(cfg.devices.begin(), cfg.devices.end(),
+                                     [](const DeviceSpec &d) { return d.provider.entityId == kRemoteEntity; });
+    ASSERT_NE(remote, cfg.devices.end());
+    ASSERT_TRUE(remote->haCapabilities);
+    std::vector<std::string> custom;
+    for (const ha::SnapshotCustomService &c : remote->haCapabilities->customServices) {
+        custom.push_back(c.service + " " + c.label);
+    }
+    std::sort(custom.begin(), custom.end());
+    EXPECT_EQ(custom, (std::vector<std::string>{"remote.delete_command Delete remote command",
+                                                "remote.learn_command Learn remote command",
+                                                "remote.send_command Send remote command"}));
 
     ConfigSpec loaded;
     const std::string saved = config::serializeConfig(cfg);
@@ -418,11 +436,11 @@ DeviceSpec lgTvDevice() {
     return d;
 }
 
-// The LG TV with one activity, "act_tv", whose startup is `startup`.
-ConfigSpec tvConfig(std::vector<ActionSpec> startup) {
+// `device` (the LG TV) with one activity, "act_tv", whose startup is `startup`.
+ConfigSpec tvConfig(std::vector<ActionSpec> startup, DeviceSpec device = lgTvDevice()) {
     ConfigSpec cfg;
     cfg.integrations = {sim::integration("ha_main", kHomeAssistantType, "Home Assistant")};
-    cfg.devices = {lgTvDevice()};
+    cfg.devices = {std::move(device)};
     ActivitySpec a;
     a.id = "act_tv";
     a.name = "TV";
@@ -435,6 +453,41 @@ ActionSpec infoButton(const char *data = R"({"button":"INFO"})") {
     ActionSpec a = sim::haAction("dev_lg_tv", ha::kCallServiceCommandId);
     a.call = HaServiceCallSpec{"webostv.button", data};
     return a;
+}
+
+// A remote.* device: `platform` "" is a YAML-only remote.
+DeviceSpec remoteDevice(const char *platform = "androidtv_remote") {
+    DeviceSpec d = sim::haDevice("dev_remote", "Living Room TV", "other", kRemoteEntity);
+    ha::CapabilitySnapshot snapshot;
+    snapshot.platform = platform;
+    ha::SnapshotCustomService send;
+    send.service = "remote.send_command";
+    send.label = "Send remote command";
+    snapshot.customServices = {send};
+    d.haCapabilities = snapshot;
+    return d;
+}
+
+// Compiles `service` on `device` both ways: in an activity's startup and
+// directly. True when both accept it, false when both refuse it at
+// /call/service.
+bool serviceAccepted(const AdapterSet &adapters, const DeviceSpec &device, const char *service) {
+    ActionSpec action = sim::haAction(device.id.c_str(), ha::kCallServiceCommandId);
+    action.call = HaServiceCallSpec{service, "{}"};
+    const ConfigSpec cfg = tvConfig({action}, device);
+    ValidationReport report;
+    const bool compiled = compileConfig(cfg, adapters, &report) != nullptr;
+    CompiledCommand direct;
+    ValidationReport issues;
+    const HaServiceCallSpec call{service, "{}"};
+    const ErrorCode code =
+        compileDeviceCommand(cfg, adapters, device.id, ha::kCallServiceCommandId, {}, &direct, &issues, &call);
+    EXPECT_EQ(compiled, code == ErrorCode::Ok) << service;
+    if (!compiled) {
+        EXPECT_TRUE(report.has(ErrorCode::ForbiddenParam, "/activities/0/startup/0/call/service")) << service;
+        EXPECT_TRUE(issues.has(ErrorCode::ForbiddenParam, "/call/service")) << service;
+    }
+    return compiled;
 }
 
 }  // namespace
@@ -521,22 +574,46 @@ TEST_F(AdapterTest, AHomeAssistantActionStaysOnItsDevice) {
     AdapterSet adapters;
     ASSERT_EQ(adapters.add(adapter), ErrorCode::Ok);
     for (const char *service : {"homeassistant.stop", "hassio.host_shutdown", "webostvx.button", "light.turn_on"}) {
-        ActionSpec action = infoButton();
-        action.call->service = service;
-        const ConfigSpec cfg = tvConfig({action});
-        ValidationReport report;
-        EXPECT_FALSE(compileConfig(cfg, adapters, &report)) << service;
-        EXPECT_TRUE(report.has(ErrorCode::ForbiddenParam, "/activities/0/startup/0/call/service")) << service;
-
-        CompiledCommand direct;
-        ValidationReport issues;
-        const HaServiceCallSpec call{service, "{}"};
-        EXPECT_EQ(compileDeviceCommand(cfg, adapters, "dev_lg_tv", ha::kCallServiceCommandId, {}, &direct, &issues,
-                                       &call),
-                  ErrorCode::ValidationFailed)
-            << service;
-        EXPECT_TRUE(issues.has(ErrorCode::ForbiddenParam, "/call/service")) << service;
+        EXPECT_FALSE(serviceAccepted(adapters, lgTvDevice(), service)) << service;
     }
+}
+
+TEST_F(AdapterTest, ARemoteTakesTheRemoteDomainsServices) {
+    // On a remote.* device: its integration's services and the remote
+    // domain's, nothing else.
+    AdapterSet adapters;
+    ASSERT_EQ(adapters.add(adapter), ErrorCode::Ok);
+    ASSERT_GE(adapter.commandsFor(remoteDevice()).find(ha::kCallServiceCommandId), 0);
+    for (const char *service : {"remote.send_command", "remote.learn_command", "remote.turn_on",
+                                "androidtv_remote.anything"}) {
+        EXPECT_TRUE(serviceAccepted(adapters, remoteDevice(), service)) << service;
+    }
+    for (const char *service : {"homeassistant.stop", "remotex.send_command", "remote", "media_player.turn_on"}) {
+        EXPECT_FALSE(serviceAccepted(adapters, remoteDevice(), service)) << service;
+    }
+    // A YAML-only remote (no platform): only the remote domain's.
+    EXPECT_TRUE(serviceAccepted(adapters, remoteDevice(""), "remote.send_command"));
+    EXPECT_FALSE(serviceAccepted(adapters, remoteDevice(""), "homeassistant.stop"));
+    // Any other device: unchanged, its own integration's only.
+    EXPECT_FALSE(serviceAccepted(adapters, lgTvDevice(), "remote.send_command"));
+    EXPECT_TRUE(serviceAccepted(adapters, lgTvDevice(), "webostv.button"));
+}
+
+TEST_F(AdapterTest, ARemoteCommandIsSentAsWritten) {
+    // remote.send_command through the Home Assistant action, with its data.
+    const CommandCatalog catalog = adapter.commandsFor(remoteDevice());
+    ASSERT_GE(catalog.find(ha::kCallServiceCommandId), 0);
+    ExecRequest r = request(catalog, ha::kCallServiceCommandId, 1, kRemoteEntity);
+    r.call = std::make_shared<const HaServiceCallSpec>(
+        HaServiceCallSpec{"remote.send_command", R"({"command":"DPAD_UP","num_repeats":2})"});
+    EXPECT_EQ(adapter.execute(r).status, ExecStatus::Pending);
+    integrationTask();
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 1u);
+    EXPECT_EQ(sink.results[0].second.status, ExecStatus::Accepted);
+    EXPECT_EQ(server.lastCallJson(), R"({"service":"remote.send_command","entity_id":"remote.living_room_tv",)"
+                                     R"("data":{"command":"DPAD_UP","num_repeats":2}})");
+    EXPECT_EQ(server.calls().back(), "remote.send_command remote.living_room_tv command=DPAD_UP num_repeats=2");
 }
 
 TEST_F(AdapterTest, HomeAssistantActionsHaveASizeBudget) {

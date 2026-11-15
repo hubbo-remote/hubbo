@@ -40,8 +40,10 @@ contract is `api/openapi.yaml`.
 - **The Home Assistant action** (`call_service`, the user's decision 2026-11-13) is a deliberate
   escape hatch: anyone who can edit bindings or execute commands (the admin or an API token, no
   new role) can send any service of a registered HA device's own integration (its snapshot's
-  platform: `webostv.*` on a webOS TV) with free JSON data to that device's entity. Only
-  media player, light, switch and fan devices have such services. That reaches whatever HA
+  platform: `webostv.*` on a webOS TV) with free JSON data to that device's entity, and on a
+  remote also HA's `remote` services (`remote.send_command`, `remote.learn_command`,
+  `remote.delete_command`). Only media player, light, switch, fan and remote devices have such
+  services. That reaches whatever HA
   allows for the integration's services, as far as the HA token's user may: for an MQTT light,
   `mqtt.publish` to any topic. Lock and alarm entities never get the action. What still holds: no other
   domain (`homeassistant.stop`, `hassio.*`, `script.*`: `forbidden_param`), the target is only

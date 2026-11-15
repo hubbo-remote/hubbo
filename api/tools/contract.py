@@ -1238,6 +1238,13 @@ def mute_toggle_flow(c):
     c.control(f"ha?muted={entity}:0")  # leave the Denon unmuted for later flows
 
 
+def refused_at(c, label, body, code, at, path, op="executeCommand", method="POST"):
+    """A 422 whose details include `code` at `at`."""
+    _, reply, _ = c.call(op, method, path, body, expect=422, label=label)
+    details = [(d["code"], d["path"]) for d in error_details(reply)]
+    expect((code, at) in details, f"{label}: want {code} at {at}, got {details}")
+
+
 def ha_action_flow(c):
     """A Home Assistant action (call_service): the LG TV offers its webostv
     services with HA's hints, an execute sends the service and data verbatim
@@ -1262,30 +1269,29 @@ def ha_action_flow(c):
         expect(last == {"service": "webostv.button", "entity_id": "media_player.family_room_lg_tv",
                         "data": {"button": "INFO"}}, f"Home Assistant action sent {last}")
 
-    def refused(label, body, code, at, path=path, op="executeCommand", method="POST"):
-        _, reply, _ = c.call(op, method, path, body, expect=422, label=label)
-        details = [(d["code"], d["path"]) for d in error_details(reply)]
-        expect((code, at) in details, f"{label}: want {code} at {at}, got {details}")
 
     def with_data(data):
         return {"params": {}, "call": {"service": "webostv.button", "data": data}}
 
     deep = {"a": {"b": {"c": {"d": {"e": 1}}}}}
-    refused("call missing", {"params": {}}, "required", "/call")
-    refused("call on another command", {"params": {}, "call": info}, "unknown_field", "/call",
-            path="/devices/dev_lg_tv/commands/media_player.volume_up/execute")
-    refused("service pattern", {"params": {}, "call": {"service": "webostv"}}, "pattern", "/call/service")
-    refused("service of another integration", {"params": {}, "call": {"service": "homeassistant.stop"}},
-            "forbidden_param", "/call/service")
-    refused("data not an object", with_data(["INFO"]), "wrong_type", "/call/data")
-    refused("data too big", with_data({"button": "x" * 1100}), "too_long", "/call/data")
-    refused("data too deep", with_data(deep), "too_deep", "/call/data")
-    refused("data names a target", with_data({"entity_id": "lock.front_door"}), "forbidden_param",
-            "/call/data/entity_id")
-    refused("data holds a template", with_data({"payload": {"target": "{{ states('x') }}"}}),
-            "template_not_supported", "/call/data/payload/target")
-    refused("no custom services", {"params": {}, "call": info}, "unknown_command", "/command_id",
-            path="/devices/dev_denon/commands/call_service/execute")
+    refused_at(c, "call missing", {"params": {}}, "required", "/call", path=path)
+    refused_at(c, "call on another command", {"params": {}, "call": info}, "unknown_field", "/call",
+               path="/devices/dev_lg_tv/commands/media_player.volume_up/execute")
+    refused_at(c, "service pattern", {"params": {}, "call": {"service": "webostv"}},
+               "pattern", "/call/service", path=path)
+    refused_at(c, "service of another integration", {"params": {}, "call": {"service": "homeassistant.stop"}},
+               "forbidden_param", "/call/service", path=path)
+    refused_at(c, "remote service on a media player", {"params": {}, "call": {"service": "remote.send_command"}},
+               "forbidden_param", "/call/service", path=path)
+    refused_at(c, "data not an object", with_data(["INFO"]), "wrong_type", "/call/data", path=path)
+    refused_at(c, "data too big", with_data({"button": "x" * 1100}), "too_long", "/call/data", path=path)
+    refused_at(c, "data too deep", with_data(deep), "too_deep", "/call/data", path=path)
+    refused_at(c, "data names a target", with_data({"entity_id": "lock.front_door"}), "forbidden_param",
+               "/call/data/entity_id", path=path)
+    refused_at(c, "data holds a template", with_data({"payload": {"target": "{{ states('x') }}"}}),
+               "template_not_supported", "/call/data/payload/target", path=path)
+    refused_at(c, "no custom services", {"params": {}, "call": info}, "unknown_command", "/command_id",
+               path="/devices/dev_denon/commands/call_service/execute")
 
     # The same rules in a binding, at the action's path.
     gb = c.call("getGlobalBindings", "GET", "/global-bindings", expect=200)[1]
@@ -1301,10 +1307,10 @@ def ha_action_flow(c):
                  "forbidden_param", "/bindings/info:tap/0/call/data/device_id"),
                 ("binding service of another integration", {"call": {"service": "hassio.host_shutdown"}},
                  "forbidden_param", "/bindings/info:tap/0/call/service")):
-            refused(label, bind(dict(act, **extra)), code, at, **put)
+            refused_at(c, label, bind(dict(act, **extra)), code, at, **put)
         stray = {"integration_id": "system", "device_id": None, "command_id": "off", "params": {}, "call": info}
-        refused("call on another command, in a binding", bind(stray), "unknown_field", "/bindings/info:tap/0/call",
-                **put)
+        refused_at(c, "call on another command, in a binding", bind(stray), "unknown_field",
+                   "/bindings/info:tap/0/call", **put)
 
 
 # One made-up entity per newer domain (gen_fixtures.py NEW_DOMAIN_ENTITIES);
@@ -1340,8 +1346,27 @@ def new_domains_flow(c):
         _, caps, _ = c.call("getDeviceCapabilities", "GET", f"/devices/{dev['id']}/capabilities", expect=200,
                             label=f"{entity_id} capabilities")
         expect_fixture_commands(entity_id, caps, f"integrations/ha_main.entities/{name}")
+        if entity_id.startswith("remote."):
+            remote_action(c, dev["id"], entity_id)
         c.call("deleteDevice", "DELETE", f"/admin/devices/{dev['id']}?revision={dev['revision']}", expect=204,
                label=f"remove {entity_id}")
+
+
+def remote_action(c, dev_id, entity_id):
+    """A remote sends HA's remote.send_command through the Home Assistant
+    action; another integration's service is still refused."""
+    path = f"/devices/{dev_id}/commands/call_service/execute"
+    send = {"service": "remote.send_command", "data": {"command": "DPAD_UP"}}
+    _, body, _ = c.call("executeCommand", "POST", path, {"params": {}, "call": send}, expect=200,
+                        label="remote.send_command")
+    expect((body or {}).get("status") == "accepted", f"remote.send_command: {body}")
+    _, reply = c.host_call("POST", "/sim/ha")
+    last = (reply or {}).get("last_call")
+    expect(last == {"service": "remote.send_command", "entity_id": entity_id, "data": {"command": "DPAD_UP"}},
+           f"remote.send_command sent {last}")
+    refused_at(c, "another integration's service on a remote",
+               {"params": {}, "call": {"service": "webostv.button", "data": {"button": "UP"}}},
+               "forbidden_param", "/call/service", path)
 
 
 def ha_unlink_flow(c):

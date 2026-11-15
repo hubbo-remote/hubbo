@@ -5,6 +5,7 @@
 #include <string_view>
 #include <vector>
 
+#include "hubbo/ha/capabilities.h"  // serviceDomains()
 #include "hubbo/ha/snapshot.h"
 
 // Integration-specific Home Assistant services (docs/ha-capabilities.md,
@@ -31,7 +32,13 @@
 //     (isForbiddenParamName), and a service or platform name that isn't
 //     ^[a-z][a-z0-9_]{0,31}$. Only P's own services are considered, never the
 //     entity domain's (those are the curated allowlist), and never when P is
-//     the entity's domain;
+//     the entity's domain. The one exception (serviceDomains()): a remote
+//     (remote.*) also gets HA's `remote` services that target it, always as
+//     custom services (never typed, never in skipped), before P's so the
+//     hint budget keeps them, remote.send_command first; an allowlisted one
+//     (turn_on/turn_off/toggle) only with fields left for the entity
+//     (turn_on's `activity`, with ACTIVITY); a remote with no platform (YAML) gets only
+//     those;
 //   - it isn't response-only (`response: {optional: false}`: it only returns
 //     data, which Hubbo can't use).
 //
@@ -115,12 +122,9 @@ public:
     };
 
 private:
-    static void addCustom(const Service &service, uint32_t supportedFeatures, Offer *offer);
-
     std::vector<Service> services_;
 };
 
-struct EntityInfo;  // capabilities.h
 // The snapshot to store for a newly registered (or re-linked) entity: its
 // attributes plus the integration services offered to it. `offered`, if
 // given, gets the offer's skipped services and dropped options (its

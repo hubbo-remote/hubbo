@@ -95,7 +95,8 @@ public:
         pumpUntil([&] { return done; });
         if (result != ErrorCode::Ok) fail(entityId + ": " + errorCodeName(result));
         const ha::ServiceDirectory services =
-            ha::ServiceDirectory::parse(details.services, {details.platform}, details.translations);
+            ha::ServiceDirectory::parse(details.services, ha::serviceDomains(details.entityId, details.platform),
+                                        details.translations);
         return ha::makeSnapshot(details.info, details.platform, services);
     }
 

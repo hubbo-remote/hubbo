@@ -1720,13 +1720,17 @@ export interface components {
             options?: components["schemas"]["HaOptionList"];
             /**
              * @description Integration-specific services offered for the entity, already
-             *     typed. Media players, lights, switches and fans only.
+             *     typed. Media players, lights, switches, fans and remotes only.
              */
             services: components["schemas"]["HaServiceSnapshot"][];
             /**
              * @description The integration's services for the entity that Hubbo couldn't
              *     type (a text, object or other untyped field, or too many fields),
-             *     with HA's field hints. They make the device offer `call_service`
+             *     with HA's field hints. A remote (`remote.*`) also gets HA's
+             *     `remote` services that match it (`remote.send_command`, ...),
+             *     after the integration's; `remote.turn_on` only when the entity
+             *     has ACTIVITY, for its `activity` field; a remote with no integration
+             *     (YAML) gets only those. They make the device offer `call_service`
              *     (a Home Assistant action). Response-only services are never here.
              *     The hints' text (service, label, field names, examples and
              *     descriptions) is at most 2048 bytes per device and 16384 across
@@ -1767,7 +1771,10 @@ export interface components {
          *     Assistant device. It reaches whatever HA allows for that service,
          *     lock or alarm services included, so bind it with care.
          *     Pick the service from the device's `call_service` command's
-         *     `services`; the hub checks only its shape. `data` is a JSON object of
+         *     `services`. Its domain must be the device's own HA integration
+         *     (`webostv.*` on a webOS TV), or on a remote also `remote`
+         *     (`remote.send_command` with `{"command": "DPAD_UP"}`); any other (`homeassistant.stop`, ...) is
+         *     `forbidden_param` at `.../call/service`. `data` is a JSON object of
          *     at most 1024 bytes (compact) and 4 levels deep; top-level target keys
          *     are refused (`forbidden_param`; the target is always the device), and
          *     so is template text, `{{` or `{%` anywhere (`template_not_supported`:
@@ -2082,8 +2089,8 @@ export interface components {
             /**
              * @description The kind a new device of this entity starts with: by domain
              *     (light, switch, fan, cover, scene and script are their own kinds,
-             *     `humidifier` is `climate`, `button`, `input_boolean` and `select`
-             *     are `other`), and for a media player by its device class or
+             *     `humidifier` is `climate`, `button`, `input_boolean`, `select` and
+             *     `remote` are `other`), and for a media player by its device class or
              *     integration (`apple_tv` is `streamer`).
              */
             suggested_kind: components["schemas"]["DeviceKind"];
@@ -3324,7 +3331,7 @@ export interface operations {
             query?: {
                 /** @description Case-insensitive substring of entity_id or name. */
                 q?: string;
-                domain?: "media_player" | "light" | "switch" | "fan" | "scene" | "script" | "cover" | "button" | "input_boolean" | "humidifier" | "select";
+                domain?: "media_player" | "light" | "switch" | "fan" | "scene" | "script" | "cover" | "button" | "input_boolean" | "humidifier" | "select" | "remote";
                 /**
                  * @description `true`: only candidates that can be registered (`supported`, with
                  *     no `registered_device_id`). Applied before paging, like `q` and
