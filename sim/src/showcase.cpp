@@ -12,6 +12,7 @@
 
 #include "fixtures.h"
 #include "hubbo/domain/ids.h"
+#include "hubbo/engine/smart_actions.h"
 #include "hubbo/ha/services.h"
 #include "hubbo/integrations/ha_client.h"
 
@@ -192,16 +193,17 @@ ConfigSpec showcaseConfig() {
         if (d.provider.type == kHomeAssistantType) d.haCapabilities = fetcher.snapshot(d.provider.entityId);
     }
 
-    // The light buttons on the first captured light, and one activity on
-    // the first captured player with sources (none: no binding, no activity).
+    // Smart button Light 1 on the first captured dimmable light (its
+    // actions come from the device: docs/design/smart-buttons.md), and one
+    // activity on the first captured player with sources (none: no slot,
+    // no activity).
     c.globalBindings = {bind("off:tap", {offAction()})};
     const auto light = std::find_if(c.devices.begin(), c.devices.end(), [](const DeviceSpec &d) {
-        return ha::entityDomain(d.provider.entityId) == ha::EntityDomain::Light;
+        if (ha::entityDomain(d.provider.entityId) != ha::EntityDomain::Light || !d.haCapabilities) return false;
+        const auto capabilities = ha::EntityCapabilities::fromSnapshot(d.provider.entityId, *d.haCapabilities);
+        return !smartSlotActions(d, capabilities.catalog()).plus.tap.empty();  // dimmable
     });
-    if (light != c.devices.end()) {
-        c.globalBindings.push_back(bind("light_1:down", {haAction(light->id.c_str(), "light.turn_on")}));
-        c.globalBindings.push_back(bind("light_2:down", {haAction(light->id.c_str(), "light.turn_off")}));
-    }
+    if (light != c.devices.end()) c.smartButtons.at(SmartSlot::Light1) = light->id;
     c.activities.clear();
     const auto tv = std::find_if(c.devices.begin(), c.devices.end(), [](const DeviceSpec &d) {
         return d.haCapabilities && !d.haCapabilities->sourceList.empty() &&

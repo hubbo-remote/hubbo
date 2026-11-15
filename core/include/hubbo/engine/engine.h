@@ -6,6 +6,7 @@
 
 #include "hubbo/domain/adapter.h"
 #include "hubbo/domain/ids.h"
+#include "hubbo/domain/smart_buttons.h"
 #include "hubbo/engine/compiled.h"
 #include "hubbo/engine/executor.h"
 #include "hubbo/engine/hold_ledger.h"
@@ -54,7 +55,31 @@
 //   * a lost release (radio timeout) is an up like any other, plus a
 //     releaseAll() on every adapter;
 //   * every transition releases all open holds and calls releaseAll().
+//
+// Smart buttons (docs/design/smart-buttons.md). For the six smart buttons
+// (Light 1/2, Switch 1/2, +, -) a press resolves per button, at its Down:
+// the active activity, if it binds any trigger of the button; else the
+// slot's press (a slot button's own `button`, or the selected slot's
+// `plus`/`minus`) if it has any actions; else the global bindings.
+//   * The press a Down picked (its slot and which press) is kept until the
+//     Up, so its Tap, Hold and release all come from it whatever changes
+//     meanwhile: another slot selected, an activity switch (the release
+//     still runs: a moving cover must stop) or a config save (the spans are
+//     read from the running config by that slot and press, never kept).
+//   * Selection: a Down of a slot button the activity doesn't bind selects
+//     that slot (even an empty one). RAM only; Light 1 at boot.
+//   * Tap runs `tap`, Hold `hold`, and the Up after a Hold (a timed-out one
+//     too) `release`. Down runs nothing.
+//   * Step taps: a + or - Tap whose tap actions have an int `step` param
+//     (CompiledSmartPress::merges) isn't sent at once. Taps add up and go as
+//     one call kSmartStepWindowMs after the last one, with step x taps
+//     (clamped to the param's range); no timer while the button is down
+//     again. Sent at once (flushed) by a tap the other way, a slot change,
+//     an activity change or off, a Hold of + or -, or a config change (with
+//     the actions as tapped, never the new config's).
 namespace hubbo {
+
+constexpr uint32_t kSmartStepWindowMs = 300;
 
 class EngineObserver : public ExecutionObserver {
 public:
@@ -209,6 +234,8 @@ public:
     std::string activeActivityIdShared() const { return shared_.load(); }
     uint32_t generation() const { return generation_; }
     uint32_t nowMs() const { return nowMs_; }
+    // The selected smart-button slot, readable from any task (status).
+    SmartSlot selectedSlotShared() const { return static_cast<SmartSlot>(selected_.load(std::memory_order_relaxed)); }
 
     Executor &executor() { return executor_; }
     const Executor &executor() const { return executor_; }
@@ -216,6 +243,14 @@ public:
     size_t openHolds() const { return holds_.size(); }  // engine task (tests)
 
 private:
+    // The press each smart button's Down picked, until its next Down.
+    struct SmartRef {
+        bool set = false;
+        uint8_t slot = 0;
+        SmartPress press = SmartPress::Button;
+        const CompiledSmartPress &in(const CompiledConfig &config) const { return config.smartSlots[slot].at(press); }
+    };
+
     void advanceClock(uint32_t nowMs);
     // Notices a new config. A deleted active activity leaves a fallback
     // request in pending_ (or reports inactive if none remain).
@@ -231,6 +266,12 @@ private:
     void finishCommand(const SequenceReport &report);
     // Pump the executor, applying pending and system.activate/off requests.
     void pumpAndApply(const CompiledConfig *config);
+    // Coalesced step taps (see above): add one, or send what's pending.
+    bool addStepTap(const CompiledConfig &config, const SmartRef &pressed);
+    void flushStep();
+    // An activity change's teardown (to another, to none, or gone): new
+    // generation, queued work cancelled, pending taps sent, holds released.
+    void endActivity();
     // The hold ledger (hold_ledger.h).
     void trackHolds(const DispatchRecord &record);
     void resolveReleases(const SequenceReport &report);
@@ -271,6 +312,22 @@ private:
 
     HoldLedger holds_;
     remote::ButtonSet held_ = 0;  // buttons down, from the events
+    remote::ButtonSet holdFired_ = 0;  // buttons down whose Hold fired
+
+    std::atomic<uint8_t> selected_{static_cast<uint8_t>(SmartSlot::Light1)};
+    SmartRef pressed_[remote::kButtonCount];
+    // Step taps waiting to go as one call (count 0: none). `command` is the
+    // first tap's action, copied with its device, so the call goes as
+    // tapped whatever a config save changes meanwhile.
+    struct StepTaps {
+        SmartRef press;  // Plus or Minus
+        CompiledCommand command;
+        uint16_t count = 0;
+        uint32_t dueAtMs = 0;
+        remote::Button button() const {
+            return press.press == SmartPress::Plus ? remote::Button::Plus : remote::Button::Minus;
+        }
+    } step_;
     uint32_t upSequence_[remote::kButtonCount] = {};  // the :up sequence per button, until it ends
 
     // Executions waiting for their sequence to finish.

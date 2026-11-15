@@ -22,6 +22,7 @@ const char *sequenceOriginName(SequenceOrigin origin) {
         case SequenceOrigin::Binding: return "binding";
         case SequenceOrigin::GlobalBinding: return "global_binding";
         case SequenceOrigin::Api: return "api";
+        case SequenceOrigin::SmartButton: return "smart_button";
     }
     return "binding";
 }

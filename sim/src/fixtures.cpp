@@ -161,6 +161,7 @@ ConfigSpec fixtureConfig() {
     ConfigSpec c;
     c.revision = 1;
     c.globalBindingsRevision = 1;
+    c.smartButtons.revision = 1;  // four empty slots
     c.integrations = {
         integration("system", "system", "System"),
         integration("ble", "ble_hid", "Bluetooth"),
@@ -252,6 +253,7 @@ std::vector<FixtureHaEntity> fixtureHaEntities() {
     // each and checks its capabilities and suggested kind against them.
     add(entity("scene.movie_night", 0), "Movie Night", "demo", "unknown");
     add(entity("script.goodnight", 0), "Goodnight", "demo", "off");
+    // open, close, set position, stop; the fake serves current_position (kFakeCoverPosition)
     add(entity("cover.office_blinds", 15), "Office Blinds", "demo", "open", "blind");
     add(entity("button.restart_router", 0), "Restart Router", "demo", "unknown", "restart");
     add(entity("input_boolean.guest_mode", 0), "Guest Mode", "demo", "off");

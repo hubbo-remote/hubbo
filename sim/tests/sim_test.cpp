@@ -1172,6 +1172,7 @@ ConfigSpec phase2Config() {
     ConfigSpec c;
     c.revision = 1;
     c.globalBindingsRevision = 1;
+    c.smartButtons.revision = 1;
     c.integrations = {integration("system", "system", "System"), integration("ble", "ble_hid", "Bluetooth")};
     c.devices = {bleDevice("dev_apple_tv", "Apple TV", "streamer")};
     return c;

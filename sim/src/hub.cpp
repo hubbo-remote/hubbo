@@ -275,7 +275,8 @@ void SimHub::onSequenceFinished(const SequenceReport &report) {
     std::string line = sequenceOriginName(report.info.origin);
     line += ' ';
     line += report.info.activityId.empty() ? "-" : report.info.activityId.c_str();
-    if (report.info.origin == SequenceOrigin::Binding || report.info.origin == SequenceOrigin::GlobalBinding) {
+    if (report.info.origin == SequenceOrigin::Binding || report.info.origin == SequenceOrigin::GlobalBinding ||
+        report.info.origin == SequenceOrigin::SmartButton) {
         line += ' ' + formatTrigger(report.info.trigger);
     }
     line += ' ';

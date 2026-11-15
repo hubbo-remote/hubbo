@@ -10,6 +10,7 @@
 
 #include "hubbo/domain/config.h"
 #include "hubbo/engine/compiler.h"
+#include "hubbo/engine/smart_actions.h"
 
 // JSON <-> config model, shared by persistence (config.json) and the API
 // handlers (request bodies). Shapes follow api/openapi.yaml exactly.
@@ -29,9 +30,13 @@ constexpr int kSchemaVersion = 1;      // of every stored object (Activity, Devi
 // Of the config document (the payload of the "config" record). An older
 // version is refused (no migrations before the first release).
 constexpr int kConfigFileVersion = 2;
-// api/openapi.yaml. 9: an activity's binding action's call.data at its
-// deepest (activity, bindings, list, action, call, then data's 4 levels).
-constexpr uint8_t kRequestNestingLimit = 9;
+// api/openapi.yaml. 10: the deepest body is a binding's call.data at its
+// 4 levels (body, bindings, list, action, call, then data's 4 levels: 9),
+// plus one so data a level too deep still parses and gets `too_deep` at
+// its path instead of a 400. A restore is a file (kFileNestingLimit).
+constexpr uint8_t kRequestNestingLimit = 10;
+// 12: the same call.data inside the config file (config, activities, list,
+// activity, bindings, list, action, call, data's 4 levels: 11), plus one.
 constexpr uint8_t kFileNestingLimit = 12;
 constexpr size_t kMaxRequestBytes = 32 * 1024;    // largest API body (activities)
 constexpr size_t kMaxConfigFileBytes = 512 * 1024;
@@ -58,6 +63,19 @@ void encodeActivity(const ActivitySpec &activity, JsonObject out);  // Activity 
 bool decodeGlobalBindings(JsonVariantConst json, std::vector<BindingSpec> *bindings, uint32_t *revision,
                           ValidationReport *report, const std::string &path = "");
 void encodeGlobalBindings(const std::vector<BindingSpec> &bindings, uint32_t revision, JsonObject out);
+
+// SmartButtons {revision, slots: {light_1, light_2, switch_1, switch_2}},
+// each slot a device id or null (docs/design/smart-buttons.md). All four
+// slots are required. Decodes the PUT body (revision required). The config
+// file and backups carry the same object as `smart_buttons`, a section that
+// may be absent (four empty slots); present, its revision is required in
+// the config file and optional in a backup.
+bool decodeSmartButtons(JsonVariantConst json, SmartButtonsSpec *out, ValidationReport *report,
+                        const std::string &path = "");
+void encodeSmartButtons(const SmartButtonsSpec &spec, JsonObject out);
+// A slot's derived actions (engine/smart_actions.h): {button, plus, minus},
+// each {tap, hold, release} lists of actions. Read-only (GET).
+void encodeSmartActions(const SmartSlotActions &actions, JsonObject out);
 
 // Action and binding pieces, for the execute endpoint and partial bodies.
 bool decodeParams(JsonVariantConst json, std::vector<ParamInput> *out, ValidationReport *report,
@@ -120,7 +138,8 @@ void encodeIntegration(const IntegrationSpec &integration, JsonObject out);
 
 // ---- whole config file ---------------------------------------------------
 // {"format":"hubbo-config","schema_version":1,"revision":N,
-//  "integrations":[...],"devices":[...],"global_bindings":{...},"activities":[...]}
+//  "integrations":[...],"devices":[...],"global_bindings":{...},"smart_buttons":{...},
+//  "activities":[...]}
 std::string serializeConfig(const ConfigSpec &config);
 
 // Migration hook: upgrade `doc` in place from `fromVersion` to

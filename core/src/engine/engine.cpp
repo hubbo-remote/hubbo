@@ -1,5 +1,7 @@
 #include "hubbo/engine/engine.h"
 
+#include <algorithm>
+
 #include "hubbo/domain/time.h"
 
 namespace hubbo {
@@ -64,9 +66,13 @@ void Engine::advanceClock(uint32_t nowMs) {
 void Engine::onRemoteEvent(const remote::RemoteEvent &event) {
     advanceClock(event.atMs);
     stats_.events++;
+    const remote::ButtonSet bit = remote::buttonBit(event.button);
     const bool up = event.kind == remote::EventKind::Up;
-    if (event.kind == remote::EventKind::Down) held_ |= remote::buttonBit(event.button);
-    if (up) held_ &= ~remote::buttonBit(event.button);
+    const bool afterHold = up && (holdFired_ & bit) != 0;
+    if (event.kind == remote::EventKind::Down) held_ |= bit;
+    if (event.kind == remote::EventKind::Down || up) holdFired_ &= ~bit;
+    if (event.kind == remote::EventKind::Hold) holdFired_ |= bit;
+    if (up) held_ &= ~bit;
     bool upQueued = false;
     {
         auto guard = reader_.read();
@@ -80,24 +86,62 @@ void Engine::onRemoteEvent(const remote::RemoteEvent &event) {
         syncConfig(guard);
         applyPending(config);  // a deleted activity's fallback, before the lookup
 
+        // A smart press is picked at Down and kept until Up (see engine.h).
+        SmartRef &pressed = pressed_[static_cast<size_t>(event.button)];
+        if (event.kind == remote::EventKind::Down) {
+            pressed = {};
+            SmartSlot slot;
+            SmartPress which;
+            if (!config->activityBinds(activeIndex_, event.button)) {
+                if (smartSlotForButton(event.button, &slot)) {
+                    if (slot != selectedSlotShared()) flushStep();
+                    selected_.store(static_cast<uint8_t>(slot), std::memory_order_relaxed);
+                }
+                if (config->smartPress(event.button, selectedSlotShared(), &slot, &which) != nullptr) {
+                    pressed = {true, static_cast<uint8_t>(slot), which};
+                }
+            }
+        }
+        // Kept past Up: the Tap comes right after it. The next Down replaces it.
+        const CompiledSmartPress *smart = pressed.set ? &pressed.in(*config) : nullptr;
+        const bool plusMinus = event.button == remote::Button::Plus || event.button == remote::Button::Minus;
+        if (plusMinus && event.kind == remote::EventKind::Hold) flushStep();
+        if (smart != nullptr && smart->merges && event.kind == remote::EventKind::Tap && addStepTap(*config, pressed)) {
+            pumpAndApply(config);  // a pending tap the other way may have gone
+            return;                // this one goes when the taps stop (poll())
+        }
         bool global = false;
-        const ActionSpan span = config->lookup(activeIndex_, event.button, event.kind, &global);
+        ActionSpan span;
+        if (smart != nullptr) {
+            switch (event.kind) {
+                case remote::EventKind::Tap: span = smart->tap; break;
+                case remote::EventKind::Hold: span = smart->hold; break;
+                case remote::EventKind::Up: span = afterHold ? smart->release : ActionSpan{}; break;
+                default: break;
+            }
+        } else {
+            span = config->lookup(activeIndex_, event.button, event.kind, &global);
+        }
         if (span.count == 0) {
             stats_.unbound++;
             if (observer_ != nullptr) observer_->onUnbound(event);
         } else {
             SequenceInfo info;
             info.lane = Lane::Input;
-            info.origin = global ? SequenceOrigin::GlobalBinding : SequenceOrigin::Binding;
+            info.origin = smart != nullptr ? SequenceOrigin::SmartButton
+                          : global         ? SequenceOrigin::GlobalBinding
+                                           : SequenceOrigin::Binding;
             info.trigger = Trigger{event.button, event.kind};
-            if (!global) info.activityId = activeId_;
+            if (info.origin == SequenceOrigin::Binding) info.activityId = activeId_;
             info.generation = generation_;
             uint32_t sequenceId = 0;
             const ErrorCode result = executor_.enqueue(info, *config, span, nowMs_, &sequenceId);
             if (result == ErrorCode::Ok) {
                 stats_.dispatched++;
-                if (up) {
-                    upSequence_[static_cast<size_t>(event.button)] = sequenceId;  // released when it ends
+                // A binding's up sequence releases the button's holds when it
+                // ends; a smart button's has none (no hold commands there).
+                if (up && smart == nullptr) {
+                    upSequence_[static_cast<size_t>(event.button)] = sequenceId;
                     upQueued = true;
                 }
             }
@@ -193,7 +237,57 @@ void Engine::poll(uint32_t nowMs) {
     adapters_.poll(nowMs_, executor_);
     auto guard = reader_.read();
     if (guard) syncConfig(guard);
+    const bool stepHeld = (held_ & remote::buttonBit(step_.button())) != 0;
+    if (step_.count != 0 && !stepHeld && timeReached(nowMs_, step_.dueAtMs)) flushStep();
     pumpAndApply(guard.get());
+}
+
+bool Engine::addStepTap(const CompiledConfig &config, const SmartRef &pressed) {
+    if (step_.count != 0 && (step_.press.press != pressed.press || step_.press.slot != pressed.slot)) {
+        flushStep();
+    }
+    if (step_.count == 0) {
+        // Merging presses have one tap action (Compiler::smartPress).
+        const CompiledAction &action = *config.span(pressed.in(config).tap);
+        step_.command.action = action;
+        step_.command.deviceId.clear();
+        step_.command.providerRef.clear();
+        if (action.deviceIndex < config.devices.size()) {
+            step_.command.deviceId = config.devices[action.deviceIndex].id;
+            step_.command.providerRef = config.devices[action.deviceIndex].providerRef;
+        }
+    }
+    step_.press = pressed;
+    if (step_.count < UINT16_MAX) step_.count++;
+    step_.dueAtMs = nowMs_ + kSmartStepWindowMs;
+    return true;
+}
+
+void Engine::endActivity() {
+    generation_++;
+    stats_.transitions++;
+    executor_.cancelAll(generation_, nowMs_);
+    flushStep();  // after the cancel, so it isn't dropped
+    releaseAllHolds();
+    adapters_.releaseAll(nowMs_);
+}
+
+void Engine::flushStep() {
+    const int32_t taps = step_.count;
+    step_.count = 0;
+    if (taps == 0) return;
+    CompiledCommand &command = step_.command;
+    const auto step = static_cast<size_t>(command.action.stepParam);
+    const ParamSpec &spec = command.action.command->params[step];
+    ParamValue &value = command.action.params[step];
+    value.integer = static_cast<int32_t>(
+        std::clamp<int64_t>(static_cast<int64_t>(value.integer) * taps, spec.minInt, spec.maxInt));
+    SequenceInfo info;
+    info.lane = Lane::Input;
+    info.origin = SequenceOrigin::SmartButton;
+    info.trigger = Trigger{step_.button(), remote::EventKind::Tap};
+    info.generation = generation_;
+    if (executor_.enqueueCommand(info, command, nowMs_) == ErrorCode::Ok) stats_.dispatched++;
 }
 
 bool Engine::submit(EngineRequest &request) {
@@ -261,6 +355,7 @@ void Engine::finishCommand(const SequenceReport &report) {
 void Engine::syncConfig(const Store::Guard &guard) {
     if (guard.serial() == seenSerial_ || guard.get() == nullptr) return;
     seenSerial_ = guard.serial();
+    flushStep();  // as tapped, before anything uses the new config
     const CompiledConfig &config = *guard.get();
     if (activeIndex_ >= 0) {
         const int index = config.findActivity(activeId_.view());
@@ -282,11 +377,7 @@ void Engine::syncConfig(const Store::Guard &guard) {
             if (deleted && count > 0) {
                 pending_ = TransitionRequest::activate(config.activities[static_cast<size_t>(next)].id.view());
             } else {
-                generation_++;
-                stats_.transitions++;
-                executor_.cancelAll(generation_, nowMs_);
-                releaseAllHolds();
-                adapters_.releaseAll(nowMs_);
+                endActivity();
                 if (observer_ != nullptr) observer_->onActivityChanged("", nowMs_);
             }
         }
@@ -324,11 +415,7 @@ void Engine::applyPending(const CompiledConfig *config) {
 
 ErrorCode Engine::transition(const CompiledConfig &config, int targetIndex, TransitionResult *result) {
     const IdString previous = activeId_;
-    generation_++;
-    stats_.transitions++;
-    executor_.cancelAll(generation_, nowMs_);
-    releaseAllHolds();
-    adapters_.releaseAll(nowMs_);
+    endActivity();
 
     SequenceInfo info;
     info.lane = Lane::Transition;

@@ -67,38 +67,39 @@ Outcome invalid(ErrorCode code, const char *path) {
 
 // Where an action sits; the JSON Pointer is only built for matches.
 struct ActionRef {
-    const std::string &owner;      // activity id, "" for the global bindings
-    const std::string &ownerName;  // activity name, "" for the global bindings
+    ReferrerOwner kind;
+    const std::string &owner;      // activity id, else ""
+    const std::string &ownerName;  // activity name, else ""
     const char *section;       // "/startup", "/shutdown", "/bindings"
     const std::string *trigger;  // bindings only
     size_t index;
 
     Referrer referrer() const {
         std::string path = section;
-        if (trigger != nullptr) path += "/" + jsonPointerToken(*trigger);
-        return {owner, detail::child(path, index), ownerName};
+        if (trigger != nullptr) path = detail::child(path, *trigger);
+        return {owner, detail::child(path, index), ownerName, kind};
     }
 };
 
 template <typename F>
 void forEachAction(const ConfigSpec &config, F &&visit) {
-    static const std::string kGlobal;
+    static const std::string kNone;
     for (const auto &a : config.activities) {
         for (size_t i = 0; i < a.startup.size(); i++) {
-            visit(ActionRef{a.id, a.name, "/startup", nullptr, i}, a.startup[i]);
+            visit(ActionRef{ReferrerOwner::Activity, a.id, a.name, "/startup", nullptr, i}, a.startup[i]);
         }
         for (size_t i = 0; i < a.shutdown.size(); i++) {
-            visit(ActionRef{a.id, a.name, "/shutdown", nullptr, i}, a.shutdown[i]);
+            visit(ActionRef{ReferrerOwner::Activity, a.id, a.name, "/shutdown", nullptr, i}, a.shutdown[i]);
         }
         for (const auto &b : a.bindings) {
             for (size_t i = 0; i < b.actions.size(); i++) {
-                visit(ActionRef{a.id, a.name, "/bindings", &b.trigger, i}, b.actions[i]);
+                visit(ActionRef{ReferrerOwner::Activity, a.id, a.name, "/bindings", &b.trigger, i}, b.actions[i]);
             }
         }
     }
     for (const auto &b : config.globalBindings) {
         for (size_t i = 0; i < b.actions.size(); i++) {
-            visit(ActionRef{kGlobal, kGlobal, "/bindings", &b.trigger, i}, b.actions[i]);
+            visit(ActionRef{ReferrerOwner::GlobalBindings, kNone, kNone, "/bindings", &b.trigger, i}, b.actions[i]);
         }
     }
 }
@@ -146,6 +147,7 @@ void stampRevisions(ConfigSpec *config, uint32_t generation, bool all) {
     for (auto &d : config->devices) stamp(d.revision);
     for (auto &i : config->integrations) stamp(i.revision);
     stamp(config->globalBindingsRevision);
+    stamp(config->smartButtons.revision);
 }
 
 ConfigSpec emptyConfig() {
@@ -501,6 +503,17 @@ Outcome ConfigService::replaceGlobalBindings(std::vector<BindingSpec> bindings, 
     return result;
 }
 
+Outcome ConfigService::replaceSmartButtons(SmartButtonsSpec &&spec, uint32_t baseRevision) {
+    if (editable() != ErrorCode::Ok) return failure(editable());
+    if (baseRevision != config_.smartButtons.revision) return conflict(config_.smartButtons.revision);
+    ConfigSpec next = config_;
+    next.smartButtons = std::move(spec);
+    next.smartButtons.revision = 0;  // commit stamps it
+    Outcome result = commit(std::move(next), Outcome{}, "");
+    result.issues = reroot(result.issues, "/smart_buttons", "");
+    return result;
+}
+
 namespace {
 
 // A created or updated device's own rules, checked before it's built so a
@@ -549,7 +562,16 @@ Outcome ConfigService::updateDevice(std::string_view id, const DeviceUpdate &upd
 }
 
 std::vector<Referrer> ConfigService::deviceReferrers(std::string_view id) const {
-    return referrersOf(config_, [&](const ActionRef &, const ActionSpec &a) { return a.deviceId && *a.deviceId == id; });
+    std::vector<Referrer> out =
+        referrersOf(config_, [&](const ActionRef &, const ActionSpec &a) { return a.deviceId && *a.deviceId == id; });
+    // A smart-button slot's device counts too: deleting it would leave the
+    // slot pointing at nothing.
+    for (size_t s = 0; s < kSmartSlotCount; s++) {
+        const auto &device = config_.smartButtons.slots[s];
+        if (!device || *device != id) continue;
+        out.push_back({"", detail::child("/slots", smartSlotName(static_cast<SmartSlot>(s))), "", ReferrerOwner::SmartButtons});
+    }
+    return out;
 }
 
 Outcome ConfigService::deleteDevice(std::string_view id, uint32_t baseRevision) {

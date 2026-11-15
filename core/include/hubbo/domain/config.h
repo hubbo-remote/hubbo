@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "hubbo/domain/params.h"
+#include "hubbo/domain/smart_buttons.h"
 #include "hubbo/ha/snapshot.h"
 
 // Source (uncompiled) configuration model. Field names mirror the public
@@ -52,6 +53,19 @@ struct ActionSpec {
 struct BindingSpec {
     std::string trigger;  // "<button>:<event>"; validated, so kept as text
     std::vector<ActionSpec> actions;  // empty == unbound
+};
+
+// Smart buttons (docs/design/smart-buttons.md, domain/smart_buttons.h):
+// each slot's device id, or none. What a slot does is derived from its
+// device at compile (engine/smart_actions.h). A vector, not an array:
+// ConfigSpec copies live on the HTTP task's stack.
+struct SmartButtonsSpec {
+    std::vector<std::optional<std::string>> slots =
+        std::vector<std::optional<std::string>>(kSmartSlotCount);  // in SmartSlot order; nullopt == JSON null
+    uint32_t revision = 0;
+
+    std::optional<std::string> &at(SmartSlot slot) { return slots[static_cast<size_t>(slot)]; }
+    const std::optional<std::string> &at(SmartSlot slot) const { return slots[static_cast<size_t>(slot)]; }
 };
 
 struct ActivitySpec {
@@ -220,6 +234,7 @@ struct ConfigSpec {
     // remote's activity buttons and Off live (system.activate / system.off).
     std::vector<BindingSpec> globalBindings;
     uint32_t globalBindingsRevision = 0;
+    SmartButtonsSpec smartButtons;
     uint32_t revision = 0;  // whole config; bumped by every saved change
 };
 

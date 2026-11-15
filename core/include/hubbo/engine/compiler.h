@@ -46,7 +46,7 @@ private:
 // Validates and compiles a whole configuration. Returns nullptr (and fills
 // `report`) on any error; a partial config is never produced. Paths are
 // rooted at the config document: /devices/N/..., /activities/N/...,
-// /global_bindings/<trigger>/N/...
+// /global_bindings/<trigger>/N/..., /smart_buttons/slots/<slot>[/<press>/<kind>/N/...]
 std::unique_ptr<CompiledConfig> compileConfig(const ConfigSpec &config, const AdapterSet &adapters,
                                               ValidationReport *report);
 
