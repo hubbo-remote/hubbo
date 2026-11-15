@@ -1491,6 +1491,47 @@ TEST_F(ApiTest, DiscoveryIsAsyncAndFiltered) {
     EXPECT_FALSE(r.json["error"].as<std::string>().empty());
 }
 
+TEST_F(ApiTest, SameUniqueIdInAnotherDomainIsAnotherDevice) {
+    // Android TV Remote: the TV's media_player and its remote share the TV's MAC.
+    sim::FakeHaEntity tv;
+    tv.info.entityId = "media_player.den_tv";
+    tv.info.supportedFeatures = 128 | 256;  // TURN_ON | TURN_OFF
+    tv.platform = "androidtv_remote";
+    tv.uniqueId = "aa:bb:cc:dd:ee:ff";
+    sim::FakeHaEntity remote = tv;
+    remote.info.entityId = "remote.den_tv_remote";
+    remote.info.supportedFeatures = 0;
+    for (const auto &e : {tv, remote}) {
+        haServer.addEntity(e);
+        hub.homeAssistant().addEntity(e.info);
+    }
+    connectHa();
+    auto add = [&](const char *name, const std::string &entityId) {
+        return call(http::Method::Post, "/api/v1/admin/devices",
+                    std::string(R"({"name":")") + name + R"(","integration_id":"ha_main",
+                        "provider":{"type":"home_assistant","entity_id":")" + entityId + R"("}})");
+    };
+    ASSERT_EQ(details("media_player.den_tv").json["state"], "done");
+    Reply r = add("Den TV", "media_player.den_tv");
+    ASSERT_EQ(r.status, 201) << dump(r);
+    const std::string tvId = r.json["id"].as<std::string>();
+
+    r = details("remote.den_tv_remote");
+    ASSERT_EQ(r.json["state"], "done") << dump(r);
+    EXPECT_TRUE(r.json["registered_device_id"].isNull()) << "not the TV's media player: " << dump(r);
+    r = add("Den TV Remote", "remote.den_tv_remote");
+    ASSERT_EQ(r.status, 201) << dump(r);
+    EXPECT_NE(r.json["id"].as<std::string>(), tvId);
+    EXPECT_EQ(r.json["provider"]["unique_id"], "aa:bb:cc:dd:ee:ff");
+
+    // Within a domain, a rename still finds the TV, not the remote.
+    haServer.removeEntity("media_player.den_tv");
+    sim::FakeHaEntity renamed = tv;
+    renamed.info.entityId = "media_player.den_television";
+    haServer.addEntity(renamed);
+    EXPECT_EQ(details("media_player.den_television").json["registered_device_id"], tvId);
+}
+
 // A fan's speed step reaches the catalog's `step` (it was always 1).
 TEST_F(ApiTest, FanSpeedStepReachesTheCatalog) {
     sim::FakeHaEntity fan;

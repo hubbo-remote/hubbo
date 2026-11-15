@@ -1060,7 +1060,8 @@ paths:
         earlier HA settings); `422` (detail at `/provider/entity_id`)
         `unknown_device` if Hubbo offers no commands for it, `duplicate_id`
         if a device already uses the entity (also one HA renamed: the
-        details match it by `unique_id`; re-link that device instead); `503
+        details match it by `unique_id` within its domain and platform;
+        re-link that device instead); `503
         integration_unavailable` on a hub without an HA client. An
         entity that HA later renames or removes shows as `availability:
         stale` once a discovery runs without it; its commands and actions
