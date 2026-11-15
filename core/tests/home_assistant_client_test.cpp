@@ -433,6 +433,31 @@ TEST_F(ClientTest, EntityDetailsAreFetchedForOneEntity) {
     EXPECT_EQ(d.translations, "");  // no integration: nothing asked
     EXPECT_EQ(server.received().back().find("get_translations"), std::string::npos);
 
+    // A remote: its integration's names and the remote domain's.
+    ASSERT_EQ(fetch("remote.living_room_tv", &d), ErrorCode::Ok);
+    EXPECT_EQ(d.platform, "demo");
+    // Both, in whatever order ha::serviceDomains() gives them.
+    const std::string asked = server.received().back();
+    const size_t list = asked.find(R"("integration":[)");
+    ASSERT_NE(list, std::string::npos) << asked;
+    const std::string integrations = asked.substr(list, asked.find(']', list) - list);
+    EXPECT_NE(integrations.find(R"("demo")"), std::string::npos) << asked;
+    EXPECT_NE(integrations.find(R"("remote")"), std::string::npos) << asked;
+    EXPECT_NE(d.translations.find(R"("component.remote.services.send_command.name":"Send remote command")"),
+              std::string::npos);
+    // A YAML-only remote has no integration, but still the remote domain's.
+    FakeHaEntity yamlRemote;
+    yamlRemote.info.entityId = "remote.attic_ir";
+    yamlRemote.friendlyName = "Attic IR";
+    yamlRemote.registered = false;
+    yamlRemote.platform.clear();
+    server.addEntity(yamlRemote);
+    ASSERT_EQ(fetch("remote.attic_ir", &d), ErrorCode::Ok);
+    EXPECT_EQ(d.platform, "");
+    EXPECT_NE(server.received().back().find(R"("integration":["remote"])"), std::string::npos)
+        << server.received().back();
+    EXPECT_NE(d.translations.find("component.remote.services.send_command.name"), std::string::npos);
+
     // Translations are optional: unanswered, details still arrive, without them.
     server.answerTranslations = false;
     ErrorCode slow = ErrorCode::Busy;

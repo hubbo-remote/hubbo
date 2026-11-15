@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <utility>
 
+#include "hubbo/ha/services.h"
+
 namespace hubbo::integrations {
 
 namespace {
@@ -635,14 +637,16 @@ void HomeAssistantClient::detailsResult(Kind kind, bool success, std::string tex
         text.erase(body.end);  // keep only the result, without a second copy
         text.erase(0, body.begin);
         details_.services = std::move(text);
-        if (details_.platform.empty()) return finishDetails(ErrorCode::Ok);  // no integration: none to label
-        // Its integration's service names, as HA's UI shows them. Optional.
+        // The service names of its integration (and a remote's remote
+        // domain), as HA's UI shows them. Optional.
+        const std::vector<std::string> domains = ha::serviceDomains(details_.entityId, details_.platform);
+        if (domains.empty()) return finishDetails(ErrorCode::Ok);  // none to label
         detailsGathered_ = true;
         JsonDocument request;
         request["type"] = "frontend/get_translations";
         request["language"] = "en";
         request["category"] = "services";
-        request["integration"].add(details_.platform);
+        for (const std::string &domain : domains) request["integration"].add(domain);
         sent = sendCommand(Kind::DetailsTranslations, serialize(request), kCommandTimeoutMs, nullptr);
     }
     if (sent != ErrorCode::Ok) finishDetails(sent);

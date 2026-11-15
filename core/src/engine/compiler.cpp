@@ -7,6 +7,7 @@
 #include "hubbo/domain/ids.h"
 #include "hubbo/domain/system.h"
 #include "hubbo/domain/trigger.h"
+#include "hubbo/ha/capabilities.h"
 
 namespace hubbo {
 
@@ -42,14 +43,13 @@ std::string jsonPointerToken(const std::string &token) {
 
 namespace {
 
-// A Home Assistant action stays on its device: the service's domain is the
-// device's own integration (webostv.* on a webostv TV), so nothing aimed at
-// HA as a whole (homeassistant.stop, hassio.*) can be bound or run.
+// A Home Assistant action stays on its device (ha::isDeviceService): its
+// integration's services (webostv.* on a webostv TV), and remote.* on a
+// remote, so nothing aimed at HA as a whole (homeassistant.stop, hassio.*)
+// can be bound or run.
 bool serviceOnDevice(const HaServiceCallSpec &call, const DeviceSpec &device) {
-    if (!device.haCapabilities || device.haCapabilities->platform.empty()) return false;
-    const std::string &platform = device.haCapabilities->platform;
-    return call.service.size() > platform.size() && call.service.compare(0, platform.size(), platform) == 0 &&
-           call.service[platform.size()] == '.';
+    return device.haCapabilities &&
+           ha::isDeviceService(device.provider.entityId, device.haCapabilities->platform, call.service);
 }
 
 // Where a command runs, and what its effect allows there: a Hold only in a
