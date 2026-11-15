@@ -90,12 +90,13 @@ const activityIds = (cat: Catalog) => {
 
 /**
  * A number param picked and shown as a percent: a 0–1 number (HA's volume level), a light's 0–255
- * brightness, or a light's ±255 brightness step. `full` is its 100% value; a signed scale runs
- * −100%…+100% with no 0.
+ * brightness, a light's ±255 brightness step, or a ±100% step (a cover's Change position). `full` is its
+ * 100% value; a signed scale runs −100%…+100% with no 0.
  */
 export type PercentScale = { full: number; signed: boolean }
 export function percentScale(commandId: string, p: ParamSpec): PercentScale | null {
   if (p.type === 'number' && p.minimum === 0 && p.maximum === 1) return { full: 1, signed: false }
+  if (p.type === 'int' && p.unit === '%' && p.minimum === -100 && p.maximum === 100) return { full: 100, signed: true }
   if (!commandId.startsWith('light.') || p.type !== 'int') return null
   if (p.name === 'brightness' && p.minimum === 0 && p.maximum === 255) return { full: 255, signed: false }
   if (p.name === 'step' && p.minimum === -255 && p.maximum === 255) return { full: 255, signed: true }
