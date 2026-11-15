@@ -82,6 +82,9 @@ constexpr CommandDef kCommands[] = {
     {"select.select_option", "Choose", "select", "select_option"},
     {"select.select_next", "Next", "select", "select_next"},
     {"select.select_previous", "Previous", "select", "select_previous"},
+    {"remote.turn_on", "Turn on", "remote", "turn_on"},
+    {"remote.turn_off", "Turn off", "remote", "turn_off"},
+    {"remote.toggle", "Toggle", "remote", "toggle"},
     // No fixed service: buildCustomCall() takes it from the action.
     {kCallServiceCommandId, "Home Assistant action", "", "", nullptr, "custom"},
 };
@@ -345,6 +348,7 @@ constexpr DomainTraits kDomainTraits[] = {
     {"other", false},     // input_boolean
     {"climate", false},   // humidifier
     {"other", false},     // select
+    {"other", true},      // remote
     {"other", false},     // Unsupported
 };
 static_assert(std::size(kDomainTraits) == std::size(kEntityDomains) + 1, "one row per EntityDomain");
@@ -365,6 +369,29 @@ const char *suggestedKind(std::string_view domain, std::string_view platform, st
 
 bool offersIntegrationServices(std::string_view entityId) {
     return traits(entityDomain(entityId)).integrationServices;
+}
+
+std::vector<std::string> serviceDomains(std::string_view entityId, std::string_view platform) {
+    std::vector<std::string> out;
+    if (entityDomain(entityId) == EntityDomain::Remote) out.emplace_back("remote");
+    if (!platform.empty() && platform != entityId.substr(0, entityId.find('.'))) out.emplace_back(platform);
+    return out;
+}
+
+bool isDeviceService(std::string_view entityId, std::string_view platform, std::string_view service) {
+    if (!isHaServiceId(service)) return false;
+    const std::string_view domain = service.substr(0, service.find('.'));
+    for (const std::string &allowed : serviceDomains(entityId, platform)) {
+        if (domain == allowed) return true;
+    }
+    return false;
+}
+
+bool isAllowlistedService(std::string_view domain, std::string_view service) {
+    for (const auto &def : kCommands) {
+        if (domain == def.domain && service == def.service) return true;
+    }
+    return false;
 }
 
 bool isHaName(std::string_view name) {
@@ -464,6 +491,12 @@ void builtins(const EntityInfo &entity, Drafts &drafts) {
             break;
         case EntityDomain::Humidifier: humidifier(entity, drafts); break;
         case EntityDomain::Select: selectEntity(entity, drafts); break;
+        case EntityDomain::Remote:
+            // remote/services.yaml: every remote. turn_on's `activity` is text: untyped.
+            drafts.add("remote.turn_on");
+            drafts.add("remote.turn_off");
+            drafts.add("remote.toggle");
+            break;
         case EntityDomain::Unsupported: break;
     }
 }

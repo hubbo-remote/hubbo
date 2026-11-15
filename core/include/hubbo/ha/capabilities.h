@@ -29,7 +29,7 @@
 //   registration), and only from a curated allowlist: no play_media,
 //   join/unjoin (take other entity ids), browse/search, or anything taking
 //   free text or URLs. Toggle only where HA's own UI leans on it (covers,
-//   humidifiers, input booleans), plus mute: HA has none, so mute_toggle
+//   humidifiers, input booleans, remotes), plus mute: HA has none, so mute_toggle
 //   reads is_volume_muted at press time and sends the opposite.
 //
 // Feature bits, attribute names and service gating were checked against
@@ -103,17 +103,18 @@ constexpr int32_t kDefaultMinKelvin = 2000;
 constexpr int32_t kDefaultMaxKelvin = 6535;
 
 enum class EntityDomain : uint8_t {
-    MediaPlayer, Light, Switch, Fan, Scene, Script, Cover, Button, InputBoolean, Humidifier, Select, Unsupported
+    MediaPlayer, Light, Switch, Fan, Scene, Script, Cover, Button, InputBoolean, Humidifier, Select, Remote,
+    Unsupported
 };
 
 // The entity domains with a curated allowlist, in EntityDomain order. The
 // spec's discovery `domain` enum matches it (api/tools/validate.py checks).
 constexpr const char *kEntityDomains[] = {"media_player", "light",         "switch",     "fan",
                                           "scene",        "script",        "cover",      "button",
-                                          "input_boolean", "humidifier",   "select"};
+                                          "input_boolean", "humidifier",   "select",     "remote"};
 static_assert(sizeof(kEntityDomains) / sizeof(kEntityDomains[0]) == static_cast<size_t>(EntityDomain::Unsupported),
               "one name per EntityDomain");
-// "media_player, light, ... or select", for messages.
+// "media_player, light, ... or remote", for messages.
 std::string entityDomainList();
 EntityDomain domainNamed(std::string_view domain);  // "fan" -> Fan; Unsupported if none
 
@@ -124,13 +125,30 @@ bool isValidEntityId(std::string_view entityId);
 EntityDomain entityDomain(std::string_view entityId);  // Unsupported if invalid
 
 // Integration services (e.g. sonos.*) are offered only for media players,
-// lights, switches and fans; the newer domains get their allowlist alone.
+// lights, switches, fans and remotes; the other newer domains get their
+// allowlist alone. A remote also gets HA's own `remote` services beyond the
+// allowlist (send_command, ...) as custom services: isDeviceService().
 bool offersIntegrationServices(std::string_view entityId);
 
 // A fan's speed-slider step: HA's percentage_step (100 / speeds) rounded down
 // to 1..100, so every multiple still lands on the speed it means (HA rounds a
 // percentage up to the next speed). 0: none (not reported, or under 1).
 int32_t fanSpeedStep(double percentageStep);
+
+// The HA service domains whose services an entity can be offered beyond the
+// allowlist, in offer (and hint budget) order: "remote" first for a remote
+// (docs/design/ha-remote.md: the one exception), then its platform unless
+// that's empty or the entity's own domain. Also the get_services domains
+// ServiceDirectory::parse() must keep.
+std::vector<std::string> serviceDomains(std::string_view entityId, std::string_view platform);
+
+// A service a Home Assistant action may send to this entity: isHaServiceId,
+// with its domain in serviceDomains(). The one rule for custom services'
+// snapshot decode and core's compiler.
+bool isDeviceService(std::string_view entityId, std::string_view platform, std::string_view service);
+
+// An HA service some allowlisted command calls (`remote`, `turn_on`).
+bool isAllowlistedService(std::string_view domain, std::string_view service);
 
 // A humidifier's reported range as whole percent within 0..100, lo < hi:
 // the one rule for the snapshot and the command. False: not reported or

@@ -1472,7 +1472,7 @@ TEST_F(ApiTest, DiscoveryIsAsyncAndFiltered) {
     }
     r = call(http::Method::Get, "/api/v1/admin/integrations/ha_main/discover?domain=sensor");
     EXPECT_EQ(r.json["error"]["details"][0]["message"], "domain must be media_player, light, switch, fan, scene, script, cover, button, input_boolean, "
-              "humidifier or select");
+              "humidifier, select or remote");
 
     // Cancel drops the candidates.
     EXPECT_EQ(call(http::Method::Delete, "/api/v1/admin/integrations/ha_main/discover").status, 204);
@@ -1519,6 +1519,38 @@ TEST_F(ApiTest, FanSpeedStepReachesTheCatalog) {
         }
     }
     EXPECT_EQ(checked, 2) << "turn_on and set_percentage: " << dump(r);
+}
+
+TEST_F(ApiTest, YamlRemoteGetsTheRemoteDomainsServices) {
+    sim::FakeHaEntity remote;
+    remote.info.entityId = "remote.bedroom_tv";
+    remote.registered = false;  // YAML-only: no platform
+    haServer.addEntity(remote);
+    hub.homeAssistant().addEntity(remote.info);
+    connectHa();
+    ASSERT_EQ(details("remote.bedroom_tv").json["state"], "done");
+    Reply r = call(http::Method::Post, "/api/v1/admin/devices",
+                   R"({"name":"Bedroom TV","integration_id":"ha_main","kind":"other",
+                       "provider":{"type":"home_assistant","entity_id":"remote.bedroom_tv"}})");
+    ASSERT_EQ(r.status, 201) << dump(r);
+    const std::string id = r.json["id"].as<std::string>();
+    r = call(http::Method::Get, "/api/v1/devices/" + id + "/capabilities");
+    ASSERT_EQ(r.status, 200);
+    std::vector<std::string> commands, services;
+    for (JsonVariant c : r.json["commands"].as<JsonArray>()) {
+        commands.push_back(c["command_id"].as<std::string>());
+        for (JsonVariant s : c["services"].as<JsonArray>()) services.push_back(s["service"].as<std::string>());
+    }
+    EXPECT_EQ(commands, (std::vector<std::string>{"remote.turn_on", "remote.turn_off", "remote.toggle", "call_service"}));
+    EXPECT_EQ(services, (std::vector<std::string>{"remote.send_command", "remote.delete_command",
+                                                  "remote.learn_command"}));
+    const std::string path = "/api/v1/devices/" + id + "/commands/call_service/execute";
+    r = call(http::Method::Post, path,
+             R"({"params":{},"call":{"service":"remote.send_command","data":{"command":"DPAD_UP"}}})");
+    EXPECT_EQ(r.status, 200) << dump(r);
+    r = call(http::Method::Post, path, R"({"params":{},"call":{"service":"homeassistant.stop"}})");
+    EXPECT_EQ(r.status, 422) << dump(r);
+    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/call/service");
 }
 
 TEST_F(ApiTest, DiscoverySearchDecodesTheQuery) {
