@@ -2,7 +2,7 @@
 import { useMemo } from 'react'
 import { api } from '@/api/client'
 import { setQueryData, useQuery } from '@/api/hooks'
-import type { Capabilities, DeviceDetail } from '@/api/types'
+import type { Capabilities, DeviceDetail, SmartSlotActions } from '@/api/types'
 import type { Catalog } from '@/lib/activity'
 
 export const useSession = () => useQuery('session', () => api.session())
@@ -14,6 +14,16 @@ export const useCapabilities = (id: string | null) => useQuery(id ? `caps/${id}`
 export const useActivities = () => useQuery('activities', () => api.activities())
 export const useActivity = (id: string | null) => useQuery(id ? `activity/${id}` : null, () => api.activity(id!))
 export const useGlobalBindings = () => useQuery('global-bindings', () => api.globalBindings())
+export const useSmartButtons = () => useQuery('smart-buttons', () => api.smartButtons())
+
+/** What the slots would do with these devices (picked, not saved yet), by device id. */
+export function useSmartActions(ids: string[]) {
+  return useQuery(
+    ids.length ? `smart-actions/${ids.join(',')}` : null,
+    async () => new Map<string, SmartSlotActions>(await Promise.all(ids.map(async (id) => [id, await api.smartButtonActions(id)] as const))),
+    { keepPrevious: true },
+  )
+}
 export const useIntegrations = (pollMs?: number) => useQuery('integrations', () => api.integrations(), { pollMs })
 export const useProfiles = (enabled = true) => useQuery(enabled ? 'profiles' : null, () => api.profiles())
 export const useKinds = (enabled = true) => useQuery(enabled ? 'kinds' : null, () => api.kinds())

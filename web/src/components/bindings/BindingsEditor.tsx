@@ -1,19 +1,22 @@
 import { AlertTriangle, Eraser, Pencil, Plus } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { Action, Bindings, ButtonId, EventKind, ValidationIssue } from '@/api/types'
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
+import type { Action, Bindings, ButtonId, EventKind, SlotId, SmartPress, SmartSlotActions, ValidationIssue } from '@/api/types'
 import { ActionPicker, TestButton } from '@/components/actions/ActionPicker'
 import { CommandPicker } from '@/components/actions/CommandPicker'
-import { actionParts, actionText } from '@/components/actions/describe'
+import { actionParts, actionText, plainActions } from '@/components/actions/describe'
 import { EV_COLOR, EV_LABEL, EventLegend, RemoteSvg, SourceLegend, type BindingSource } from '@/components/remote/RemoteSvg'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Field, Select } from '@/components/ui/input'
 import { bindsButton, buttonForPath, commandFor, isTimed, releaseFor, triggerKey, type Catalog } from '@/lib/activity'
 import { callReady } from '@/lib/haCall'
 import { readButton, viewKinds, writeLongPress, writeMain } from '@/lib/commands'
 import { BUTTONS, buttonLabel } from '@/lib/buttons'
+import { isSlot, SLOT_KINDS, SLOTS, type SmartSet } from '@/lib/smartButtons'
 import { cn, same } from '@/lib/utils'
+import { Skeleton } from '@/components/ui/misc'
 import { Sheet, SheetSpacer } from '@/components/ui/sheet'
 import { useWide } from '@/hooks/media'
 
@@ -27,6 +30,26 @@ import { useWide } from '@/hooks/media'
  */
 export type BindingSet = { source: 'global'; globals?: undefined } | { source: 'activity'; globals: Bindings }
 
+const pressKinds = (a: SmartPress): EventKind[] => [...(a.tap.length ? (['tap'] as const) : []), ...(a.hold.length ? (['hold'] as const) : [])]
+const isPlusMinus = (b: string): b is 'plus' | 'minus' => b === 'plus' || b === 'minus'
+const anyDevice = (smart: SmartSet) => SLOTS.some((s) => smart.slots[s])
+
+/**
+ * What the smart buttons give a button (undefined when they don't take it): a slot's own button once it has a
+ * device, and + / − once any slot has one. `kinds` may be empty (a switch gives + and − nothing).
+ */
+function smartFor(smart: SmartSet | undefined, b: string): { kinds: EventKind[]; presses: SmartPress[] } | undefined {
+  if (!smart) return undefined
+  if (isSlot(b)) {
+    if (!smart.slots[b]) return undefined
+    const p = smart.actions(b)?.button
+    return { kinds: p ? pressKinds(p) : [], presses: p ? [p] : [] }
+  }
+  if (!isPlusMinus(b) || !anyDevice(smart)) return undefined
+  const presses = SLOTS.flatMap((s) => (smart.slots[s] && smart.actions(s)?.[b]) || [])
+  return { kinds: [...new Set(presses.flatMap(pressKinds))], presses }
+}
+
 /** The button shown before any pick. */
 const FIRST_BUTTON: Record<BindingSource, ButtonId> = { activity: 'select', global: 'tv' }
 
@@ -39,6 +62,8 @@ export function BindingsEditor({
   selected: picked,
   onSelect,
   set,
+  smart,
+  onPickSlot,
 }: {
   bindings: Bindings
   onChange: (b: Bindings) => void
@@ -50,6 +75,12 @@ export function BindingsEditor({
   selected: string | null
   onSelect: (id: string) => void
   set: BindingSet
+  /**
+   * The smart buttons (Light 1, Light 2, Switch 1 and Switch 2's devices). On Global, a slot with a device does what
+   * the hub derives (shown read-only), and `onPickSlot` sets it; in an activity they show as inherited.
+   */
+  smart?: SmartSet
+  onPickSlot?: (slot: SlotId, device: string | null) => void
 }) {
   const { source, globals: fallback } = set
   const selected = picked ?? FIRST_BUTTON[source]
@@ -59,14 +90,30 @@ export function BindingsEditor({
       const ev = viewKinds(readButton(bindings, b.id))
       if (ev.length) out[b.id] = ev
     }
+    // On Global, what the smart buttons take is theirs (an activity shows it as inherited instead).
+    if (source !== 'global') return out
+    for (const b of [...SLOTS, 'plus', 'minus']) {
+      const sm = smartFor(smart, b)
+      if (!sm) continue
+      const ev = new Set([...(isSlot(b) ? [] : (out[b] ?? [])), ...sm.kinds])
+      if (ev.size) out[b] = [...ev]
+      else delete out[b]
+    }
     return out
-  }, [bindings])
+  }, [bindings, smart, source])
   // Buttons this set leaves to a global binding (it binds nothing on them), with what the global does.
   const inherited = useMemo(() => {
     if (!fallback) return undefined
     const out: Record<string, { kinds: EventKind[]; text: string }> = {}
     for (const b of BUTTONS) {
-      if (bindsButton(bindings, b.id) || !bindsButton(fallback, b.id)) continue
+      if (bindsButton(bindings, b.id)) continue
+      // The smart buttons come before Global (an activity's own bindings before both).
+      const sm = smartFor(smart, b.id)
+      if (sm) {
+        if (sm.kinds.length) out[b.id] = { kinds: sm.kinds, text: `Smart button: ${sm.presses.map((p) => pressText(p, catalog)).filter(Boolean).join(' / ')}` }
+        continue
+      }
+      if (!bindsButton(fallback, b.id)) continue
       const v = readButton(fallback, b.id)
       const parts = [
         v.main && `${EV_LABEL.tap} → ${actionText(v.main, catalog)}`,
@@ -76,7 +123,7 @@ export function BindingsEditor({
       out[b.id] = { kinds: viewKinds(v), text: parts.filter(Boolean).join(' · ') }
     }
     return out
-  }, [fallback, bindings, catalog])
+  }, [fallback, bindings, catalog, smart])
   // Keyed on the joined ids so a re-validation with the same result keeps the Set (and RemoteSvg's memo) stable.
   const errorKey = [...new Set(errors.map((e) => buttonForPath(e.path)).filter(Boolean))].sort().join(' ')
   const errorButtons = useMemo(() => new Set(errorKey ? errorKey.split(' ') : []), [errorKey])
@@ -102,6 +149,8 @@ export function BindingsEditor({
       button={selected as ButtonId}
       bindings={bindings}
       fallback={fallback}
+      smart={smart}
+      onPickSlot={onPickSlot}
       catalog={catalog}
       errors={errors.filter((e) => buttonForPath(e.path) === selected)}
       warnings={warnings.filter((e) => buttonForPath(e.path) === selected)}
@@ -157,7 +206,7 @@ function Row({ color, title, note, action, inherited, catalog, editing, children
         <div className="min-w-0 flex-1">
           <p className="flex items-center gap-2 text-sm font-semibold">
             {title}
-            {!list.length && inherited && <GlobalTag />}
+            {!list.length && inherited && <SourceTag>Global</SourceTag>}
             {note && <span className="text-xs font-normal text-muted-foreground">{note}</span>}
           </p>
           {!editing && (
@@ -184,11 +233,13 @@ function Row({ color, title, note, action, inherited, catalog, editing, children
   )
 }
 
-/** Marks a row whose binding comes from the global buttons: amber, like the remote's key. */
-function GlobalTag() {
+const TAG = 'px-1.5 py-0 text-[11px] leading-4'
+
+/** Marks what a row gets from elsewhere ("Global", "Smart button"): amber, like the remote's key. */
+function SourceTag({ children }: { children: ReactNode }) {
   return (
-    <Badge variant="outline" className="border-[var(--global)] px-1.5 py-0 text-[11px] leading-4 text-[var(--global)]">
-      Global
+    <Badge variant="outline" className={cn(TAG, 'border-[var(--global)] text-[var(--global)]')}>
+      {children}
     </Badge>
   )
 }
@@ -236,7 +287,7 @@ type Editing = { row: 'main' | 'long' | EventKind; action: Action | null; from?:
  * The selected button: what it does on a press (passed straight through), on a long press, and, for anything
  * that doesn't fit those, its raw down/up/tap triggers ("Advanced").
  */
-function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, onChange }: { button: ButtonId; bindings: Bindings; fallback?: Bindings; catalog: Catalog; errors: ValidationIssue[]; warnings: ValidationIssue[]; onChange: (b: Bindings) => void }) {
+function BindingPanel({ button, bindings, fallback, smart, onPickSlot, catalog, errors, warnings, onChange }: { button: ButtonId; bindings: Bindings; fallback?: Bindings; smart?: SmartSet; onPickSlot?: (slot: SlotId, device: string | null) => void; catalog: Catalog; errors: ValidationIssue[]; warnings: ValidationIssue[]; onChange: (b: Bindings) => void }) {
   const [editing, setEditing] = useState<Editing | null>(null)
   const [advanced, setAdvanced] = useState(false)
   useEffect(() => (setEditing(null), setAdvanced(false)), [button])
@@ -244,7 +295,10 @@ function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, o
   const view = readButton(bindings, button)
   // A button the set binds at all masks every global for it (the hub's rule), so only an untouched button inherits.
   const owns = bindsButton(bindings, button)
-  const inherited = fallback && !owns ? readButton(fallback, button) : null
+  const global = !fallback
+  // In an activity, the smart buttons stand in for Global on what they take (shown above the rows to override).
+  const smartHere = !global && !!smartFor(smart, button)
+  const inherited = fallback && !owns && !smartHere ? readButton(fallback, button) : null
   const timed = isTimed(catalog)
   const forced = view.raw.some((e) => e !== 'hold') // doesn't fit Press: only the raw rows can show it
   const showRaw = forced || advanced
@@ -269,19 +323,41 @@ function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, o
     onChange(next)
   }
 
+  // On Global, a slot's button picks its device; with one, it (and + / −) only explain what they do.
+  const slot = global && smart && onPickSlot && isSlot(button) ? button : null
+  const picker = slot && <SlotDevice slot={slot} device={smart!.slots[slot]} onPick={onPickSlot!} catalog={catalog} />
+  const explained = (slot && smart!.slots[slot]) || (global && smart && isPlusMinus(button) && anyDevice(smart))
+  const title = (
+    <CardHeader>
+      <div className="flex items-center justify-between gap-2">
+        <CardTitle className="text-lg">{buttonLabel(button)}</CardTitle>
+        {!forced && !explained && (
+          <Button variant="link" size="sm" className="h-auto p-0 text-muted-foreground" onClick={() => (close(), setAdvanced(!advanced))} aria-pressed={advanced}>
+            {advanced ? 'Simple' : 'Advanced'}
+          </Button>
+        )}
+      </div>
+    </CardHeader>
+  )
+  if (explained)
+    return (
+      <Card aria-live="polite">
+        {title}
+        <CardContent className="grid gap-2">
+          {picker}
+          {slot ? <SlotActions slot={slot} actions={smart!.actions(slot)} catalog={catalog} /> : <Follows button={button as 'plus' | 'minus'} smart={smart!} catalog={catalog} />}
+        </CardContent>
+      </Card>
+    )
+
   return (
     <Card aria-live="polite">
-      <CardHeader>
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-lg">{buttonLabel(button)}</CardTitle>
-          {!forced && (
-            <Button variant="link" size="sm" className="h-auto p-0 text-muted-foreground" onClick={() => (close(), setAdvanced(!advanced))} aria-pressed={advanced}>
-              {advanced ? 'Simple' : 'Advanced'}
-            </Button>
-          )}
-        </div>
-      </CardHeader>
+      {title}
       <CardContent className="grid gap-2">
+        {picker}
+        {smartHere && !owns && (isPlusMinus(button) ? <Follows button={button} smart={smart!} catalog={catalog} inherited /> : <SmartInherited slot={button as SlotId} smart={smart!} catalog={catalog} />)}
+        {smartHere && owns && <p className="text-sm text-muted-foreground">This activity’s own, in place of the smart button{isPlusMinus(button) ? 's' : ''}.</p>}
+        {smartHere && !owns && <p className="mt-2 text-xs font-medium text-muted-foreground">Bind it to use something else in this activity</p>}
         {errors.map((i) => (
           <Alert key={i.path + i.code} variant="error">
             {i.message}
@@ -361,6 +437,113 @@ function BindingPanel({ button, bindings, fallback, catalog, errors, warnings, o
         })}
       </CardContent>
     </Card>
+  )
+}
+
+/** A smart button's device: lights, fans, covers and switches (and whatever it has now), or none. */
+function SlotDevice({ slot, device, onPick, catalog }: { slot: SlotId; device: string | null; onPick: (slot: SlotId, device: string | null) => void; catalog: Catalog }) {
+  const id = useId()
+  const offered = [...catalog.devices.values()].filter((d) => SLOT_KINDS.has(d.kind) || d.id === device)
+  return (
+    <div className="mb-2">
+      <Field label="Device" htmlFor={id} hint={device ? 'The button and + / − control it.' : 'None: bind it like any other button.'}>
+        <Select id={id} value={device ?? ''} onChange={(e) => onPick(slot, e.target.value || null)}>
+          <option value="">None</option>
+          {offered.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    </div>
+  )
+}
+
+/** + or −, once a smart button has a device: what it does for each one. In an activity it's inherited (tagged). */
+function Follows({ button, smart, catalog, inherited }: { button: 'plus' | 'minus'; smart: SmartSet; catalog: Catalog; inherited?: boolean }) {
+  return (
+    <div className="grid gap-3">
+      <p className="flex flex-wrap items-center gap-x-2 text-sm">
+        {inherited && <SourceTag>Smart button</SourceTag>}
+        <span className="font-semibold">Controls your smart buttons.</span> <span className="text-muted-foreground">+ and − adjust whichever one you pressed last.</span>
+      </p>
+      <SmartCards slots={SLOTS.filter((s) => smart.slots[s])} smart={smart} press={(a) => a[button]} nothing="+ and − do nothing" catalog={catalog} />
+      {!inherited && <p className="text-xs text-muted-foreground">Activities can use + and − for something else, like volume.</p>}
+    </div>
+  )
+}
+
+/** An activity's slot button that its smart button handles: what it does there. */
+function SmartInherited({ slot, smart, catalog }: { slot: SlotId; smart: SmartSet; catalog: Catalog }) {
+  return (
+    <div className="grid gap-2">
+      <p className="flex items-center gap-2 text-sm">
+        <SourceTag>Smart button</SourceTag>
+        <span className="text-muted-foreground">Set on the Global remote.</span>
+      </p>
+      <SmartCards slots={[slot]} smart={smart} press={(a) => a.button} nothing="Does nothing" catalog={catalog} />
+    </div>
+  )
+}
+
+/** A press's actions in plain words: "Turn on; Hold: Turn off". */
+const pressText = (p: SmartPress, cat: Catalog) => [p.tap.length && plainActions(p.tap, cat), p.hold.length && `Hold: ${plainActions(p.hold, cat)}`].filter(Boolean).join('; ')
+
+/** One card per smart button: its badge and device on the left, what `press` picks out of its actions on the right. */
+function SmartCards({ slots, smart, press, nothing, catalog }: { slots: SlotId[]; smart: SmartSet; press: (a: SmartSlotActions) => SmartPress; nothing: string; catalog: Catalog }) {
+  return (
+    <ul className="grid gap-2" aria-label="Smart buttons">
+      {slots.map((slot) => {
+        const device = smart.slots[slot]!
+        const name = catalog.devices.get(device)?.name ?? device
+        const actions = smart.actions(slot)
+        const p = actions && press(actions)
+        if (!p?.tap.length && !p?.hold.length)
+          return (
+            <li key={slot} className="px-1 text-sm text-muted-foreground">
+              {buttonLabel(slot)} · {name}{p ? `: ${nothing}` : '…'}
+            </li>
+          )
+        return (
+          <li key={slot} className="flex items-center gap-3 rounded-lg border p-3">
+            <div className="min-w-0 flex-1">
+              <Badge variant="outline" className={TAG}>
+                {buttonLabel(slot)}
+              </Badge>
+              <p className="truncate text-sm font-medium">{name}</p>
+            </div>
+            <div className="shrink-0 text-right text-sm">
+              {p.tap.length > 0 && <p className="font-medium">{plainActions(p.tap, catalog)}</p>}
+              {p.hold.length > 0 && <p className="text-xs text-muted-foreground">Hold: {plainActions(p.hold, catalog)}</p>}
+            </div>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+/** What a smart button with a device does: the hub works it out, so it's read-only (a long press only if it has one). */
+function SlotActions({ slot, actions, catalog }: { slot: SlotId; actions: SmartSlotActions | null; catalog: Catalog }) {
+  if (!actions) return <Skeleton className="h-24" />
+  const stops = (p: SmartPress) => (p.release.length ? 'stops on release' : undefined)
+  const rows: { title: string; color: string; list: Action[]; note?: string; optional?: boolean }[] = [
+    { title: 'Press', color: EV_COLOR.tap, list: actions.button.tap },
+    { title: 'Long press', color: EV_COLOR.hold, list: actions.button.hold },
+    { title: '+', color: EV_COLOR.tap, list: actions.plus.tap },
+    { title: '+ long press', color: EV_COLOR.hold, list: actions.plus.hold, note: stops(actions.plus), optional: true },
+    { title: '−', color: EV_COLOR.tap, list: actions.minus.tap },
+    { title: '− long press', color: EV_COLOR.hold, list: actions.minus.hold, note: stops(actions.minus), optional: true },
+  ]
+  return (
+    <section className="grid gap-2" aria-label={`What ${buttonLabel(slot)} does`}>
+      {rows
+        .filter((r) => r.list.length || !r.optional)
+        .map((r) => (
+          <Row key={r.title} color={r.color} title={r.title} note={r.note} action={r.list} catalog={catalog} editing={false} actions={null} />
+        ))}
+    </section>
   )
 }
 

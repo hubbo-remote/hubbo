@@ -3,7 +3,7 @@
 // against the spec.
 import { gunzipSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
-import type { Activity, ApiErrorBody, Capabilities, DiscoverStatus, ExecuteResult, EntityDetailsStatus, FirmwareStatus, Session, Status, TransitionResult } from '../src/api/types.ts'
+import type { Activity, ApiErrorBody, Capabilities, DiscoverStatus, ExecuteResult, EntityDetailsStatus, FirmwareStatus, Session, SmartButtons, SmartButtonsInput, Status, TransitionResult } from '../src/api/types.ts'
 import { fixture, fixtureBytes } from './fixtures.ts'
 import { GUIDE_PATH } from './docs.ts'
 import { buildFirmwareImage } from './firmware.ts'
@@ -37,6 +37,7 @@ const ROUTES: Record<string, [string, string]> = {
   changeAdminPassword: ['PUT', '/admin/account/password'],
   restoreBackup: ['POST', '/admin/restore?dry_run=true'],
   setRemoteEndpoint: ['PUT', '/admin/remote/endpoint'],
+  replaceSmartButtons: ['PUT', '/smart-buttons'],
 }
 
 // Requests whose operation needs another target than ROUTES gives.
@@ -811,5 +812,80 @@ describe('device profiles', () => {
     const wait = { integration_id: 'ble', device_id: 'dev_apple_tv', command_id: 'wait_connected', params: {} }
     const bad = await m.handle(req('POST', '/activities', { name: 'W', startup: [wait], shutdown: [], bindings: { 'up:tap': [wait] } }))
     expect(errorOf(bad).details!.map((d) => [d.path, d.code])).toEqual([['/bindings/up:tap/0/command_id', 'sequence_only']])
+  })
+})
+
+describe('smart buttons', () => {
+  const get = async (m: ReturnType<typeof createMock>) => (await m.handle(req('GET', '/smart-buttons'))).body as SmartButtons
+
+  it('answers like the fixtures, deriving each slot from its device', async () => {
+    const m = createMock({ random: () => 0.99 })
+    const sb = await get(m)
+    expect(sb).toEqual(fixture('smart_buttons/get.json'))
+    const body = fixture<SmartButtonsInput>('smart_buttons/replace.request.json')
+    const r = await m.handle(req('PUT', '/smart-buttons', { ...body, revision: sb.revision }))
+    expect(r.status).toBe(200)
+    expect({ ...(r.body as SmartButtons), revision: 0 }).toEqual({ ...fixture<SmartButtons>('smart_buttons/replace.json'), revision: 0 })
+  })
+
+  it('works out a device’s actions without saving, like the fixtures', async () => {
+    const m = createMock({ random: () => 0.99 })
+    for (const id of ['dev_family_room_lights', 'dev_lg_tv']) {
+      const r = await m.handle(req('GET', `/smart-buttons/actions?device_id=${id}`))
+      expect([r.status, r.body], id).toEqual([200, fixture(`smart_buttons/actions.${id}.json`)])
+    }
+    expect((await m.handle(req('GET', '/smart-buttons/actions?device_id=dev_nope'))).status).toBe(404)
+    expect(errorOf(await m.handle(req('GET', '/smart-buttons/actions'))).details?.[0]).toMatchObject({ path: '/device_id', code: 'required' })
+    expect(errorOf(await m.handle(req('GET', '/smart-buttons/actions?device_id=light.x'))).details?.[0]).toMatchObject({ path: '/device_id', code: 'invalid_id' })
+  })
+
+  it('checks revisions, devices and the shape', async () => {
+    const m = createMock({ random: () => 0.99 })
+    const { slots, revision } = await get(m)
+    const stale = await m.handle(req('PUT', '/smart-buttons', { slots, revision: revision - 1 }))
+    expect(stale.status).toBe(409)
+    expect(errorOf(stale)).toMatchObject({ code: 'revision_conflict', current_revision: revision })
+    const gone = await m.handle(req('PUT', '/smart-buttons', { revision, slots: { ...slots, light_2: 'dev_nope' } }))
+    expect(errorOf(gone)).toEqual(fixture<ApiErrorBody>('errors/smart_buttons_unknown_device.json').error)
+    const extra = await m.handle(req('PUT', '/smart-buttons', { revision, slots: { ...slots, light_3: null } }))
+    expect(errorOf(extra).details?.[0]).toMatchObject({ path: '/slots/light_3', code: 'unknown_field' })
+    const actions = await m.handle(req('PUT', '/smart-buttons', { revision, slots, actions: {} }))
+    expect(errorOf(actions).details?.[0]).toMatchObject({ path: '/actions', code: 'unknown_field' })
+  })
+
+  it("selects the pressed slot unless the activity owns that button", async () => {
+    const m = createMock({ random: () => 0.99 })
+    const slot = async () => ((await m.handle(req('GET', '/status'))).body as Status).selected_slot
+    expect(await slot()).toBe('light_1')
+    await m.handle(req('POST', '/__mock/remote/switch_2/press'))
+    expect(await slot()).toBe('switch_2')
+    const acts = (await m.handle(req('GET', '/activities'))).body as { activities: Activity[] }
+    const a = acts.activities[0]!
+    const full = (await m.handle(req('GET', `/activities/${a.id}`))).body as Activity
+    const own = { integration_id: 'system', device_id: null, command_id: 'off', params: {} }
+    const { id: _i, revision, schema_version: _s, ...input } = full
+    expect((await m.handle(req('PUT', `/activities/${a.id}`, { ...input, revision, bindings: { ...full.bindings, 'light_2:hold': [own] } }))).status).toBe(200)
+    await m.handle(req('POST', `/activities/${a.id}/activate`))
+    await m.handle(req('POST', '/__mock/remote/light_2/tap'))
+    expect(await slot()).toBe('switch_2')
+  })
+
+  it('counts as a reference, and goes in backups and resets', async () => {
+    const m = createMock({ random: () => 0.99 })
+    const lights = (await m.handle(req('GET', '/devices/dev_family_room_lights'))).body as { revision: number }
+    const del = await m.handle(req('DELETE', `/admin/devices/dev_family_room_lights?revision=${lights.revision}`))
+    expect(del.status).toBe(409)
+    expect(errorOf(del).details).toContainEqual(expect.objectContaining({ path: '/smart_buttons/slots/light_1', code: 'referenced' }))
+    const backup = (await m.handle(req('GET', '/admin/backup'))).body as { smart_buttons: SmartButtonsInput }
+    expect(backup.smart_buttons).toEqual({ slots: fixture<SmartButtons>('smart_buttons/get.json').slots, revision: expect.any(Number) })
+    await m.handle(req('POST', '/admin/reset'))
+    const reset = await get(m)
+    expect(reset.slots.light_1).toBe(null)
+    expect(reset.actions.light_1).toEqual({ button: { tap: [], hold: [], release: [] }, plus: { tap: [], hold: [], release: [] }, minus: { tap: [], hold: [], release: [] } })
+    const { smart_buttons: _sb, ...old } = backup
+    expect((await m.handle(req('POST', '/admin/restore', old))).status).toBe(200)
+    expect((await get(m)).slots.light_1).toBe(null)
+    expect((await m.handle(req('POST', '/admin/restore', backup))).status).toBe(200)
+    expect((await get(m)).slots.light_1).toBe('dev_family_room_lights')
   })
 })
