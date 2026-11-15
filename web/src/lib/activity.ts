@@ -248,11 +248,11 @@ export interface Catalog {
   /** Bluetooth profile commands with their own timed hold (`hold_ms`), by device: a button sends them as one timed press. */
   timed?: ReadonlyMap<string, ReadonlySet<string>>
   /**
-   * Home Assistant devices' snapshot platforms ('' for none), when known: a call's service must be
-   * on its device's platform. The mock knows them; the editors don't (the picker only offers a
-   * device's own services) and leave the check to the hub.
+   * The service domains each Home Assistant device's calls may use, when known: its snapshot
+   * platform (none when YAML-only), and `remote` on a remote. The mock knows them; the editors don't
+   * (the picker only offers a device's own services) and leave the check to the hub.
    */
-  haPlatforms?: ReadonlyMap<string, string>
+  haServiceDomains?: ReadonlyMap<string, readonly string[]>
 }
 
 /** Whether an action is one of those timed profile commands (see `writeMain`). */
@@ -270,9 +270,8 @@ function checkAction(a: Action, path: string, cat: Catalog, out: ValidationIssue
     else {
       const issues = callIssues(a.call, `${path}/call`)
       out.push(...issues)
-      const platform = a.device_id ? cat.haPlatforms?.get(a.device_id) : undefined
-      const service = a.call.service
-      if (!issues.length && platform !== undefined && service.split('.')[0] !== platform) out.push({ path: `${path}/call/service`, code: 'forbidden_param', message: platform ? `Pick a ${platform} service: the action goes to this device` : 'This device takes no Home Assistant action' })
+      const domains = a.device_id ? cat.haServiceDomains?.get(a.device_id) : undefined
+      if (!issues.length && domains && !domains.includes(a.call.service.split('.')[0]!)) out.push({ path: `${path}/call/service`, code: 'forbidden_param', message: domains.length ? `Pick a ${domains.join(' or ')} service: the action goes to this device` : 'This device takes no Home Assistant action' })
     }
   } else if (a.call !== undefined) out.push({ path: `${path}/call`, code: 'unknown_field', message: 'Only a Home Assistant action takes a call' })
   let cmd: Command | undefined
