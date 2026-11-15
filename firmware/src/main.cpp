@@ -766,9 +766,10 @@ void printStatus() {
     }
     const auto &es = engine.stats();
     const auto &xs = engine.executor().stats();
-    con.printf("  engine: %s, %lu events, %lu unbound, %lu dispatched, %lu transitions;"
+    con.printf("  engine: %s, slot %s, %lu events, %lu unbound, %lu dispatched, %lu transitions;"
                   " sequences %lu ok %lu failed %lu rejected %lu timeouts\n",
                   engine.hasActiveActivity() ? engine.activeActivityId() : "(off)",
+                  hubbo::smartSlotName(engine.selectedSlotShared()),
                   static_cast<unsigned long>(es.events), static_cast<unsigned long>(es.unbound),
                   static_cast<unsigned long>(es.dispatched), static_cast<unsigned long>(es.transitions),
                   static_cast<unsigned long>(xs.completed), static_cast<unsigned long>(xs.failed),

@@ -61,6 +61,7 @@ hubbo::api::RuntimeSnapshot EngineRuntime::snapshot() const {
     hubbo::api::RuntimeSnapshot out;
     out.uptimeMs = static_cast<uint64_t>(esp_timer_get_time() / 1000);
     out.activeActivityId = engine_.activeActivityIdShared();
+    out.selectedSlot = engine_.selectedSlotShared();
     out.linkUp = s.linkUp;
     out.ip = s.ip;
 
