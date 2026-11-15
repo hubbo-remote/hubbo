@@ -263,6 +263,7 @@ std::vector<FixtureHaEntity> fixtureHaEntities() {
     ha::EntityInfo dryer = entity("select.dryer_cycle", 0);
     dryer.options = {"normal", "delicate", "towels"};
     add(dryer, "Dryer Cycle", "demo", "normal");
+    add(entity("remote.living_room_tv", 0), "Living Room TV", "demo", "on");
     return out;
 }
 

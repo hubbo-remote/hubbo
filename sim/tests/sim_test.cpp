@@ -285,6 +285,14 @@ TEST(SimShowcase, EveryCapturedEntityIsADevice) {
         EXPECT_EQ(d->haCapabilities->percentageStep > 0, (attrs["percentage_step"] | 0.0) >= 1) << e.info.entityId;
     }
     EXPECT_EQ(hub.configService().findDevice("dev_shield")->profile->id, "hubbo:android-tv");
+    // The capture has no remote: the fake's, with HA's remote services.
+    const auto remote = std::find_if(hub.config().devices.begin(), hub.config().devices.end(),
+                                     [](const DeviceSpec &x) { return x.provider.entityId == "remote.living_room_tv"; });
+    ASSERT_NE(remote, hub.config().devices.end());
+    ASSERT_TRUE(remote->haCapabilities);
+    EXPECT_TRUE(std::any_of(remote->haCapabilities->customServices.begin(),
+                            remote->haCapabilities->customServices.end(),
+                            [](const ha::SnapshotCustomService &c) { return c.service == "remote.send_command"; }));
     for (const ActivitySpec &a : hub.config().activities) EXPECT_EQ(hub.activate(a.id), ErrorCode::Ok) << a.id;
 }
 
