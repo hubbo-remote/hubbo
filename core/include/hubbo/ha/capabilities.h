@@ -123,6 +123,9 @@ EntityDomain domainNamed(std::string_view domain);  // "fan" -> Fan; Unsupported
 // ref), and not a broadcast value ("all", "none"). Commas/whitespace (lists) are rejected.
 bool isValidEntityId(std::string_view entityId);
 EntityDomain entityDomain(std::string_view entityId);  // Unsupported if invalid
+// The text before the first '.' ("light" for "light.lamp"), any domain,
+// unchecked; the whole id if it has no dot.
+std::string_view entityDomainName(std::string_view entityId);
 
 // Integration services (e.g. sonos.*) are offered only for media players,
 // lights, switches, fans and remotes; the other newer domains get their
@@ -214,6 +217,13 @@ constexpr const char *kCallServiceCommandId = "call_service";
 // service ("webostv.button").
 bool isHaServiceId(std::string_view service);
 
+// How a command uses the state attribute it reads at press time
+// (stateAttribute()). Toggle: a bool HA has no toggle for, sent back negated
+// under the same key (mute_toggle). Step: a number the command's one param
+// is added to, clamped to 0..100 and sent under the param's data key
+// (cover.position_step).
+enum class StateUse : uint8_t { Toggle, Step };
+
 struct CommandDef;  // allowlist entry (id, label, HA service); capabilities.cpp
 struct CapabilitySnapshot;  // snapshot.h
 struct Drafts;              // capabilities.cpp
@@ -255,7 +265,9 @@ public:
     // the entity left it out (HA drops it when a player is off or reports
     // None) or it was null/an object/an array. Commands with no
     // stateAttribute ignore it. A toggle sends the opposite; an unknown or
-    // non-bool state counts as false (mute_toggle then mutes).
+    // non-bool state counts as false (mute_toggle then mutes). A step
+    // (cover.position_step) sends its param plus the state, clamped to
+    // 0..100; with no numeric state it sends nothing: StateUnavailable.
     ErrorCode buildServiceCall(uint16_t index, const ParamValue *params, uint8_t present,
                                ServiceCall *out, const ServiceValue *state = nullptr) const;
 
@@ -267,7 +279,8 @@ public:
     ErrorCode buildCustomCall(std::string_view service, std::string_view dataJson, ServiceCall *out) const;
 
     // The state attribute catalog command `index` reads at press time
-    // ("is_volume_muted" for media_player.mute_toggle). nullptr: it needs no
+    // ("is_volume_muted" for media_player.mute_toggle, "current_position"
+    // for cover.position_step). nullptr: it needs no
     // state, or the index is out of range. Valid while this object is.
     const char *stateAttribute(uint16_t index) const;
 
@@ -282,6 +295,7 @@ private:
         const char *service = nullptr;
         const char *stateAttribute = nullptr;  // static (CommandDef), or nullptr
         const char *group = nullptr;           // static (CommandDef), or nullptr
+        StateUse stateUse = StateUse::Toggle;  // CommandDef::stateUse
     };
 
     std::string entityId_;
