@@ -41,6 +41,22 @@
           "unit": "%"
         }
       ]
+    },
+    {
+      "command_id": "cover.position_step",
+      "label": "Change position",
+      "effect": "momentary",
+      "params": [
+        {
+          "name": "step",
+          "type": "int",
+          "required": true,
+          "minimum": -100,
+          "maximum": 100,
+          "step": 1,
+          "unit": "%"
+        }
+      ]
     }
   ]
 }

@@ -14,6 +14,7 @@
     "generation": 42
   },
   "active_activity_id": "act_watch_apple_tv",
+  "selected_slot": "light_1",
   "network": {
     "link": "up",
     "ip": "192.0.2.56",

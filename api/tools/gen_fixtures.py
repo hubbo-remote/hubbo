@@ -249,6 +249,7 @@ def cover_commands(features):
         out.append(cmd("cover.toggle", "Toggle"))
     if has("SET_POSITION"):
         out.append(cmd("cover.set_cover_position", "Set position", [percent("position")]))
+        out.append(cmd("cover.position_step", "Change position", [percent("step", -100, 100)]))
     if has("OPEN_TILT"):
         out.append(cmd("cover.open_cover_tilt", "Open tilt"))
     if has("CLOSE_TILT"):
@@ -606,6 +607,46 @@ GLOBAL_BINDINGS = {
 }
 
 
+# ---------------------------------------------------------------- smart buttons
+
+SLOTS = ("light_1", "light_2", "switch_1", "switch_2")
+
+
+def press(tap=(), hold=(), release=()):
+    return {"tap": list(tap), "hold": list(hold), "release": list(release)}
+
+
+def no_actions():
+    return {"button": press(), "plus": press(), "minus": press()}
+
+
+def light_actions(dev):
+    """A dimmable light's slot actions (core's smartSlotActions, the light
+    row of docs/design/smart-buttons.md): on/off, and +/- step 10% of 255."""
+    return {"button": press([a(dev, "light.turn_on")], [a(dev, "light.turn_off")]),
+            "plus": press([a(dev, "light.brightness_step", step=26)]),
+            "minus": press([a(dev, "light.brightness_step", step=-26)])}
+
+
+EMPTY_SLOTS = {slot: None for slot in SLOTS}
+# The only fixture devices put in a slot: the lights, and the LG TV (a kind
+# with no actions). The contract checks the other kinds on hub-sim.
+SLOT_ACTIONS = {None: no_actions(), "dev_family_room_lights": light_actions("dev_family_room_lights"),
+                "dev_lg_tv": no_actions()}
+
+
+def smart_buttons(slots, revision):
+    """GET /smart-buttons for `slots`."""
+    return {"slots": dict(slots), "actions": {slot: SLOT_ACTIONS[dev] for slot, dev in slots.items()},
+            "revision": revision}
+
+
+# Light 1 holds the lights; the others empty.
+SMART_SLOTS = dict(EMPTY_SLOTS, light_1="dev_family_room_lights")
+SMART_BUTTONS = smart_buttons(SMART_SLOTS, 7)
+BACKUP_SMART_BUTTONS = {"slots": SMART_SLOTS, "revision": 7}
+
+
 def input_of(act):
     return {k: copy.deepcopy(act[k]) for k in ("name", "startup", "shutdown", "bindings")}
 
@@ -654,6 +695,7 @@ STATUS = {
     "uptime_s": 86400, "time": "2026-11-08T20:15:00Z", "auth_mode": "enforced",
     "auth_state": "ok", "config": {"state": "ok", "generation": 42},
     "active_activity_id": "act_watch_apple_tv",
+    "selected_slot": "light_1",
     "network": {"link": "up", "ip": "192.0.2.56", "hostname": HUB["hostname"]},
     "remote": REMOTE_STATUS,
     "integrations": [{k: i[k] for k in ("id", "type", "state", "detail") if k in i} for i in INTEGRATIONS],
@@ -762,6 +804,20 @@ replace = copy.deepcopy(WATCH)
 replace["bindings"].update(passthrough("green", "key", key="F3"))
 fx("activities/replace.request.json", "replaceActivity", "request", replace)
 fx("activities/global_bindings.json", "getGlobalBindings", "200", GLOBAL_BINDINGS)
+fx("smart_buttons/get.json", "getSmartButtons", "200", SMART_BUTTONS)
+# Switch 2 gets the LG TV: a kind with no smart actions.
+REPLACED_SLOTS = dict(SMART_SLOTS, switch_2="dev_lg_tv")
+fx("smart_buttons/replace.request.json", "replaceSmartButtons", "request",
+   {"slots": REPLACED_SLOTS, "revision": SMART_BUTTONS["revision"]})
+fx("smart_buttons/replace.json", "replaceSmartButtons", "200", smart_buttons(REPLACED_SLOTS, 8))
+fx("smart_buttons/actions.dev_family_room_lights.json", "getSmartButtonActions", "200",
+   SLOT_ACTIONS["dev_family_room_lights"])
+fx("smart_buttons/actions.dev_lg_tv.json", "getSmartButtonActions", "200", SLOT_ACTIONS["dev_lg_tv"])
+fx("errors/smart_buttons_revision_conflict.json", "replaceSmartButtons", "409",
+   err("revision_conflict", "Changed since the revision you sent; GET it again and reapply", current_revision=8))
+fx("errors/smart_buttons_unknown_device.json", "replaceSmartButtons", "422", err(
+    "validation_failed", "The smart buttons are invalid", [
+        ("/slots/light_2", "unknown_device", "No device with that id")]))
 fx("activities/validate.valid.json", "validateActivity", "200", {"valid": True, "errors": []})
 fx("activities/validate.invalid.json", "validateActivity", "200", {"valid": False, "errors": [
     {"path": "/bindings/volume_up:down/0/params/level", "code": "param_out_of_range",
@@ -917,7 +973,7 @@ BACKUP = {
          "settings": {"host": "192.0.2.10", "port": 1883, "username": "hubbo"}},
     ],
     "devices": [stored_device(d) for d in DEVICES],
-    "global_bindings": GLOBAL_BINDINGS, "activities": ACTIVITIES,
+    "global_bindings": GLOBAL_BINDINGS, "smart_buttons": BACKUP_SMART_BUTTONS, "activities": ACTIVITIES,
     "excluded": ["admin_password", "api_tokens", "integration_secrets", "ble_bonds"],
 }
 fx("admin/backup.json", "downloadBackup", "200", BACKUP)
@@ -929,6 +985,7 @@ fx("admin/backup.empty.json", "downloadBackup", "200", {
     "firmware_version": "0.1.0", "board": "waveshare_esp32_s3_eth",
     "integrations": [], "devices": [],
     "global_bindings": {"bindings": {"off:tap": [a(None, "off")]}, "revision": 1},
+    "smart_buttons": {"slots": EMPTY_SLOTS, "revision": 1},
     "activities": [], "excluded": ["admin_password", "api_tokens", "integration_secrets", "ble_bonds"],
 })
 fx("admin/restore.request.json", "restoreBackup", "request", BACKUP)

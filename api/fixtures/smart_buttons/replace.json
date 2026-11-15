@@ -1,0 +1,111 @@
+{
+  "slots": {
+    "light_1": "dev_family_room_lights",
+    "light_2": null,
+    "switch_1": null,
+    "switch_2": "dev_lg_tv"
+  },
+  "actions": {
+    "light_1": {
+      "button": {
+        "tap": [
+          {
+            "integration_id": "ha_main",
+            "device_id": "dev_family_room_lights",
+            "command_id": "light.turn_on",
+            "params": {}
+          }
+        ],
+        "hold": [
+          {
+            "integration_id": "ha_main",
+            "device_id": "dev_family_room_lights",
+            "command_id": "light.turn_off",
+            "params": {}
+          }
+        ],
+        "release": []
+      },
+      "plus": {
+        "tap": [
+          {
+            "integration_id": "ha_main",
+            "device_id": "dev_family_room_lights",
+            "command_id": "light.brightness_step",
+            "params": {
+              "step": 26
+            }
+          }
+        ],
+        "hold": [],
+        "release": []
+      },
+      "minus": {
+        "tap": [
+          {
+            "integration_id": "ha_main",
+            "device_id": "dev_family_room_lights",
+            "command_id": "light.brightness_step",
+            "params": {
+              "step": -26
+            }
+          }
+        ],
+        "hold": [],
+        "release": []
+      }
+    },
+    "light_2": {
+      "button": {
+        "tap": [],
+        "hold": [],
+        "release": []
+      },
+      "plus": {
+        "tap": [],
+        "hold": [],
+        "release": []
+      },
+      "minus": {
+        "tap": [],
+        "hold": [],
+        "release": []
+      }
+    },
+    "switch_1": {
+      "button": {
+        "tap": [],
+        "hold": [],
+        "release": []
+      },
+      "plus": {
+        "tap": [],
+        "hold": [],
+        "release": []
+      },
+      "minus": {
+        "tap": [],
+        "hold": [],
+        "release": []
+      }
+    },
+    "switch_2": {
+      "button": {
+        "tap": [],
+        "hold": [],
+        "release": []
+      },
+      "plus": {
+        "tap": [],
+        "hold": [],
+        "release": []
+      },
+      "minus": {
+        "tap": [],
+        "hold": [],
+        "release": []
+      }
+    }
+  },
+  "revision": 8
+}

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "revision_conflict",
+    "message": "Changed since the revision you sent; GET it again and reapply",
+    "current_revision": 8
+  }
+}

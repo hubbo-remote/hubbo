@@ -23,7 +23,7 @@ info:
       (once). `x-hubbo-describes-api`: the response is this spec, whose schemas
       name secret and revision fields. The contract skips its body scans for
       these.
-    * **Config state.** Every edit (activities, global bindings, devices) is
+    * **Config state.** Every edit (activities, global bindings, smart buttons, devices) is
       refused with `409 config_blocked` while `/status` `config.state` is
       `blocked`, and with `503 storage_unavailable` while it is
       `storage_unavailable`. Restore and reset are the way out.
@@ -39,7 +39,7 @@ info:
       limit is 16 KiB; activity bodies 32 KiB; restore 640 KiB, the largest
       saved config (512 KiB) plus headroom for the backup wrapper and
       pretty-printing; the firmware image the OTA slot, 6.25 MiB
-      (`x-hubbo-max-body`). JSON nesting deeper than 9 levels is rejected.
+      (`x-hubbo-max-body`). JSON nesting deeper than 10 levels is rejected.
     * **Errors.** Every non-2xx response has the `Error` body. Any request can
       also get `405 method_not_allowed`. A body larger than the operation
       accepts (any body, for operations that take none) is refused with
@@ -714,6 +714,108 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /smart-buttons:
+    get:
+      tags: [activities]
+      operationId: getSmartButtons
+      x-hubbo-role: token
+      summary: The Light 1, Light 2, Switch 1 and Switch 2 slots
+      description: |
+        Each of the four buttons is a slot that holds a device, or null. The
+        hub works out what the slot's own button and `plus`/`minus` do from
+        the device's `kind` and the commands it offers; `actions` shows the
+        result, read-only:
+
+        | Kind | button tap | button hold | plus | minus |
+        |---|---|---|---|---|
+        | light | Turn on | Turn off | tap: Change brightness (`step` +26, 10%) | tap: `step` −26 |
+        | fan | Turn on | Turn off | tap: Speed up | tap: Slow down |
+        | cover | Open | Close | tap: Change position (`step` +10); hold: Open; release: Stop | tap: `step` −10; hold: Close; release: Stop |
+        | switch | Turn on | Turn off | none | none |
+
+        Each action is there only if the device offers that command, so the
+        kind works whatever the entity's domain (an `input_boolean` set to
+        `switch` gets its own Turn on and Turn off). A light without
+        brightness gets no plus/minus; a cover without a position gets tap
+        Open on plus and tap Close on minus. Any other kind, a device that
+        isn't Home Assistant, or a null slot, gets empty presses.
+
+        A press of a slot's button selects it (see `/status`
+        `selected_slot`; `light_1` after a reboot), unless the active
+        activity binds that button. For light_1, light_2, switch_1,
+        switch_2, plus and minus, the first that has actions wins: the
+        active activity's bindings for that button, then the slot (the
+        slot's own button, or the selected slot's `plus`/`minus`), then the
+        global bindings. Quick taps on plus or minus with a `step` merge
+        into one call.
+      responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '200':
+          description: The four slots and their actions
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SmartButtons'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+    put:
+      tags: [activities]
+      operationId: replaceSmartButtons
+      x-hubbo-role: token
+      x-hubbo-max-body: 4096
+      summary: Atomically replace the four slots
+      description: |
+        `{slots, revision}`: `revision` is the one the body is based on, and
+        a stale one is `409 revision_conflict`. Each slot is a registered
+        device's id or null; an unknown one is `unknown_device` at
+        `/slots/<slot>`. `actions` isn't sent: the hub derives it. Answers
+        as `GET` does.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SmartButtonsInput'}
+      responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '200':
+          description: Replaced
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SmartButtons'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /smart-buttons/actions:
+    get:
+      tags: [activities]
+      operationId: getSmartButtonActions
+      x-hubbo-role: token
+      summary: What a slot would do with a device
+      description: |
+        The actions a slot gets from `device_id`, by the table in
+        `GET /smart-buttons`, without saving anything: a preview before
+        `PUT /smart-buttons`. A device that isn't Home Assistant, or of
+        another kind, gets empty presses.
+      parameters:
+        - name: device_id
+          in: query
+          required: true
+          schema: {$ref: '#/components/schemas/DeviceId'}
+      responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '200':
+          description: The slot's actions
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SmartSlotActions'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
 
   /integrations:
@@ -1947,7 +2049,7 @@ components:
     Status:
       type: object
       additionalProperties: false
-      required: [hubbo, uptime_s, auth_mode, auth_state, config, active_activity_id, network, remote, integrations, diagnostics]
+      required: [hubbo, uptime_s, auth_mode, auth_state, config, active_activity_id, selected_slot, network, remote, integrations, diagnostics]
       properties:
         hubbo:
           type: object
@@ -1965,6 +2067,11 @@ components:
         config: {$ref: '#/components/schemas/ConfigState'}
         active_activity_id:
           $ref: '#/components/schemas/NullableActivityId'
+        selected_slot:
+          description: |
+            The smart button slot `plus`/`minus` act on: the slot whose button
+            was pressed last. `light_1` after a reboot.
+          allOf: [{$ref: '#/components/schemas/SmartSlotId'}]
         network:
           type: object
           additionalProperties: false
@@ -2355,7 +2462,9 @@ components:
             `adapter_failed` (it refused the call), `adapter_timeout` (no
             answer within the action timeout), `entity_not_found` (the HA
             entity is missing from the latest discovery, see `availability:
-            stale`; not sent), `queue_full`.
+            stale`; not sent), `state_unavailable` (a step needs the entity's
+            current value, such as a cover's `current_position`, and Home
+            Assistant reports none; not sent), `queue_full`.
           type: string
           maxLength: 200
 
@@ -2432,6 +2541,86 @@ components:
       properties:
         bindings: {$ref: '#/components/schemas/Bindings'}
         revision: {$ref: '#/components/schemas/Revision'}
+
+    # ---------- smart buttons ----------
+    SmartSlotId:
+      type: string
+      enum: [light_1, light_2, switch_1, switch_2]
+    SmartSlotDevices:
+      description: All four, always. Each is the slot's device, or null.
+      type: object
+      additionalProperties: false
+      required: [light_1, light_2, switch_1, switch_2]
+      properties:
+        light_1: {$ref: '#/components/schemas/NullableDeviceId'}
+        light_2: {$ref: '#/components/schemas/NullableDeviceId'}
+        switch_1: {$ref: '#/components/schemas/NullableDeviceId'}
+        switch_2: {$ref: '#/components/schemas/NullableDeviceId'}
+    SmartPressActions:
+      type: object
+      additionalProperties: false
+      required: [tap, hold, release]
+      properties:
+        tap:
+          type: array
+          items: {$ref: '#/components/schemas/Action'}
+        hold:
+          description: When Hold fires (`GET /remote/buttons` `hold_ms`). It fires once.
+          type: array
+          items: {$ref: '#/components/schemas/Action'}
+        release:
+          description: |
+            When the button comes up after a hold (never after a tap),
+            including a release the hub supplies after a lost packet. Stops a
+            moving cover.
+          type: array
+          items: {$ref: '#/components/schemas/Action'}
+    SmartSlotActions:
+      description: Empty lists mean the slot does nothing there (the global binding, if any, applies).
+      type: object
+      additionalProperties: false
+      required: [button, plus, minus]
+      properties:
+        button:
+          description: The slot's own button.
+          allOf: [{$ref: '#/components/schemas/SmartPressActions'}]
+        plus:
+          description: What `plus` does while this slot is selected.
+          allOf: [{$ref: '#/components/schemas/SmartPressActions'}]
+        minus:
+          description: What `minus` does while this slot is selected.
+          allOf: [{$ref: '#/components/schemas/SmartPressActions'}]
+    SmartButtonsInput:
+      type: object
+      additionalProperties: false
+      required: [slots, revision]
+      properties:
+        slots: {$ref: '#/components/schemas/SmartSlotDevices'}
+        revision: {$ref: '#/components/schemas/Revision'}
+    SmartButtons:
+      type: object
+      additionalProperties: false
+      required: [slots, actions, revision]
+      properties:
+        slots: {$ref: '#/components/schemas/SmartSlotDevices'}
+        actions:
+          description: Each slot's actions, derived from its device. Read-only.
+          type: object
+          additionalProperties: false
+          required: [light_1, light_2, switch_1, switch_2]
+          properties:
+            light_1: {$ref: '#/components/schemas/SmartSlotActions'}
+            light_2: {$ref: '#/components/schemas/SmartSlotActions'}
+            switch_1: {$ref: '#/components/schemas/SmartSlotActions'}
+            switch_2: {$ref: '#/components/schemas/SmartSlotActions'}
+        revision: {$ref: '#/components/schemas/Revision'}
+    BackupSmartButtons:
+      type: object
+      additionalProperties: false
+      required: [slots]
+      properties:
+        slots: {$ref: '#/components/schemas/SmartSlotDevices'}
+        revision: {$ref: '#/components/schemas/BackupRevision'}
     ValidationResult:
       type: object
       additionalProperties: false
@@ -3387,6 +3576,9 @@ components:
           maxItems: 64
           items: {$ref: '#/components/schemas/StoredDevice'}
         global_bindings: {$ref: '#/components/schemas/BackupGlobalBindings'}
+        smart_buttons:
+          description: Always written. A restore without it gets four empty slots.
+          allOf: [{$ref: '#/components/schemas/BackupSmartButtons'}]
         activities:
           type: array
           maxItems: 16

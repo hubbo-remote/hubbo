@@ -16,6 +16,7 @@ void Api::registerRoutes(http::Router &router) {
     addRegistryRoutes(sink, ctx_);
     addProfileRoutes(sink, ctx_);
     addActivityRoutes(sink, ctx_);
+    addSmartButtonRoutes(sink, ctx_);
     addStatusRoutes(sink, ctx_);
     addBackupRoutes(sink, ctx_);
     addIntegrationRoutes(sink, ctx_);
