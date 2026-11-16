@@ -5,6 +5,47 @@ Design: `docs/design/activity-runs.md` and `docs/design/state-checks.md`; the pr
 This file covers state, decisions and traps only.
 
 ## State
+- Macros (branch macros, uncommitted; docs/design/macros.md), /simplify done:
+  - Explicit, not inferred: `BindingSpec::macro`, from "macros" (array of trigger keys, optional:
+    absent = none, everywhere incl. stored/backup (user's call); always encoded; next to "bindings"
+    on an activity and on global_bindings; config/json.cpp decodeMacros). Each entry a press
+    (`isMacroTrigger()`, domain/trigger.h, shared with api's /macros/run; else invalid_trigger), once (duplicate_trigger), bound to 1+
+    actions (unbound_macro), at /macros/<i>; cap kButtonCount*3 = 144. Encode lists marked, bound
+    ones. Test helper `sim::macro(trigger, actions)`.
+  - Compiler: one `Place {Sequence, Binding, Macro, SmartPress, Direct}`. Macro (any length):
+    waits ok, holds and holds' releases (`releasesAHold`, Unavailable too) hold_not_allowed. An unmarked binding
+    with > 1 action: macro_required at the binding path. A binding or macro of only system.wait
+    (as the web's isWait): sequence_only at <binding>/0/command_id (/actions/0/command_id). `ActionSpan::macro` carries the mark to the engine. `setTarget()` fills a
+    `CompiledConfig::targetOf()` fills a queued step's target (executor nodes; compileMacro via a
+    targets-only CompiledConfig). compileMacro resolves only the devices its actions name
+    (`devices(..., &actions)`). `targetsDevice()` in compiled.h.
+  - Executor Lane::Macro; LaneQueue is a ring over per-lane storage (`items`, `capacity`):
+    Transition/Input 16, Macro `kExecutorMacroSequences` (4) + 1 (the running one: 1 runs, 4
+    queue, the next is QueueFull/rejected). Executor is non-copyable (lanes point into it).
+    Per-lane node budget (`nodeBudget`/`nodes`): Macro `kExecutorMacroNodes` (32) of the 64-node
+    pool, so macros never starve presses. `Executor::link()` is the one fill+link loop.
+  - Engine::onRemoteEvent routes by `span.macro` (never set on a smart press) -> Lane::Macro,
+    `SequenceOrigin::Macro` ("macro"), activityId = active unless global. Hold tracking and the
+    up-sequence release ignore Macro: macros hold nothing and are never on :up. No state checks.
+  - RunHistory records Macro too (`records()`); `ActivityRun::trigger` / `LastRun::trigger`
+    (meaningful for Macro: Hold = long press). Engine begins a macro run only once queued: a full
+    lane's refusal is only counted. The ring is unordered slots (ids order them; read() sorts):
+    a new run never replaces a running one (begin returns 0 if none can go), and macros hold at
+    most `kMaxMacroRuns` (5, the lane's size) slots, replacing the oldest finished macro. A switch-cancelled macro is recorded Cancelled.
+    `RunHistory::current()` finds the running run by sequence id (with macros queued, the one
+    running isn't the newest).
+  - Run from the editor (POST /macros/run, api's route): `ConfigService::compileMacro(JsonVariantConst
+    actions, std::vector<CompiledCommand>*)` = `config::decodeActionList` + `hubbo::compileMacro`
+    (compiler.h; Compiler::macro, Place::Macro; issues at /actions, /actions/<i>/...), then
+    `EngineRequest::runMacro(steps, count, Trigger, activityId)` -> `macro()` MacroRunResult
+    {error Ok|QueueFull|TooManyActions, runId}. Engine: Executor::enqueueSteps (enqueueCommand is its
+    1-step case), RunHistory::begin(info, steps, count, ...) returns the id (both begins do).
+    Done once queued; any activity (or none); a switch cancels it.
+  - OverflowOnReleaseStillReleasesKeys parks the Input lane with slow HA calls (fake latency).
+    Removed engine tests whose configs (holds/releases in multi-action bindings) are invalid.
+    Hardening item: the engine's ledger-overflow path (release at once when HoldLedger is full) has
+    no engine test now; reachable only with 17 buttons held.
+  - Tests: core/tests/macro_test.cpp.
 
 - State checks and the 1 s HA reply limit (activity-runs branch, uncommitted;
   docs/design/state-checks.md). Lead-approved shape: both live in the HA adapter, not the executor.
