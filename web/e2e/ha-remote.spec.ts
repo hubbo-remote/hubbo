@@ -24,7 +24,7 @@ test('add a remote and bind a button to send one of its commands', async ({ page
 
   await open(page, '/remote')
   await page.locator('[data-key="info"]').click()
-  await page.getByRole('button', { name: /^(Bind|Edit) Info press$/ }).click()
+  await page.getByRole('button', { name: /^(Command for|Edit) Info press$/ }).click()
   await page.getByLabel('Device').selectOption({ label: 'E2E Remote' })
   await page.getByLabel('Command', { exact: true }).selectOption({ label: 'Home Assistant action…' })
   await page.getByLabel('Service').selectOption('remote.send_command')

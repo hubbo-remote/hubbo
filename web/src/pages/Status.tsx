@@ -14,7 +14,7 @@ import { Tabs } from '@/components/ui/tabs'
 import { useActivities, useStatus } from '@/hooks/data'
 import { buttonLabel } from '@/lib/buttons'
 import { EVENT_VERB } from '@/lib/remote'
-import { activityName } from '@/lib/runs'
+import { activityName, runKind } from '@/lib/runs'
 import { healthLabel, isUnset } from '@/lib/health'
 import { agoMs, bytes, cn, formatDuration, plural, timeAgo } from '@/lib/utils'
 import { NotFound } from './NotFound'
@@ -117,21 +117,23 @@ function Overview({ status: s }: { status: HubStatus | undefined }) {
   )
 }
 
-/** One line when the newest startup or shutdown had failed steps: which activity, how many, and a link to the log. */
+/** One line when the newest run (a startup, a shutdown or a macro) had failed steps: what ran, how many, and a link to the log. */
 function LastRunProblem({ status }: { status: HubStatus | undefined }) {
   const run = status?.last_run
-  return run?.failed_steps ? <FailedRunLine activityId={run.activity_id} failed={run.failed_steps} /> : null
+  return run?.failed_steps ? <FailedRunLine run={run} /> : null
 }
 
 /** Only rendered on a failure, so the Overview loads activities (for the name) only then. */
-function FailedRunLine({ activityId, failed }: { activityId: string; failed: number }) {
-  const name = activityName(useActivities().data?.activities, activityId)
+function FailedRunLine({ run }: { run: NonNullable<HubStatus['last_run']> }) {
+  const name = activityName(useActivities().data?.activities, run.activity_id)
+  const what = run.kind === 'macro' ? ` · ${runKind(run)}` : ''
   return (
     <p className="flex flex-wrap items-center gap-x-2 text-sm lg:col-span-3">
       <AlertTriangle className="size-4 shrink-0 text-warning" aria-hidden />
       <span>
-        {name} · {plural(failed, 'step')} failed ·{' '}
-        <Link href={`/activities/${activityId}/log`} className="text-primary underline underline-offset-4">
+        {name}
+        {what} · {plural(run.failed_steps, 'step')} failed ·{' '}
+        <Link href={run.activity_id ? `/activities/${run.activity_id}/log` : '/status/activity'} className="text-primary underline underline-offset-4">
           View log
         </Link>
       </span>

@@ -1,3 +1,4 @@
+import type { ButtonSet } from '@/lib/commands'
 import { CheckCircle2, Loader2, Save } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { useLocation } from 'wouter'
@@ -43,10 +44,10 @@ export default function ActivityEditor({ id, tab = 'buttons' }: { id: string; ta
       </div>
     )
   }
-  return <Editor key={id} tab={tab} activity={remote.data} catalog={cat.catalog} globalBindings={globals.data.bindings} />
+  return <Editor key={id} tab={tab} activity={remote.data} catalog={cat.catalog} globalBindings={globals.data} />
 }
 
-function Editor({ tab, activity, catalog, globalBindings }: { tab: string; activity: Activity; catalog: Catalog; globalBindings: ActivityDraft['bindings'] }) {
+function Editor({ tab, activity, catalog, globalBindings }: { tab: string; activity: Activity; catalog: Catalog; globalBindings: ButtonSet }) {
   const store = useMemo(() => activityStore(activity.id), [activity.id])
   const ed = useDraft(store, useMemo(() => toDraft(activity), [activity]), catalog)
   const draft = ed.draft! // the saved copy is in hand, so the draft is too
@@ -55,13 +56,13 @@ function Editor({ tab, activity, catalog, globalBindings }: { tab: string; activ
   const [, navigate] = useLocation()
   const setTab = (t: string) => navigate(`/activities/${activity.id}/${t}`, { replace: true })
   const smartData = useSmartButtons().data
-  // The newest run of this activity: its failing steps carry a warning (where the step is still the same).
-  const lastRun = useActivityRuns().data?.runs.find((r) => r.activity_id === activity.id)
+  // The newest startup or shutdown of this activity: its failing steps carry a warning (where the step is still the same).
+  const lastRun = useActivityRuns().data?.runs.find((r) => r.activity_id === activity.id && r.kind !== 'macro')
   const smart = useMemo(() => smartOf(smartData), [smartData])
   const countFor = (prefix: string) => errors.filter((e) => e.path.startsWith(prefix)).length
 
   const jumpTo = (issue: ValidationIssue) => {
-    const b = buttonForPath(issue.path)
+    const b = buttonForPath(issue.path, draft.macros)
     if (b) {
       setTab('buttons')
       setSelected(b)
@@ -150,13 +151,14 @@ function Editor({ tab, activity, catalog, globalBindings }: { tab: string; activ
         {tab === 'buttons' && (
           <BindingsEditor
             bindings={draft.bindings}
-            onChange={(bindings) => update({ bindings })}
+            macros={draft.macros}
+            onChange={update}
             catalog={catalog}
             errors={errors}
             warnings={ed.warnings}
             selected={selected}
             onSelect={setSelected}
-            set={{ source: 'activity', globals: globalBindings }}
+            set={{ source: 'activity', globals: globalBindings, activityId: activity.id }}
             smart={smart}
           />
         )}

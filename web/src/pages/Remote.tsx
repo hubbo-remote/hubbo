@@ -113,11 +113,12 @@ export default function Remote({ activityId }: { activityId?: string }) {
       ) : (
         <div aria-busy={ed.pending} className={cn('transition-opacity', ed.pending && 'pointer-events-none opacity-60')}>
           <BindingsEditor
-            set={'name' in draft ? { source: 'activity', globals: g.data.bindings } : { source: 'global' }}
+            set={'name' in draft ? { source: 'activity', globals: g.data, activityId: draft.id } : { source: 'global' }}
             smart={smartView}
             onPickSlot={'name' in draft ? undefined : pickSlot}
             bindings={draft.bindings}
-            onChange={(bindings) => ed.update({ bindings })}
+            macros={draft.macros}
+            onChange={ed.update}
             catalog={cat.catalog}
             errors={ed.errors}
             warnings={ed.warnings}

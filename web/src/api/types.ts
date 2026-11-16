@@ -34,12 +34,14 @@ export type TransitionResult = S['TransitionResult']
 export type ActivityRun = S['ActivityRun']
 export type ActivityRunStep = S['ActivityRunStep']
 export type ActivityRuns = S['ActivityRuns']
+export type MacroRunRequest = S['MacroRunRequest']
+export type MacroRunAccepted = S['MacroRunAccepted']
 export type PhaseResult = S['PhaseResult']
 export type ConfigState = S['ConfigState']
 export type AuthState = S['AuthState']
 /** UI-only: what the editor holds. `id`/`revision` are absent for a new activity. */
 /** A stored activity being edited: its input fields plus which revision they came from. */
-export type ActivityDraft = ActivityInput & { id: string; revision: number }
+export type ActivityDraft = ActivityInput & { id: string; revision: number; macros: string[] }
 
 export type Device = S['Device']
 export type DeviceKind = S['DeviceKind']

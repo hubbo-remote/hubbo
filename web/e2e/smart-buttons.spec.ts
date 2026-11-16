@@ -21,7 +21,7 @@ async function bindLight1(page: Page) {
   const hub = api(page)
   const off = { integration_id: 'system', device_id: null, command_id: 'off', params: {} }
   const g = await hub.get('/global-bindings')
-  const r = await hub.put('/global-bindings', { revision: g.revision, bindings: { ...g.bindings, 'light_1:tap': [off] } })
+  const r = await hub.put('/global-bindings', { revision: g.revision, macros: g.macros, bindings: { ...g.bindings, 'light_1:tap': [off] } })
   expect(r.status(), await r.text()).toBe(200)
 }
 const light1Bound = async (page: Page) => 'light_1:tap' in (await api(page).get('/global-bindings')).bindings
@@ -57,7 +57,7 @@ test('a device clears the button’s global bindings, so None starts empty', asy
   const hub = api(page)
   const off = { integration_id: 'system', device_id: null, command_id: 'off', params: {} }
   const g = await hub.get('/global-bindings')
-  const r = await hub.put('/global-bindings', { revision: g.revision, bindings: { ...g.bindings, 'light_1:tap': [off], 'light_1:hold': [off] } })
+  const r = await hub.put('/global-bindings', { revision: g.revision, macros: g.macros, bindings: { ...g.bindings, 'light_1:tap': [off], 'light_1:hold': [off] } })
   expect(r.status(), await r.text()).toBe(200)
   await open(page, '/remote')
   await key(page, 'light_1')
@@ -70,8 +70,8 @@ test('a device clears the button’s global bindings, so None starts empty', asy
 
   await device(page).selectOption({ label: 'None' })
   await expect(does(page)).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Bind Light 1 press' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Bind Light 1 long press' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Command for Light 1 press' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Command for Light 1 long press' })).toBeVisible()
   await save(page)
   expect((await hub.get('/smart-buttons')).slots.light_1).toBeNull()
 })
@@ -81,7 +81,7 @@ test('the first device takes + and −: their globals go, and the panel explains
   const hub = api(page)
   const off = { integration_id: 'system', device_id: null, command_id: 'off', params: {} }
   const g = await hub.get('/global-bindings')
-  const r = await hub.put('/global-bindings', { revision: g.revision, bindings: { ...g.bindings, 'plus:tap': [off], 'minus:hold': [off] } })
+  const r = await hub.put('/global-bindings', { revision: g.revision, macros: g.macros, bindings: { ...g.bindings, 'plus:tap': [off], 'minus:hold': [off] } })
   expect(r.status(), await r.text()).toBe(200)
   await open(page, '/remote')
   await key(page, 'plus')
@@ -108,7 +108,7 @@ test('the first device takes + and −: their globals go, and the panel explains
   await page.reload()
   await key(page, 'plus')
   await expect(page.getByText('Controls your smart buttons.')).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Bind Plus press' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Command for Plus press' })).toBeVisible()
 })
 
 test('an activity inherits the smart buttons, and can override them', async ({ page }) => {
@@ -129,7 +129,7 @@ test('an activity inherits the smart buttons, and can override them', async ({ p
 
   await key(page, 'plus')
   await expect(page.getByRole('list', { name: 'Smart buttons' })).toContainText('Brightness up 10%')
-  await expect(page.getByRole('button', { name: 'Bind Plus press' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Command for Plus press' })).toBeVisible()
 })
 
 test('a pick undone before saving changes nothing', async ({ page }) => {

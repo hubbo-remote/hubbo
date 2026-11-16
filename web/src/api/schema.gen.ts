@@ -94,11 +94,13 @@ export interface paths {
         };
         /**
          * The last few activity runs, step by step
-         * @description The hub keeps the last 8 runs of an activity's startup (activate) or
-         *     shutdown (off), newest first, in RAM: a restart clears them. Button
-         *     presses aren't kept. Failed steps don't stop a run
-         *     (`ActionSequence`); switching activity mid-run cancels the rest
-         *     (`cancelled` steps). `GET /status` `last_run` sums up the newest.
+         * @description The hub keeps the last 8 runs of an activity's startup (activate),
+         *     shutdown (off) or a macro (a trigger listed in `macros`), newest
+         *     first, in RAM: a restart clears them. Other button presses aren't
+         *     kept. Failed steps don't stop a run (`ActionSequence`); switching
+         *     activity mid-run cancels the rest (`cancelled` steps), macros
+         *     included. A macro pressed while 4 are already queued is dropped and
+         *     isn't listed. `GET /status` `last_run` sums up the newest.
          */
         get: operations["listActivityRuns"];
         put?: never;
@@ -548,6 +550,37 @@ export interface paths {
         /** Atomically replace the global bindings */
         put: operations["replaceGlobalBindings"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/macros/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Try a macro now, as written (saved or not)
+         * @description Queues `actions` as a macro, as if `trigger` had been pressed in
+         *     `activity_id` (null: a global macro), and answers once it's queued.
+         *     Nothing is saved. The actions follow a macro's rules (`Macros`):
+         *     1 to 32, one-shot commands and waits, no `*_down`/`*_up`
+         *     (`hold_not_allowed`). `trigger` is a `down`, `tap` or `hold` trigger
+         *     (`invalid_trigger`). `activity_id` must exist (`unknown_activity`);
+         *     it doesn't have to be active, and the run doesn't switch to it.
+         *
+         *     It runs on the macro queue like a pressed macro, and is recorded in
+         *     `GET /activity-runs` (kind `macro`, its button and trigger) under
+         *     `run_id`. A switch of activity cancels it. `503 busy` when 4 macros
+         *     already wait: nothing was queued, and a retry is safe.
+         */
+        post: operations["runMacro"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1327,7 +1360,7 @@ export interface components {
              *     `weak_password`).
              * @enum {string}
              */
-            code: "required" | "unknown_field" | "wrong_type" | "too_long" | "pattern" | "forbidden_param" | "referenced" | "id_mismatch" | "weak_password" | "hold_not_allowed" | "unpaired_hold" | "integration_disabled" | "invalid_id" | "invalid_name" | "invalid_command_id" | "duplicate_id" | "unknown_integration" | "unknown_device" | "device_required" | "device_not_allowed" | "integration_mismatch" | "unknown_command" | "unknown_param" | "duplicate_param" | "missing_param" | "invalid_param_type" | "param_out_of_range" | "invalid_enum_value" | "too_many_params" | "invalid_trigger" | "duplicate_trigger" | "unknown_activity" | "misplaced_transition" | "too_many_actions" | "too_many_activities" | "too_many_devices" | "capacity_exceeded" | "unsupported_schema" | "unknown_profile" | "unknown_kind" | "sequence_only" | "too_deep" | "template_not_supported";
+            code: "required" | "unknown_field" | "wrong_type" | "too_long" | "pattern" | "forbidden_param" | "referenced" | "id_mismatch" | "weak_password" | "hold_not_allowed" | "unpaired_hold" | "integration_disabled" | "invalid_id" | "invalid_name" | "invalid_command_id" | "duplicate_id" | "unknown_integration" | "unknown_device" | "device_required" | "device_not_allowed" | "integration_mismatch" | "unknown_command" | "unknown_param" | "duplicate_param" | "missing_param" | "invalid_param_type" | "param_out_of_range" | "invalid_enum_value" | "too_many_params" | "invalid_trigger" | "duplicate_trigger" | "unknown_activity" | "misplaced_transition" | "too_many_actions" | "too_many_activities" | "too_many_devices" | "capacity_exceeded" | "unsupported_schema" | "unknown_profile" | "unknown_kind" | "sequence_only" | "too_deep" | "template_not_supported" | "macro_required" | "unbound_macro";
             message: string;
         };
         Error: {
@@ -1435,10 +1468,20 @@ export interface components {
             diagnostics: components["schemas"]["Diagnostics"];
         };
         /**
-         * @description `startup` (activate) or `shutdown` (off).
+         * @description `startup` (activate), `shutdown` (off) or `macro` (a trigger marked as a macro).
          * @enum {string}
          */
-        ActivityRunKind: "startup" | "shutdown";
+        ActivityRunKind: "startup" | "shutdown" | "macro";
+        /** @description The button that ran a macro; null for startup and shutdown. */
+        ActivityRunButton: components["schemas"]["Button"] | null;
+        /**
+         * @description Which of the button's bindings ran the macro (a button can have a
+         *     Press macro and a Long press macro); null for startup and shutdown.
+         * @enum {string|null}
+         */
+        ActivityRunTrigger: "press" | "long_press" | null;
+        /** @description Null only for a macro bound globally (not to an activity). */
+        ActivityRunActivityId: components["schemas"]["ActivityId"] | null;
         /**
          * @description `running`; `completed`: every step ok, skipped or no_reply;
          *     `completed_with_errors`: it reached the end and one or more steps
@@ -1451,8 +1494,10 @@ export interface components {
         LastActivityRun: {
             /** @description The run's `id` in `GET /activity-runs`. */
             id: number;
-            activity_id: components["schemas"]["ActivityId"];
+            activity_id: components["schemas"]["ActivityRunActivityId"];
             kind: components["schemas"]["ActivityRunKind"];
+            button: components["schemas"]["ActivityRunButton"];
+            trigger: components["schemas"]["ActivityRunTrigger"];
             outcome: components["schemas"]["ActivityRunOutcome"];
             /** @description Steps that failed or timed out. */
             failed_steps: number;
@@ -1489,8 +1534,10 @@ export interface components {
              *     restart starts again). Stable while the run is listed.
              */
             id: number;
-            activity_id: components["schemas"]["ActivityId"];
+            activity_id: components["schemas"]["ActivityRunActivityId"];
             kind: components["schemas"]["ActivityRunKind"];
+            button: components["schemas"]["ActivityRunButton"];
+            trigger: components["schemas"]["ActivityRunTrigger"];
             /** @description How long ago it started. */
             started_ago_ms: number;
             /** @description Start to the last step's result; null while running. */
@@ -1700,6 +1747,24 @@ export interface components {
             [key: string]: components["schemas"]["Action"][];
         };
         /**
+         * @description The triggers in `bindings` that are macros: each runs its list as a
+         *     macro (on the macro queue, recorded in `GET /activity-runs`), at any
+         *     length, one command included. A trigger with more than one action
+         *     must be listed here. Only `down`, `tap` and `hold` triggers; each
+         *     once, and each bound. Absent in a request or backup means none;
+         *     responses always include it.
+         */
+        Macros: components["schemas"]["Trigger"][];
+        MacroRunRequest: {
+            actions: components["schemas"]["Action"][];
+            trigger: components["schemas"]["Trigger"];
+            activity_id: components["schemas"]["NullableActivityId"];
+        };
+        MacroRunAccepted: {
+            /** @description The run's `id` in `GET /activity-runs`. */
+            run_id: number;
+        };
+        /**
          * @description `call` only for `call_service` (a Home Assistant action), and required
          *     there; detail paths start at the body (`/call/data/...`).
          */
@@ -1737,6 +1802,7 @@ export interface components {
             startup: components["schemas"]["ActionSequence"];
             shutdown: components["schemas"]["ActionSequence"];
             bindings: components["schemas"]["Bindings"];
+            macros?: components["schemas"]["Macros"];
         };
         /** @description Body for create. */
         ActivityInput: components["schemas"]["ActivityFields"];
@@ -1756,7 +1822,7 @@ export interface components {
             /** @constant */
             schema_version: 1;
             revision: components["schemas"]["Revision"];
-        } & components["schemas"]["ActivityFields"];
+        } & WithRequired<components["schemas"]["ActivityFields"], "macros">;
         ActivityList: {
             activities: components["schemas"]["Activity"][];
             active_activity_id: components["schemas"]["NullableActivityId"];
@@ -1774,10 +1840,18 @@ export interface components {
         } & components["schemas"]["ActivityFields"];
         BackupGlobalBindings: {
             bindings: components["schemas"]["Bindings"];
+            macros?: components["schemas"]["Macros"];
             revision?: components["schemas"]["BackupRevision"];
+        };
+        /** @description Body for replace; `macros` may be left out (none). */
+        GlobalBindingsInput: {
+            bindings: components["schemas"]["Bindings"];
+            macros?: components["schemas"]["Macros"];
+            revision: components["schemas"]["Revision"];
         };
         GlobalBindings: {
             bindings: components["schemas"]["Bindings"];
+            macros: components["schemas"]["Macros"];
             revision: components["schemas"]["Revision"];
         };
         /** @enum {string} */
@@ -3420,7 +3494,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["GlobalBindings"];
+                "application/json": components["schemas"]["GlobalBindingsInput"];
             };
         };
         responses: {
@@ -3441,6 +3515,37 @@ export interface operations {
             415: components["responses"]["UnsupportedMediaType"];
             422: components["responses"]["ValidationFailed"];
             500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    runMacro: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MacroRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MacroRunAccepted"];
+                };
+            };
+            400: components["responses"]["MalformedJson"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["ValidationFailed"];
             503: components["responses"]["Unavailable"];
         };
     };

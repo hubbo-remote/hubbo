@@ -2,13 +2,15 @@
 // words. Pure: imported by the UI and the mock, so relative imports only.
 import type { Action, ActivityRun, ActivityRunStep as RunStep } from '../api/types.ts'
 import { SYSTEM } from './activity.ts'
+import { buttonLabel } from './buttons.ts'
 import { duration } from './utils.ts'
 
 /** A step as an action, for the usual names and checks: a run keeps no params, and a step with no device is Hubbo's. */
 export const stepAction = (s: RunStep): Action => ({ integration_id: s.device_id ? '' : SYSTEM, device_id: s.device_id, command_id: s.command_id, params: {} })
 
-/** The run's activity by name, or a stand-in once it's been deleted. */
-export const activityName = (activities: readonly { id: string; name: string }[] | undefined, id: string) => activities?.find((a) => a.id === id)?.name ?? 'An activity'
+/** The run's activity by name, or a stand-in once it's been deleted; "Global" for a macro on a global button. */
+export const activityName = (activities: readonly { id: string; name: string }[] | undefined, id: string | null) =>
+  id === null ? 'Global' : (activities?.find((a) => a.id === id)?.name ?? 'An activity')
 
 /** Why a step failed, as people say it (the hub's error codes; ExecuteResult `message` uses the same names). */
 const REASONS: Record<string, string> = {
@@ -42,8 +44,9 @@ export const isFailure = (s: RunStep) => s.result === 'failed' || s.result === '
 
 export const failedSteps = (r: ActivityRun) => r.steps.filter(isFailure).length
 
-/** "start" or "stop": what the run did to its activity. */
-export const runKind = (r: ActivityRun) => (r.kind === 'startup' ? 'start' : 'stop')
+/** What the run was: "start" or "stop" for its activity, or a button's macro ("Guide · macro", "Play · long press macro"). */
+export const runKind = (r: Pick<ActivityRun, 'kind' | 'button' | 'trigger'>) =>
+  r.kind === 'macro' ? `${r.button ? buttonLabel(r.button) : 'A button'} · ${r.trigger === 'long_press' ? 'long press macro' : 'macro'}` : r.kind === 'startup' ? 'start' : 'stop'
 
 /** How the run went, as a log says it: "completed", "1 failed", "running…". */
 export function runSummary(r: ActivityRun): string {

@@ -264,7 +264,7 @@ test('a re-link that would break an activity or a global button is refused, nami
   const lgSteps = ((await hub.get(`/activities/${id}`)).startup as { device_id: string | null }[]).filter((x) => x.device_id === 'dev_lg_tv')
   expect(lgSteps.length).toBeGreaterThan(0)
   const global = await hub.get('/global-bindings')
-  const put = await hub.put('/global-bindings', { ...global, bindings: { ...global.bindings, 'tv:tap': lgSteps } })
+  const put = await hub.put('/global-bindings', { ...global, bindings: { ...global.bindings, 'tv:tap': lgSteps }, macros: [...global.macros, 'tv:tap'] })
   expect(put.status(), await put.text()).toBe(200)
   const target = SIM_URL ? T.free : 'switch.tv_backlight' // neither offers the LG TV's inputs
   await open(page, '/devices/dev_lg_tv')

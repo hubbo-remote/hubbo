@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Action, Command } from '../api/types'
+import type { Bindings, Action, Command } from '../api/types'
 import { loadSeed } from '../../mock/fixtures.ts'
 import { actionFor, choiceName, choiceOf, choiceParams, choices, commandName, commandTitle, isFriendly, readButton, toggleLabel, toggleOf, toggleParams, viewKinds, writeLongPress, writeMain } from './commands'
 
@@ -99,45 +99,71 @@ describe('choices', () => {
 })
 
 describe('a button as Press / Long press', () => {
+  const none = { bindings: {}, macros: [] }
+  const B = (bindings: Bindings, macros: string[] = []) => ({ bindings, macros })
+  const view = (v: Partial<ReturnType<typeof readButton>>) => ({ press: [], pressMacro: false, pressKey: null, longPress: [], longMacro: false, raw: [], ...v })
+
   it('passes Press straight through, and makes it a tap while a long press is bound', () => {
-    const mirror = writeMain({}, 'up', press('DirectionUp', { hold_ms: 800 }))
-    expect(mirror).toEqual({
+    const mirror = writeMain(none, 'up', press('DirectionUp', { hold_ms: 800 }))
+    expect(mirror).toEqual(B({
       'up:down': [{ ...press('DirectionUp'), command_id: 'press_down' }],
       'up:up': [{ ...press('DirectionUp'), command_id: 'press_up' }],
-    })
-    expect(readButton(mirror, 'up')).toEqual({ main: press('DirectionUp'), longPress: null, raw: [] })
-    const ha = writeMain({}, 'volume_up', { ...dev, command_id: 'media_player.volume_up', params: {} })
-    expect(Object.keys(ha)).toEqual(['volume_up:down']) // no down/up: one send, on press
-    expect(readButton(ha, 'volume_up').main?.command_id).toBe('media_player.volume_up')
+    }))
+    expect(readButton(mirror, 'up')).toEqual(view({ press: [press('DirectionUp')] }))
+    const ha = writeMain(none, 'volume_up', { ...dev, command_id: 'media_player.volume_up', params: {} })
+    expect(Object.keys(ha.bindings)).toEqual(['volume_up:down']) // no down/up: one send, on press
+    expect(readButton(ha, 'volume_up').press[0]?.command_id).toBe('media_player.volume_up')
 
-    const both = writeLongPress(writeMain({}, 'select', press('Select')), 'select', press('Home'))
-    expect(both).toEqual({ 'select:tap': [press('Select')], 'select:hold': [press('Home')] })
+    const both = writeLongPress(writeMain(none, 'select', press('Select')), 'select', press('Home'))
+    expect(both).toEqual(B({ 'select:tap': [press('Select')], 'select:hold': [press('Home')] }))
     expect(viewKinds(readButton(both, 'select'))).toEqual(['tap', 'hold'])
-    expect(Object.keys(writeLongPress(both, 'select', null))).toEqual(['select:down', 'select:up']) // back to the mirror
-    expect(writeMain(both, 'select', null)).toEqual({ 'select:hold': [press('Home')] }) // long press kept
+    expect(Object.keys(writeLongPress(both, 'select', null).bindings)).toEqual(['select:down', 'select:up']) // back to the mirror
+    expect(writeMain(both, 'select', null)).toEqual(B({ 'select:hold': [press('Home')] })) // long press kept
   })
 
   it('makes Press a tap when the long press was bound first, and Hubbo’s own commands always a tap', () => {
-    const held = writeMain(writeLongPress({}, 'info', press('Home')), 'info', press('Info'))
-    expect(held).toEqual({ 'info:hold': [press('Home')], 'info:tap': [press('Info')] })
+    const held = writeMain(writeLongPress(none, 'info', press('Home')), 'info', press('Info'))
+    expect(held).toEqual(B({ 'info:hold': [press('Home')], 'info:tap': [press('Info')] }))
     const off = { integration_id: 'system', device_id: null, command_id: 'off', params: {} }
-    expect(writeMain({}, 'tv', off)).toEqual({ 'tv:tap': [off] })
-    expect(readButton({ 'tv:tap': [off] }, 'tv').main).toEqual(off)
+    expect(writeMain(none, 'tv', off)).toEqual(B({ 'tv:tap': [off] }))
+    expect(readButton(B({ 'tv:tap': [off] }), 'tv').press).toEqual([off])
   })
 
   it('keeps a timed profile command a tap, with or without a long press', () => {
     const timed = (a: Action) => a.params.command === 'ControlCenter'
     const cc = press('ControlCenter')
-    expect(writeMain({}, 'menu', cc, timed)).toEqual({ 'menu:tap': [cc] })
-    expect(readButton({ 'menu:tap': [cc] }, 'menu')).toEqual({ main: cc, longPress: null, raw: [] })
-    const both = writeLongPress(writeMain({}, 'menu', cc, timed), 'menu', press('Home'), timed)
-    expect(writeLongPress(both, 'menu', null, timed)).toEqual({ 'menu:tap': [cc] })
+    expect(writeMain(none, 'menu', cc, { timed })).toEqual(B({ 'menu:tap': [cc] }))
+    expect(readButton(B({ 'menu:tap': [cc] }), 'menu')).toEqual(view({ press: [cc] }))
+    const both = writeLongPress(writeMain(none, 'menu', cc, { timed }), 'menu', press('Home'), { timed })
+    expect(writeLongPress(both, 'menu', null, { timed })).toEqual(B({ 'menu:tap': [cc] }))
+  })
+
+  it('writes a macro as its list, marked, at any length: on down, or on the tap with a long press', () => {
+    const one = writeMain(none, 'play', [press('Home')], { macro: true })
+    expect(one).toEqual(B({ 'play:down': [press('Home')] }, ['play:down']))
+    expect(readButton(one, 'play')).toEqual(view({ press: [press('Home')], pressMacro: true, pressKey: 'play:down' }))
+    const two = [press('Home'), press('Select')]
+    const m = writeMain(none, 'play', two, { macro: true })
+    const both = writeLongPress(m, 'play', [press('Info'), press('Back')], { macro: true })
+    expect(both).toEqual(B({ 'play:tap': two, 'play:hold': [press('Info'), press('Back')] }, ['play:hold', 'play:tap']))
+    expect(readButton(both, 'play')).toEqual(view({ press: two, pressMacro: true, pressKey: 'play:tap', longPress: [press('Info'), press('Back')], longMacro: true }))
+    expect(writeLongPress(both, 'play', null)).toEqual(B({ 'play:down': two }, ['play:down']))
+    expect(writeMain(m, 'play', null)).toEqual(none) // cleared: the mark goes too
+  })
+
+  it('moves a macro’s mark with its list when a Long press comes or goes, so a saved macro is always marked', () => {
+    const up = press('DirectionUp')
+    const m = writeMain(B({ 'tv:tap': [press('Home')] }, []), 'switch_2', [up, up, up, up], { macro: true })
+    const held = writeLongPress(m, 'switch_2', up)
+    expect(held.macros).toEqual(['switch_2:tap'])
+    expect(writeLongPress(held, 'switch_2', null).macros).toEqual(['switch_2:down'])
+    expect(writeMain(held, 'switch_2', [...held.bindings['switch_2:tap']!, up], { macro: true }).macros).toEqual(['switch_2:tap'])
   })
 
   it('leaves triggers it can’t fold as raw', () => {
-    const odd = { 'up:down': [press('DirectionUp')], 'up:tap': [press('Select')] }
-    expect(readButton(odd, 'up')).toEqual({ main: null, longPress: null, raw: ['down', 'tap'] })
-    const mismatched = { 'up:down': [{ ...press('DirectionUp'), command_id: 'press_down' }], 'up:up': [{ ...press('DirectionDown'), command_id: 'press_up' }] }
+    const odd = B({ 'up:down': [press('DirectionUp')], 'up:tap': [press('Select')] })
+    expect(readButton(odd, 'up')).toEqual(view({ raw: ['down', 'tap'] }))
+    const mismatched = B({ 'up:down': [{ ...press('DirectionUp'), command_id: 'press_down' }], 'up:up': [{ ...press('DirectionDown'), command_id: 'press_up' }] })
     expect(readButton(mismatched, 'up').raw).toEqual(['down', 'up'])
   })
 })

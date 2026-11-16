@@ -1,4 +1,4 @@
-import { Box, Check, CircleSlash, History, Hourglass, Lightbulb, Loader2, MonitorPlay, Play, Power, Radio, Send, SkipForward, ToggleRight, X, type LucideIcon } from 'lucide-react'
+import { Box, Check, CircleSlash, History, Hourglass, Layers, Lightbulb, Loader2, MonitorPlay, Play, Power, Radio, Send, SkipForward, ToggleRight, X, type LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { ActivityRun, ActivityRunStep as RunStep, Device } from '@/api/types'
 import { actionParts } from '@/components/actions/describe'
@@ -12,7 +12,7 @@ import { isWait, type Catalog } from '@/lib/activity'
 import { agoMs, cn, duration, plural } from '@/lib/utils'
 
 /**
- * The hub's last few startups and shutdowns as a timeline, newest first: each run is a node on a rail at the left,
+ * The hub's last few startups, shutdowns and button macros as a timeline, newest first: each run is a node on a rail at the left,
  * its steps hang off the same rail. Every part of a line is its own token; screen readers still hear each line as
  * one sentence (the joiners are sr-only, the glyphs aria-hidden). With `activityId`, only that activity's runs, and
  * no name on each (the page already says it).
@@ -65,7 +65,7 @@ function runFacts(run: ActivityRun): string {
 function RunEntry({ run, newest, name, catalog }: { run: ActivityRun; newest: boolean; name: string | null; catalog: Catalog }) {
   const failed = failedSteps(run) > 0 || run.outcome === 'rejected'
   const node = runNode(run, failed)
-  const Kind = run.kind === 'startup' ? Play : Power
+  const Kind = run.kind === 'macro' ? Layers : run.kind === 'startup' ? Play : Power
   return (
     <li className="relative pb-6 pl-9 last:pb-0">
       {/* The rail: from under this node down to the next one. */}

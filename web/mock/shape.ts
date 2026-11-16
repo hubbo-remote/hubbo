@@ -37,6 +37,13 @@ export function bindingsShape(b: unknown, path: string, out: ValidationIssue[]) 
   }
 }
 
+/** `macros` is optional on input (missing is none). */
+export function macrosShape(m: unknown, path: string, out: ValidationIssue[]) {
+  if (m === undefined) return
+  if (!Array.isArray(m)) return void out.push({ path, code: 'wrong_type', message: 'macros must be an array of triggers' })
+  m.forEach((k, i) => typeof k !== 'string' && out.push({ path: `${path}/${i}`, code: 'wrong_type', message: 'A macro is a trigger' }))
+}
+
 export function activityShape(body: unknown, allowed: readonly string[]): ValidationIssue[] {
   const out: ValidationIssue[] = []
   if (!isObj(body)) return [{ path: '', code: 'wrong_type', message: 'Body must be an object' }]
@@ -49,6 +56,7 @@ export function activityShape(body: unknown, allowed: readonly string[]): Valida
     else s.forEach((a, i) => action(a, `/${seq}/${i}`, out))
   }
   bindingsShape(body.bindings, '/bindings', out)
+  macrosShape(body.macros, '/macros', out)
   return out
 }
 

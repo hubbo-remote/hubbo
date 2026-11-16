@@ -1,4 +1,4 @@
-import { AlertTriangle, Eraser, Pencil, Plus, SlidersHorizontal } from 'lucide-react'
+import { AlertTriangle, Eraser, ListOrdered, Loader2, Pencil, Play, Plus, SlidersHorizontal } from 'lucide-react'
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
 import type { Action, Bindings, ButtonId, EventKind, SlotId, SmartPress, SmartSlotActions, ValidationIssue } from '@/api/types'
 import { ActionPicker, TestButton } from '@/components/actions/ActionPicker'
@@ -9,17 +9,20 @@ import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog } from '@/components/ui/dialog'
 import { Field, Select } from '@/components/ui/input'
 import { InfoTip } from '@/components/ui/info-tip'
 import { bindsButton, buttonForPath, commandFor, isTimed, releaseFor, triggerKey, type Catalog } from '@/lib/activity'
 import { callReady } from '@/lib/haCall'
-import { readButton, viewKinds, writeLongPress, writeMain } from '@/lib/commands'
+import { readButton, viewKinds, writeLongPress, writeMain, type ButtonSet } from '@/lib/commands'
 import { BUTTONS, buttonLabel } from '@/lib/buttons'
 import { isSlot, SLOT_KINDS, SLOTS, type SmartSet } from '@/lib/smartButtons'
-import { cn, same } from '@/lib/utils'
+import { cn, plural, same } from '@/lib/utils'
 import { Skeleton } from '@/components/ui/misc'
+import { SequenceEditor } from '@/components/actions/SequenceEditor'
 import { Sheet, SheetSpacer } from '@/components/ui/sheet'
 import { useWide } from '@/hooks/media'
+import { runMacro } from '@/hooks/runMacro'
 
 /**
  * Clickable remote plus the selected button's down/up/tap/hold bindings.
@@ -29,7 +32,7 @@ import { useWide } from '@/hooks/media'
  * Whose buttons these are. The global set is the base layer; an activity's set always shows the globals behind
  * the buttons it leaves unbound, so both hosts (the activity editor and the Remote page) render it the same.
  */
-export type BindingSet = { source: 'global'; globals?: undefined } | { source: 'activity'; globals: Bindings }
+export type BindingSet = { source: 'global'; globals?: undefined; activityId?: undefined } | { source: 'activity'; globals: ButtonSet; activityId: string }
 
 const pressKinds = (a: SmartPress): EventKind[] => [...(a.tap.length ? (['tap'] as const) : []), ...(a.hold.length ? (['hold'] as const) : [])]
 const isPlusMinus = (b: string): b is 'plus' | 'minus' => b === 'plus' || b === 'minus'
@@ -56,6 +59,7 @@ const FIRST_BUTTON: Record<BindingSource, ButtonId> = { activity: 'select', glob
 
 export function BindingsEditor({
   bindings,
+  macros,
   onChange,
   catalog,
   errors,
@@ -67,7 +71,9 @@ export function BindingsEditor({
   onPickSlot,
 }: {
   bindings: Bindings
-  onChange: (b: Bindings) => void
+  /** Which of `bindings`' triggers are macros. */
+  macros: string[]
+  onChange: (b: ButtonSet) => void
   catalog: Catalog
   errors: ValidationIssue[]
   /** Advisory only: shown, but never mark a button as broken. */
@@ -84,11 +90,12 @@ export function BindingsEditor({
   onPickSlot?: (slot: SlotId, device: string | null) => void
 }) {
   const { source, globals: fallback } = set
+  const own = useMemo(() => ({ bindings, macros }), [bindings, macros])
   const selected = picked ?? FIRST_BUTTON[source]
   const bound = useMemo(() => {
     const out: Record<string, EventKind[]> = {}
     for (const b of BUTTONS) {
-      const ev = viewKinds(readButton(bindings, b.id))
+      const ev = viewKinds(readButton(own, b.id))
       if (ev.length) out[b.id] = ev
     }
     // On Global, what the smart buttons take is theirs (an activity shows it as inherited instead).
@@ -101,7 +108,17 @@ export function BindingsEditor({
       else delete out[b]
     }
     return out
-  }, [bindings, smart, source])
+  }, [own, smart, source])
+  // Press / Long press macros, marked on the remote: "<button>:tap" / "<button>:hold".
+  const macroMarks = useMemo(() => {
+    const out = new Set<string>()
+    for (const b of BUTTONS) {
+      const v = readButton(own, b.id)
+      if (v.pressMacro) out.add(`${b.id}:tap`)
+      if (v.longMacro) out.add(`${b.id}:hold`)
+    }
+    return out
+  }, [own])
   // Buttons this set leaves to a global binding (it binds nothing on them), with what the global does.
   const inherited = useMemo(() => {
     if (!fallback) return undefined
@@ -114,19 +131,19 @@ export function BindingsEditor({
         if (sm.kinds.length) out[b.id] = { kinds: sm.kinds, text: `Smart button: ${sm.presses.map((p) => pressText(p, catalog)).filter(Boolean).join(' / ')}` }
         continue
       }
-      if (!bindsButton(fallback, b.id)) continue
+      if (!bindsButton(fallback.bindings, b.id)) continue
       const v = readButton(fallback, b.id)
       const parts = [
-        v.main && `${EV_LABEL.tap} → ${actionText(v.main, catalog)}`,
-        v.longPress && `${EV_LABEL.hold} → ${actionText(v.longPress, catalog)}`,
-        ...v.raw.map((e) => `${EV_LABEL[e]} → ${fallback[triggerKey(b.id, e)]!.map((a) => actionText(a, catalog)).join(', ')}`),
+        v.press.length && `${EV_LABEL.tap} → ${v.press.map((a) => actionText(a, catalog)).join(', then ')}`,
+        v.longPress.length && `${EV_LABEL.hold} → ${v.longPress.map((a) => actionText(a, catalog)).join(', then ')}`,
+        ...v.raw.map((e) => `${EV_LABEL[e]} → ${fallback.bindings[triggerKey(b.id, e)]!.map((a) => actionText(a, catalog)).join(', ')}`),
       ]
       out[b.id] = { kinds: viewKinds(v), text: parts.filter(Boolean).join(' · ') }
     }
     return out
   }, [fallback, bindings, catalog, smart])
   // Keyed on the joined ids so a re-validation with the same result keeps the Set (and RemoteSvg's memo) stable.
-  const errorKey = [...new Set(errors.map((e) => buttonForPath(e.path)).filter(Boolean))].sort().join(' ')
+  const errorKey = [...new Set(errors.map((e) => buttonForPath(e.path, macros)).filter(Boolean))].sort().join(' ')
   const errorButtons = useMemo(() => new Set(errorKey ? errorKey.split(' ') : []), [errorKey])
 
   // Phones: the remote fills the page and a tapped button's editor opens in a bottom sheet over it.
@@ -148,13 +165,14 @@ export function BindingsEditor({
   const panel = (
     <BindingPanel
       button={selected as ButtonId}
-      bindings={bindings}
+      set={own}
       fallback={fallback}
+      activityId={set.activityId ?? null}
       smart={smart}
       onPickSlot={onPickSlot}
       catalog={catalog}
-      errors={errors.filter((e) => buttonForPath(e.path) === selected)}
-      warnings={warnings.filter((e) => buttonForPath(e.path) === selected)}
+      errors={errors.filter((e) => buttonForPath(e.path, macros) === selected)}
+      warnings={warnings.filter((e) => buttonForPath(e.path, macros) === selected)}
       onChange={onChange}
     />
   )
@@ -169,6 +187,7 @@ export function BindingsEditor({
             selected={selected}
             onSelect={pick}
             errors={errorButtons}
+            macros={macroMarks}
             inherited={inherited}
             source={source}
             className="mx-auto max-w-[19rem] md:max-h-[calc(100dvh-9rem)] md:max-w-[15rem]" // phones: full width, so keys are big enough to tap
@@ -198,8 +217,9 @@ export function BindingsEditor({
 const keyEl = (id: string) => document.querySelector<SVGGElement>(`[data-key="${id}"]`)
 
 /** A row's look: its colour dot, title, and what it does now (or the global one it falls back to). */
-function Row({ color, title, note, action, inherited, catalog, editing, children, actions }: { color: string; title: string; note?: string; action: Action | Action[] | null; inherited?: Action | null; catalog: Catalog; editing: boolean; children?: ReactNode; actions: ReactNode }) {
+function Row({ color, title, note, action, inherited, macro, catalog, editing, children, actions }: { color: string; title: string; note?: string; action: Action | Action[] | null; inherited?: Action | Action[] | null; /** What it shows is a macro (an inherited one). */ macro?: boolean; catalog: Catalog; editing: boolean; children?: ReactNode; actions: ReactNode }) {
   const list = Array.isArray(action) ? action : action ? [action] : []
+  const from = Array.isArray(inherited) ? inherited : inherited ? [inherited] : []
   return (
     <div className={cn('rounded-lg border p-3 transition-colors', editing && 'border-[var(--bind)]/60 bg-accent/30', !list.length && !inherited && !editing && 'border-dashed')}>
       <div className="flex items-center gap-3">
@@ -207,20 +227,19 @@ function Row({ color, title, note, action, inherited, catalog, editing, children
         <div className="min-w-0 flex-1">
           <p className="flex items-center gap-2 text-sm font-semibold">
             {title}
-            {!list.length && inherited && <SourceTag>Global</SourceTag>}
+            {!list.length && from.length > 0 && <SourceTag>Global</SourceTag>}
+            {macro && <MacroTag />}
             {note && <span className="text-xs font-normal text-muted-foreground">{note}</span>}
           </p>
           {!editing && (
             <p className={cn('truncate text-sm', !list.length && 'text-muted-foreground')}>
-              {list.length ? (
-                list.map((a, i) => (
+              {list.length || from.length ? (
+                (list.length ? list : from).map((a, i) => (
                   <span key={i}>
                     {i > 0 && ', then '}
                     <ActionText action={a} catalog={catalog} />
                   </span>
                 ))
-              ) : inherited ? (
-                <ActionText action={inherited} catalog={catalog} />
               ) : (
                 'Nothing'
               )}
@@ -236,6 +255,62 @@ function Row({ color, title, note, action, inherited, catalog, editing, children
 
 const TAG = 'px-1.5 py-0 text-[11px] leading-4'
 
+/** Marks a Press or Long press that runs a list of commands. */
+function MacroTag() {
+  return (
+    <Badge variant="outline" className={TAG}>
+      Macro
+    </Badge>
+  )
+}
+
+/**
+ * A Press or Long press macro: its commands as a short list, edited in place like a startup (add a command or a
+ * wait, drag to reorder, remove). Clear asks first once it has any (a built macro is work to lose).
+ */
+function MacroRow({ color, title, note, list, label, name, catalog, issues, path, startAdding, onChange, onClear, onRun }: { color: string; title: string; note?: string; list: Action[]; label: string; /** "Guide", "Guide long press": what the confirm calls it. */ name: string; catalog: Catalog; /** The button's issues; those under `path` (its binding) mark their step. */ issues: ValidationIssue[]; path: string; startAdding: boolean; onChange: (list: Action[]) => void; onClear: () => void; /** Runs it as shown; resolves when done. */ onRun: () => Promise<void> }) {
+  const [confirm, setConfirm] = useState(false)
+  const [running, setRunning] = useState(false)
+  const run = () => (setRunning(true), void onRun().finally(() => setRunning(false)))
+  return (
+    <div className="grid gap-3 rounded-lg border border-[var(--bind)]/40 p-3">
+      <div className="flex items-center gap-3">
+        <span className="size-3 shrink-0 rounded-full ring-2 ring-background" style={{ background: color }} aria-hidden />
+        <p className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-sm font-semibold">
+          {title}
+          <MacroTag />
+          {note && <span className="text-xs font-normal text-muted-foreground">{note}</span>}
+        </p>
+        {list.length > 0 && (
+          <Button variant="ghost" size="icon" className="size-8" aria-label={`Run ${label}`} title="Run this macro" disabled={running} onClick={run}>
+            {running ? <Loader2 className="animate-spin" /> : <Play />}
+          </Button>
+        )}
+        <Button variant="ghost" size="icon" className="size-8 hover:text-destructive" aria-label={`Clear ${label}`} onClick={() => (list.length ? setConfirm(true) : onClear())}>
+          <Eraser />
+        </Button>
+      </div>
+      <SequenceEditor label={title} actions={list} onChange={onChange} catalog={catalog} issues={issues} pathPrefix={path} noun="command" startAdding={startAdding} />
+      <Dialog
+        open={confirm}
+        onClose={() => setConfirm(false)}
+        title={`Clear the ${name} macro?`}
+        description={`Its ${plural(list.length, 'step')} will be removed.`}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirm(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => (setConfirm(false), onClear())}>
+              Clear
+            </Button>
+          </>
+        }
+      />
+    </div>
+  )
+}
+
 /** Marks what a row gets from elsewhere ("Global", "Smart button"): amber, like the remote's key. */
 function SourceTag({ children }: { children: ReactNode }) {
   return (
@@ -246,8 +321,8 @@ function SourceTag({ children }: { children: ReactNode }) {
 }
 
 /** Edit when bound; Change when a global applies here (it opens on the global's action); else Bind. */
-function RowButtons({ bound, inherited, label, onEdit, onClear }: { bound: boolean; inherited?: boolean; label: string; onEdit: () => void; onClear: () => void }) {
-  const verb = bound ? 'Edit' : inherited ? 'Change' : 'Bind'
+function RowButtons({ bound, label, onEdit, onClear }: { bound: boolean; label: string; onEdit: () => void; onClear: () => void }) {
+  const verb = bound ? 'Edit' : 'Bind'
   return (
     <>
       {bound && (
@@ -255,8 +330,8 @@ function RowButtons({ bound, inherited, label, onEdit, onClear }: { bound: boole
           <Eraser />
         </Button>
       )}
-      <Button variant={bound || inherited ? 'ghost' : 'outline'} size="sm" onClick={onEdit} aria-label={`${verb} ${label}`}>
-        {bound || inherited ? <Pencil /> : <Plus />}
+      <Button variant={bound ? 'ghost' : 'outline'} size="sm" onClick={onEdit} aria-label={`${verb} ${label}`}>
+        {bound ? <Pencil /> : <Plus />}
         {verb}
       </Button>
     </>
@@ -288,12 +363,17 @@ type Editing = { row: 'main' | 'long' | EventKind; action: Action | null; from?:
  * The selected button: what it does on a press (passed straight through), on a long press, and, for anything
  * that doesn't fit those, its raw down/up/tap triggers ("Advanced triggers").
  */
-function BindingPanel({ button, bindings, fallback, smart, onPickSlot, catalog, errors, warnings, onChange }: { button: ButtonId; bindings: Bindings; fallback?: Bindings; smart?: SmartSet; onPickSlot?: (slot: SlotId, device: string | null) => void; catalog: Catalog; errors: ValidationIssue[]; warnings: ValidationIssue[]; onChange: (b: Bindings) => void }) {
+function BindingPanel({ button, set, fallback, activityId, smart, onPickSlot, catalog, errors, warnings, onChange }: { button: ButtonId; set: ButtonSet; fallback?: ButtonSet; /** Whose macros run (null: Global's). */ activityId: string | null; smart?: SmartSet; onPickSlot?: (slot: SlotId, device: string | null) => void; catalog: Catalog; errors: ValidationIssue[]; warnings: ValidationIssue[]; onChange: (b: ButtonSet) => void }) {
+  const { bindings } = set
   const [editing, setEditing] = useState<Editing | null>(null)
   const [advanced, setAdvanced] = useState(false)
-  useEffect(() => (setEditing(null), setAdvanced(false)), [button])
+  // An empty macro row (Macro just chosen, or its last command removed): the bindings have nothing to say yet.
+  // `adding`: its add dialog opens.
+  const [emptyMacro, setEmptyMacro] = useState<Partial<Record<'main' | 'long', { adding: boolean }>>>({})
+  const markEmpty = (row: 'main' | 'long', m: { adding: boolean } | undefined) => setEmptyMacro((x) => ({ ...x, [row]: m }))
+  useEffect(() => (setEditing(null), setAdvanced(false), setEmptyMacro({})), [button])
 
-  const view = readButton(bindings, button)
+  const view = readButton(set, button)
   // A button the set binds at all masks every global for it (the hub's rule), so only an untouched button inherits.
   const owns = bindsButton(bindings, button)
   const global = !fallback
@@ -301,9 +381,11 @@ function BindingPanel({ button, bindings, fallback, smart, onPickSlot, catalog, 
   const smartHere = !global && !!smartFor(smart, button)
   const inherited = fallback && !owns && !smartHere ? readButton(fallback, button) : null
   const timed = isTimed(catalog)
-  const forced = view.raw.some((e) => e !== 'hold') // doesn't fit Press: only the raw rows can show it
-  const showRaw = forced || advanced
-  const rawRows: EventKind[] = [...(showRaw ? (['down', 'up', 'tap'] as const) : []), ...(view.raw.includes('hold') ? (['hold'] as const) : [])]
+  const forced = view.raw.length > 0 // doesn't fit Press: only the raw rows can show it
+  // Advanced (raw down/up/tap) is for single commands: not offered on a button with a macro, own or inherited.
+  const hasMacro = view.pressMacro || view.longMacro || !!inherited?.pressMacro || !!inherited?.longMacro || !!(emptyMacro.main || emptyMacro.long)
+  const showRaw = forced || (advanced && !hasMacro)
+  const rawRows: EventKind[] = showRaw ? ['down', 'up', 'tap'] : []
   const close = () => setEditing(null)
   const unchanged = (e: Editing) => !!e.from && same(e.action, e.from)
   const edit = (row: 'main' | 'long', own: Action | null, global: Action | null | undefined) =>
@@ -321,7 +403,99 @@ function BindingPanel({ button, bindings, fallback, smart, onPickSlot, catalog, 
       const up = next[upKey]?.[0]
       if (!up || up.device_id === action.device_id) next[upKey] = [releaseFor(action)]
     }
-    onChange(next)
+    onChange({ bindings: next, macros: set.macros.filter((k) => next[k]?.length) })
+  }
+
+  /**
+   * Press or Long press: a Command (one, passed through as today) or a Macro (a list, like a startup, at any
+   * length). Unbound, the row offers both; to change which, clear it and choose again.
+   */
+  const pressRow = (row: 'main' | 'long') => {
+    const main = row === 'main'
+    const own = main ? view.press : view.longPress
+    const ownMacro = main ? view.pressMacro : view.longMacro
+    const from = (main ? inherited?.press : inherited?.longPress) ?? []
+    const fromMacro = !!(main ? inherited?.pressMacro : inherited?.longMacro)
+    const write = (list: Action[], macro: boolean) => onChange(main ? writeMain(set, button, list, { macro, timed }) : writeLongPress(set, button, list, { macro, timed }))
+    const color = EV_COLOR[main ? 'tap' : 'hold']
+    const title = main ? 'Press' : 'Long press'
+    const label = `${buttonLabel(button)} ${main ? 'press' : 'long press'}`
+    const note = main && view.press.length && view.longPress.length ? 'Sends on release' : undefined
+    // The trigger the macro is on (none yet while it's empty).
+    const macroKey = (main ? view.pressKey : triggerKey(button, 'hold')) ?? ''
+    if (ownMacro || emptyMacro[row])
+      return (
+        <MacroRow
+          key={row}
+          color={color}
+          title={title}
+          note={note}
+          list={own}
+          label={label}
+          name={main ? buttonLabel(button) : `${buttonLabel(button)} long press`}
+          issues={errors}
+          path={`/bindings/${macroKey}`}
+          onRun={() => runMacro(own, macroKey, activityId)}
+          catalog={catalog}
+          startAdding={!!emptyMacro[row]?.adding}
+          onChange={(list) => {
+            // Its last command removed, it stays an empty macro here (the bindings can't hold an empty one).
+            markEmpty(row, list.length ? undefined : { adding: false })
+            write(list, true)
+          }}
+          onClear={() => (markEmpty(row, undefined), write([], false))}
+        />
+      )
+    return (
+      <Row
+        key={row}
+        color={color}
+        title={title}
+        note={note}
+        action={own[0] ?? null}
+        inherited={from.length ? from : null}
+        macro={!own.length && fromMacro}
+        catalog={catalog}
+        editing={editing?.row === row}
+        actions={
+          own.length ? (
+            <RowButtons bound label={label} onEdit={() => edit(row, own[0]!, undefined)} onClear={() => write([], false)} />
+          ) : (
+            // Unbound (or only inherited): a command or a macro. An inherited one opens on what Global does.
+            <>
+              <Button variant="outline" size="sm" onClick={() => edit(row, null, fromMacro ? null : from[0])}>
+                <Plus /> Command<span className="sr-only"> for {label}</span>
+              </Button>
+              {!showRaw && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    close()
+                    if (fromMacro) write(from, true)
+                    else markEmpty(row, { adding: true })
+                  }}
+                >
+                  <ListOrdered /> Macro<span className="sr-only"> for {label}</span>
+                </Button>
+              )}
+            </>
+          )
+        }
+      >
+        {editing?.row === row && (
+          <>
+            <CommandPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="binding" testable={false} />
+            <EditButtons
+              ok={!!editing.action?.command_id && callReady(editing.action)}
+              onApply={() => (unchanged(editing) || write(editing.action ? [editing.action] : [], false), close())}
+              onCancel={close}
+              test={testable(editing.action)}
+            />
+          </>
+        )}
+      </Row>
+    )
   }
 
   // On Global, a slot's button picks its device; with one, it (and + / −) only explain what they do.
@@ -340,14 +514,20 @@ function BindingPanel({ button, bindings, fallback, smart, onPickSlot, catalog, 
               size="sm"
               className="border"
               aria-pressed={showRaw}
-              disabled={forced}
+              disabled={forced || hasMacro}
               onClick={() => (close(), setAdvanced(!advanced))}
             >
               <SlidersHorizontal aria-hidden />
               Advanced triggers
             </Button>
             <InfoTip
-              text={forced ? 'On while this button has down, up or tap actions. Clear them to turn it off.' : 'Set what the button does on down, up and tap separately.'}
+              text={
+                forced
+                  ? 'On while this button has down, up or tap actions. Clear them to turn it off.'
+                  : hasMacro
+                    ? 'Not available for a button with a macro.'
+                    : 'Set what the button does on down, up and tap separately.'
+              }
               label="Advanced triggers"
             />
           </div>
@@ -384,48 +564,8 @@ function BindingPanel({ button, bindings, fallback, smart, onPickSlot, catalog, 
             {i.message}
           </Alert>
         ))}
-        {!showRaw && (
-          <Row
-            color={EV_COLOR.tap}
-            title="Press"
-            note={view.main && view.longPress ? 'Sends on release' : undefined}
-            action={view.main}
-            inherited={inherited?.main}
-            catalog={catalog}
-            editing={editing?.row === 'main'}
-            actions={<RowButtons bound={!!view.main} inherited={!!inherited?.main} label={`${buttonLabel(button)} press`} onEdit={() => edit('main', view.main, inherited?.main)} onClear={() => onChange(writeMain(bindings, button, null, timed))} />}
-          >
-            {editing?.row === 'main' && (
-              <>
-                <CommandPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="binding" testable={false} />
-                <EditButtons
-                  ok={!!editing.action?.command_id && callReady(editing.action)}
-                  onApply={() => (unchanged(editing) || onChange(writeMain(bindings, button, editing.action, timed)), close())}
-                  onCancel={close}
-                  test={testable(editing.action)}
-                />
-              </>
-            )}
-          </Row>
-        )}
-        {!view.raw.includes('hold') && (
-          <Row
-            color={EV_COLOR.hold}
-            title="Long press"
-            action={view.longPress}
-            inherited={inherited?.longPress}
-            catalog={catalog}
-            editing={editing?.row === 'long'}
-            actions={<RowButtons bound={!!view.longPress} inherited={!!inherited?.longPress} label={`${buttonLabel(button)} long press`} onEdit={() => edit('long', view.longPress, inherited?.longPress)} onClear={() => onChange(writeLongPress(bindings, button, null, timed))} />}
-          >
-            {editing?.row === 'long' && (
-              <>
-                <CommandPicker value={editing.action} onChange={(action) => setEditing({ ...editing, action })} catalog={catalog} context="binding" testable={false} />
-                <EditButtons ok={!!editing.action?.command_id && callReady(editing.action)} onApply={() => (unchanged(editing) || onChange(writeLongPress(bindings, button, editing.action, timed)), close())} onCancel={close} test={testable(editing.action)} />
-              </>
-            )}
-          </Row>
-        )}
+        {!showRaw && pressRow('main')}
+        {pressRow('long')}
         {rawRows.length > 0 && <p className="mt-2 text-xs font-medium text-muted-foreground">Advanced triggers</p>}
         {rawRows.map((ev) => {
           const list = bindings[triggerKey(button, ev)] ?? []
@@ -436,7 +576,7 @@ function BindingPanel({ button, bindings, fallback, smart, onPickSlot, catalog, 
               color={EV_COLOR[ev]}
               title={RAW_TITLE[ev]}
               action={list}
-              inherited={owns ? undefined : fallback?.[triggerKey(button, ev)]?.[0]}
+              inherited={owns ? undefined : fallback?.bindings[triggerKey(button, ev)]?.[0]}
               catalog={catalog}
               editing={isEditing}
               actions={<RowButtons bound={list.length > 0} label={`${buttonLabel(button)} ${ev}`} onEdit={() => setEditing({ row: ev, action: list[0] ?? null })} onClear={() => setRaw(ev, null)} />}

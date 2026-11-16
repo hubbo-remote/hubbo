@@ -63,7 +63,7 @@ test('deleting the active activity switches to the next one', async ({ page }) =
   // act_play_xbox is referenced by the global music button, so remove a fresh one instead.
   const hub = api(page)
   const first = (await hub.get('/activities')).activities[0].id
-  const created = await hub.post('/activities', { name: 'E2E Temp', startup: [], shutdown: [], bindings: {} })
+  const created = await hub.post('/activities', { name: 'E2E Temp', startup: [], shutdown: [], bindings: {}, macros: [] })
   expect(created.status()).toBe(201)
   const temp = await created.json()
 
@@ -152,7 +152,7 @@ test('a button inherits the global bindings only while the activity binds none o
   await expect(globalRow).toBeVisible()
 
   // Change opens on the global's action; applying it unchanged binds nothing.
-  await page.getByRole('button', { name: 'Change TV press' }).click()
+  await page.getByRole('button', { name: 'Command for TV press' }).click()
   await expect(page.getByLabel('Device').locator('option:checked')).toHaveText('Hubbo')
   await expect(page.getByLabel('Command', { exact: true }).locator('option:checked')).toHaveText('Switch activity')
   await page.getByRole('button', { name: 'Apply' }).click()
@@ -163,7 +163,7 @@ test('a button inherits the global bindings only while the activity binds none o
   await expect(tv).toHaveAttribute('aria-label', /bound: long press$/)
   await expect(globalRow).toHaveCount(0)
   // An unbound row opens empty: nothing guessed, and Apply waits for a command.
-  await page.getByRole('button', { name: 'Bind TV press' }).click()
+  await page.getByRole('button', { name: 'Command for TV press' }).click()
   await expect(page.getByLabel('Device').locator('option:checked')).toHaveText('Choose…')
   await expect(page.getByLabel('Command', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Apply' })).toBeDisabled()
@@ -177,18 +177,18 @@ test('the Advanced triggers button shows a button’s down, up and tap rows, and
   await page.locator('[data-key="up"]').click()
   const advanced = page.getByRole('button', { name: 'Advanced triggers', exact: true })
   await expect(advanced).toHaveAttribute('aria-pressed', 'false')
-  await expect(page.getByRole('button', { name: 'Bind Up press' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Command for Up press' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Bind Up down' })).toHaveCount(0)
 
   await advanced.click()
   await expect(advanced).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByRole('button', { name: 'Bind Up down' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Bind Up press' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Command for Up press' })).toHaveCount(0)
   await expect(advanced).toBeEnabled() // the label never flips: it's pressed, not renamed
 
   await page.locator('[data-key="down"]').click() // another button starts simple again
   await expect(advanced).toHaveAttribute('aria-pressed', 'false')
-  await expect(page.getByRole('button', { name: 'Bind Down press' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Command for Down press' })).toBeVisible()
 
   // A down and a tap only fit the raw rows: the button stays pressed, locked, and its tip says why.
   await page.locator('[data-key="up"]').click()
@@ -299,7 +299,7 @@ test('with a single activity, a global button switches to it: the picker sets it
   // One activity, nothing else bound (the global bindings refer to the others, so clear them first).
   const hub = api(page)
   const g = await hub.get('/global-bindings')
-  expect((await hub.put('/global-bindings', { revision: g.revision, bindings: {} })).status()).toBe(200)
+  expect((await hub.put('/global-bindings', { revision: g.revision, bindings: {}, macros: [] })).status()).toBe(200)
   const [only, ...rest] = (await hub.get('/activities')).activities as { id: string; name: string }[]
   for (const a of rest) {
     const { revision } = await hub.get(`/activities/${a.id}`)
@@ -309,7 +309,7 @@ test('with a single activity, a global button switches to it: the picker sets it
 
   await open(page, '/remote')
   await page.locator('[data-key="tv"]').click()
-  await page.getByRole('button', { name: /^Bind TV press$/i }).click()
+  await page.getByRole('button', { name: /^Command for TV press$/i }).click()
   await expect(page.getByLabel('Device').locator('option', { hasText: /^None$/ })).toHaveCount(0)
   await expect(page.getByLabel('Device').locator('option').last()).toHaveText('Hubbo') // listed last, in a binding
   await page.getByLabel('Device').selectOption({ label: 'Hubbo' })

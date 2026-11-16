@@ -5,6 +5,8 @@
 import type { operations } from '../src/api/schema.gen.ts'
 import type {
   Action,
+  MacroRunAccepted,
+  MacroRunRequest,
   Activity,
   ActivityInput,
   AuthState,
@@ -50,13 +52,13 @@ import type {
   FirmwareStatus,
 } from '../src/api/types.ts'
 import { BLE_MAX_DEVICES, BLE_PAIR_WINDOW_MAX_S, BLE_PAIR_WINDOW_MIN_S, BLE_PAIR_WINDOW_S, REMOTE_CHANNEL_MAX, REMOTE_SCAN_TIMEOUT_S } from '../src/api/constants.ts'
-import { bindsButton, forEachAction, validateActivity, validateBindings, type Catalog } from '../src/lib/activity.ts'
+import { bindsButton, forEachAction, parseTrigger, triggerKey, validateActivity, validateBindings, type Catalog } from '../src/lib/activity.ts'
 import { CALL_DATA_MAX_DEPTH, CALL_SERVICE, depth } from '../src/lib/haCall.ts'
 import { addressProblem } from '../src/lib/remote.ts'
 import { GUIDE_PATH, loadDocs, sendDoc } from './docs.ts'
 import { checkFirmwareImage } from './firmware.ts'
 import { fixture, fixtureBytes, loadSeed, type Seed } from './fixtures.ts'
-import { activityShape, bindingsShape, DEVICE_ID, smartButtonsShape, unknownFields } from './shape.ts'
+import { activityShape, bindingsShape, DEVICE_ID, macrosShape, smartButtonsShape, unknownFields } from './shape.ts'
 import { emptySmartButtons, isSlot, SLOTS, validateSmartButtons } from '../src/lib/smartButtons.ts'
 import { failedSteps } from '../src/lib/runs.ts'
 import { noActions, slotActions } from './smartActions.ts'
@@ -265,6 +267,8 @@ export function createMock(opts: MockOptions = {}) {
   let lastEventAt: number
   /** The hub's last few startups and shutdowns (RAM only, newest first), with when each started. */
   let runs: { run: ActivityRun; at: number }[]
+  /** The last run id handed out (a macro run from the editor gets its id when queued, and is kept once done). */
+  let lastRunId = 0
   /** The last remote event (POST /__mock/remote/…); the fixture's until then. */
   let lastEvent: { button: ButtonId; kind: EventKind } | null
   /** The smart button slot + and − act on (RAM only, like the hub): Light 1 after a reboot. */
@@ -340,6 +344,7 @@ export function createMock(opts: MockOptions = {}) {
     }))
     transitions = 17
     runs = mode.firstRun ? [] : fixture<ActivityRuns>('activity_runs/list.json').runs.map((run) => ({ run, at: Date.now() - run.started_ago_ms }))
+    lastRunId = runs[0]?.run.id ?? 0
     lastEventAt = Date.now() - 5230
     lastEvent = null
     selectedSlot = 'light_1'
@@ -368,7 +373,7 @@ export function createMock(opts: MockOptions = {}) {
     db.capabilities.clear()
     db.activities = []
     db.activeActivityId = null
-    db.globalBindings = { bindings: { 'off:tap': [{ integration_id: 'system', device_id: null, command_id: 'off', params: {} }] }, revision: configGen }
+    db.globalBindings = { bindings: { 'off:tap': [{ integration_id: 'system', device_id: null, command_id: 'off', params: {} }] }, macros: [], revision: configGen }
     db.smartButtons = emptySmartButtons(configGen)
     db.discover.candidates.forEach((c) => (c.registered_device_id = null))
     const ha = db.configs.get('ha_main')!
@@ -755,12 +760,21 @@ export function createMock(opts: MockOptions = {}) {
   /** An entity's state in the fake HA, made on first use as hub-sim's fake media players start: off. */
   const fakeState = (id: string) => entityStates.get(id) ?? entityStates.set(id, { state: 'off', attributes: {} }).get(id)!
 
+  /** Macros run from the editor still going (the hub queues at most 4). */
+  let macrosWaiting = 0
+
+  /** Keep a run, as the hub does. */
+  function keepRun(...args: Parameters<typeof runOf>) {
+    runs = [{ run: runOf(...args), at: Date.now() }, ...runs].slice(0, 8)
+  }
+
   /**
-   * A startup or shutdown, as the hub keeps it: it runs at once here, and each step keeps going past a failure. A step
-   * on a stale device fails like an execute does (entity_not_found); a wait takes its time; the rest are ok.
+   * A run as the hub records it: a startup, a shutdown, or a button's macro (`activityId` null for a global one). It
+   * runs at once here, and each step keeps going past a failure. A step on a stale device fails like an execute does
+   * (entity_not_found); a wait takes its time; the rest are ok.
    */
-  function recordRun(a: Activity, kind: 'startup' | 'shutdown', rejected = false) {
-    const steps = a[kind].map((x, index): ActivityRunStep => {
+  function runOf(activityId: string | null, kind: ActivityRun['kind'], actions: Action[], { rejected = false, button = null, trigger = null }: { rejected?: boolean; button?: ButtonId | null; trigger?: ActivityRun['trigger'] } = {}): ActivityRun {
+    const steps = actions.map((x, index): ActivityRunStep => {
       const base = { index, device_id: x.device_id, command_id: x.command_id }
       if (rejected) return { ...base, result: 'cancelled', error: 'queue_full', duration_ms: null }
       const d = db.devices.find((dev) => dev.id === x.device_id)
@@ -776,8 +790,7 @@ export function createMock(opts: MockOptions = {}) {
     })
     const failed = steps.some((s) => s.result === 'failed')
     const outcome = rejected ? 'rejected' : failed ? 'completed_with_errors' : 'completed'
-    const run: ActivityRun = { id: (runs[0]?.run.id ?? 0) + 1, activity_id: a.id, kind, started_ago_ms: 0, duration_ms: rejected ? null : steps.reduce((n, s) => n + (s.duration_ms ?? 0), 0), outcome, steps }
-    runs = [{ run, at: Date.now() }, ...runs].slice(0, 8)
+    return { id: ++lastRunId, activity_id: activityId, kind, button, trigger, started_ago_ms: 0, duration_ms: rejected ? null : steps.reduce((n, s) => n + (s.duration_ms ?? 0), 0), outcome, steps }
   }
 
   /** GET /smart-buttons: the slots, and what each does with its device (derived like the hub; read-only). */
@@ -799,7 +812,7 @@ export function createMock(opts: MockOptions = {}) {
     s.active_activity_id = db.activeActivityId
     s.selected_slot = selectedSlot
     const last = runs[0]?.run
-    s.last_run = last ? { id: last.id, activity_id: last.activity_id, kind: last.kind, outcome: last.outcome, failed_steps: failedSteps(last) } : null
+    s.last_run = last ? { id: last.id, activity_id: last.activity_id, kind: last.kind, button: last.button, trigger: last.trigger, outcome: last.outcome, failed_steps: failedSteps(last) } : null
     s.config = config
     s.auth_state = authState()
     s.integrations = integrations().map(({ id, type, state, detail }) => ({ id, type, state, ...(detail ? { detail } : {}) }))
@@ -816,6 +829,11 @@ export function createMock(opts: MockOptions = {}) {
   function logError(source: string, code: string, message: string) {
     const list = db.status.diagnostics.last_errors ?? []
     db.status.diagnostics.last_errors = [{ at: isoNow(), source, code, message }, ...list].slice(0, 16)
+  }
+
+  /** `macros` is optional on input: missing is none. */
+  function withMacros<T extends { macros?: string[] }>(b: T): T & { macros: string[] } {
+    return { ...b, macros: b.macros ?? [] }
   }
 
   function checkActivity(body: unknown, allowed: readonly string[]): MockResponse | null {
@@ -902,8 +920,8 @@ export function createMock(opts: MockOptions = {}) {
       const body = req.body as { params?: Record<string, never>; call?: HaServiceCall }
       const a: Action = { integration_id: d.integration_id, device_id: d.id, command_id: m[2]!, params: body?.params ?? {}, ...(body?.call !== undefined ? { call: body.call } : {}) }
       if (db.capabilities.get(d.id)?.commands.find((c) => c.command_id === a.command_id)?.effect === 'wait') return fixtureError(422, 'errors/sequence_only.json')
-      const shape = activityShape({ name: 'x', startup: [a], shutdown: [], bindings: {} }, ['name', 'startup', 'shutdown', 'bindings'])
-      const v = shape.length ? shape : validateActivity({ name: 'x', startup: [a], shutdown: [], bindings: {} }, catalog()).errors
+      const shape = activityShape({ name: 'x', startup: [a], shutdown: [], bindings: {}, macros: [] }, ['name', 'startup', 'shutdown', 'bindings', 'macros'])
+      const v = shape.length ? shape : validateActivity({ name: 'x', startup: [a], shutdown: [], bindings: {}, macros: [] }, catalog()).errors
       if (v.length) return invalid(v.map((e) => ({ ...e, path: e.path.replace(/^\/startup\/0/, '') })))
       if (integrationState(d.integration_id) !== 'connected') return err(503, 'integration_unavailable', `${d.integration_id} is not connected`)
       // Like the hub: a key for a host that isn't connected is sent nowhere.
@@ -924,18 +942,18 @@ export function createMock(opts: MockOptions = {}) {
     // activities
     ['GET', /^\/activities$/, 'token', () => ok({ activities: db.activities, active_activity_id: db.activeActivityId })],
     ['POST', /^\/activities$/, 'token', (req) => {
-      const bad = checkActivity(req.body, ['name', 'startup', 'shutdown', 'bindings'])
+      const bad = checkActivity(req.body, ['name', 'startup', 'shutdown', 'bindings', 'macros'])
       if (bad) return bad
       if (db.activities.length >= 16) return err(409, 'limit_reached', 'At most 16 activities')
       const b = req.body as ActivityInput
       let id = `act_${slug(b.name)}`
       while (db.activities.some((a) => a.id === id)) id = `act_${slug(b.name).slice(0, 20)}_${rand36(3)}`
-      const act: Activity = { id, name: b.name, startup: b.startup, shutdown: b.shutdown, bindings: b.bindings, schema_version: 1, revision: commit() }
+      const act: Activity = { id, name: b.name, startup: b.startup, shutdown: b.shutdown, bindings: b.bindings, macros: b.macros ?? [], schema_version: 1, revision: commit() }
       db.activities.push(act)
       return { status: 201, body: act, headers: { location: `/api/v1/activities/${id}` } }
     }],
     ['POST', /^\/activities\/validate$/, 'token', (req) => {
-      const shape = activityShape(req.body, ['id', 'name', 'startup', 'shutdown', 'bindings', 'schema_version', 'revision'])
+      const shape = activityShape(req.body, ['id', 'name', 'startup', 'shutdown', 'bindings', 'macros', 'schema_version', 'revision'])
       if (shape.length) return ok({ valid: false, errors: shape })
       const v = validateActivity(req.body as ActivityInput, catalog())
       return ok({ valid: v.valid, errors: v.errors })
@@ -943,7 +961,7 @@ export function createMock(opts: MockOptions = {}) {
     ['POST', /^\/activities\/off$/, 'token', () => {
       const cur = db.activities.find((a) => a.id === db.activeActivityId)
       db.activeActivityId = null
-      if (cur) recordRun(cur, 'shutdown')
+      if (cur) keepRun(cur.id, 'shutdown', cur.shutdown)
       const none = { status: 'none', queued_actions: 0 } as const
       const r: TransitionResult = { switched: !!cur, active_activity_id: null, previous_activity_id: cur?.id ?? null, generation: ++transitions, startup: none, shutdown: cur ? { status: 'queued', queued_actions: cur.shutdown.length } : none }
       return ok(r)
@@ -960,9 +978,9 @@ export function createMock(opts: MockOptions = {}) {
       if (b?.revision === undefined) return invalid([{ path: '/revision', code: 'required', message: 'revision is required' }])
       if (b.id !== undefined && b.id !== cur.id) return invalid([{ path: '/id', code: 'id_mismatch', message: 'id does not match the URL' }])
       if (b.revision !== cur.revision) return err(409, 'revision_conflict', `Activity changed since revision ${b.revision}`, { current_revision: cur.revision })
-      const bad = checkActivity(req.body, ['id', 'name', 'startup', 'shutdown', 'bindings', 'schema_version', 'revision'])
+      const bad = checkActivity(req.body, ['id', 'name', 'startup', 'shutdown', 'bindings', 'macros', 'schema_version', 'revision'])
       if (bad) return bad
-      const next: Activity = { ...cur, name: b.name, startup: b.startup, shutdown: b.shutdown, bindings: b.bindings, revision: commit() }
+      const next: Activity = { ...cur, name: b.name, startup: b.startup, shutdown: b.shutdown, bindings: b.bindings, macros: b.macros ?? [], revision: commit() }
       db.activities[i] = next
       return ok(next)
     }],
@@ -985,10 +1003,37 @@ export function createMock(opts: MockOptions = {}) {
       if (!a) return err(404, 'not_found', 'No such activity')
       const prev = db.activeActivityId
       db.activeActivityId = a.id
-      recordRun(a, 'startup', mode.startupRejected)
+      keepRun(a.id, 'startup', a.startup, { rejected: mode.startupRejected })
       const startup = mode.startupRejected ? ({ status: 'rejected', queued_actions: 0, reason: 'queue_full' } as const) : ({ status: 'queued', queued_actions: a.startup.length } as const)
       const r: TransitionResult = { switched: true, active_activity_id: a.id, previous_activity_id: prev, generation: ++transitions, startup, shutdown: { status: 'none', queued_actions: 0 } }
       return ok(r)
+    }],
+    // Run a macro as it is on screen (saved or not): checked like a bound one, queued on the Macro lane, and
+    // logged once its steps are done (the mock waits out its waits). Body: { actions, trigger, activity_id }.
+    ['POST', /^\/macros\/run$/, 'token', (req) => {
+      const b = req.body as Partial<Record<keyof MacroRunRequest, unknown>>
+      const shape: ValidationIssue[] = []
+      if (!Array.isArray(b?.actions) || !b.actions.length || b.actions.length > 32) shape.push({ path: '/actions', code: 'wrong_type', message: 'actions must be 1 to 32 actions' })
+      const t = typeof b?.trigger === 'string' ? parseTrigger(b.trigger) : null
+      if (!t || t.event === 'up') shape.push({ path: '/trigger', code: 'invalid_trigger', message: 'trigger must be a down, tap or hold trigger' })
+      if (b?.activity_id !== null && typeof b?.activity_id !== 'string') shape.push({ path: '/activity_id', code: 'wrong_type', message: 'activity_id must be a string or null' })
+      if (shape.length) return invalid(shape)
+      const activityId = b.activity_id as string | null
+      if (activityId && !db.activities.some((a) => a.id === activityId)) return invalid([{ path: '/activity_id', code: 'unknown_activity', message: 'No such activity' }])
+      const key = b.trigger as string
+      const actions = b.actions as Action[]
+      const errors: ValidationIssue[] = []
+      validateBindings({ bindings: { [key]: actions }, macros: [key] }, catalog(), errors, [])
+      if (errors.length) return invalid(errors.map((e) => ({ ...e, path: e.path.replace(`/bindings/${key}`, '/actions') })))
+      if (macrosWaiting >= 4) return err(503, 'busy', 'Too many macros waiting')
+      // Its steps go now; it's kept once they're done (it took `duration_ms`).
+      const run = runOf(activityId, 'macro', actions, { button: t!.button, trigger: t!.event === 'hold' ? 'long_press' : 'press' })
+      macrosWaiting++
+      setTimeout(() => {
+        macrosWaiting--
+        runs = [{ run, at: Date.now() - run.duration_ms! }, ...runs].slice(0, 8)
+      }, run.duration_ms!)
+      return { status: 202, body: { run_id: run.id } satisfies MacroRunAccepted }
     }],
     ['GET', /^\/activity-runs$/, 'token', () => ok({ runs: runs.map(({ run, at }) => ({ ...run, started_ago_ms: Date.now() - at })) } satisfies ActivityRuns)],
     ['GET', /^\/global-bindings$/, 'token', () => ok(db.globalBindings)],
@@ -1015,12 +1060,13 @@ export function createMock(opts: MockOptions = {}) {
       const b = req.body as GlobalBindings
       const shape: ValidationIssue[] = []
       bindingsShape(b?.bindings, '/bindings', shape)
+      macrosShape(b?.macros, '/macros', shape)
       if (shape.length) return invalid(shape)
       if (b.revision !== db.globalBindings.revision) return err(409, 'revision_conflict', `Global bindings changed since revision ${b.revision}`, { current_revision: db.globalBindings.revision })
       const errors: ValidationIssue[] = []
-      validateBindings(b.bindings, catalog(), errors, [])
+      validateBindings(b, catalog(), errors, [])
       if (errors.length) return invalid(errors)
-      db.globalBindings = { bindings: b.bindings, revision: commit() }
+      db.globalBindings = { bindings: b.bindings, macros: b.macros ?? [], revision: commit() }
       return ok(db.globalBindings)
     }],
 
@@ -1179,7 +1225,7 @@ export function createMock(opts: MockOptions = {}) {
           cat.haServiceDomains = new Map(cat.haServiceDomains).set(d.id, serviceDomains(p.entity_id))
           const broken = db.activities.flatMap((a, ai) => validateActivity(a, cat).errors.map((x) => ({ ...x, path: `/activities/${ai}${x.path}` })))
           const global: ValidationIssue[] = []
-          validateBindings(db.globalBindings.bindings, cat, global, [])
+          validateBindings(db.globalBindings, cat, global, [])
           // The hub's shape: /global_bindings/<trigger>/<i>/… (no /bindings level).
           broken.push(...global.map((x) => ({ ...x, path: `/global_bindings${x.path.replace(/^\/bindings/, '')}` })))
           if (broken.length) return invalid(broken, 'The device is invalid')
@@ -1324,8 +1370,8 @@ export function createMock(opts: MockOptions = {}) {
         // A Bluetooth device's commands come from the profile content it carries.
         for (const d of db.devices) if (d.provider.type === 'ble_hid') db.capabilities.set(d.id, bleCaps(d))
         pruneBonds() // a restored device keeps its bond on this hub; others are dropped
-        db.activities = b.activities.map((a) => ({ ...a, schema_version: 1 as const, revision: 0 }))
-        db.globalBindings = { bindings: b.global_bindings?.bindings ?? {}, revision: 0 }
+        db.activities = b.activities.map((a) => ({ ...withMacros(a), schema_version: 1 as const, revision: 0 }))
+        db.globalBindings = { bindings: b.global_bindings?.bindings ?? {}, macros: b.global_bindings?.macros ?? [], revision: 0 }
         db.smartButtons = b.smart_buttons ? { slots: b.smart_buttons.slots, revision: 0 } : emptySmartButtons(0)
         // Integration settings come back without secrets (a backup never has the HA token). Like the
         // hub, the stored token survives only when the URL stays the same.
@@ -1499,8 +1545,13 @@ export function createMock(opts: MockOptions = {}) {
       lastEvent = { button: m[1] as ButtonId, kind: action === 'press' ? 'down' : action === 'release' ? 'up' : 'tap' }
       // A slot's button selects its slot (core: on Down, even when the slot is empty), unless the active activity owns that button.
       const active = db.activities.find((a) => a.id === db.activeActivityId)
-      const pressed = m[1]!
+      const pressed = m[1]! as ButtonId
       if (action !== 'release' && isSlot(pressed) && !(active && bindsButton(active.bindings, pressed))) selectedSlot = pressed
+      // A macro (a Press marked as one, on down or on tap) runs and is logged, like the hub's Macro lane.
+      const owner = active && bindsButton(active.bindings, pressed) ? active : null
+      const set = owner ?? db.globalBindings
+      const key = triggerKey(pressed, lastEvent.kind)
+      if (set.macros.includes(key)) keepRun(owner?.id ?? null, 'macro', set.bindings[key] ?? [], { button: pressed, trigger: 'press' })
       lastEventAt = Date.now()
       return ok()
     }],

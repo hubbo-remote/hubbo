@@ -54,15 +54,49 @@ export function forEachAction(doc: { startup?: Action[]; shutdown?: Action[]; bi
 }
 
 /** Button that a validation path points at, if any. */
-export function buttonForPath(path: string): ButtonId | null {
+/** The button an issue is about: `/bindings/<trigger>/...`, or `/macros/<i>` (the trigger `macros` lists there). */
+export function buttonForPath(path: string, macros: readonly string[] = []): ButtonId | null {
   const m = /^\/bindings\/([^/]+)/.exec(path)
-  return m?.[1] ? (parseTrigger(decodeURIComponent(m[1]))?.button ?? null) : null
+  const listed = /^\/macros\/(\d+)/.exec(path)
+  const key = m?.[1] ? decodeURIComponent(m[1]) : listed ? macros[Number(listed[1])] : undefined
+  return key ? (parseTrigger(key)?.button ?? null) : null
+}
+
+/** What an activity write sends: every field the hub keeps, `macros` included (a dropped mark makes a macro unmarked). */
+export const activityBody = (a: ActivityInput) => ({ name: a.name, startup: a.startup, shutdown: a.shutdown, bindings: a.bindings, macros: a.macros ?? [] })
+
+/** The editor's words for the macro rules (the hub's messages are written for agents). */
+const MACRO_COPY: Record<string, (button: string) => string> = {
+  macro_required: (b) => `${b}: make this a macro to run more than one command`,
+  unbound_macro: (b) => `${b}: add a command to the macro`,
+  duplicate_trigger: (b) => `${b}: this macro is set twice`,
+  invalid_trigger: (b) => `${b}: this can't be a macro`,
+}
+
+/**
+ * A hub issue in the editor's words: our own check's message for the same path and code when there is one, or our
+ * copy for the macro rules; otherwise the hub's message as it is.
+ */
+export function inOurWords(issue: ValidationIssue, local: readonly ValidationIssue[], macros: readonly string[] = []): ValidationIssue {
+  const mine = local.find((l) => l.path === issue.path && l.code === issue.code)
+  if (mine) return { ...issue, message: mine.message }
+  const macroRule = issue.code === 'macro_required' || issue.path.startsWith('/macros/')
+  if (!macroRule || !(issue.code in MACRO_COPY)) return issue
+  const button = buttonForPath(issue.path, macros)
+  return { ...issue, message: MACRO_COPY[issue.code]!(button ? buttonLabel(button) : 'A button') }
 }
 
 export const systemAction = (command_id: string, params: ActionParams = {}): Action => ({ integration_id: SYSTEM, device_id: null, command_id, params })
 export const waitAction = (duration_ms = 500): Action => systemAction('wait', { duration_ms })
 export const isSystem = (a: Action) => a.integration_id === SYSTEM && a.device_id === null
 export const isWait = (a: Action) => isSystem(a) && a.command_id === 'wait'
+/** How long a list's waits take, in ms. */
+export const waitMs = (actions: readonly Action[]) => actions.filter(isWait).reduce((n, a) => n + Number(a.params.duration_ms ?? 0), 0)
+/** The longest a device step can take before the hub gives up on it. */
+const STEP_TIMEOUT_MS = 5000
+/** The longest a list can take to run: its waits, a wait to connect at its limit, every other step at its timeout. */
+export const longestRunMs = (actions: readonly Action[]) =>
+  actions.reduce((n, a) => n + (isWait(a) ? Number(a.params.duration_ms ?? 0) : a.command_id === 'wait_connected' ? Number(a.params.timeout_ms ?? 15_000) : isSystem(a) ? 0 : STEP_TIMEOUT_MS), 0)
 
 export type Placement = 'sequence' | 'binding-last' | 'binding-mid'
 /** Where a system command may go: activate/off only as the last action of a binding (spec rule). */
@@ -264,7 +298,8 @@ export function commandFor(a: Action, cat: Catalog): Command | undefined {
   return a.device_id ? cat.capabilities.get(a.device_id)?.commands.find((c) => c.command_id === a.command_id) : undefined
 }
 
-function checkAction(a: Action, path: string, cat: Catalog, out: ValidationIssue[], where: Placement) {
+/** `macro`: one of a Press or Long press list's commands, which runs like a startup's (waits yes, holds no). */
+function checkAction(a: Action, path: string, cat: Catalog, out: ValidationIssue[], where: Placement, macro = false) {
   // A Home Assistant action carries its call; nothing else takes one.
   if (a.command_id === CALL_SERVICE) {
     if (a.call === undefined) out.push({ path: `${path}/call`, code: 'required', message: 'Pick a Home Assistant action' })
@@ -317,12 +352,12 @@ function checkAction(a: Action, path: string, cat: Catalog, out: ValidationIssue
   }
   if (!cmd) return
   // A hold (e.g. key_down) needs a release: only a button's down event can pair one (checked in validateBindings).
-  if (cmd.effect === 'hold' && where === 'sequence') {
+  if (cmd.effect === 'hold' && (where === 'sequence' || macro)) {
     out.push({ path: `${path}/command_id`, code: 'hold_not_allowed', message: `${cmd.label} holds until released; use the momentary form in sequences` })
     return
   }
-  // A wait (wait_connected) holds up what follows: only a startup or shutdown can use one.
-  if (cmd.effect === 'wait' && where !== 'sequence') {
+  // A wait (wait_connected) holds up what follows: only a startup, a shutdown or a macro can use one.
+  if (cmd.effect === 'wait' && where !== 'sequence' && !macro) {
     out.push({ path: `${path}/command_id`, code: 'sequence_only', message: `${cmd.label} only works in a startup or shutdown` })
     return
   }
@@ -342,7 +377,15 @@ function checkAction(a: Action, path: string, cat: Catalog, out: ValidationIssue
 export const releaseFor = (hold: Action): Action => ({ ...hold, command_id: hold.command_id.replace(/_down$/, '_up') })
 const isReleaseOf = (r: Action, hold: Action) => r.device_id === hold.device_id && r.command_id === releaseFor(hold).command_id && JSON.stringify(r.params) === JSON.stringify(hold.params)
 
-export function validateBindings(bindings: Bindings, cat: Catalog, errors: ValidationIssue[], warnings: ValidationIssue[]) {
+/** `macros`: which triggers are macros (a list at any length, run like a startup's); the rest hold one command. */
+export function validateBindings({ bindings, macros = [] }: { bindings: Bindings; macros?: readonly string[] }, cat: Catalog, errors: ValidationIssue[], warnings: ValidationIssue[]) {
+  macros.forEach((key, i) => {
+    const t = parseTrigger(key)
+    const path = `/macros/${i}`
+    if (!t || t.event === 'up') errors.push({ path, code: 'invalid_trigger', message: MACRO_COPY.invalid_trigger!(t ? buttonLabel(t.button) : key) })
+    else if (macros.indexOf(key) !== i) errors.push({ path, code: 'duplicate_trigger', message: MACRO_COPY.duplicate_trigger!(buttonLabel(t.button)) })
+    else if (!bindings[key]?.length) errors.push({ path, code: 'unbound_macro', message: MACRO_COPY.unbound_macro!(buttonLabel(t.button)) })
+  })
   for (const [key, actions] of Object.entries(bindings)) {
     const t = parseTrigger(key)
     const base = `/bindings/${key}`
@@ -351,9 +394,14 @@ export function validateBindings(bindings: Bindings, cat: Catalog, errors: Valid
       continue
     }
     if (actions.length > LIMITS.maxBindingActions) errors.push({ path: base, code: 'too_many_actions', message: `At most ${LIMITS.maxBindingActions} actions per trigger` })
+    // A macro runs like a startup's list; anything else is one command.
+    const macro = macros.includes(key)
+    if (!macro && actions.length > 1) errors.push({ path: base, code: 'macro_required', message: MACRO_COPY.macro_required!(buttonLabel(t.button)) })
+    // Only waits, no command: nothing to run (the hub refuses it the same way).
+    if (actions.length && actions.every(isWait)) errors.push({ path: `${base}/0/command_id`, code: 'sequence_only', message: `${buttonLabel(t.button)}: a wait needs a command to go with it` })
     actions.forEach((act, i) => {
-      checkAction(act, `${base}/${i}`, cat, errors, i === actions.length - 1 ? 'binding-last' : 'binding-mid')
-      if (commandFor(act, cat)?.effect !== 'hold') return
+      checkAction(act, `${base}/${i}`, cat, errors, i === actions.length - 1 ? 'binding-last' : 'binding-mid', macro)
+      if (macro || commandFor(act, cat)?.effect !== 'hold') return
       const at = `${base}/${i}/command_id`
       if (t.event !== 'down') errors.push({ path: at, code: 'hold_not_allowed', message: `${buttonLabel(t.button)} ${t.event}: a held command only works on down, released on up` })
       else if (!bindings[triggerKey(t.button, 'up')]?.some((r) => isReleaseOf(r, act))) {
@@ -381,6 +429,6 @@ export function validateActivity(a: ActivityInput, cat: Catalog): LocalValidatio
     if (a[seq].length > LIMITS.maxSequence) errors.push({ path: `/${seq}`, code: 'too_many_actions', message: `At most ${LIMITS.maxSequence} steps` })
     a[seq].forEach((act, i) => checkAction(act, `/${seq}/${i}`, cat, errors, 'sequence'))
   }
-  validateBindings(a.bindings, cat, errors, warnings)
+  validateBindings(a, cat, errors, warnings)
   return { valid: errors.length === 0, errors, warnings }
 }

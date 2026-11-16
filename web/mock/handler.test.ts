@@ -3,11 +3,12 @@
 // against the spec.
 import { gunzipSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
-import type { Activity, ActivityRuns, ApiErrorBody, Capabilities, DiscoverStatus, ExecuteResult, EntityDetailsStatus, FirmwareStatus, Session, SmartButtons, SmartButtonsInput, Status, TransitionResult } from '../src/api/types.ts'
+import type { Action, Activity, ActivityRuns, ApiErrorBody, Capabilities, DiscoverStatus, ExecuteResult, EntityDetailsStatus, FirmwareStatus, Session, SmartButtons, SmartButtonsInput, Status, TransitionResult } from '../src/api/types.ts'
 import { fixture, fixtureBytes } from './fixtures.ts'
 import { GUIDE_PATH } from './docs.ts'
 import { buildFirmwareImage } from './firmware.ts'
 import { createMock, type MockRequest, type MockResponse } from './handler.ts'
+import { activityBody, inOurWords } from '../src/lib/activity.ts'
 
 /** Load an entity's details (POST, then GET: discoverDelayMs is 0 in these tests). */
 async function loadDetails(m: ReturnType<typeof createMock>, entityId: string) {
@@ -38,6 +39,7 @@ const ROUTES: Record<string, [string, string]> = {
   restoreBackup: ['POST', '/admin/restore?dry_run=true'],
   setRemoteEndpoint: ['PUT', '/admin/remote/endpoint'],
   replaceSmartButtons: ['PUT', '/smart-buttons'],
+  runMacro: ['POST', '/macros/run'],
 }
 
 // Requests whose operation needs another target than ROUTES gives.
@@ -92,7 +94,7 @@ describe('mock matches hub-sim', () => {
     const lg = { integration_id: 'ha_main', device_id: 'dev_lg_tv', command_id: 'call_service', params: {} }
     const put = async (action: object) => {
       const g = (await m.handle(req('GET', '/global-bindings'))).body as { revision: number }
-      return m.handle(req('PUT', '/global-bindings', { revision: g.revision, bindings: { 'info:tap': [action] } }))
+      return m.handle(req('PUT', '/global-bindings', { revision: g.revision, bindings: { 'info:tap': [action] }, macros: [] }))
     }
     const paths = async (action: object) => errorOf(await put(action)).details?.map((d) => `${d.code} ${d.path}`)
     expect(await paths(lg)).toEqual(['required /bindings/info:tap/0/call'])
@@ -121,7 +123,7 @@ describe('mock matches hub-sim', () => {
     const { id } = r.body as { id: string }
     expect(((await run(id)).body as ExecuteResult).status).toBe('accepted')
     const g = (await m.handle(req('GET', '/global-bindings'))).body as { revision: number }
-    const put = await m.handle(req('PUT', '/global-bindings', { revision: g.revision, bindings: { 'info:tap': [{ integration_id: 'ha_main', device_id: id, command_id: 'call_service', params: {}, call }] } }))
+    const put = await m.handle(req('PUT', '/global-bindings', { revision: g.revision, macros: [], bindings: { 'info:tap': [{ integration_id: 'ha_main', device_id: id, command_id: 'call_service', params: {}, call }] } }))
     expect(put.status).toBe(200)
   })
 
@@ -161,7 +163,7 @@ describe('mock matches hub-sim', () => {
 
   it('deleting the active activity switches to the one in its place', async () => {
     const m = createMock()
-    const created = (await m.handle(req('POST', '/activities', { name: 'Temp', startup: [], shutdown: [], bindings: {} }))).body as Activity
+    const created = (await m.handle(req('POST', '/activities', { name: 'Temp', startup: [], shutdown: [], bindings: {}, macros: [] }))).body as Activity
     await m.handle(req('POST', `/activities/${created.id}/activate`))
     expect((await m.handle(req('DELETE', `/activities/${created.id}?revision=${created.revision}`))).status).toBe(204)
     const list = (await m.handle(req('GET', '/activities'))).body as { activities: Activity[]; active_activity_id: string }
@@ -300,9 +302,9 @@ describe('mock behaviour', () => {
     const st = (await m.handle(req('GET', '/status'))).body as Status
     expect(st.config.state).toBe('blocked')
     expect(st.config.reason).toMatch(/newer/)
-    const put = await m.handle(req('PUT', '/global-bindings', { bindings: {}, revision: 1 }))
+    const put = await m.handle(req('PUT', '/global-bindings', { bindings: {}, macros: [], revision: 1 }))
     expect([put.status, errorOf(put).code]).toEqual([409, 'config_blocked'])
-    expect((await m.handle(req('POST', '/activities/validate', { name: 'x', startup: [], shutdown: [], bindings: {} }))).status).toBe(200)
+    expect((await m.handle(req('POST', '/activities/validate', { name: 'x', startup: [], shutdown: [], bindings: {}, macros: [] }))).status).toBe(200)
     const reset = await m.handle(req('POST', '/admin/reset'))
     expect((reset.body as { state: string }).state).toBe('ok')
     expect(((await m.handle(req('GET', '/devices'))).body as { devices: unknown[] }).devices).toEqual([])
@@ -810,7 +812,7 @@ describe('device profiles', () => {
     const x = await m.handle(req('POST', '/devices/dev_apple_tv/commands/wait_connected/execute', { params: {} }))
     expect([x.status, x.body]).toEqual([422, fixture('errors/sequence_only.json')])
     const wait = { integration_id: 'ble', device_id: 'dev_apple_tv', command_id: 'wait_connected', params: {} }
-    const bad = await m.handle(req('POST', '/activities', { name: 'W', startup: [wait], shutdown: [], bindings: { 'up:tap': [wait] } }))
+    const bad = await m.handle(req('POST', '/activities', { name: 'W', startup: [wait], shutdown: [], bindings: { 'up:tap': [wait] }, macros: [] }))
     expect(errorOf(bad).details!.map((d) => [d.path, d.code])).toEqual([['/bindings/up:tap/0/command_id', 'sequence_only']])
   })
 })
@@ -911,11 +913,36 @@ describe('activity runs', () => {
     expect(run).toMatchObject({ activity_id: 'act_watch_apple_tv', kind: 'startup', outcome: 'completed_with_errors' })
     expect(run!.steps.map((s) => s.result)).toEqual(['failed', 'ok', 'ok', 'ok', 'ok', 'failed', 'ok'])
     expect(run!.steps[0]).toMatchObject({ device_id: 'dev_lg_tv', error: 'entity_not_found' })
-    expect(await lastRun(m)).toEqual({ id: 13, activity_id: 'act_watch_apple_tv', kind: 'startup', outcome: 'completed_with_errors', failed_steps: 2 }) // ids count on from the fixture's newest
+    expect(await lastRun(m)).toEqual({ id: 14, activity_id: 'act_watch_apple_tv', kind: 'startup', button: null, trigger: null, outcome: 'completed_with_errors', failed_steps: 2 }) // ids count on from the fixture's newest
 
     await m.handle(req('POST', '/activities/off'))
     expect((await runsOf(m))[0]).toMatchObject({ activity_id: 'act_watch_apple_tv', kind: 'shutdown' })
-    expect(await runsOf(m)).toHaveLength(5) // the fixture's 3 and these 2; at most 8 are kept
+    expect(await runsOf(m)).toHaveLength(6) // the fixture's 4 and these 2; at most 8 are kept
+  })
+
+  it('runs and logs a marked Press as a macro, with the button and its activity', async () => {
+    const m = createMock()
+    await m.handle(req('POST', '/activities/act_watch_apple_tv/activate'))
+    await m.handle(req('POST', '/__mock/remote/guide/press'))
+    const [run] = await runsOf(m)
+    expect(run).toMatchObject({ activity_id: 'act_watch_apple_tv', kind: 'macro', button: 'guide', trigger: 'press', outcome: 'completed' })
+    expect(run!.steps.map((s) => s.command_id)).toEqual(['press', 'wait', 'press'])
+    await m.handle(req('POST', '/__mock/remote/up/press')) // one command: passed through, no run
+    expect((await runsOf(m))[0]!.id).toBe(run!.id)
+  })
+
+  it('saves a macro built in the editor: its mark goes with it (a dropped mark is macro_required)', async () => {
+    const m = createMock()
+    const a = (await m.handle(req('GET', '/activities/act_watch_apple_tv'))).body as Activity
+    const up: Action = { integration_id: 'ble', device_id: 'dev_apple_tv', command_id: 'press', params: { command: 'DirectionUp' } }
+    // As the editor writes it (see lib/commands' tests): a Press macro beside a Long press, on tap and marked.
+    const made = { bindings: { ...a.bindings, 'switch_2:tap': [up, up, up, up], 'switch_2:hold': [up] }, macros: [...a.macros, 'switch_2:tap'] }
+    const r = await m.handle(req('PUT', `/activities/${a.id}`, { ...activityBody({ ...a, ...made }), revision: a.revision }))
+    expect(r.status, JSON.stringify(r.body)).toBe(200)
+    expect((r.body as Activity).macros).toEqual(made.macros)
+    const unmarked = await m.handle(req('PUT', `/activities/${a.id}`, { ...activityBody({ ...a, ...made, macros: a.macros }), revision: (r.body as Activity).revision }))
+    expect(errorOf(unmarked).details!.map((d) => [d.path, d.code])).toEqual([['/bindings/switch_2:tap', 'macro_required']])
+    expect(inOurWords(errorOf(unmarked).details![0]!, [], []).message).toBe('Switch 2: make this a macro to run more than one command')
   })
 
   it('skips a step HA already shows, records a late reply as no_reply, and neither is a failure (state checks)', async () => {
