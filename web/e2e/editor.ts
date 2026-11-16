@@ -50,8 +50,8 @@ export const deviceIdFromUrl = (page: Page) => new URL(page.url()).hash.split('/
 /** A sequence as "device command" lines (a wait has no device: " wait"). */
 export const stepIds = (steps: { device_id: string | null; command_id: string }[]) => steps.map((s) => `${s.device_id ?? ''} ${s.command_id}`)
 
-/** The activity id in the editor's URL (`#/activities/<id>`), after the wizard creates one or a duplicate. */
+/** The activity id in the editor's URL (`#/activities/<id>[/<tab>]`), after the wizard creates one or a duplicate. */
 export async function activityIdFromUrl(page: Page): Promise<string> {
   await expect(page).toHaveURL(/#\/activities\/act_/)
-  return page.url().split('/').pop()!
+  return /#\/activities\/([^/]+)/.exec(page.url())![1]!
 }

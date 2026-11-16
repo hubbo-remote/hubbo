@@ -206,7 +206,7 @@ function LatencyCard({ stats }: { stats: LatencyStats | null | undefined }) {
     </div>
   )
   return (
-    <Card>
+    <Card aria-label="Response time">
       <CardHeader>
         <CardTitle>Response time</CardTitle>
         {stats && <Badge variant={within ? 'success' : 'destructive'}>{within ? 'Good' : 'Slow'}</Badge>}
