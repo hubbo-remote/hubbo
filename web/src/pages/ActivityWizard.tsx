@@ -21,7 +21,7 @@ type StepId = 'start' | 'watch' | 'volume' | 'inputs' | 'power' | 'review'
 const TITLES: Record<StepId, string> = { start: 'Devices', watch: 'Watch', volume: 'Volume', inputs: 'Inputs', power: 'Power', review: 'Review' }
 
 /** A checkbox or radio row. */
-const OPTION_ROW = 'flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5'
+const OPTION_ROW = 'flex items-center gap-3 rounded-lg border px-3 py-2.5 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5'
 
 const hasRole = (d: WizardDevice, role: 'watch' | 'volume') => BUTTON_RULES.some((r) => r.role === role && matchButton(d, r))
 
@@ -86,7 +86,7 @@ export default function ActivityWizard() {
       <ol className="flex gap-1.5" aria-label="Progress">
         {steps.map((s, i) => (
           <li key={s} className="flex-1" aria-current={i === index ? 'step' : undefined}>
-            <button type="button" className="block w-full text-left disabled:cursor-default" disabled={i >= index} onClick={() => go(i)}>
+            <button type="button" className="block w-full text-left" disabled={i >= index} onClick={() => go(i)}>
               <span className={cn('block h-1.5 rounded-full bg-border transition-colors', i <= index && 'bg-primary')} />
               <span className={cn('mt-1.5 hidden text-xs sm:block', i === index ? 'font-medium text-foreground' : 'text-muted-foreground')}>
                 {i < index && <Check className="mr-1 inline size-3 text-success" />}

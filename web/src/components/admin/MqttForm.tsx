@@ -1,8 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import type { IntegrationConfig } from '@/api/types'
-import { IntegrationSettings, SaveButton, SaveError, type ConnectionHelp, type SaveSettings } from '@/components/admin/IntegrationSettings'
+import { IntegrationSettings, SaveActions, SaveError, type ConnectionHelp, type SaveSettings } from '@/components/admin/IntegrationSettings'
 import { Alert } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { usePendingFormSave } from '@/hooks/stepSave'
 
@@ -67,14 +66,7 @@ function MqttForm({ config, save: saveSettings, busy, error }: { config: Integra
         <Input id="mqtt-password" type="password" spellCheck={false} placeholder={keepsPassword ? '••••••••' : undefined} value={password} onChange={(e) => setPassword(e.target.value)} maxLength={512} />
       </Field>
       {error && !fieldError && <SaveError error={error} />}
-      <div className="flex flex-wrap items-center gap-3">
-        <SaveButton busy={busy} />
-        {keepsPassword && (
-          <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void save(null)}>
-            Remove password
-          </Button>
-        )}
-      </div>
+      <SaveActions busy={busy} remove={keepsPassword ? { label: 'Remove password', onRemove: () => void save(null).then((ok) => ok && setPassword('')) } : undefined} />
     </form>
   )
 }

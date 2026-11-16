@@ -122,7 +122,7 @@ export function ParamForm({ commandId, name, params, values, onChange, activitie
                   step={step}
                   value={display === '' ? p.minimum : display}
                   onChange={(e) => set(p.name, Number(e.target.value))}
-                  className="h-2 min-w-0 flex-1 cursor-pointer accent-[var(--primary)]"
+                  className="h-2 min-w-0 flex-1 accent-[var(--primary)]"
                 />
               )}
               <Input

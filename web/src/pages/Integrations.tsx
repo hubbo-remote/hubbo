@@ -11,7 +11,6 @@ import { Switch } from '@/components/ui/switch'
 import { toastError } from '@/components/ui/toast'
 import { useIntegrations } from '@/hooks/data'
 import { healthLabel, INTEGRATION_ICON, isUserIntegration } from '@/lib/health'
-import { plural } from '@/lib/utils'
 
 export default function Integrations() {
   const integrations = useIntegrations(3000) // the cards' state lines are live
@@ -88,7 +87,6 @@ function IntegrationCard({ integration: i }: { integration: Integration }) {
         <Switch checked={i.enabled} onCheckedChange={toggle} disabled={toggling} aria-label={`Enable ${i.name}`} />
       </CardHeader>
       <CardContent className="grid gap-4">
-        {i.type !== 'mqtt' && <p className="text-sm text-muted-foreground">{plural(i.device_count, 'device')}</p>}
         {i.type === 'home_assistant' && <HomeAssistantSettings id={i.id} />}
         {i.type === 'mqtt' && <MqttSettings id={i.id} />}
       </CardContent>

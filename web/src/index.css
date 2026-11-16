@@ -126,6 +126,30 @@
     @apply bg-background text-foreground antialiased;
     font-feature-settings: 'cv11', 'ss01';
   }
+  /* Everything clickable shows the pointer (Tailwind's preflight leaves buttons on the arrow). Zero
+     specificity, so a utility (cursor-grab, cursor-default) still wins. Disabled ones keep the arrow. */
+  :where(
+      button,
+      [role='button'],
+      [role='tab'],
+      [role='switch'],
+      [role='checkbox'],
+      [role='radio'],
+      [role='menuitem'],
+      [role='menuitemradio'],
+      [role='option'],
+      a[href],
+      summary,
+      select,
+      input:is([type='checkbox'], [type='radio'], [type='range'], [type='file'], [type='color'], [type='button'], [type='submit'], [type='reset']),
+      label:has(input:is([type='checkbox'], [type='radio'], [type='file']), [role='switch']),
+      :has(> [role='switch']) label[for]
+    ) {
+    cursor: pointer;
+  }
+  :where(:disabled, [aria-disabled='true'], label:has(input:disabled)) {
+    cursor: default;
+  }
   dialog::backdrop {
     background: oklch(0 0 0 / 0.45);
     backdrop-filter: blur(2px);

@@ -2,6 +2,42 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## Response time gauge (branch `latency-targets`)
+
+- Status Overview: targets p95 < 2 ms, p99 < 5 ms (ARCHITECTURE.md; boards measure ~0.5 / 0.65 / 0.8 ms).
+  `LatencyMeter`: 0–5 ms track (green < 2, amber 2–5) plus a 6% red end cap where anything past 5 ms pins;
+  ticks 0, 1, 2, 5 ms. Values under 1 ms show two decimals. The mock tracks the API fixture (sub-ms since
+  the fixture change) with jitter rounded to 0.01; status.spec checks "Good" and a sub-ms value on the mock.
+
+## UI tweaks (branch `latency-targets`, after the gauge)
+
+- **Integrations**: the Bluetooth card stays (the user reverted its removal; core/API keep its on/off). No
+  device count line on any card.
+- **Secrets**: `SaveActions` (IntegrationSettings) = Save + an optional "Remove …" that saves null; MQTT's
+  "Remove password" and HA's "Remove token" (`access_token: null`) share it; a successful remove also clears the typed field. ha.spec and mqtt.spec cover it.
+- **Bindings panel**: the old grey "Advanced"/"Simple" link is a toggle Button "Advanced triggers" (outline,
+  SlidersHorizontal icon, `aria-pressed`; secondary while on) + InfoTip; on = raw down/up/tap rows. `forced`
+  (bindings only fit the raw rows) shows it pressed and disabled, and the InfoTip says why ("Clear them to
+  turn it off."); hidden when `explained`; resets on button change. activity.spec covers both.
+- **Menu stacking**: the shared `Menu` root gets `z-20` while open (z-30 tied the sticky header/bottom nav and painted over them on scroll). A caller's transform (the tiles'
+  `-translate-y-1/2`) made the root a stacking context, so the list's z-20 sat under later tiles.
+  activate.spec clicks a menu item over the next tile at one column.
+- **RemoteSvg icons**: Lucide via `icon(Icon, props)`, a nested 13-unit svg at strokeWidth 3 (≈ the
+  arrows' 1.7). music Music, tv Tv, movie Clapperboard, bulb Lightbulb, socket Plug, play Play, pause
+  Pause, stop Square (those three and skip filled), next SkipForward, prev SkipBack, mute VolumeX, back
+  Undo2, record Circle filled red. Arrows, plus/minus and the stripe stay hand-drawn strokes.
+- **Pointer cursor**: one `@layer base` rule in index.css (`:where(...)`, zero specificity) gives every
+  clickable thing the pointer: buttons, ARIA button/tab/switch/checkbox/radio/menuitem/option roles (so the
+  remote's `<g role=button>` keys), `a[href]`, summary, select, checkbox/radio/range/file inputs, labels
+  wrapping those or a Switch, and `label[for]` in a row with a Switch. Disabled and `aria-disabled` (the running tile) stay the arrow. Per-component
+  `cursor-pointer` classes are gone; utilities still override (the step grip's `cursor-grab`/`active:cursor-grabbing`; the name field's `cursor-text`). cursor.spec samples them.
+- **Step drag ghost** (SequenceEditor): pointer events as before (mouse, trackpad, touch; no HTML5 DnD).
+  On grip down, `liftGhost` clones the row into a fixed, `inert` (ids stripped) `[data-drag-ghost]` copy
+  (80% opacity, shadow, scale 1.02 unless reduced motion) that follows the pointer vertically; the row
+  stays dimmed and the drop line still marks the slot. Removed on up/cancel/unmount. Grip cursor grab, grabbing while held (the user tried move, went back).
+  activity.spec drags both ways on Watch Apple TV and checks the ghost, the order and the save.
+- Editor URLs carry a tab now, so `activityIdFromUrl` (e2e/editor.ts) reads the id by pattern.
+
 ## Activity runs (branch `activity-runs`; docs/design/activity-runs.md)
 
 - **Activity Log** (Status tab `activity`, `/status/activity`; `components/ActivityLog.tsx`; UX iteration,

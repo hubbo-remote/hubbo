@@ -41,7 +41,10 @@ export function Menu({ label, open, onOpenChange, trigger, children, className }
   }
 
   return (
-    <div ref={root} className={cn('relative', className)}>
+    // Open, the root itself rises: a caller's transform (or z-index) makes it a stacking context, and then
+    // the list's own z-index only counts inside it, under whatever comes later on the page. z-20 beats later
+    // tiles and stays under the sticky header and bottom nav (z-30).
+    <div ref={root} className={cn('relative', open && 'z-20', className)}>
       {trigger({ ref: button, 'aria-haspopup': 'menu', 'aria-expanded': open, onClick: () => onOpenChange(!open) })}
       {open && (
         <div
@@ -79,7 +82,7 @@ export function MenuItem({ icon: Icon, destructive, checked, children, ...props 
       role={radio ? 'menuitemradio' : 'menuitem'}
       aria-checked={radio ? checked : undefined}
       className={cn(
-        'flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm outline-none cursor-pointer hover:bg-accent focus-visible:bg-accent disabled:pointer-events-none disabled:opacity-50',
+        'flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm outline-none hover:bg-accent focus-visible:bg-accent disabled:pointer-events-none disabled:opacity-50',
         destructive && 'text-destructive hover:bg-destructive/10 focus-visible:bg-destructive/10',
       )}
       {...props}

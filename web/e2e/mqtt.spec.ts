@@ -34,8 +34,10 @@ test('setting up the broker connects, and the password is write-only', async ({ 
   expect(JSON.stringify(cfg)).not.toContain(PASSWORD)
   await expectNotStoredInBrowser(page, PASSWORD)
 
-  // Removing it is its own action.
+  // Removing it is its own action, and clears anything typed.
+  await card.getByLabel('Password').fill('typed-then-removed')
   await card.getByRole('button', { name: 'Remove password' }).click()
+  await expect(card.getByLabel('Password')).toHaveValue('')
   await expect(card.getByText('Leave blank to keep the saved password.')).toBeHidden()
   expect((await api(page).get('/admin/integrations/mqtt_main')).settings.has_password).toBe(false)
 })

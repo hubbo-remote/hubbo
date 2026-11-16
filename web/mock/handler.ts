@@ -793,7 +793,7 @@ export function createMock(opts: MockOptions = {}) {
 
   function status(): Status {
     const s = structuredClone(db.status)
-    const jitter = (v: number) => Math.round(v * (0.85 + rand() * 0.3) * 10) / 10
+    const jitter = (v: number) => Math.round(v * (0.85 + rand() * 0.3) * 100) / 100 // sub-ms on a real board
     s.uptime_s = db.status.uptime_s + Math.round((Date.now() - bootedAt) / 1000)
     s.time = isoNow()
     s.active_activity_id = db.activeActivityId

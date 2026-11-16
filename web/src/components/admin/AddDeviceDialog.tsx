@@ -224,7 +224,7 @@ export function AddDeviceDialog({ open, onClose, onPair }: { open: boolean; onCl
 
 function Choice({ icon: Icon, title, subtitle, onClick }: { icon: LucideIcon; title: string; subtitle: string; onClick: () => void }) {
   return (
-    <button onClick={onClick} className="flex cursor-pointer items-center gap-3 rounded-lg border p-3 text-left outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50">
+    <button onClick={onClick} className="flex items-center gap-3 rounded-lg border p-3 text-left outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50">
       <Icon className="size-5 shrink-0 text-muted-foreground" />
       <div>
         <p className="font-medium">{title}</p>

@@ -47,7 +47,7 @@ export function ThemeToggle({ className }: { className?: string }) {
           aria-label={t.label}
           title={t.label}
           onClick={() => setTheme(t.id)}
-          className={cn('grid size-7 place-items-center rounded-md text-muted-foreground transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer', theme === t.id && 'bg-card text-foreground shadow-sm')}
+          className={cn('grid size-7 place-items-center rounded-md text-muted-foreground transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring', theme === t.id && 'bg-card text-foreground shadow-sm')}
         >
           <t.icon className="size-3.5" />
         </button>

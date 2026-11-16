@@ -1,4 +1,4 @@
-import { AlertTriangle, Eraser, Pencil, Plus } from 'lucide-react'
+import { AlertTriangle, Eraser, Pencil, Plus, SlidersHorizontal } from 'lucide-react'
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
 import type { Action, Bindings, ButtonId, EventKind, SlotId, SmartPress, SmartSlotActions, ValidationIssue } from '@/api/types'
 import { ActionPicker, TestButton } from '@/components/actions/ActionPicker'
@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, Select } from '@/components/ui/input'
+import { InfoTip } from '@/components/ui/info-tip'
 import { bindsButton, buttonForPath, commandFor, isTimed, releaseFor, triggerKey, type Catalog } from '@/lib/activity'
 import { callReady } from '@/lib/haCall'
 import { readButton, viewKinds, writeLongPress, writeMain } from '@/lib/commands'
@@ -285,7 +286,7 @@ type Editing = { row: 'main' | 'long' | EventKind; action: Action | null; from?:
 
 /**
  * The selected button: what it does on a press (passed straight through), on a long press, and, for anything
- * that doesn't fit those, its raw down/up/tap triggers ("Advanced").
+ * that doesn't fit those, its raw down/up/tap triggers ("Advanced triggers").
  */
 function BindingPanel({ button, bindings, fallback, smart, onPickSlot, catalog, errors, warnings, onChange }: { button: ButtonId; bindings: Bindings; fallback?: Bindings; smart?: SmartSet; onPickSlot?: (slot: SlotId, device: string | null) => void; catalog: Catalog; errors: ValidationIssue[]; warnings: ValidationIssue[]; onChange: (b: Bindings) => void }) {
   const [editing, setEditing] = useState<Editing | null>(null)
@@ -329,12 +330,27 @@ function BindingPanel({ button, bindings, fallback, smart, onPickSlot, catalog, 
   const explained = (slot && smart!.slots[slot]) || (global && smart && isPlusMinus(button) && anyDevice(smart))
   const title = (
     <CardHeader>
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <CardTitle className="text-lg">{buttonLabel(button)}</CardTitle>
-        {!forced && !explained && (
-          <Button variant="link" size="sm" className="h-auto p-0 text-muted-foreground" onClick={() => (close(), setAdvanced(!advanced))} aria-pressed={advanced}>
-            {advanced ? 'Simple' : 'Advanced'}
-          </Button>
+        {!explained && (
+          // Pressed and locked when the bindings only fit the raw triggers, so their rows showing isn't a mystery.
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant={showRaw ? 'secondary' : 'outline'}
+              size="sm"
+              className="border"
+              aria-pressed={showRaw}
+              disabled={forced}
+              onClick={() => (close(), setAdvanced(!advanced))}
+            >
+              <SlidersHorizontal aria-hidden />
+              Advanced triggers
+            </Button>
+            <InfoTip
+              text={forced ? 'On while this button has down, up or tap actions. Clear them to turn it off.' : 'Set what the button does on down, up and tap separately.'}
+              label="Advanced triggers"
+            />
+          </div>
         )}
       </div>
     </CardHeader>
@@ -410,7 +426,7 @@ function BindingPanel({ button, bindings, fallback, smart, onPickSlot, catalog, 
             )}
           </Row>
         )}
-        {rawRows.length > 0 && <p className="mt-2 text-xs font-medium text-muted-foreground">Advanced</p>}
+        {rawRows.length > 0 && <p className="mt-2 text-xs font-medium text-muted-foreground">Advanced triggers</p>}
         {rawRows.map((ev) => {
           const list = bindings[triggerKey(button, ev)] ?? []
           const isEditing = editing?.row === ev
@@ -574,7 +590,7 @@ function BoundList({ bound, selected, onSelect, errorButtons }: { bound: Record<
               onClick={() => onSelect(id)}
               aria-pressed={selected === id}
               className={cn(
-                'inline-flex items-center gap-1.5 rounded-md border bg-card px-2 py-1 text-xs outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring cursor-pointer',
+                'inline-flex items-center gap-1.5 rounded-md border bg-card px-2 py-1 text-xs outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring',
                 selected === id && 'border-[var(--bind)] bg-[var(--bind)]/10',
                 errorButtons.has(id) && 'border-destructive text-destructive',
               )}

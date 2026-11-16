@@ -737,7 +737,7 @@ STATUS = {
     "integrations": [{k: i[k] for k in ("id", "type", "state", "detail") if k in i} for i in INTEGRATIONS],
     "diagnostics": {
         "heap_free": 182340, "heap_min_free": 141020, "psram_free": 7912448, "queue_overflows": 0,
-        "dispatch_latency": {"count": 1532, "p50_ms": 1.2, "p95_ms": 3.8, "p99_ms": 7.5},
+        "dispatch_latency": {"count": 1532, "p50_ms": 0.5, "p95_ms": 0.65, "p99_ms": 0.8},
         "last_errors": [{"at": "2026-11-08T19:02:11Z", "source": "ha_main", "code": "timeout",
                          "message": "media_player.volume_up on dev_sonos timed out after 2000 ms"}],
     },

@@ -9,7 +9,13 @@ test('Status shows the remote, Bluetooth, Home Assistant and Ethernet as they ar
   await expect(tile('Ethernet')).toContainText(/\d+\.\d+\.\d+\.\d+/)
   await expect(tile('Bluetooth')).toContainText('Ready') // the radio: hosts come and go on their device pages
   await expect(tile('Home Assistant')).toContainText('Connected')
-  await expect(page.getByText('Response time')).toBeVisible()
+  await expect(tile('Response time')).toBeVisible()
+  if (!SIM_URL) {
+    // A board's sub-millisecond presses (the fixture's 0.5 / 0.65 / 0.8 ms) are well inside the 2 / 5 ms targets.
+    const latency = tile('Response time')
+    await expect(latency.getByText('Good', { exact: true })).toBeVisible()
+    await expect(latency.getByText(/^0\.\d\d ms$/).first()).toBeVisible()
+  }
   await expect(page.getByText('Recent errors')).toBeVisible()
 
   for (const [state, label] of [['unreachable', 'Unreachable'], ['connecting', 'Connecting'], ['auth_failed', 'Token rejected'], ['connected', 'Connected']] as const) {

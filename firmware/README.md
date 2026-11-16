@@ -200,8 +200,8 @@ the engine has dispatched it.
 - `read->event`: `micros()` right after the payload leaves the nRF24 FIFO, to the `Down`/`Up`
   event reaching the engine. Decode cost.
 - `read->hid`: same start, to the HID report being queued to the NimBLE host by the engine's
-  BLE adapter. This is the full internal dispatch path (ARCHITECTURE target: p95 < 10 ms,
-  p99 < 25 ms). Only reports caused directly by a radio payload count, not timed-out releases.
+  BLE adapter. This is the full internal dispatch path (ARCHITECTURE target: p95 < 2 ms,
+  p99 < 5 ms). Only reports caused directly by a radio payload count, not timed-out releases.
 - `loop`: longest main-loop iteration and count over 5 ms. The radio is polled, so a long
   iteration delays the FIFO read; that delay is **not** in `read->*`.
 

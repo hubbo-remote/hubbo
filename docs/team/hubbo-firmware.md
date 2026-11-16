@@ -477,6 +477,12 @@ of remote lag during the write are accepted.
 - Gotcha: the console's `tasks` command costs the loop about 5 ms itself (5,108 us, 1 over 5 ms).
   Run `lat reset` after it before measuring.
 
+## Latency targets (branch `latency-targets`)
+
+- README dispatch targets now p95 < 2 ms, p99 < 5 ms (ec7782c).
+- BLE always-on was tried and reverted (the user wants it toggleable): `bleRadioState` keeps the
+  integration; firmware is unchanged from HEAD. `_ota` RAM 99,008 B, flash 2,382,671 B (36.4%).
+
 ## Moving a board from other firmware to Hubbo over USB
 
 - Use USB when the board runs other firmware. An OTA can't change the bootloader or the partition

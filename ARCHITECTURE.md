@@ -54,7 +54,7 @@ Hot RF path: RF decode → index active table → dispatch/enqueue typed action.
 
 BLE HID: key-down/key-up semantics, reconnect and release-all safeguards, timeout for missing key-up. Home Assistant: asynchronous worker/queue, persistent transport if useful, explicit timeout and error reporting; HA response latency is not the same as RF dispatch latency. System wait uses sequence scheduler, not sleep in RF callback.
 
-Instrument RF receive-to-dispatch and adapter handoff independently from remote-to-device response. Initial **targets for validation**, not promises: internal dispatch p95 <10 ms and p99 <25 ms under idle and web/API load; establish actual baseline from experimental firmware and tune. Test RF under Ethernet SPI traffic, BLE reconnect, web load and OTA.
+Instrument RF receive-to-dispatch and adapter handoff independently from remote-to-device response. Internal dispatch targets: **p95 <2 ms and p99 <5 ms** under idle and web/API load. They're set from the measured baseline on boards in daily use (2026-11-15: p50 ~0.5 ms, p95 ~0.65 ms, p99 ~0.8 ms), with headroom; the first placeholders were 10 ms and 25 ms. Test RF under Ethernet SPI traffic, BLE reconnect, web load and OTA.
 
 ## Integrations
 **BLE HID:** Apple TV paired as keyboard; integration is generic HID, with `key_down`, `key_up`, `key_tap` and typed key parameter. UI may offer friendly presets. Held remote button sends down and release sends up. Prevent stuck keys after disconnect, activity switch, timeout.
