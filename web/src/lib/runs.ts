@@ -1,7 +1,14 @@
 // Activity runs (docs/design/activity-runs.md): the hub's last few startups and shutdowns, step by step, in plain
 // words. Pure: imported by the UI and the mock, so relative imports only.
 import type { Action, ActivityRun, ActivityRunStep as RunStep } from '../api/types.ts'
-import { duration, plural } from './utils.ts'
+import { SYSTEM } from './activity.ts'
+import { duration } from './utils.ts'
+
+/** A step as an action, for the usual names and checks: a run keeps no params, and a step with no device is Hubbo's. */
+export const stepAction = (s: RunStep): Action => ({ integration_id: s.device_id ? '' : SYSTEM, device_id: s.device_id, command_id: s.command_id, params: {} })
+
+/** The run's activity by name, or a stand-in once it's been deleted. */
+export const activityName = (activities: readonly { id: string; name: string }[] | undefined, id: string) => activities?.find((a) => a.id === id)?.name ?? 'An activity'
 
 /** Why a step failed, as people say it (the hub's error codes; ExecuteResult `message` uses the same names). */
 const REASONS: Record<string, string> = {
@@ -35,17 +42,17 @@ export const isFailure = (s: RunStep) => s.result === 'failed' || s.result === '
 
 export const failedSteps = (r: ActivityRun) => r.steps.filter(isFailure).length
 
-/** "Watch TV started", "Watch TV turned off". */
-export const runTitle = (r: ActivityRun, name: string) => `${name} ${r.kind === 'startup' ? 'started' : 'turned off'}`
+/** "start" or "stop": what the run did to its activity. */
+export const runKind = (r: ActivityRun) => (r.kind === 'startup' ? 'start' : 'stop')
 
-/** How the run went, briefly: "1 step failed", "all steps ok", "running…". */
+/** How the run went, as a log says it: "completed", "1 failed", "running…". */
 export function runSummary(r: ActivityRun): string {
   const failed = failedSteps(r)
   if (r.outcome === 'running') return 'running…'
   if (r.outcome === 'rejected') return 'didn’t run'
-  if (r.outcome === 'cancelled') return failed ? `cancelled, ${plural(failed, 'step')} failed` : 'cancelled'
-  if (failed) return `${plural(failed, 'step')} failed`
-  return r.steps.length ? 'all steps ok' : 'nothing to do'
+  if (r.outcome === 'cancelled') return failed ? `cancelled, ${failed} failed` : 'cancelled'
+  if (failed) return `${failed} failed`
+  return r.steps.length ? 'completed' : 'nothing to do'
 }
 
 /**

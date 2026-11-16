@@ -1,6 +1,7 @@
-// Activity runs: a startup whose first step fails keeps going, and the dashboard and the activity page say which step
-// failed and why; a step HA already shows is skipped, and a late reply isn't a failure. Mock and hub-sim.
-import type { Page } from '@playwright/test'
+// Activity runs: a startup whose first step fails keeps going, and Status → Activity Log, the activity's Log tab, its
+// Startup steps and the Overview say which step failed and why; a step HA already shows is skipped, and a late reply
+// isn't a failure. Mock and hub-sim.
+import type { Locator, Page } from '@playwright/test'
 import { advance, api, connectHa, control, expect, open, registerHa, removeHaEntity, SIM_URL, test } from './hub.ts'
 
 // A free entity on each target, registered fresh so HA can forget it.
@@ -24,7 +25,13 @@ async function runsActivity(page: Page, commands: string[]) {
   return ((await r.json()) as { id: string }).id
 }
 
-test('a failed startup step shows on the dashboard and on the activity', async ({ page }) => {
+/** The log's newest run (its outer line, not the steps nested in it) and that run's steps. */
+function newestRun(page: Page): { run: Locator; steps: Locator } {
+  const run = page.getByRole('list', { name: 'Activity log' }).locator(':scope > li').first()
+  return { run, steps: run.getByRole('list', { name: 'Steps' }).getByRole('listitem') }
+}
+
+test('a failed startup step shows in the log, on the activity and on the Overview', async ({ page }) => {
   const hub = api(page)
   const id = await runsActivity(page, [FREE.command])
   await removeHaEntity(page, FREE.entity) // HA forgets it: its step fails, and the run goes on
@@ -32,18 +39,30 @@ test('a failed startup step shows on the dashboard and on the activity', async (
   await advance(page, 1_000)
   await expect.poll(async () => (await hub.get('/status')).last_run).toMatchObject({ activity_id: id, outcome: 'completed_with_errors', failed_steps: 1 })
 
-  await open(page, '/')
-  const card = page.getByRole('region', { name: 'Recent activity' })
-  const line = card.getByRole('button', { name: /^Runs e2e started/ }).first() // newest first; hub-sim's reset keeps the history
-  await expect(line).toContainText('1 step failed')
-  await line.click()
-  const steps = card.getByRole('list', { name: 'Steps' })
-  await expect(steps.getByRole('listitem').first()).toContainText(/Porch TV · (Turn|Power) on/)
-  await expect(steps.getByRole('listitem').first()).toContainText('Home Assistant no longer has this device')
-  await expect(steps.getByRole('listitem').nth(1)).toContainText('Wait')
+  // Overview: one line naming it, linking to the activity's own log.
+  await open(page, '/status')
+  await expect(page.getByText('Runs e2e · 1 step failed')).toBeVisible()
+  await page.getByRole('link', { name: 'View log' }).click()
+  await expect(page).toHaveURL(new RegExp(`#/activities/${id}/log$`))
+  await expect(page.getByRole('tab', { name: 'Log', exact: true, selected: true })).toBeVisible()
+  const own = newestRun(page)
+  await expect(own.run).toContainText('1 failed')
+  await expect(own.run).not.toContainText('Runs e2e') // the page already says which activity
+  await expect(own.steps.first()).toContainText('Home Assistant no longer has this device')
 
-  await open(page, `/activities/${id}`)
-  await page.getByRole('tab', { name: /Startup/ }).click()
+  // Status → Activity Log: every activity's runs, each with its name.
+  await open(page, '/status/activity')
+  const { run, steps } = newestRun(page)
+  await expect(run).toContainText('Runs e2e')
+  await expect(run).toContainText('start')
+  await expect(run).toContainText('1 failed')
+  await expect(steps.first()).toContainText('Porch TV')
+  await expect(steps.first()).toContainText(/(Turn|Power) on/)
+  await expect(steps.first()).toContainText('Home Assistant no longer has this device')
+  await expect(steps.nth(1)).toContainText('Wait')
+
+  // The activity's Startup tab (its own URL too) marks the step.
+  await open(page, `/activities/${id}/startup`)
   const first = page.getByRole('list', { name: 'Startup steps' }).getByRole('listitem').first()
   await expect(first).toContainText('Failed last time: Home Assistant no longer has this device')
 })
@@ -58,15 +77,18 @@ test('a step HA already shows is skipped, and a late reply is just "no reply"', 
   await advance(page, 3_000)
   await expect.poll(async () => (await hub.get('/status')).last_run).toMatchObject({ activity_id: id, outcome: 'completed', failed_steps: 0 })
 
-  await open(page, '/')
-  const card = page.getByRole('region', { name: 'Recent activity' })
-  const line = card.getByRole('button', { name: /^Runs e2e started/ }).first() // newest first; hub-sim's reset keeps the history
-  await expect(line).toContainText('all steps ok')
-  await line.click()
-  const steps = card.getByRole('list', { name: 'Steps' }).getByRole('listitem')
+  await open(page, '/status/activity')
+  const { run, steps } = newestRun(page)
+  await expect(run).toContainText('Runs e2e')
+  await expect(run).toContainText('completed')
+  await expect(run).toContainText('1 skipped')
   await expect(steps.first()).toContainText('already on')
   await expect(steps.nth(1)).toContainText('sent, no reply')
 
+  // Neither is a failure: no line on the Overview, no warning on the activity.
+  await open(page, '/status')
+  await expect(page.getByRole('heading', { name: 'Response time' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'View log' })).toHaveCount(0)
   await open(page, `/activities/${id}`)
   await page.getByRole('tab', { name: /Startup/ }).click()
   await expect(page.getByRole('list', { name: 'Startup steps' })).toBeVisible()

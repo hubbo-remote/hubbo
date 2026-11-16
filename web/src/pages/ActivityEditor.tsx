@@ -1,5 +1,6 @@
 import { CheckCircle2, Loader2, Save } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
+import { useLocation } from 'wouter'
 import type { Activity, ActivityDraft, ValidationIssue } from '@/api/types'
 import { SequenceEditor } from '@/components/actions/SequenceEditor'
 import { BindingsEditor } from '@/components/bindings/BindingsEditor'
@@ -13,19 +14,25 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input, ShowErrors } from '@/components/ui/input'
 import { Kbd, Skeleton } from '@/components/ui/misc'
 import { Tabs } from '@/components/ui/tabs'
+import { ActivityLog } from '@/components/ActivityLog'
 import { retryFailed, useActivity, useActivityRuns, useCatalog, useGlobalBindings, useSmartButtons } from '@/hooks/data'
 import { failuresFor } from '@/lib/runs'
 import { activityStore, toDraft, useDraft } from '@/hooks/draft'
 import { buttonForPath, LIMITS, parseTrigger, type Catalog } from '@/lib/activity'
 import { cn, plural } from '@/lib/utils'
+import { NotFound } from './NotFound'
 
 const boundButtons = (b: ActivityDraft['bindings']) => new Set(Object.keys(b).map((k) => parseTrigger(k)?.button)).size
 
-export default function ActivityEditor({ id }: { id: string }) {
+/** The editor's tabs, each its own URL (`/activities/<id>/<tab>`, like Status), so a link can open one. */
+const TAB_IDS = ['buttons', 'startup', 'shutdown', 'log']
+
+export default function ActivityEditor({ id, tab = 'buttons' }: { id: string; tab?: string }) {
   const remote = useActivity(id)
   const cat = useCatalog()
   const globals = useGlobalBindings() // fetched alongside, not after, the catalog
 
+  if (!TAB_IDS.includes(tab)) return <NotFound />
   if (!remote.data || !globals.data || cat.loading) {
     const err = remote.error ?? globals.error ?? cat.error
     if (err) return <ErrorState error={err} retry={retryFailed(remote, globals, cat)} />
@@ -36,16 +43,17 @@ export default function ActivityEditor({ id }: { id: string }) {
       </div>
     )
   }
-  return <Editor key={id} activity={remote.data} catalog={cat.catalog} globalBindings={globals.data.bindings} />
+  return <Editor key={id} tab={tab} activity={remote.data} catalog={cat.catalog} globalBindings={globals.data.bindings} />
 }
 
-function Editor({ activity, catalog, globalBindings }: { activity: Activity; catalog: Catalog; globalBindings: ActivityDraft['bindings'] }) {
+function Editor({ tab, activity, catalog, globalBindings }: { tab: string; activity: Activity; catalog: Catalog; globalBindings: ActivityDraft['bindings'] }) {
   const store = useMemo(() => activityStore(activity.id), [activity.id])
   const ed = useDraft(store, useMemo(() => toDraft(activity), [activity]), catalog)
   const draft = ed.draft! // the saved copy is in hand, so the draft is too
   const { update, errors } = ed
   const [selected, setSelected] = useState<string | null>(null)
-  const [tab, setTab] = useState('buttons')
+  const [, navigate] = useLocation()
+  const setTab = (t: string) => navigate(`/activities/${activity.id}/${t}`, { replace: true })
   const smartData = useSmartButtons().data
   // The newest run of this activity: its failing steps carry a warning (where the step is still the same).
   const lastRun = useActivityRuns().data?.runs.find((r) => r.activity_id === activity.id)
@@ -136,6 +144,7 @@ function Editor({ activity, catalog, globalBindings }: { activity: Activity; cat
           { id: 'buttons', label: <TabLabel text="Buttons" count={boundButtons(draft.bindings)} errors={countFor('/bindings')} /> },
           { id: 'startup', label: <TabLabel text="Startup" count={draft.startup.length} errors={countFor('/startup')} /> },
           { id: 'shutdown', label: <TabLabel text="Shutdown" count={draft.shutdown.length} errors={countFor('/shutdown')} /> },
+          { id: 'log', label: 'Log' },
         ]}
       >
         {tab === 'buttons' && (
@@ -174,6 +183,19 @@ function Editor({ activity, catalog, globalBindings }: { activity: Activity; cat
             </CardHeader>
             <CardContent>
               <SequenceEditor label="Shutdown" actions={draft.shutdown} onChange={(shutdown) => update({ shutdown })} catalog={catalog} issues={errors} pathPrefix="/shutdown" lastRun={failuresFor(lastRun, 'shutdown', draft.shutdown)} />
+            </CardContent>
+          </Card>
+        )}
+        {tab === 'log' && (
+          <Card>
+            <CardHeader>
+              <div>
+                <CardTitle>Log</CardTitle>
+                <CardDescription>What happened the last few times it started or stopped.</CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <ActivityLog activityId={activity.id} />
             </CardContent>
           </Card>
         )}

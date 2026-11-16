@@ -2,6 +2,7 @@ import { AlertTriangle, Bluetooth, Cable, Home, Radio, RadioTower, RefreshCw, ty
 import type { ReactNode } from 'react'
 import { Link, useLocation } from 'wouter'
 import type { IntegrationState, LatencyStats, Status as HubStatus } from '@/api/types'
+import { ActivityLog } from '@/components/ActivityLog'
 import { Backups } from '@/components/admin/Backups'
 import { FirmwareUpdate } from '@/components/admin/FirmwareUpdate'
 import { ErrorState, Facts, HealthDot, PageHeader, Section } from '@/components/common'
@@ -10,15 +11,17 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/misc'
 import { Tabs } from '@/components/ui/tabs'
-import { useStatus } from '@/hooks/data'
+import { useActivities, useStatus } from '@/hooks/data'
 import { buttonLabel } from '@/lib/buttons'
 import { EVENT_VERB } from '@/lib/remote'
+import { activityName } from '@/lib/runs'
 import { healthLabel, isUnset } from '@/lib/health'
-import { agoMs, bytes, cn, formatDuration, timeAgo } from '@/lib/utils'
+import { agoMs, bytes, cn, formatDuration, plural, timeAgo } from '@/lib/utils'
 import { NotFound } from './NotFound'
 
 const TABS = [
   { id: 'overview', label: 'Overview' },
+  { id: 'activity', label: 'Activity Log' },
   { id: 'backups', label: 'Backups' },
   { id: 'firmware', label: 'Firmware' },
   { id: 'diagnostics', label: 'Diagnostics' },
@@ -35,6 +38,7 @@ export default function Status({ tab = 'overview' }: { tab?: string }) {
       <PageHeader title="Status" description={s ? [s.network.hostname, `up ${formatDuration(s.uptime_s)}`].filter(Boolean).join(' · ') : undefined} />
       <Tabs tabs={TABS} value={tab} onChange={(t) => navigate(`/status/${t}`, { replace: true })}>
         {tab === 'overview' && (status.error && !s ? <ErrorState error={status.error} retry={status.refetch} /> : <Overview status={s} />)}
+        {tab === 'activity' && <ActivityLog />}
         {tab === 'backups' && <Backups />}
         {tab === 'firmware' && <FirmwareUpdate />}
         {tab === 'diagnostics' && <Diagnostics status={s} refetch={status.refetch} />}
@@ -57,6 +61,7 @@ function Overview({ status: s }: { status: HubStatus | undefined }) {
   const ev = s?.remote.last_event
   return (
     <div className="grid gap-4 lg:grid-cols-3">
+      <LastRunProblem status={s} />
       {/* Remote, Bluetooth, Ethernet; then Home Assistant and MQTT side by side, wider for their details. */}
       <div className="grid gap-4 sm:grid-cols-2 lg:col-span-3 lg:grid-cols-6">
         <StatusTile
@@ -108,6 +113,28 @@ function Overview({ status: s }: { status: HubStatus | undefined }) {
       <ErrorsCard status={s} className="lg:col-span-2" />
       <LatencyCard stats={s ? (s.diagnostics.dispatch_latency ?? null) : undefined} />
     </div>
+  )
+}
+
+/** One line when the newest startup or shutdown had failed steps: which activity, how many, and a link to the log. */
+function LastRunProblem({ status }: { status: HubStatus | undefined }) {
+  const run = status?.last_run
+  return run?.failed_steps ? <FailedRunLine activityId={run.activity_id} failed={run.failed_steps} /> : null
+}
+
+/** Only rendered on a failure, so the Overview loads activities (for the name) only then. */
+function FailedRunLine({ activityId, failed }: { activityId: string; failed: number }) {
+  const name = activityName(useActivities().data?.activities, activityId)
+  return (
+    <p className="flex flex-wrap items-center gap-x-2 text-sm lg:col-span-3">
+      <AlertTriangle className="size-4 shrink-0 text-warning" aria-hidden />
+      <span>
+        {name} · {plural(failed, 'step')} failed ·{' '}
+        <Link href={`/activities/${activityId}/log`} className="text-primary underline underline-offset-4">
+          View log
+        </Link>
+      </span>
+    </p>
   )
 }
 
