@@ -15,6 +15,11 @@ export const useActivities = () => useQuery('activities', () => api.activities()
 export const useActivity = (id: string | null) => useQuery(id ? `activity/${id}` : null, () => api.activity(id!))
 export const useGlobalBindings = () => useQuery('global-bindings', () => api.globalBindings())
 export const useSmartButtons = () => useQuery('smart-buttons', () => api.smartButtons())
+/**
+ * The last few startups and shutdowns (GET /activity-runs). `fresh`: a key that changes whenever they do (the
+ * dashboard passes /status `last_run`'s id and outcome, which it polls anyway), so they're fetched again only then.
+ */
+export const useActivityRuns = (fresh?: string | null) => useQuery(fresh === undefined ? 'activity-runs' : `activity-runs/${fresh}`, () => api.activityRuns(), { keepPrevious: true })
 
 /** What the slots would do with these devices (picked, not saved yet), by device id. */
 export function useSmartActions(ids: string[]) {

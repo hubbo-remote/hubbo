@@ -13,7 +13,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input, ShowErrors } from '@/components/ui/input'
 import { Kbd, Skeleton } from '@/components/ui/misc'
 import { Tabs } from '@/components/ui/tabs'
-import { retryFailed, useActivity, useCatalog, useGlobalBindings, useSmartButtons } from '@/hooks/data'
+import { retryFailed, useActivity, useActivityRuns, useCatalog, useGlobalBindings, useSmartButtons } from '@/hooks/data'
+import { failuresFor } from '@/lib/runs'
 import { activityStore, toDraft, useDraft } from '@/hooks/draft'
 import { buttonForPath, LIMITS, parseTrigger, type Catalog } from '@/lib/activity'
 import { cn, plural } from '@/lib/utils'
@@ -46,6 +47,8 @@ function Editor({ activity, catalog, globalBindings }: { activity: Activity; cat
   const [selected, setSelected] = useState<string | null>(null)
   const [tab, setTab] = useState('buttons')
   const smartData = useSmartButtons().data
+  // The newest run of this activity: its failing steps carry a warning (where the step is still the same).
+  const lastRun = useActivityRuns().data?.runs.find((r) => r.activity_id === activity.id)
   const smart = useMemo(() => smartOf(smartData), [smartData])
   const countFor = (prefix: string) => errors.filter((e) => e.path.startsWith(prefix)).length
 
@@ -157,7 +160,7 @@ function Editor({ activity, catalog, globalBindings }: { activity: Activity; cat
               </div>
             </CardHeader>
             <CardContent>
-              <SequenceEditor label="Startup" actions={draft.startup} onChange={(startup) => update({ startup })} catalog={catalog} issues={errors} pathPrefix="/startup" />
+              <SequenceEditor label="Startup" actions={draft.startup} onChange={(startup) => update({ startup })} catalog={catalog} issues={errors} pathPrefix="/startup" lastRun={failuresFor(lastRun, 'startup', draft.startup)} />
             </CardContent>
           </Card>
         )}
@@ -170,7 +173,7 @@ function Editor({ activity, catalog, globalBindings }: { activity: Activity; cat
               </div>
             </CardHeader>
             <CardContent>
-              <SequenceEditor label="Shutdown" actions={draft.shutdown} onChange={(shutdown) => update({ shutdown })} catalog={catalog} issues={errors} pathPrefix="/shutdown" />
+              <SequenceEditor label="Shutdown" actions={draft.shutdown} onChange={(shutdown) => update({ shutdown })} catalog={catalog} issues={errors} pathPrefix="/shutdown" lastRun={failuresFor(lastRun, 'shutdown', draft.shutdown)} />
             </CardContent>
           </Card>
         )}

@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import { invalidate } from '@/api/hooks'
 import type { Activity } from '@/api/types'
 import { EmptyState, ErrorState, PageHeader } from '@/components/common'
+import { RecentActivity } from '@/components/RecentActivity'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input } from '@/components/ui/input'
@@ -111,7 +112,7 @@ export function Activities() {
           An activity turns on your devices and sets up the remote for them.
         </EmptyState>
       ) : (
-        <ul className={GRID}>
+        <ul className={GRID} aria-label="Activities">
           {list.map((a) => {
             const on = a.id === activeId
             return (
@@ -163,6 +164,7 @@ export function Activities() {
           })}
         </ul>
       )}
+      {list && list.length > 0 && <RecentActivity />}
       {list && list.length > 0 && (
         <div className="mt-6 flex flex-wrap gap-2">
           {lock.locked ? (

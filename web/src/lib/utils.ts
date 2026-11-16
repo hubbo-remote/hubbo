@@ -37,6 +37,9 @@ export function sentenceCase(s: string): string {
 /** `3 bindings`, `1 binding`. */
 export const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`
 
+/** 500 ms, 1 s, 1.5 s, 2.25 s: milliseconds under a second, else seconds without trailing zeros. */
+export const duration = (ms: number) => (ms >= 1000 ? `${Number((ms / 1000).toFixed(3))} s` : `${ms} ms`)
+
 export function formatDuration(s: number): string {
   const d = Math.floor(s / 86400)
   const h = Math.floor((s % 86400) / 3600)
