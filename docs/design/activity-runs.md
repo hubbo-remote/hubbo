@@ -44,16 +44,17 @@ A step: `index`, `device_id` (null for system steps), `command_id`, `result` (`o
 
 - `GET /activity-runs` returns them newest first. Read with the token, like `/status`.
 - `/status` gains `last_run`: the newest run's `activity_id`, `kind`, `outcome` and failed step count,
-  so the dashboard can flag a problem without fetching the history.
+  so the web admin can flag a problem without fetching the history.
 
 ## Web admin
 
-- **Dashboard:** a "Recent activity" card. Each run is one line, e.g. "Watch TV started · 2 min ago ·
-  1 step failed". A run with failures is highlighted. Opening it lists the steps: the device and
-  command, a tick or a cross, the reason in plain words ("TV · Turn on · timed out
-  after 5 s"), and how long each took.
-- **Activity page:** if the newest run of this activity had failures, the failing steps in its
-  startup or shutdown list carry a small warning with the reason.
+- **Status → Activity Log:** a log of the last runs, newest first. Each run is a line (time, activity,
+  start or stop, outcome) with its steps indented under it: the device, the command, and the result
+  in plain words ("timed out after 5 s", "already on") or how long it took.
+- **Activity page:** a Log tab with the same log for that activity only. If the newest run of this
+  activity had failures, the failing steps in its startup or shutdown list carry a small warning with
+  the reason.
+- **Overview:** when the newest run had failures, one line names the activity and links to its Log tab.
 - Copy stays light.
 
 ## Owners
@@ -61,7 +62,8 @@ A step: `index`, `device_id` (null for system steps), `command_id`, `result` (`o
 - **core:** keep going in the executor; the outcome; the run history (fixed size, no allocation on
   the RF path, readable from the API's task safely); hub-sim; tests.
 - **api:** `GET /activity-runs`, `last_run` in `/status`, the spec, fixtures, contract, docs.
-- **frontend:** the dashboard card, the activity page's warnings, the mock, e2e.
+- **frontend:** the Activity Log (Status tab and activity tab), the Overview line, the activity page's
+  warnings, the mock, e2e.
 - **firmware:** any wiring the history needs to be read from httpd (the snapshot pattern the engine
   already uses).
 - **lead:** this doc, ARCHITECTURE.md (the "report and stop" rule), IMPLEMENTATION_PLAN.md.

@@ -250,7 +250,7 @@ call. Also fixes boot using up internal RAM (the saved config now loads into PSR
 
 ## Activity runs (user, 2026-11-15)
 A failed step no longer stops a sequence: it's reported and the next step runs. The hub keeps the last
-8 activity runs step by step, and the web admin shows them (dashboard, activity page). Design:
+8 activity runs step by step, and the web admin shows them (Status → Activity Log, and a Log tab on each activity). Design:
 `docs/design/activity-runs.md`.
 
 ## State checks (user, 2026-11-15)
