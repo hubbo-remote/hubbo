@@ -144,6 +144,41 @@ test('a button inherits the global bindings only while the activity binds none o
   expect(Object.keys((await api(page).get(`/activities/${id}`)).bindings)).toEqual(['tv:hold'])
 })
 
+test('the Advanced triggers button shows a button’s down, up and tap rows, and resets on another button', async ({ page }) => {
+  await openNewActivity(page, 'E2E Advanced')
+  await page.locator('[data-key="up"]').click()
+  const advanced = page.getByRole('button', { name: 'Advanced triggers', exact: true })
+  await expect(advanced).toHaveAttribute('aria-pressed', 'false')
+  await expect(page.getByRole('button', { name: 'Bind Up press' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Bind Up down' })).toHaveCount(0)
+
+  await advanced.click()
+  await expect(advanced).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: 'Bind Up down' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Bind Up press' })).toHaveCount(0)
+  await expect(advanced).toBeEnabled() // the label never flips: it's pressed, not renamed
+
+  await page.locator('[data-key="down"]').click() // another button starts simple again
+  await expect(advanced).toHaveAttribute('aria-pressed', 'false')
+  await expect(page.getByRole('button', { name: 'Bind Down press' })).toBeVisible()
+
+  // A down and a tap only fit the raw rows: the button stays pressed, locked, and its tip says why.
+  await page.locator('[data-key="up"]').click()
+  await advanced.click()
+  for (const event of ['down', 'tap']) {
+    await page.getByRole('button', { name: `Bind Up ${event}` }).click()
+    await page.getByLabel('Device').selectOption({ label: 'Family Room Denon' })
+    await page.getByLabel('Command', { exact: true }).selectOption({ label: 'Volume up' })
+    await page.getByRole('button', { name: 'Apply' }).click()
+  }
+  await page.locator('[data-key="down"]').click()
+  await page.locator('[data-key="up"]').click()
+  await expect(advanced).toHaveAttribute('aria-pressed', 'true')
+  await expect(advanced).toBeDisabled()
+  await page.getByRole('button', { name: 'About Advanced triggers' }).click()
+  await expect(page.getByText('Clear them to turn it off.')).toBeVisible()
+})
+
 test('a step dialog: no "None" or Hubbo device; Duplicate; a wait edits only its time, in ms', async ({ page }) => {
   const id = await openNewActivity(page, 'E2E Steps')
   await page.getByRole('tab', { name: /Startup/ }).click()
