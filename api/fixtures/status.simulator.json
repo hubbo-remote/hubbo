@@ -15,6 +15,13 @@
   },
   "active_activity_id": "act_watch_apple_tv",
   "selected_slot": "light_1",
+  "last_run": {
+    "id": 12,
+    "activity_id": "act_watch_apple_tv",
+    "kind": "startup",
+    "outcome": "completed_with_errors",
+    "failed_steps": 1
+  },
   "network": {
     "link": "up",
     "ip": "192.0.2.56",

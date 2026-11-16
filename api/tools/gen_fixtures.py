@@ -688,6 +688,41 @@ INTEGRATIONS = [
     {"id": "mqtt_main", "type": "mqtt", "name": "MQTT", "enabled": True, "state": "connected", "device_count": 0},
 ]
 
+# ---------------------------------------------------------------- activity runs
+
+
+def run(run_id, act, kind, outcome, started_ago_ms, results):
+    """One run of `act`'s `kind` sequence: `results` per action, in order,
+    as (result, error, duration_ms)."""
+    actions = act[kind]
+    assert len(results) == len(actions)
+    steps = [{"index": i, "device_id": x["device_id"], "command_id": x["command_id"],
+              "result": r, "error": e, "duration_ms": d} for i, (x, (r, e, d)) in enumerate(zip(actions, results))]
+    done = [d for _, _, d in results if d is not None]
+    return {"id": run_id, "activity_id": act["id"], "kind": kind, "started_ago_ms": started_ago_ms,
+            "duration_ms": None if outcome == "running" else sum(done), "outcome": outcome, "steps": steps}
+
+
+OK = ("ok", None, 40)
+# Newest first: Watch Apple TV's startup skipped the TV (already on), got no
+# reply from the Sonos, and went on past the lights failing; before it, Play
+# Xbox's shutdown, and its startup, cut short by the switch.
+ACTIVITY_RUNS = [
+    run(12, WATCH, "startup", "completed_with_errors", 120000,
+        [("skipped", "already_set", 25), ("no_reply", None, 1000), ("ok", None, 2100), OK, ("ok", None, 1500), OK,
+         ("failed", "entity_not_found", 30)]),
+    run(11, PLAY_XBOX, "shutdown", "completed", 125000, [OK, OK, OK]),
+    run(10, PLAY_XBOX, "startup", "cancelled", 3600000,
+        [OK, ("failed", "entity_not_found", 30), OK, ("ok", None, 2000), OK,
+         ("cancelled", "cancelled", None), ("cancelled", "cancelled", None)]),
+]
+
+
+def last_run(r):
+    return {"id": r["id"], "activity_id": r["activity_id"], "kind": r["kind"], "outcome": r["outcome"],
+            "failed_steps": sum(s["result"] in ("failed", "timed_out") for s in r["steps"])}  # not skipped/no_reply
+
+
 HUB = {"name": "Living Room", "hostname": "living-room", "hostname_conflict": False}
 STATUS = {
     "hubbo": {"name": HUB["name"], "version": "0.1.0", "build": "0.1.0+g1a2b3c4",
@@ -696,6 +731,7 @@ STATUS = {
     "auth_state": "ok", "config": {"state": "ok", "generation": 42},
     "active_activity_id": "act_watch_apple_tv",
     "selected_slot": "light_1",
+    "last_run": last_run(ACTIVITY_RUNS[0]),
     "network": {"link": "up", "ip": "192.0.2.56", "hostname": HUB["hostname"]},
     "remote": REMOTE_STATUS,
     "integrations": [{k: i[k] for k in ("id", "type", "state", "detail") if k in i} for i in INTEGRATIONS],
@@ -738,13 +774,14 @@ fx("discovery/index.json", "getApiIndex", "200", {
     "auth": "Authorization: Bearer <token>. An admin creates tokens in Settings → API tokens."})
 fx("status.json", "getStatus", "200", STATUS)
 fx("status.blocked.json", "getStatus", "200",
-   dict(copy.deepcopy(STATUS), active_activity_id=None,
+   dict(copy.deepcopy(STATUS), active_activity_id=None, last_run=None,
         config={"state": "blocked", "generation": 57,
                 "reason": "config.json schema_version 2 is newer than this firmware (1)"}))
 fx("status.simulator.json", "getStatus", "200",
    dict(copy.deepcopy(STATUS), auth_mode="simulator_no_auth",
         hubbo={"name": "Hubbo 534D", "version": "0.1.0", "build": "sim", "board": "hub-sim"},
         network=dict(STATUS["network"], hostname="hubbo-534d")))
+fx("activity_runs/list.json", "listActivityRuns", "200", {"runs": ACTIVITY_RUNS})
 fx("remote/status.json", "getRemoteStatus", "200", REMOTE_STATUS)
 fx("remote/buttons.json", "listRemoteButtons", "200", {
     "buttons": [{"name": n, "group": g, "label": l} for n, g, l in BUTTONS],

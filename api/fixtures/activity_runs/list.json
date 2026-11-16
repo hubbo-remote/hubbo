@@ -1,0 +1,170 @@
+{
+  "runs": [
+    {
+      "id": 12,
+      "activity_id": "act_watch_apple_tv",
+      "kind": "startup",
+      "started_ago_ms": 120000,
+      "duration_ms": 4735,
+      "outcome": "completed_with_errors",
+      "steps": [
+        {
+          "index": 0,
+          "device_id": "dev_lg_tv",
+          "command_id": "media_player.turn_on",
+          "result": "skipped",
+          "error": "already_set",
+          "duration_ms": 25
+        },
+        {
+          "index": 1,
+          "device_id": "dev_sonos",
+          "command_id": "media_player.select_source",
+          "result": "no_reply",
+          "error": null,
+          "duration_ms": 1000
+        },
+        {
+          "index": 2,
+          "device_id": "dev_apple_tv",
+          "command_id": "wait_connected",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 2100
+        },
+        {
+          "index": 3,
+          "device_id": "dev_apple_tv",
+          "command_id": "press",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 40
+        },
+        {
+          "index": 4,
+          "device_id": null,
+          "command_id": "wait",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 1500
+        },
+        {
+          "index": 5,
+          "device_id": "dev_lg_tv",
+          "command_id": "media_player.select_source",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 40
+        },
+        {
+          "index": 6,
+          "device_id": "dev_family_room_lights",
+          "command_id": "light.turn_on",
+          "result": "failed",
+          "error": "entity_not_found",
+          "duration_ms": 30
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "activity_id": "act_play_xbox",
+      "kind": "shutdown",
+      "started_ago_ms": 125000,
+      "duration_ms": 120,
+      "outcome": "completed",
+      "steps": [
+        {
+          "index": 0,
+          "device_id": "dev_xbox",
+          "command_id": "media_player.turn_off",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 40
+        },
+        {
+          "index": 1,
+          "device_id": "dev_lg_tv",
+          "command_id": "media_player.turn_off",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 40
+        },
+        {
+          "index": 2,
+          "device_id": "dev_denon",
+          "command_id": "media_player.turn_off",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 40
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "activity_id": "act_play_xbox",
+      "kind": "startup",
+      "started_ago_ms": 3600000,
+      "duration_ms": 2150,
+      "outcome": "cancelled",
+      "steps": [
+        {
+          "index": 0,
+          "device_id": "dev_xbox",
+          "command_id": "media_player.turn_on",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 40
+        },
+        {
+          "index": 1,
+          "device_id": "dev_lg_tv",
+          "command_id": "media_player.turn_on",
+          "result": "failed",
+          "error": "entity_not_found",
+          "duration_ms": 30
+        },
+        {
+          "index": 2,
+          "device_id": "dev_denon",
+          "command_id": "media_player.turn_on",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 40
+        },
+        {
+          "index": 3,
+          "device_id": null,
+          "command_id": "wait",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 2000
+        },
+        {
+          "index": 4,
+          "device_id": "dev_lg_tv",
+          "command_id": "media_player.select_source",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 40
+        },
+        {
+          "index": 5,
+          "device_id": "dev_denon",
+          "command_id": "media_player.select_source",
+          "result": "cancelled",
+          "error": "cancelled",
+          "duration_ms": null
+        },
+        {
+          "index": 6,
+          "device_id": "dev_denon",
+          "command_id": "media_player.select_sound_mode",
+          "result": "cancelled",
+          "error": "cancelled",
+          "duration_ms": null
+        }
+      ]
+    }
+  ]
+}

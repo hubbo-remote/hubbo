@@ -22,6 +22,11 @@
       "kind": "200"
     },
     {
+      "file": "activity_runs/list.json",
+      "operation": "listActivityRuns",
+      "kind": "200"
+    },
+    {
       "file": "remote/status.json",
       "operation": "getRemoteStatus",
       "kind": "200"

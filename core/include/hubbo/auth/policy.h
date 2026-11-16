@@ -42,6 +42,7 @@ const char *mediaType(Body body);  // the Content-Type it must be sent with
 
 enum class Operation : uint8_t {
     GetStatus,
+    ListActivityRuns,
     GetRemoteStatus,
     ListRemoteButtons,
     SetupAdmin,

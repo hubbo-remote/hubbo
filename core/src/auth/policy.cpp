@@ -27,6 +27,7 @@ constexpr uint32_t kMaxFirmwareImageBytes = 6400 * 1024;
 // application/octet-stream body).
 constexpr OperationInfo kOperations[] = {
     {Operation::GetStatus, "getStatus", Method::Get, Requirement::TokenOrAdmin, 0},
+    {Operation::ListActivityRuns, "listActivityRuns", Method::Get, Requirement::TokenOrAdmin, 0},
     {Operation::GetRemoteStatus, "getRemoteStatus", Method::Get, Requirement::TokenOrAdmin, 0},
     {Operation::ListRemoteButtons, "listRemoteButtons", Method::Get, Requirement::TokenOrAdmin, 0},
     {Operation::SetupAdmin, "setupAdmin", Method::Post, Requirement::Public, 1024},

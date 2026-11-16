@@ -15,6 +15,7 @@
 #include "hubbo/config/hub.h"
 #include "hubbo/domain/adapter.h"
 #include "hubbo/engine/engine.h"
+#include "hubbo/engine/run_history.h"
 #include "hubbo/http/route.h"
 #include "hubbo/integrations/ble_hosts.h"
 #include "hubbo/remote/input.h"
@@ -88,6 +89,14 @@ public:
     virtual bool run(EngineRequest &request) = 0;
 
     virtual RuntimeSnapshot snapshot() const = 0;
+
+    // The last activity runs, newest first (engine/run_history.h), copied
+    // into `out` (about 14 KB: the caller heap-allocates it), with
+    // `out->nowMs` on the runs' clock. False: no history (the API shows none).
+    virtual bool activityRuns(ActivityRuns *out) const = 0;
+    // The newest run in brief, for /status (no copy of the whole history).
+    // False: none (last_run null).
+    virtual bool lastRun(LastRun *out) const = 0;
 
     // Registered adapters (capabilities come from commandsFor()).
     virtual const AdapterSet &adapters() const = 0;
