@@ -9,6 +9,25 @@ Current state, not a log. Update when a piece of work lands.
   ticks 0, 1, 2, 5 ms. Values under 1 ms show two decimals. The mock tracks the API fixture (sub-ms since
   the fixture change) with jitter rounded to 0.01; status.spec checks "Good" and a sub-ms value on the mock.
 
+## UI tweaks (branch `latency-targets`, after the gauge)
+
+- **Integrations**: the Bluetooth card stays (the user reverted its removal; core/API keep its on/off). No
+  device count line on any card.
+- **Secrets**: `SaveActions` (IntegrationSettings) = Save + an optional "Remove …" that saves null; MQTT's
+  "Remove password" and HA's "Remove token" (`access_token: null`) share it; a successful remove also clears the typed field. ha.spec and mqtt.spec cover it.
+- **Bindings panel**: the old grey "Advanced"/"Simple" link is a toggle Button "Advanced triggers" (outline,
+  SlidersHorizontal icon, `aria-pressed`; secondary while on) + InfoTip; on = raw down/up/tap rows. `forced`
+  (bindings only fit the raw rows) shows it pressed and disabled, and the InfoTip says why ("Clear them to
+  turn it off."); hidden when `explained`; resets on button change. activity.spec covers both.
+- **Menu stacking**: the shared `Menu` root gets `z-20` while open (z-30 tied the sticky header/bottom nav and painted over them on scroll). A caller's transform (the tiles'
+  `-translate-y-1/2`) made the root a stacking context, so the list's z-20 sat under later tiles.
+  activate.spec clicks a menu item over the next tile at one column.
+- **RemoteSvg icons**: Lucide via `icon(Icon, props)`, a nested 13-unit svg at strokeWidth 3 (≈ the
+  arrows' 1.7). music Music, tv Tv, movie Clapperboard, bulb Lightbulb, socket Plug, play Play, pause
+  Pause, stop Square (those three and skip filled), next SkipForward, prev SkipBack, mute VolumeX, back
+  Undo2, record Circle filled red. Arrows, plus/minus and the stripe stay hand-drawn strokes.
+- Editor URLs carry a tab now, so `activityIdFromUrl` (e2e/editor.ts) reads the id by pattern.
+
 ## Activity runs (branch `activity-runs`; docs/design/activity-runs.md)
 
 - **Activity Log** (Status tab `activity`, `/status/activity`; `components/ActivityLog.tsx`; UX iteration,
