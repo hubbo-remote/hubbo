@@ -4,16 +4,33 @@ Current state, not a log. Update when a piece of work lands.
 
 ## Activity runs (branch `activity-runs`; docs/design/activity-runs.md)
 
-- **Dashboard** (Activities page): `components/RecentActivity.tsx`, a "Recent activity" card under the
-  tiles (hidden with no runs; reads activities itself for names). It refetches /activity-runs only when
-  `/status.last_run`'s `id` or `outcome` changes (a new run, or the newest finishing; two identical runs
-  still differ by id), no poll of its own. The open run and list keys are the run `id` (monotonic since
-  boot), so a new run arriving doesn't move the open panel. One disclosure line per run:
-  "Watch TV started · 2m ago · 1 step failed"; failures get an amber border and icon (warning colour on
-  icons/borders only: text contrast is too low). Opening lists the steps (catalog loads only then):
-  tick / cross / skipped / spinner, "Device · Command" via `actionParts`, the reason, the duration.
-  The tiles list is `aria-label="Activities"` (run lines start with the activity's name too; e2e tile
-  locators scope to that list).
+- **Activity Log** (Status tab `activity`, `/status/activity`; `components/ActivityLog.tsx`; UX iteration,
+  e2e not caught up). Moved off the Activities page (RecentActivity.tsx deleted). A timeline: each run a
+  round status node (check / X / spinner / slash) on a left rail; header = name (semibold; newest larger) +
+  outline start/stop Badge (Play/Power, `runKind`) + right: mono time + outcome Badge (`runSummary`;
+  success/destructive/secondary); a facts line "5 steps · 2 skipped · 1.8 s" (run.duration_ms). Steps hang
+  off the rail with glyphs (ok check success/70, skip SkipForward, no_reply Send, failed X, wait Hourglass,
+  pending spinner), then a device outline Badge with a domain icon (media_player MonitorPlay, remote Radio,
+  light Lightbulb, switch ToggleRight, BLE Bluetooth, else Box), the command, and a right-aligned result
+  (secondary/destructive Badge from `stepReason`, else a mono duration). From sm up steps share subgrid
+  columns so results line up; a phone wraps. Offsets: run gutter pl-9, rail left 13px, step rows start
+  30px in (-mx-1.5 for the hover bg), so glyphs sit at -left-6. sr-only joiners keep each line one
+  sentence. A run step has no params, so a wait reads "Wait" plus its duration. Empty: History icon + copy.
+  `ActivityLog activityId` filters to one activity and drops the name from each run header: the activity
+  editor's fourth tab "Log" (no count: it's the last ≤8 runs hub-wide), empty copy "Start this activity…".
+  Refetches /activity-runs only when `/status.last_run`'s `id:outcome` changes (rides the shell's poll).
+  Overview: one line "<Activity> · N steps failed · View log" when last_run has failures (may be dropped).
+  The tiles list keeps `aria-label="Activities"`. `useActivityRuns()` keys itself on /status `last_run`
+  (id:outcome; nothing until /status is in), so the editor's warnings and the Log tab share one fetch.
+  `stepAction`/`activityName` (lib/runs) are the shared step→Action and name-or-"An activity" helpers.
+  The Overview line loads activities only on a failure (`FailedRunLine`); its "View log" link goes to that
+  activity's own Log tab and is always underlined (axe link-in-text-block in dark mode).
+- **Editor tabs are routes**, like Status: `/activities/:id/:tab?` (buttons default; startup, shutdown,
+  log; unknown → NotFound). Tab clicks `navigate(…, { replace: true })`; the draft survives (same keyed Editor).
+- **Badge**: `success`/`destructive` text is darkened in light mode (color-mix with black, like `warning`):
+  the base colours on their own /15 tint were 4.36:1 and 3.64:1 (axe, found via /status/activity).
+- e2e: `activity-runs.spec` covers Status → Activity Log, the activity's Log tab (no name), the Startup
+  "Failed last time" and the Overview line + View log; a11y covers /status/activity.
 - **Activity page**: `SequenceEditor` takes `lastRun` (index → reason); a failing step gets an amber
   border and "Failed last time: …". `failuresFor(run, kind, steps)`: only the newest run of this
   activity, only if it was that kind, only steps still the same command at that index.
