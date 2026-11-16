@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "hubbo/domain/limits.h"
+#include "hubbo/domain/trigger.h"
 #include "hubbo/api/remote_port.h"
 #include "hubbo/ha/capabilities.h"
 #include "hubbo/ha/snapshot_json.h"
@@ -64,6 +65,58 @@ bool decodeBindings(JsonVariantConst json, std::vector<BindingSpec> *out, Valida
         out->push_back(std::move(binding));
     }
     return ok;
+}
+
+// At most one per button and press (down, tap, hold).
+constexpr size_t kMaxMacros = remote::kButtonCount * 3;
+
+// "macros": the triggers of `bindings` that are macros (docs/design/
+// macros.md); absent: none. Each a press (:down, :tap or :hold; else invalid_trigger),
+// once (duplicate_trigger), and bound to at least one action
+// (unbound_macro), at /macros/<i>.
+bool decodeMacros(JsonVariantConst json, std::vector<BindingSpec> *bindings, ValidationReport *report,
+                  const std::string &path) {
+    std::vector<std::string> triggers;
+    bool ok = decodeList(json, kMaxMacros, &triggers, report, path,
+                         [&](JsonVariantConst j, std::string *trigger, const std::string &p) {
+                             if (!j.is<const char *>()) {
+                                 addIssue(report, ErrorCode::WrongType, p);
+                                 return false;
+                             }
+                             *trigger = j.as<const char *>();
+                             return true;
+                         });
+    if (!ok) return false;
+    for (size_t i = 0; i < triggers.size(); i++) {
+        const std::string at = child(path, i);
+        if (!isMacroTrigger(triggers[i])) {
+            addIssue(report, ErrorCode::InvalidTrigger, at);
+            ok = false;
+            continue;
+        }
+        if (std::find(triggers.begin(), triggers.begin() + static_cast<std::ptrdiff_t>(i), triggers[i]) !=
+            triggers.begin() + static_cast<std::ptrdiff_t>(i)) {
+            addIssue(report, ErrorCode::DuplicateTrigger, at);
+            ok = false;
+            continue;
+        }
+        const auto bound = std::find_if(bindings->begin(), bindings->end(), [&](const BindingSpec &b) {
+            return b.trigger == triggers[i] && !b.actions.empty();
+        });
+        if (bound == bindings->end()) {
+            addIssue(report, ErrorCode::UnboundMacro, at);
+            ok = false;
+            continue;
+        }
+        bound->macro = true;
+    }
+    return ok;
+}
+
+void encodeMacros(const std::vector<BindingSpec> &bindings, JsonArray out) {
+    for (const auto &b : bindings) {
+        if (b.macro && !b.actions.empty()) out.add(b.trigger);
+    }
 }
 
 void encodeAction(const ActionSpec &action, JsonObject out) {
@@ -262,6 +315,11 @@ std::string toText(const JsonDocument &doc, bool trailingNewline) {
 
 }  // namespace
 
+bool decodeActionList(JsonVariantConst json, std::vector<ActionSpec> *out, ValidationReport *report,
+                      const std::string &path) {
+    return decodeSequence(json, out, report, path);
+}
+
 ErrorCode parseJson(std::string_view text, JsonDocument &doc, size_t maxBytes, uint8_t nestingLimit) {
     if (text.empty() || text.size() > maxBytes) return ErrorCode::MalformedJson;
     const DeserializationError err =
@@ -419,6 +477,8 @@ bool decodeActivity(JsonVariantConst json, ActivityShape shape, ActivitySpec *ou
              [&](JsonVariantConst v, const std::string &p) { return decodeSequence(v, &out->shutdown, report, p); });
     f.nested("bindings", true,
              [&](JsonVariantConst v, const std::string &p) { return decodeBindings(v, &out->bindings, report, p); });
+    f.nested("macros", false,
+             [&](JsonVariantConst v, const std::string &p) { return decodeMacros(v, &out->bindings, report, p); });
     return f.finish();
 }
 
@@ -428,6 +488,7 @@ void encodeActivity(const ActivitySpec &activity, JsonObject out) {
     encodeSequence(activity.startup, out["startup"].to<JsonArray>());
     encodeSequence(activity.shutdown, out["shutdown"].to<JsonArray>());
     encodeBindings(activity.bindings, out["bindings"].to<JsonObject>());
+    encodeMacros(activity.bindings, out["macros"].to<JsonArray>());
     out["schema_version"] = kSchemaVersion;
     out["revision"] = activity.revision;
 }
@@ -439,6 +500,8 @@ bool decodeGlobalBindingsAs(JsonVariantConst json, bool backup, std::vector<Bind
     Fields f(json, report, path);
     f.nested("bindings", true,
              [&](JsonVariantConst v, const std::string &p) { return decodeBindings(v, bindings, report, p); });
+    f.nested("macros", false,
+             [&](JsonVariantConst v, const std::string &p) { return decodeMacros(v, bindings, report, p); });
     f.revision("revision", revision, !backup, backup);
     return f.finish();
 }
@@ -452,6 +515,7 @@ bool decodeGlobalBindings(JsonVariantConst json, std::vector<BindingSpec> *bindi
 
 void encodeGlobalBindings(const std::vector<BindingSpec> &bindings, uint32_t revision, JsonObject out) {
     encodeBindings(bindings, out["bindings"].to<JsonObject>());
+    encodeMacros(bindings, out["macros"].to<JsonArray>());
     out["revision"] = revision;
 }
 

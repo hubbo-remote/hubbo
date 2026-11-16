@@ -53,6 +53,10 @@ struct ActionSpec {
 struct BindingSpec {
     std::string trigger;  // "<button>:<event>"; validated, so kept as text
     std::vector<ActionSpec> actions;  // empty == unbound
+    // A macro (listed in its owner's "macros": docs/design/macros.md): a
+    // plain list of one or more commands on the Macro lane. Else a single
+    // command.
+    bool macro = false;
 };
 
 // Smart buttons (docs/design/smart-buttons.md, domain/smart_buttons.h):

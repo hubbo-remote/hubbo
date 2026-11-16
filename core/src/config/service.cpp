@@ -597,6 +597,22 @@ Outcome ConfigService::replaceIntegration(std::string_view id, IntegrationSpec &
     return replace(&ConfigSpec::integrations, static_cast<size_t>(index), "/integrations", std::move(integration));
 }
 
+Outcome ConfigService::compileMacro(JsonVariantConst json, std::vector<CompiledCommand> *out) const {
+    Outcome outcome;
+    std::vector<ActionSpec> actions;
+    if (json.isUnbound() || json.isNull()) {
+        outcome.issues.add(ErrorCode::Required, "/actions");
+        outcome.code = ErrorCode::ValidationFailed;
+        return outcome;
+    }
+    if (!decodeActionList(json, &actions, &outcome.issues, "/actions")) {
+        outcome.code = ErrorCode::ValidationFailed;
+        return outcome;
+    }
+    outcome.code = hubbo::compileMacro(config_, adapters_, actions, out, &outcome.issues);
+    return outcome;
+}
+
 Outcome ConfigService::compileCommand(std::string_view deviceId, std::string_view commandId,
                                       const std::vector<ParamInput> &params, CompiledCommand *out,
                                       const HaServiceCallSpec *call) const {

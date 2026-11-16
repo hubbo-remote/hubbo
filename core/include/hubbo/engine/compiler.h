@@ -85,6 +85,16 @@ ErrorCode compileDeviceCommand(const ConfigSpec &config, const AdapterSet &adapt
                                CompiledCommand *out, ValidationReport *report,
                                const HaServiceCallSpec *call = nullptr);
 
+// Compiles a macro run straight from the editor (POST /macros/run; docs/
+// design/macros.md), maybe unsaved, against `config`: as a binding marked a
+// macro (1 to kMaxSequenceLength actions, waits ok, holds and their
+// releases hold_not_allowed), each step self-contained (its device id and
+// provider ref; an activate's activity id as its deviceId). Ok, or
+// ValidationFailed with issues rooted at the request body: /actions
+// (required: none), /actions/<i>/... HTTP task (it allocates).
+ErrorCode compileMacro(const ConfigSpec &config, const AdapterSet &adapters, const std::vector<ActionSpec> &actions,
+                       std::vector<CompiledCommand> *out, ValidationReport *report);
+
 // JSON Pointer token escaping ("~" -> "~0", "/" -> "~1").
 std::string jsonPointerToken(const std::string &token);
 

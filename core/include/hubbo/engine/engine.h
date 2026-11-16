@@ -143,6 +143,14 @@ struct CommandResult {
     uint32_t elapsedMs = 0;
 };
 
+// A macro run from the editor (EngineRequest::runMacro), once done.
+struct MacroRunResult {
+    // Ok (queued on the Macro lane), QueueFull (the lane is full: refused,
+    // counted, not recorded), TooManyActions (0 or over the limit).
+    ErrorCode error = ErrorCode::Ok;
+    uint32_t runId = 0;  // ActivityRun::id (0: not recorded, or no history)
+};
+
 // A request from another task (e.g. HTTP) with a reply. The caller owns it,
 // fills it, submit()s it, and waits until done() (the engine never blocks
 // on it; how the caller waits is its business: vTaskDelay on the board,
@@ -152,7 +160,7 @@ struct CommandResult {
 // the action timeout).
 class EngineRequest {
 public:
-    enum class Kind : uint8_t { Activate, Off, Execute };
+    enum class Kind : uint8_t { Activate, Off, Execute, RunMacro };
 
     EngineRequest() = default;
     EngineRequest(const EngineRequest &) = delete;
@@ -167,16 +175,33 @@ public:
         kind_ = Kind::Execute;
         command_ = command;
     }
+    // A macro straight from the editor (ConfigService::compileMacro's
+    // steps; the caller keeps them until done()), run as a press of
+    // `trigger` would: the Macro lane, origin Macro, recorded with
+    // `activityId` ("" for none; any activity, active or not). Done once
+    // queued (or refused), not when it ends; an activity switch cancels it.
+    void runMacro(const CompiledCommand *steps, size_t count, Trigger trigger, std::string_view activityId) {
+        kind_ = Kind::RunMacro;
+        steps_ = steps;
+        stepCount_ = count;
+        trigger_ = trigger;
+        activityId_.assign(activityId);
+    }
 
     bool done() const { return done_.load(std::memory_order_acquire); }
     const TransitionResult &transition() const { return transition_; }  // Activate/Off, once done
     const CommandResult &command() const { return result_; }           // Execute, once done
+    const MacroRunResult &macro() const { return macro_; }             // RunMacro, once done
 
 private:
     friend class Engine;
     Kind kind_ = Kind::Off;
     IdString activityId_;
     CompiledCommand command_;
+    const CompiledCommand *steps_ = nullptr;  // RunMacro
+    size_t stepCount_ = 0;
+    Trigger trigger_;
+    MacroRunResult macro_;
     TransitionResult transition_;
     CommandResult result_;
     uint32_t sequenceId_ = 0;

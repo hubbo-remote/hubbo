@@ -28,6 +28,7 @@ ActionSpec waitMs(int64_t ms);
 ActionSpec activateAction(const char *activityId);
 ActionSpec offAction();
 BindingSpec bind(std::string trigger, std::vector<ActionSpec> actions);
+BindingSpec macro(std::string trigger, std::vector<ActionSpec> actions);  // a binding marked a macro
 DeviceSpec device(std::string id, std::string name, std::string integration, std::string kind,
                   ProviderSpec provider);
 DeviceSpec haDevice(std::string id, std::string name, std::string kind, std::string entityId);

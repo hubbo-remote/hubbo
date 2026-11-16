@@ -209,8 +209,8 @@ TEST_F(CompilerTest, TransitionsOnlyLastInABinding) {
     ConfigSpec cfg = fixtureConfig();
     cfg.activities[0].startup.push_back(activateAction("act_play_xbox"));
     cfg.activities[1].shutdown.insert(cfg.activities[1].shutdown.begin(), offAction());
-    cfg.activities[0].bindings.push_back(bind("red:tap", {offAction(), bleKey("key_tap", "MENU")}));
-    cfg.activities[0].bindings.push_back(bind("green:tap", {bleKey("key_tap", "MENU"), activateAction("act_play_xbox")}));
+    cfg.activities[0].bindings.push_back(macro("red:tap", {offAction(), bleKey("key_tap", "MENU")}));
+    cfg.activities[0].bindings.push_back(macro("green:tap", {bleKey("key_tap", "MENU"), activateAction("act_play_xbox")}));
     compile(cfg);
     EXPECT_TRUE(report.has(ErrorCode::MisplacedTransition, "/activities/0/startup/5/command_id"));
     EXPECT_TRUE(report.has(ErrorCode::MisplacedTransition, "/activities/1/shutdown/0/command_id"));

@@ -55,6 +55,11 @@ enum class ActivityShape : uint8_t {
     Backup,   // BackupActivity: id required; schema_version, revision optional (revision >= 0)
 };
 
+// A list of actions (a startup, shutdown or binding's): at most
+// kMaxSequenceLength. Replaces *out.
+bool decodeActionList(JsonVariantConst json, std::vector<ActionSpec> *out, ValidationReport *report,
+                      const std::string &path);
+
 bool decodeActivity(JsonVariantConst json, ActivityShape shape, ActivitySpec *out, ValidationReport *report,
                     const std::string &path = "");
 void encodeActivity(const ActivitySpec &activity, JsonObject out);  // Activity (stored/response)

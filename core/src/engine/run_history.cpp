@@ -39,8 +39,17 @@ uint8_t ActivityRun::failedSteps() const {
 void RunHistory::read(ActivityRuns *out) const {
     while (lock_.test_and_set(std::memory_order_acquire)) {
     }
-    out->count = shared_.count;
-    for (size_t i = 0; i < shared_.count; i++) out->runs[i] = shared_.newest(i);
+    // Newest first: by id, highest first (an insertion sort of indexes:
+    // a handful, and no big copies).
+    uint8_t order[kMaxActivityRuns];
+    const size_t count = std::min<size_t>(shared_.count, kMaxActivityRuns);
+    for (size_t i = 0; i < count; i++) {
+        size_t j = i;
+        for (; j > 0 && shared_.runs[order[j - 1]].id < shared_.runs[i].id; j--) order[j] = order[j - 1];
+        order[j] = static_cast<uint8_t>(i);
+    }
+    out->count = static_cast<uint8_t>(count);
+    for (size_t i = 0; i < count; i++) out->runs[i] = shared_.runs[order[i]];
     lock_.clear(std::memory_order_release);
 }
 
@@ -49,10 +58,13 @@ bool RunHistory::readLatest(LastRun *out) const {
     }
     const bool any = shared_.count != 0;
     if (any) {
-        const ActivityRun &run = shared_.newest(0);
+        const ActivityRun &run = *std::max_element(
+            shared_.runs, shared_.runs + shared_.count,
+            [](const ActivityRun &a, const ActivityRun &b) { return a.id < b.id; });
         out->id = run.id;
         out->activityId = run.activityId;
         out->kind = run.kind;
+        out->trigger = run.trigger;
         out->outcome = run.outcome;
         out->failedSteps = run.failedSteps();
     }
@@ -60,35 +72,79 @@ bool RunHistory::readLatest(LastRun *out) const {
     return any;
 }
 
-void RunHistory::begin(const SequenceInfo &info, const CompiledConfig &config, ActionSpan span, ErrorCode queued,
-                       uint32_t nowMs) {
-    ActivityRun &run = ring_.runs[ring_.next];
-    ring_.next = static_cast<uint8_t>((ring_.next + 1) % kMaxActivityRuns);
-    ring_.count = static_cast<uint8_t>(std::min<size_t>(ring_.count + 1, kMaxActivityRuns));
+ActivityRun *RunHistory::start(const SequenceInfo &info, uint8_t stepCount, uint32_t nowMs) {
+    // A macro replaces a macro once macros hold their share, so they never
+    // crowd out startups and shutdowns. Never a running run: its end would
+    // be lost.
+    const auto macros = static_cast<size_t>(std::count_if(
+        ring_.runs, ring_.runs + ring_.count, [](const ActivityRun &r) { return r.kind == SequenceOrigin::Macro; }));
+    const bool macroOnly = info.origin == SequenceOrigin::Macro && macros >= kMaxMacroRuns;
+    ActivityRun *slot = nullptr;
+    if (!macroOnly && ring_.count < kMaxActivityRuns) {
+        slot = &ring_.runs[ring_.count++];
+    } else {
+        for (size_t i = 0; i < ring_.count; i++) {
+            ActivityRun &r = ring_.runs[i];
+            if (r.outcome == RunOutcome::Running || (macroOnly && r.kind != SequenceOrigin::Macro)) continue;
+            if (slot == nullptr || r.id < slot->id) slot = &r;
+        }
+        if (slot == nullptr) return nullptr;
+    }
+    ActivityRun &run = *slot;
     run.id = nextId_++;
     run.activityId = info.activityId;
     run.kind = info.origin;
+    run.trigger = info.origin == SequenceOrigin::Macro ? info.trigger : Trigger{};
     run.sequenceId = info.id;
     run.startedMs = nowMs;
     run.durationMs = 0;
     run.outcome = RunOutcome::Running;
-    run.stepCount = config.fits(span) ? span.count : 0;
+    run.stepCount = stepCount;
+    for (uint8_t i = 0; i < stepCount; i++) run.steps[i] = RunStep{};
+    return &run;
+}
+
+uint32_t RunHistory::started(ActivityRun &run, ErrorCode queued, uint32_t nowMs) {
+    if (queued != ErrorCode::Ok) finishRun(run, SequenceOutcome::Rejected, queued, nowMs);
+    changed(run);
+    return run.id;
+}
+
+uint32_t RunHistory::begin(const SequenceInfo &info, const CompiledConfig &config, ActionSpan span, ErrorCode queued,
+                           uint32_t nowMs) {
+    ActivityRun *run = start(info, config.fits(span) ? span.count : 0, nowMs);
+    if (run == nullptr) return 0;
     const CompiledAction *actions = config.span(span);
-    for (uint8_t i = 0; i < run.stepCount; i++) {
-        RunStep &step = run.steps[i];
-        step = RunStep{};
+    for (uint8_t i = 0; i < run->stepCount; i++) {
+        RunStep &step = run->steps[i];
         if (const CompiledDevice *device = config.deviceOf(actions[i])) step.deviceId = device->id;
         if (actions[i].command != nullptr) step.commandId = actions[i].command->id;
     }
-    if (queued != ErrorCode::Ok) finishRun(run, SequenceOutcome::Rejected, queued, nowMs);
-    changed(run);
+    return started(*run, queued, nowMs);
+}
+
+uint32_t RunHistory::begin(const SequenceInfo &info, const CompiledCommand *steps, size_t count, ErrorCode queued,
+                           uint32_t nowMs) {
+    ActivityRun *run = start(info, static_cast<uint8_t>(std::min<size_t>(count, limits::kMaxSequenceLength)), nowMs);
+    if (run == nullptr) return 0;
+    for (uint8_t i = 0; i < run->stepCount; i++) {
+        if (targetsDevice(steps[i].action)) run->steps[i].deviceId = steps[i].deviceId;
+        if (steps[i].action.command != nullptr) run->steps[i].commandId = steps[i].action.command->id;
+    }
+    return started(*run, queued, nowMs);
+}
+
+bool RunHistory::records(SequenceOrigin origin) {
+    return origin == SequenceOrigin::Startup || origin == SequenceOrigin::Shutdown || origin == SequenceOrigin::Macro;
 }
 
 ActivityRun *RunHistory::current(const SequenceInfo &info) {
-    if (ring_.count == 0) return nullptr;
-    if (info.origin != SequenceOrigin::Startup && info.origin != SequenceOrigin::Shutdown) return nullptr;
-    ActivityRun &run = ring_.runs[(ring_.next + kMaxActivityRuns - 1) % kMaxActivityRuns];
-    return run.sequenceId == info.id && run.outcome == RunOutcome::Running ? &run : nullptr;
+    if (!records(info.origin)) return nullptr;
+    for (size_t i = 0; i < ring_.count; i++) {
+        ActivityRun &run = ring_.runs[i];
+        if (run.sequenceId == info.id && run.outcome == RunOutcome::Running) return &run;
+    }
+    return nullptr;
 }
 
 namespace {
@@ -170,12 +226,10 @@ void RunHistory::finishRun(ActivityRun &run, SequenceOutcome outcome, ErrorCode 
 
 void RunHistory::clear() {
     ring_.count = 0;
-    ring_.next = 0;
     dirty_ = 0;
     while (lock_.test_and_set(std::memory_order_acquire)) {
     }
     shared_.count = 0;
-    shared_.next = 0;
     lock_.clear(std::memory_order_release);
 }
 
@@ -184,7 +238,6 @@ void RunHistory::publish() {
     for (size_t i = 0; i < kMaxActivityRuns; i++) {
         if ((dirty_ & (1u << i)) != 0) shared_.runs[i] = ring_.runs[i];
     }
-    shared_.next = ring_.next;
     shared_.count = ring_.count;
     lock_.clear(std::memory_order_release);
     dirty_ = 0;

@@ -51,6 +51,11 @@ struct CompiledAction {
     int8_t stepParam = -1;
 };
 
+// Whether `action` sends to a device (deviceIndex is its target).
+inline bool targetsDevice(const CompiledAction &action) {
+    return action.op == ActionOp::Adapter || action.op == ActionOp::Unavailable;
+}
+
 // One registered device command compiled for direct execution
 // (POST /devices/{id}/commands/{command_id}/execute). Self-contained: it
 // carries its target, so it doesn't reference any compiled config.
@@ -63,6 +68,7 @@ struct CompiledCommand {
 struct ActionSpan {
     uint16_t offset = 0;
     uint8_t count = 0;
+    bool macro = false;  // a binding marked as a macro: the Macro lane
 };
 
 struct TriggerTable {
@@ -133,8 +139,21 @@ struct CompiledConfig {
     }
     // The device an Adapter or Unavailable action targets, or nullptr.
     const CompiledDevice *deviceOf(const CompiledAction &action) const {
-        const bool device = action.op == ActionOp::Adapter || action.op == ActionOp::Unavailable;
-        return device && action.deviceIndex < devices.size() ? &devices[action.deviceIndex] : nullptr;
+        return targetsDevice(action) && action.deviceIndex < devices.size() ? &devices[action.deviceIndex] : nullptr;
+    }
+
+    // A queued step's target (executor nodes, a macro run from the editor):
+    // its device's id and provider ref, or an activate's activity id; else
+    // left as is.
+    void targetOf(const CompiledAction &action, IdString *target,
+                  FixedString<limits::kMaxProviderRefLength> *providerRef) const {
+        if (const CompiledDevice *device = deviceOf(action)) {
+            *target = device->id;
+            *providerRef = device->providerRef;
+        } else if (action.op == ActionOp::Activate) {
+            const auto index = static_cast<size_t>(action.params[0].integer);
+            if (index < activities.size()) *target = activities[index].id;
+        }
     }
 
     // The binding for a trigger. Fallback is per button: if the active

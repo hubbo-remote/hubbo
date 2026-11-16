@@ -53,16 +53,34 @@ bool serviceOnDevice(const HaServiceCallSpec &call, const DeviceSpec &device) {
            ha::isDeviceService(device.provider.entityId, device.haCapabilities->platform, call.service);
 }
 
-// Where a command runs, and what its effect allows there: a Hold only in a
-// binding (paired with its release there), a Wait only in a startup or
-// shutdown, so a direct execute runs neither. Ok, HoldNotAllowed or
-// SequenceOnly.
-enum class Place { Sequence, Binding, Direct };
+// Where a command runs: a startup or shutdown; a binding (a single
+// command); a macro (a binding marked as one, docs/design/macros.md: a plain
+// list of one or more); a smart button's press (as a binding, whatever its
+// length); a direct execute. What its effect allows there: a Hold only in a
+// binding (paired with its release there; a smart press refuses it later),
+// a Wait only in a startup, shutdown or macro, so a direct execute runs
+// neither. Ok, HoldNotAllowed or SequenceOnly. (A macro refuses a hold's
+// release too: sequence().)
+enum class Place { Sequence, Binding, Macro, SmartPress, Direct };
 ErrorCode misplacedEffect(const CommandSpec *command, Place place) {
     if (command == nullptr) return ErrorCode::Ok;
-    if (command->effect == CommandEffect::Hold && place != Place::Binding) return ErrorCode::HoldNotAllowed;
-    if (command->effect == CommandEffect::Wait && place != Place::Sequence) return ErrorCode::SequenceOnly;
+    const bool holds = place == Place::Binding || place == Place::SmartPress;
+    if (command->effect == CommandEffect::Hold && !holds) return ErrorCode::HoldNotAllowed;
+    const bool waits = place == Place::Sequence || place == Place::Macro;
+    if (command->effect == CommandEffect::Wait && !waits) return ErrorCode::SequenceOnly;
     return ErrorCode::Ok;
+}
+
+// Whether `command` releases one of `catalog`'s holds (key_up).
+bool releasesAHold(const CommandCatalog &catalog, const CommandSpec *command) {
+    if (command == nullptr) return false;
+    for (size_t i = 0; i < catalog.count; i++) {
+        const CommandSpec &c = catalog.items[i];
+        if (c.effect == CommandEffect::Hold && c.releasedBy != nullptr && std::string_view(c.releasedBy) == command->id) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Looks up `commandId` in `catalog` and resolves `params` against it into
@@ -101,8 +119,10 @@ public:
 
     // Devices first: actions resolve against them, each through
     // resolveIntegration(). Device problems go to `sink` (defaults to the
-    // main report).
-    void devices(const ConfigSpec &config, const std::string &prefix, ValidationReport *sink = nullptr) {
+    // main report). With `only`, just the devices those actions name (a
+    // macro run from the editor, against the saved, validated config).
+    void devices(const ConfigSpec &config, const std::string &prefix, ValidationReport *sink = nullptr,
+                 const std::vector<ActionSpec> *only = nullptr) {
         ValidationReport &report = sink != nullptr ? *sink : report_;
         const std::vector<DeviceSpec> &devices = config.devices;
         config_ = &config;
@@ -115,6 +135,11 @@ public:
         size_t hintBytes = 0;
         for (size_t i = 0; i < devices.size(); i++) {
             const DeviceSpec &d = devices[i];
+            if (only != nullptr && std::none_of(only->begin(), only->end(), [&](const ActionSpec &a) {
+                    return a.deviceId == d.id;
+                })) {
+                continue;
+            }
             const std::string path = prefix + "/" + std::to_string(i);
             bool ok = true;
             // One host per Bluetooth device, and the radio holds kMaxBleDevices bonds.
@@ -202,6 +227,11 @@ public:
 
     // The ids system.activate may reference, index = compiled activity index.
     void activityIds(std::vector<std::string> ids) { activityIds_ = std::move(ids); }
+    void activityIds(const ConfigSpec &config) {
+        activityIds_.clear();
+        activityIds_.reserve(config.activities.size());
+        for (const auto &a : config.activities) activityIds_.push_back(a.id);
+    }
 
     int activityIndex(std::string_view id) const override {
         for (size_t i = 0; i < activityIds_.size(); i++) {
@@ -219,8 +249,8 @@ public:
             report_.add(ErrorCode::InvalidName, prefix + "/name");
         }
         ActionSpan startup, shutdown;
-        sequence(a.startup, /*isBinding=*/false, prefix + "/startup", &startup);
-        sequence(a.shutdown, /*isBinding=*/false, prefix + "/shutdown", &shutdown);
+        sequence(a.startup, Place::Sequence, prefix + "/startup", &startup);
+        sequence(a.shutdown, Place::Sequence, prefix + "/shutdown", &shutdown);
         TriggerTable table{};
         bindings(a.bindings, prefix + "/bindings", &table);
         if (out != nullptr) {
@@ -259,7 +289,8 @@ public:
             seen[triggerIndex(trigger)] = true;
             paths[triggerIndex(trigger)] = &path;
             ActionSpan span;
-            sequence(binding.actions, /*isBinding=*/true, path, &span);
+            sequence(binding.actions, binding.macro ? Place::Macro : Place::Binding, path, &span);
+            span.macro = binding.macro;
             table->spans[static_cast<size_t>(trigger.button)][static_cast<size_t>(trigger.kind)] = span;
             if (span.count != 0) table->bound |= remote::buttonBit(trigger.button);
         }
@@ -314,7 +345,7 @@ public:
             bool paired = false;
             for (uint8_t j = 0; j < up.count && !paired; j++) {
                 const CompiledAction &r = actions_[up.offset + j];
-                const bool adapterAction = r.op == ActionOp::Adapter || r.op == ActionOp::Unavailable;
+                const bool adapterAction = targetsDevice(r);
                 if (!adapterAction || r.adapterIndex != hold.adapterIndex ||
                     r.deviceIndex != hold.deviceIndex || r.commandIndex != hold.releaseIndex) {
                     continue;
@@ -340,6 +371,18 @@ public:
         }
     }
 
+    // A macro run straight from the editor (compileMacro()): its actions as
+    // a marked binding's, or false (issues reported under `path`).
+    bool macro(const std::vector<ActionSpec> &actions, const std::string &path, std::vector<CompiledAction> *out) {
+        const size_t before = report_.issues().size();
+        ActionSpan span;
+        sequence(actions, Place::Macro, path, &span);
+        if (report_.issues().size() != before) return false;
+        const auto first = actions_.begin() + span.offset;
+        out->assign(first, first + span.count);
+        return true;
+    }
+
 private:
     // + and - (`merges`): each tap action's int `step` param is marked, so
     // quick taps can go as one call (the engine's tap merge).
@@ -362,7 +405,7 @@ private:
     }
 
     void smartList(const std::vector<ActionSpec> &actions, const std::string &path, ActionSpan *span) {
-        sequence(actions, /*isBinding=*/true, path, span);
+        sequence(actions, Place::SmartPress, path, span);
         rejectHolds(*span, path);
     }
 
@@ -376,15 +419,20 @@ private:
     }
 
     // system.activate/off are allowed only as the last action of a binding;
-    // hold commands only in bindings (checked in bindings()).
-    void sequence(const std::vector<ActionSpec> &actions, bool isBinding, const std::string &prefix,
-                  ActionSpan *span) {
+    // hold commands only in one-action bindings (paired in bindings()).
+    void sequence(const std::vector<ActionSpec> &actions, Place place, const std::string &prefix, ActionSpan *span) {
         *span = ActionSpan{};
         if (actions.size() > limits::kMaxSequenceLength) {
             report_.add(ErrorCode::TooManyActions, prefix);
             return;
         }
+        if (place == Place::Binding && actions.size() > 1) {
+            report_.add(ErrorCode::MacroRequired, prefix);  // a list must be marked a macro
+            return;
+        }
+        const bool isBinding = place != Place::Sequence;
         const size_t offset = actions_.size();
+        size_t waits = 0;
         for (size_t i = 0; i < actions.size(); i++) {
             CompiledAction compiled;
             const std::string path = prefix + "/" + std::to_string(i);
@@ -396,12 +444,25 @@ private:
                 report_.add(ErrorCode::MisplacedTransition, path + "/command_id");
                 continue;
             }
-            const ErrorCode misplaced = misplacedEffect(compiled.command, isBinding ? Place::Binding : Place::Sequence);
+            ErrorCode misplaced = misplacedEffect(compiled.command, place);
+            // A disabled integration's (Unavailable) too: disabling never
+            // changes what validates.
+            if (place == Place::Macro && targetsDevice(compiled) && compiled.deviceIndex < info_.size() &&
+                releasesAHold(info_[compiled.deviceIndex].catalog, compiled.command)) {
+                misplaced = ErrorCode::HoldNotAllowed;
+            }
             if (misplaced != ErrorCode::Ok) {
                 report_.add(misplaced, path + "/command_id");
                 continue;
             }
+            if (compiled.op == ActionOp::Wait) waits++;
             actions_.push_back(compiled);
+        }
+        // A binding or macro that's only waits waits for nothing: a wait
+        // needs a command to go with it (as the web reports it).
+        const bool press = place == Place::Binding || place == Place::Macro;
+        if (press && !actions.empty() && waits == actions.size()) {
+            report_.add(ErrorCode::SequenceOnly, prefix + "/0/command_id");
         }
         if (actions_.size() <= limits::kMaxCompiledActions) {
             span->offset = static_cast<uint16_t>(offset);
@@ -516,10 +577,7 @@ std::unique_ptr<CompiledConfig> compileConfig(const ConfigSpec &config, const Ad
         r.add(ErrorCode::TooManyActivities, "/activities");
         return nullptr;
     }
-    std::vector<std::string> ids;
-    ids.reserve(config.activities.size());
-    for (const auto &a : config.activities) ids.push_back(a.id);
-    compiler.activityIds(std::move(ids));
+    compiler.activityIds(config);
 
     out->activities.resize(config.activities.size());
     for (size_t i = 0; i < config.activities.size(); i++) {
@@ -591,6 +649,34 @@ IntegrationResolution resolveIntegration(const ConfigSpec &config, const Adapter
     }
     if (!r.integration->enabled) r.error = ErrorCode::IntegrationDisabled;
     return r;
+}
+
+ErrorCode compileMacro(const ConfigSpec &config, const AdapterSet &adapters, const std::vector<ActionSpec> &actions,
+                       std::vector<CompiledCommand> *out, ValidationReport *report) {
+    ValidationReport local;
+    ValidationReport &r = report != nullptr ? *report : local;
+    if (actions.empty()) {
+        r.add(ErrorCode::Required, "/actions");
+        return ErrorCode::ValidationFailed;
+    }
+    ValidationReport deviceIssues;  // the config's own, not this macro's
+    CompiledConfig targets;  // just the ids a step's target needs
+    Compiler compiler(adapters, r, &targets);
+    compiler.devices(config, "/devices", &deviceIssues, &actions);
+    compiler.activityIds(config);
+    targets.activities.resize(config.activities.size());
+    for (size_t i = 0; i < config.activities.size(); i++) targets.activities[i].id.assign(config.activities[i].id);
+    std::vector<CompiledAction> compiled;
+    if (!compiler.macro(actions, "/actions", &compiled)) return ErrorCode::ValidationFailed;
+    // Self-contained, as a queued node is: each step with its target.
+    out->clear();
+    out->reserve(compiled.size());
+    for (const CompiledAction &action : compiled) {
+        CompiledCommand &step = out->emplace_back();
+        step.action = action;
+        targets.targetOf(action, &step.deviceId, &step.providerRef);
+    }
+    return ErrorCode::Ok;
 }
 
 ErrorCode compileDeviceCommand(const ConfigSpec &config, const AdapterSet &adapters, std::string_view deviceId,

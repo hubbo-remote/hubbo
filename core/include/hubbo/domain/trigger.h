@@ -31,5 +31,8 @@ constexpr size_t triggerIndex(Trigger t) {
 // Strict: exactly one ':', known names, no whitespace. Returns false otherwise.
 bool parseTrigger(std::string_view text, Trigger *out);
 std::string formatTrigger(Trigger trigger);
+// A trigger a macro can be on: a press (:down, :tap or :hold), never :up
+// (docs/design/macros.md). False for an unparseable one too.
+bool isMacroTrigger(std::string_view text);
 
 }  // namespace hubbo

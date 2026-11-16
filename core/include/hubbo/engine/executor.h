@@ -13,9 +13,13 @@
 // storage. Runs on the engine task only (single-threaded by design).
 //
 // Lanes. Sequences queue FIFO in one of two lanes that progress
-// independently, so a 5 s wait in a startup sequence never delays a button:
+// independently, so a 5 s wait in a startup sequence or a macro never delays
+// a button:
 //   Transition  startup/shutdown sequences
-//   Input       button bindings (and API-triggered sequences)
+//   Input       one-action button bindings (and API-triggered sequences)
+//   Macro       button bindings marked as macros
+//               (the running one plus kExecutorMacroSequences queued;
+//               docs/design/macros.md)
 // Within a lane, sequences run one after another; within a sequence, actions
 // run strictly in order.
 //
@@ -44,15 +48,18 @@
 // device id and provider ref, so queued work never points into a compiled
 // config that may be swapped and freed.
 //
-// Overflow. enqueue() is all-or-nothing: if the lane or the node pool can't
-// take the whole sequence it is rejected with QueueFull, counted, and
-// reported (outcome Rejected). Nothing already queued is dropped. The engine
+// Overflow. enqueue() is all-or-nothing: if the lane, its node budget or the
+// node pool can't take the whole sequence it is rejected with QueueFull,
+// counted, and reported (outcome Rejected). The Macro lane's budget is
+// kExecutorMacroNodes, so long macros never starve presses of nodes. Nothing already queued is dropped. The engine
 // adds held-key safety on top (see engine.h).
 namespace hubbo {
 
-enum class Lane : uint8_t { Transition, Input, Count };
+enum class Lane : uint8_t { Transition, Input, Macro, Count };
 // SmartButton: a smart-button slot's press (docs/design/smart-buttons.md).
-enum class SequenceOrigin : uint8_t { Startup, Shutdown, Binding, GlobalBinding, Api, SmartButton };
+// Macro: a binding (activity or global) marked as a macro, on the Macro
+// lane (docs/design/macros.md).
+enum class SequenceOrigin : uint8_t { Startup, Shutdown, Binding, GlobalBinding, Api, SmartButton, Macro };
 // Completed: every step ok. CompletedWithErrors: it reached the end and one
 // or more steps failed or timed out.
 enum class SequenceOutcome : uint8_t { Completed, CompletedWithErrors, Cancelled, Rejected };
@@ -66,7 +73,7 @@ struct SequenceInfo {
     uint32_t id = 0;  // assigned by enqueue()
     Lane lane = Lane::Input;
     SequenceOrigin origin = SequenceOrigin::Binding;
-    Trigger trigger;  // Binding/GlobalBinding/SmartButton only
+    Trigger trigger;  // Binding/GlobalBinding/SmartButton/Macro only
     IdString activityId;  // owning activity, if any
     uint32_t generation = 0;
     uint8_t actionCount = 0;
@@ -147,6 +154,8 @@ struct ExecutorStats {
 class Executor : public CompletionSink {
 public:
     explicit Executor(AdapterSet &adapters, uint32_t actionTimeoutMs = limits::kDefaultActionTimeoutMs);
+    Executor(const Executor &) = delete;  // its lanes point into it
+    Executor &operator=(const Executor &) = delete;
 
     void setObserver(ExecutionObserver *observer) { observer_ = observer; }
 
@@ -159,7 +168,13 @@ public:
 
     // Queues one self-contained command (API execution) as a sequence.
     ErrorCode enqueueCommand(SequenceInfo info, const CompiledCommand &command, uint32_t nowMs,
-                             uint32_t *sequenceId = nullptr);
+                             uint32_t *sequenceId = nullptr) {
+        return enqueueSteps(info, &command, 1, nowMs, sequenceId);
+    }
+    // Queues `count` self-contained commands (a macro run from the editor)
+    // as one sequence: QueueFull, TooManyActions (0 or over the limit), Ok.
+    ErrorCode enqueueSteps(SequenceInfo info, const CompiledCommand *steps, size_t count, uint32_t nowMs,
+                           uint32_t *sequenceId = nullptr);
 
     // Runs everything that is due. Bounded: each call executes at most the
     // queued actions once. Stops early at a system.activate/off so the engine
@@ -230,8 +245,12 @@ private:
         Ticket ticket = 0;
     };
 
+    // A ring over storage the executor owns, sized per lane.
     struct LaneQueue {
-        Sequence items[limits::kExecutorSequencesPerLane];
+        Sequence *items = nullptr;
+        size_t capacity = 0;
+        size_t nodeBudget = 0;  // pool nodes its sequences may hold together
+        size_t nodes = 0;       // held now
         size_t first = 0;
         size_t count = 0;
         PendingAction pending;  // the front sequence's, while it is Pending
@@ -251,6 +270,10 @@ private:
 
     // Reserves a sequence slot and `count` nodes, or reports Rejected.
     Sequence *reserve(SequenceInfo &info, uint8_t count, uint32_t nowMs);
+    // Queues `count` actions on `seq`, step i from fill(i, &node) (its
+    // action and target).
+    template <typename Fill>
+    void link(Sequence &seq, size_t count, Fill fill);
     void runLane(LaneQueue &lane, uint32_t nowMs);
     // The front sequence, cancelled (the rest of its steps never run).
     void cancelFront(LaneQueue &lane, uint32_t nowMs);
@@ -280,6 +303,9 @@ private:
     uint16_t freeHead_ = kNil;
     size_t freeCount_ = 0;
     LaneQueue lanes_[kLaneCount];
+    Sequence transitionItems_[limits::kExecutorSequencesPerLane];
+    Sequence inputItems_[limits::kExecutorSequencesPerLane];
+    Sequence macroItems_[limits::kExecutorMacroSequences + 1];  // the running one too
     InFlight inFlight_[limits::kExecutorInFlight];
 
     uint32_t generation_ = 0;
