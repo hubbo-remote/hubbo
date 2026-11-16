@@ -2,6 +2,13 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## Response time gauge (branch `latency-targets`)
+
+- Status Overview: targets p95 < 2 ms, p99 < 5 ms (ARCHITECTURE.md; boards measure ~0.5 / 0.65 / 0.8 ms).
+  `LatencyMeter`: 0–5 ms track (green < 2, amber 2–5) plus a 6% red end cap where anything past 5 ms pins;
+  ticks 0, 1, 2, 5 ms. Values under 1 ms show two decimals. The mock tracks the API fixture (sub-ms since
+  the fixture change) with jitter rounded to 0.01; status.spec checks "Good" and a sub-ms value on the mock.
+
 ## Activity runs (branch `activity-runs`; docs/design/activity-runs.md)
 
 - **Activity Log** (Status tab `activity`, `/status/activity`; `components/ActivityLog.tsx`; UX iteration,
