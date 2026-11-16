@@ -26,6 +26,16 @@ Current state, not a log. Update when a piece of work lands.
   arrows' 1.7). music Music, tv Tv, movie Clapperboard, bulb Lightbulb, socket Plug, play Play, pause
   Pause, stop Square (those three and skip filled), next SkipForward, prev SkipBack, mute VolumeX, back
   Undo2, record Circle filled red. Arrows, plus/minus and the stripe stay hand-drawn strokes.
+- **Pointer cursor**: one `@layer base` rule in index.css (`:where(...)`, zero specificity) gives every
+  clickable thing the pointer: buttons, ARIA button/tab/switch/checkbox/radio/menuitem/option roles (so the
+  remote's `<g role=button>` keys), `a[href]`, summary, select, checkbox/radio/range/file inputs, labels
+  wrapping those or a Switch, and `label[for]` in a row with a Switch. Disabled and `aria-disabled` (the running tile) stay the arrow. Per-component
+  `cursor-pointer` classes are gone; utilities still override (the step grip's `cursor-grab`/`active:cursor-grabbing`; the name field's `cursor-text`). cursor.spec samples them.
+- **Step drag ghost** (SequenceEditor): pointer events as before (mouse, trackpad, touch; no HTML5 DnD).
+  On grip down, `liftGhost` clones the row into a fixed, `inert` (ids stripped) `[data-drag-ghost]` copy
+  (80% opacity, shadow, scale 1.02 unless reduced motion) that follows the pointer vertically; the row
+  stays dimmed and the drop line still marks the slot. Removed on up/cancel/unmount. Grip cursor grab, grabbing while held (the user tried move, went back).
+  activity.spec drags both ways on Watch Apple TV and checks the ghost, the order and the save.
 - Editor URLs carry a tab now, so `activityIdFromUrl` (e2e/editor.ts) reads the id by pattern.
 
 ## Activity runs (branch `activity-runs`; docs/design/activity-runs.md)
