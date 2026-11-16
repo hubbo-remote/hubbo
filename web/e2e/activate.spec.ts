@@ -35,3 +35,13 @@ test.describe('when the hub switches but can\'t queue the startup', () => {
     await expect(page.getByText('Couldn’t start')).toHaveCount(0)
   })
 })
+
+test('a tile’s menu opens over the tiles after it: its items take the click', async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 800 }) // one column: the next tile sits right under the menu
+  await open(page, '/')
+  const first = page.getByRole('list', { name: 'Activities' }).getByRole('listitem').first()
+  await first.getByRole('button', { name: /^More for / }).click()
+  // Playwright refuses a click whose point another element covers, so this fails if the next tile is on top.
+  await page.getByRole('menuitem', { name: 'Edit' }).click()
+  await expect(page).toHaveURL(/#\/activities\/act_/)
+})
