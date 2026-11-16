@@ -1,0 +1,20 @@
+# A startup checks each Home Assistant step just before it runs and skips
+# what's already true. From off every step runs; switching to Play Xbox then
+# skips the TV's and receiver's power and changes their inputs.
+ha real
+activate act_watch_apple_tv
+advance 3000
+expect_event startup act_watch_apple_tv completed
+drain
+activate act_play_xbox
+advance 4000
+expect ha_main dev_xbox media_player.turn_on -> pending
+expect ha_main dev_lg_tv media_player.turn_on -> pending
+expect ha_main dev_lg_tv media_player.turn_on done -> skipped already_set
+expect ha_main dev_denon media_player.turn_on -> pending
+expect ha_main dev_denon media_player.turn_on done -> skipped already_set
+expect system - wait duration_ms=2000
+expect ha_main dev_lg_tv media_player.select_source source="HDMI 2" -> pending
+expect ha_main dev_denon media_player.select_source source=Game -> pending
+expect_none
+expect_event startup act_play_xbox completed

@@ -17,28 +17,33 @@
 //   engine task       execute(): AdapterUnavailable at once unless the client
 //                     is Connected and the hand-over ring has room; else the
 //                     call goes to the integration task through that
-//                     lock-free ring and the result is Pending. poll():
-//                     delivers results to the executor's completion sink.
-//                     Never locks, never allocates.
+//                     lock-free ring and the result is Pending. cancel():
+//                     hands the ticket over through a third ring, so a call
+//                     not yet sent (still queued, or reading its state) is
+//                     never sent. poll(): delivers results to the
+//                     executor's completion sink. Never locks, never
+//                     allocates.
 //   integration task  service(): takes handed-over calls, refuses a stale
 //                     entity (EntityNotFound, unsent: HA would answer
 //                     success), builds each HA service call (ha/
 //                     capabilities: the registered entity is the only
-//                     target) and sends it. A command that acts on the
-//                     current state (stateAttribute(), e.g. a mute toggle)
-//                     first reads that one attribute fresh
-//                     (client.readAttribute; no cache, no standing
-//                     subscription), then builds the call from it and
-//                     sends it with what's left of kCommandTimeoutMs, so
-//                     the read and the call fit the 5 s together (a
-//                     Home Assistant action, call_service, is sent as the
-//                     user wrote it: buildCustomCall); a
-//                     failed or timed-out read still sends, as unknown; an
-//                     entity HA has no state for fails EntityNotFound; HA's result (or the
-//                     client's kCommandTimeoutMs) comes back through a second
-//                     ring as Accepted or Failed. A call that can't be sent
-//                     now fails; nothing is queued for later or replayed
-//                     after a reconnect.
+//                     target; a Home Assistant action, call_service, as the
+//                     user wrote it) and sends it.
+//                     - A command that acts on the current state
+//                       (stateAttribute(), e.g. a mute toggle) first reads
+//                       that one attribute fresh (client.readAttribute; no
+//                       cache, no standing subscription) and builds the call
+//                       from it; a failed or timed-out read still sends, as
+//                       unknown; an entity HA has no state for fails
+//                       EntityNotFound.
+//                     - A startup or shutdown step (checkState) first reads
+//                       its entity's state (kStateCheckMs) and is Skipped if
+//                       it's already set (state_check.h); else it's sent.
+//                     HA's answer comes back through a second ring as
+//                     Accepted or Failed, or NoReply when there's none
+//                     within kReplyLimitMs. A call that can't be sent now
+//                     fails; nothing is queued for later or replayed after
+//                     a reconnect.
 //   config task       commandsFor() (config compile): the device's stored
 //                     capabilities snapshot, so HA isn't needed to compile.
 //
@@ -49,6 +54,11 @@ namespace hubbo::integrations {
 class HomeAssistantAdapter : public IntegrationAdapter {
 public:
     static constexpr size_t kQueueDepth = 16;
+    // How long a step waits for HA's answer: past it, the step is NoReply
+    // and the sequence goes on (docs/design/state-checks.md).
+    static constexpr uint32_t kReplyLimitMs = 1000;
+    // A startup or shutdown step's state read: past it, the step is sent.
+    static constexpr uint32_t kStateCheckMs = 300;
 
     HomeAssistantAdapter(const char *integrationId, HomeAssistantClient &client);
 
@@ -62,6 +72,9 @@ public:
     // Engine task.
     ExecResult execute(const ExecRequest &request) override;
     void poll(uint32_t nowMs, CompletionSink &sink) override;
+    // A cancelled call that HA already has can't be taken back; one not yet
+    // sent is dropped. Full ring: the cancel is lost (it may still send).
+    void cancel(Ticket ticket, uint32_t nowMs) override;
 
     // Integration task, every loop (after client.poll()).
     void service();
@@ -75,22 +88,35 @@ private:
         uint8_t paramsPresent = 0;
         FixedString<limits::kMaxProviderRefLength> entityId;
         HaServiceCallRef custom;  // call_service; kept until the call is built
+        bool checkState = false;  // ExecRequest::checkState
     };
     struct Result {
         Ticket ticket = 0;
         ExecResult result;
     };
-    void finish(Ticket ticket, ErrorCode error);
-    // Integration task: build `call` from `capabilities` (with `state`, the
-    // value read for a command that needs one) and send it with `timeoutMs`;
-    // the ticket finishes with HA's result.
-    void send(const Call &call, const ha::EntityCapabilities &capabilities, const ha::ServiceValue *state,
-              uint32_t timeoutMs);
+    void finish(Ticket ticket, ExecResult result);
+    void finish(Ticket ticket, ErrorCode error);  // Ok: Accepted, else Failed
+    // Integration task. build(): `call` from `capabilities` (with `state`,
+    // the value read for a command that needs one); false: it couldn't be
+    // built and the ticket is finished. check(): skip it if already set
+    // (state_check.h), else send(). send(): to HA, the ticket finishing
+    // with HA's answer, or NoReply after kReplyLimitMs.
+    bool build(const Call &call, const ha::EntityCapabilities &capabilities, const ha::ServiceValue *state,
+               ha::ServiceCall *out);
+    void check(Ticket ticket, const ha::ServiceCall &call);
+    void send(Ticket ticket, const ha::ServiceCall &call);
+    // Integration task: whether the engine cancelled `ticket` (takes the
+    // cancels handed over so far).
+    bool cancelled(Ticket ticket);
 
     const char *id_;
     HomeAssistantClient &client_;
     SpscRing<Call, kQueueDepth + 1> calls_;          // engine -> integration
     SpscRing<Result, 2 * kQueueDepth + 1> results_;  // integration -> engine
+    SpscRing<Ticket, 2 * kQueueDepth + 1> cancels_;  // engine -> integration
+    // Integration task: the latest cancelled tickets, oldest overwritten.
+    Ticket cancelled_[2 * kQueueDepth] = {};
+    size_t cancelledNext_ = 0;
     mutable HaCatalogs catalogs_;  // config task (commandsFor) vs integration task (service)
 };
 

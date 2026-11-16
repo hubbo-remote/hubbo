@@ -47,6 +47,12 @@ public:
     const char *integrationState(std::string_view integrationId) const override;
     std::string integrationDetail(std::string_view integrationId) const override;
     const char *deviceAvailability(const DeviceSpec &device) const override;
+    bool activityRuns(ActivityRuns *out) const override {
+        if (!hub_.engine().runsShared(out)) return false;
+        out->nowMs = hub_.nowMs();  // the engine's clock
+        return true;
+    }
+    bool lastRun(LastRun *out) const override { return hub_.engine().lastRunShared(out); }
 
 private:
     SimHub &hub_;

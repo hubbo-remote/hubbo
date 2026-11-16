@@ -31,15 +31,19 @@ Engine::Engine(Store &store, AdapterSet &adapters, uint32_t actionTimeoutMs)
 void Engine::setObserver(EngineObserver *observer) { observer_ = observer; }
 
 void Engine::Relay::onActionDispatched(const DispatchRecord &record) {
+    if (engine->history_ != nullptr) engine->history_->onDispatched(record);
     if (engine->observer_ != nullptr) engine->observer_->onActionDispatched(record);
     engine->trackHolds(record);
 }
 
 void Engine::Relay::onActionCompleted(const CompletionRecord &record) {
+    if (engine->history_ != nullptr) engine->history_->onCompleted(record);
+    engine->resolveRelease(record);
     if (engine->observer_ != nullptr) engine->observer_->onActionCompleted(record);
 }
 
 void Engine::Relay::onSequenceFinished(const SequenceReport &report) {
+    if (engine->history_ != nullptr) engine->history_->onFinished(report);
     engine->resolveReleases(report);
     if (report.info.origin == SequenceOrigin::Api) engine->finishCommand(report);
     const bool binding =
@@ -240,6 +244,7 @@ void Engine::poll(uint32_t nowMs) {
     const bool stepHeld = (held_ & remote::buttonBit(step_.button())) != 0;
     if (step_.count != 0 && !stepHeld && timeReached(nowMs_, step_.dueAtMs)) flushStep();
     pumpAndApply(guard.get());
+    if (history_ != nullptr) history_->publish();
 }
 
 bool Engine::addStepTap(const CompiledConfig &config, const SmartRef &pressed) {
@@ -252,9 +257,9 @@ bool Engine::addStepTap(const CompiledConfig &config, const SmartRef &pressed) {
         step_.command.action = action;
         step_.command.deviceId.clear();
         step_.command.providerRef.clear();
-        if (action.deviceIndex < config.devices.size()) {
-            step_.command.deviceId = config.devices[action.deviceIndex].id;
-            step_.command.providerRef = config.devices[action.deviceIndex].providerRef;
+        if (const CompiledDevice *device = config.deviceOf(action)) {
+            step_.command.deviceId = device->id;
+            step_.command.providerRef = device->providerRef;
         }
     }
     step_.press = pressed;
@@ -436,7 +441,12 @@ ErrorCode Engine::transition(const CompiledConfig &config, int targetIndex, Tran
     }
     publishActive();
     if (observer_ != nullptr) observer_->onActivityChanged(activeId_.c_str(), nowMs_);
-    const ErrorCode queued = executor_.enqueue(info, config, span, nowMs_);
+    uint32_t sequenceId = 0;
+    const ErrorCode queued = executor_.enqueue(info, config, span, nowMs_, &sequenceId);
+    if (history_ != nullptr && span.count != 0) {
+        info.id = sequenceId;
+        history_->begin(info, config, span, queued, nowMs_);
+    }
     if (result != nullptr) {
         *result = {};
         result->switched = true;
@@ -471,15 +481,15 @@ void Engine::pumpAndApply(const CompiledConfig *config) {
 void Engine::trackHolds(const DispatchRecord &record) {
     const CompiledAction &action = record.action;
     if (action.op != ActionOp::Adapter || action.command == nullptr) return;
-    const bool reached = record.result.status == ExecStatus::Accepted || record.result.status == ExecStatus::Pending;
+    const bool reached = succeeded(record.result.status) || record.result.status == ExecStatus::Pending;
     if (!reached) return;
     if (action.command->effect != CommandEffect::Hold) {
         // A binding's own release. The hold closes only once the release has
-        // completed: at once if Accepted; if Pending, when its sequence ends
-        // (resolveReleases()).
+        // completed: at once if it succeeded; if Pending, with its own result
+        // (resolveRelease()).
         const int slot = holds_.match(action.adapterIndex, record.target, action.command, action.params);
         if (slot < 0) return;
-        if (record.result.status == ExecStatus::Accepted) {
+        if (succeeded(record.result.status)) {
             holds_.erase(slot);
         } else {
             holds_.markReleasing(slot, record.sequence.id, record.index);
@@ -503,18 +513,24 @@ void Engine::trackHolds(const DispatchRecord &record) {
     if ((held_ & remote::buttonBit(hold.button)) == 0 || !holds_.add(hold)) releaseHold(hold);
 }
 
-void Engine::resolveReleases(const SequenceReport &report) {
+void Engine::resolveRelease(const CompletionRecord &record) {
+    // A pending release's own result: it went (the hold is closed) or it may
+    // not have (failed or timed out: the adapter's releaseAll).
     OpenHold hold;
-    while (holds_.takeReleasing(report.info.id, &hold)) {
-        // The release's result arrived (Completed, or a later action failed)
-        // or it didn't (it failed, timed out or was cancelled while pending:
-        // unknown). Unknown falls back to the adapter's releaseAll.
-        const bool released = report.outcome == SequenceOutcome::Completed ||
-                              (report.outcome == SequenceOutcome::Failed && report.actionIndex > hold.releasingIndex);
-        if (released) continue;
-        stats_.forcedReleases++;
-        if (IntegrationAdapter *adapter = adapters_.at(hold.adapterIndex)) adapter->releaseAll(nowMs_);
-    }
+    if (!holds_.takeReleasing(record.sequence.id, record.index, &hold)) return;
+    if (!succeeded(record.result.status)) forceRelease(hold);
+}
+
+void Engine::resolveReleases(const SequenceReport &report) {
+    // A release still pending when its sequence ends never got a result
+    // (cancelled): unknown, so the adapter's releaseAll.
+    OpenHold hold;
+    while (holds_.takeReleasing(report.info.id, -1, &hold)) forceRelease(hold);
+}
+
+void Engine::forceRelease(const OpenHold &hold) {
+    stats_.forcedReleases++;
+    if (IntegrationAdapter *adapter = adapters_.at(hold.adapterIndex)) adapter->releaseAll(nowMs_);
 }
 
 void Engine::releaseHolds(remote::Button button) {

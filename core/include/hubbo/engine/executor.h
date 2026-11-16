@@ -22,11 +22,14 @@
 // Waits. system.wait parks its sequence until nowMs + duration; pump() resumes
 // it. Nothing sleeps. Time comparisons are wrap-safe.
 //
-// Adapter results. Accepted -> next action. Failed/Timeout -> the sequence
-// stops and is reported Failed (MVP: no retries). Pending -> if more actions
-// follow, the sequence (and its lane) waits for complete() or the action
-// timeout; if it was the last action, the lane moves on and the result is
-// tracked in a small in-flight table, reported when it arrives or times out.
+// Adapter results. Accepted -> next action. Failed/Timeout -> the step's
+// error is recorded and the next action starts at once: a step never stops
+// its sequence (docs/design/activity-runs.md), which ends CompletedWithErrors
+// (no retries). Pending -> if more actions follow, the sequence (and its
+// lane) waits for complete() or the action timeout (reported as the step's
+// Timeout completion); if it was the last action, the lane moves on and the
+// result is tracked in a small in-flight table, reported when it arrives or
+// times out.
 //
 // Generation guard. Every sequence carries the engine's transition
 // generation. cancelAll(newGeneration) drops every queued/parked sequence and
@@ -50,7 +53,9 @@ namespace hubbo {
 enum class Lane : uint8_t { Transition, Input, Count };
 // SmartButton: a smart-button slot's press (docs/design/smart-buttons.md).
 enum class SequenceOrigin : uint8_t { Startup, Shutdown, Binding, GlobalBinding, Api, SmartButton };
-enum class SequenceOutcome : uint8_t { Completed, Failed, Cancelled, Rejected };
+// Completed: every step ok. CompletedWithErrors: it reached the end and one
+// or more steps failed or timed out.
+enum class SequenceOutcome : uint8_t { Completed, CompletedWithErrors, Cancelled, Rejected };
 
 const char *sequenceOriginName(SequenceOrigin origin);
 const char *sequenceOutcomeName(SequenceOutcome outcome);
@@ -71,7 +76,9 @@ struct SequenceReport {
     SequenceInfo info;
     SequenceOutcome outcome = SequenceOutcome::Completed;
     ErrorCode error = ErrorCode::Ok;
-    uint8_t actionIndex = 0;  // failing action (Failed) or next unrun action (Cancelled)
+    // The first failed step (CompletedWithErrors, with `error`) or the next
+    // unrun one (Cancelled).
+    uint8_t actionIndex = 0;
     uint32_t atMs = 0;
 };
 
@@ -89,10 +96,9 @@ struct DispatchRecord {
 };
 
 // A Pending action's result, when its adapter reports it (a timed press
-// released, a wait for a connection ended). A result that is Accepted with an
-// error (wait_connected timing out) lets the sequence go on; this is where it
-// is logged. A deadline the adapter misses is reported as the sequence's
-// failure instead.
+// released, a wait for a connection ended), or a Timeout when it misses its
+// deadline. An Accepted result may still carry an error (wait_connected
+// timing out), logged here.
 struct CompletionRecord {
     const SequenceInfo &sequence;
     uint8_t index;               // position in the sequence
@@ -131,7 +137,7 @@ struct TransitionRequest {
 struct ExecutorStats {
     uint32_t enqueued = 0;
     uint32_t completed = 0;
-    uint32_t failed = 0;
+    uint32_t withErrors = 0;  // CompletedWithErrors
     uint32_t cancelled = 0;
     uint32_t rejected = 0;   // overflow
     uint32_t timeouts = 0;
@@ -203,8 +209,20 @@ private:
         IdString target;
     };
 
+    // A sequence's first failed step, for its report.
+    struct FirstError {
+        ErrorCode code = ErrorCode::Ok;
+        uint8_t index = 0;
+        void note(uint8_t at, ErrorCode error) {
+            if (code != ErrorCode::Ok) return;
+            code = error;
+            index = at;
+        }
+    };
+
     struct Sequence {
         SequenceInfo info;
+        FirstError errors;
         uint16_t head = kNil;
         uint8_t nextIndex = 0;
         State state = State::Ready;
@@ -225,6 +243,7 @@ private:
         bool used = false;
         Ticket ticket = 0;
         SequenceInfo info;
+        FirstError errors;  // its earlier steps'
         uint8_t index = 0;
         uint32_t deadlineMs = 0;
         PendingAction pending;
@@ -233,7 +252,14 @@ private:
     // Reserves a sequence slot and `count` nodes, or reports Rejected.
     Sequence *reserve(SequenceInfo &info, uint8_t count, uint32_t nowMs);
     void runLane(LaneQueue &lane, uint32_t nowMs);
-    void finishFront(LaneQueue &lane, SequenceOutcome outcome, ErrorCode error, uint8_t index, uint32_t nowMs);
+    // The front sequence, cancelled (the rest of its steps never run).
+    void cancelFront(LaneQueue &lane, uint32_t nowMs);
+    // The front sequence, at its end.
+    void doneFront(LaneQueue &lane, uint32_t nowMs);
+    // Reached its end: Completed, or CompletedWithErrors with the first error.
+    void finishDone(const SequenceInfo &info, const FirstError &errors, uint32_t nowMs);
+    // A step's result: a Failed or Timeout one is counted and noted.
+    void stepFailed(FirstError &errors, uint8_t index, const ExecResult &result);
     void popFront(LaneQueue &lane);
     // Counts the outcome and tells the observer. Every finished sequence goes
     // through here exactly once.

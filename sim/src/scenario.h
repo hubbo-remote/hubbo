@@ -12,6 +12,12 @@
 //   ha latency <ms>               HA results arrive later (Pending); 0 = immediate
 //   ha fail <command_id> [error]  next call of that command fails (default adapter_failed)
 //   ha available | unavailable
+//   ha real                       from here on, the real HA client and adapter
+//                                 over the fake HA server (a fresh hub at t=0,
+//                                 connected; not on a pinned hub). Then:
+//   ha state <entity_id> <state>  the fake entity's state (players start off)
+//   ha attr <entity_id> <name> <value>  one attribute (JSON, else text)
+//   ha slow <entity_id> <ms>      HA answers its calls after ms (0: at once)
 //   ble connected | disconnected [device_id]   one host's link (default: every bonded host)
 //   reboot                        power-cycle: same storage, t=0, config and
 //                                 the saved active activity restored (no startup)
@@ -75,6 +81,8 @@ private:
     void reset();
     void reboot();
     void newHub();
+    bool useRealHomeAssistant();
+    void drain();  // everything so far counts as checked
     bool fail(std::string message);
 
     std::ostream *trace_;

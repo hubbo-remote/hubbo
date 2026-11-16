@@ -32,6 +32,8 @@ SimHub::SimHub(storage::Storage *storage, storage::StateStore *state, bool realH
       persister_(state_),
       mqtt_(mqttTransport_, integrations::mqttNodeId(kSimMac), mqttHooks()) {
     engine_.setObserver(this);
+    engine_.setRunHistory(&runs_);
+    ha_.server.clock = [this] { return static_cast<uint64_t>(nowMs_); };  // slow answers wait in hub time
     service_.setListener(&configListeners_);
     resetBle();
     if (bonds != nullptr) {
@@ -108,7 +110,9 @@ ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
     mqttTransitions_.clear();
     (void)hubSettings_.forget();
     mqtt_.setHubName(hubSettings_.identity().name);
-    return load(config);
+    const ValidationReport report = load(config);
+    runs_.clear();  // RAM only on the board: a reset starts with none
+    return report;
 }
 
 
@@ -124,6 +128,7 @@ void SimHub::wipe(auth::Credentials *credentials) {
     mqtt_.setHubName(hubSettings_.identity().name);
     boot(factoryDefaultConfig(), credentials);  // the firmware's first boot and defaults
     engine_.poll(nowMs_);
+    runs_.clear();  // the board restarts after an erase
 }
 
 void SimHub::advanceFirmware(uint32_t ms) {
@@ -259,15 +264,17 @@ void SimHub::onActionDispatched(const DispatchRecord &record) {
     logCommand(std::move(line));
 }
 
-// A Pending action finishing with an error: "ble dev_x wait_connected done ->
-// accepted adapter_unavailable" (the wait timed out; its sequence goes on).
-// Clean results aren't logged; the dispatch line already shows them.
+// A Pending action finishing with an error, or skipped or without a reply:
+// "ble dev_x wait_connected done -> accepted adapter_unavailable" (the wait
+// timed out; its sequence goes on), "ha_main dev_denon media_player.turn_on
+// done -> skipped already_set", "... done -> no_reply". Clean results
+// aren't logged; the dispatch line already shows them.
 void SimHub::onActionCompleted(const CompletionRecord &record) {
-    if (record.result.error == ErrorCode::Ok) return;
+    if (record.result.error == ErrorCode::Ok && record.result.status != ExecStatus::NoReply) return;
     std::string line = commandLine(record.integrationId, record.target, record.command);
     line += " done -> ";
     line += execStatusName(record.result.status);
-    line += std::string(" ") + errorCodeName(record.result.error);
+    if (record.result.error != ErrorCode::Ok) line += std::string(" ") + errorCodeName(record.result.error);
     logCommand(std::move(line));
 }
 

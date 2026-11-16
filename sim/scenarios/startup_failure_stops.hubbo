@@ -1,8 +1,0 @@
-# An action failure stops the sequence and is reported; no retries.
-ha fail media_player.turn_on adapter_failed
-activate act_watch_apple_tv
-expect ha_main dev_lg_tv media_player.turn_on -> failed adapter_failed
-expect_event startup act_watch_apple_tv failed adapter_failed@0
-advance 2000
-expect_none
-expect_active act_watch_apple_tv

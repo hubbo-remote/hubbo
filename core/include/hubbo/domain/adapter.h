@@ -27,9 +27,20 @@ enum class ExecStatus : uint8_t {
     Pending,   // result will arrive later through CompletionSink::complete()
     Failed,
     Timeout,
+    // Neither is a failure. Skipped: nothing sent, the entity was already
+    // in that state (a startup or shutdown step's check, error AlreadySet).
+    // NoReply: sent, but the integration didn't answer within its reply
+    // limit (Home Assistant: 1 s); the device may well have acted.
+    Skipped,
+    NoReply,
 };
 
-const char *execStatusName(ExecStatus status);  // "accepted", "pending", "failed", "timeout"
+// "accepted", "pending", "failed", "timeout", "skipped", "no_reply"
+const char *execStatusName(ExecStatus status);
+// Accepted, Skipped or NoReply: the step went fine as far as the hub knows.
+constexpr bool succeeded(ExecStatus status) {
+    return status == ExecStatus::Accepted || status == ExecStatus::Skipped || status == ExecStatus::NoReply;
+}
 
 struct ExecResult {
     ExecStatus status = ExecStatus::Accepted;
@@ -39,7 +50,13 @@ struct ExecResult {
     static constexpr ExecResult pending() { return {ExecStatus::Pending, ErrorCode::Ok}; }
     static constexpr ExecResult failed(ErrorCode code) { return {ExecStatus::Failed, code}; }
     static constexpr ExecResult timeout() { return {ExecStatus::Timeout, ErrorCode::AdapterTimeout}; }
+    static constexpr ExecResult skipped() { return {ExecStatus::Skipped, ErrorCode::AlreadySet}; }
+    static constexpr ExecResult noReply() { return {ExecStatus::NoReply, ErrorCode::Ok}; }
 };
+
+// The error a Failed or Timeout result stands for (AdapterTimeout, the
+// adapter's error, or AdapterFailed when it gave none).
+ErrorCode failureCode(const ExecResult &result);
 
 // Identifies one pending execution. Never 0.
 using Ticket = uint32_t;
@@ -61,6 +78,9 @@ struct ExecRequest {
     // call_service: the Home Assistant action to send (CompiledAction::call);
     // an adapter that sends it later keeps a copy. Empty otherwise.
     HaServiceCallRef call = nullptr;
+    // A startup or shutdown step: skip it (Skipped) if its device is
+    // already in the state it sets. Adapters that can't tell ignore it.
+    bool checkState = false;
 };
 
 class CompletionSink {

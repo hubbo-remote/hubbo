@@ -209,6 +209,7 @@ private:
     FakeAdapters fakes_;
     integrations::BleHostReconciler bleReconciler_{fakes_.bleHosts};  // hosts follow the saved config
     Engine::Store store_;
+    RunHistory runs_;  // the board's lives in PSRAM; here a member will do
     Engine engine_{store_, fakes_.set};
     remote::RemoteInput input_{*this};  // events go through onRemoteEvent() to the engine
     storage::MemoryStorage memory_;

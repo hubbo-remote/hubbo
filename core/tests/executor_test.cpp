@@ -1,5 +1,5 @@
-// Action executor: ordering, waits, failures, pending results, overflow,
-// cancellation and the generation guard.
+// Action executor: ordering, waits, failed steps (the sequence goes on),
+// pending results, overflow, cancellation and the generation guard.
 #include <gtest/gtest.h>
 
 #include <deque>
@@ -143,27 +143,33 @@ TEST_F(ExecutorTest, ZeroWaitDoesNotPark) {
     EXPECT_EQ(adapter.log, (std::vector<int32_t>{1, 2}));
 }
 
-TEST_F(ExecutorTest, FailureStopsTheSequenceAndIsReported) {
-    build({{act(1), act(2), act(3)}, {act(4)}});
-    adapter.results = {ExecResult::accepted(), ExecResult::failed(ErrorCode::AdapterUnavailable)};
+// A failed step never stops its sequence: the next step starts at once and
+// the report names the first failure.
+TEST_F(ExecutorTest, AFailedStepIsReportedAndTheNextOneRuns) {
+    build({{act(1), act(2), act(3), act(4)}, {act(5)}});
+    adapter.results = {ExecResult::accepted(), ExecResult::failed(ErrorCode::AdapterUnavailable),
+                       ExecResult::failed(ErrorCode::AdapterFailed)};
     run(0);
     run(1);
     exec.pump(0);
-    EXPECT_EQ(adapter.log, (std::vector<int32_t>{1, 2, 4}));  // 3 never runs; next sequence still does
+    EXPECT_EQ(adapter.log, (std::vector<int32_t>{1, 2, 3, 4, 5}));
     ASSERT_EQ(reports.finished.size(), 2u);
-    EXPECT_EQ(reports.finished[0].outcome, SequenceOutcome::Failed);
+    EXPECT_EQ(reports.finished[0].outcome, SequenceOutcome::CompletedWithErrors);
     EXPECT_EQ(reports.finished[0].error, ErrorCode::AdapterUnavailable);
     EXPECT_EQ(reports.finished[0].actionIndex, 1);
-    EXPECT_EQ(exec.stats().failed, 1u);
+    EXPECT_EQ(reports.finished[1].outcome, SequenceOutcome::Completed);
+    EXPECT_EQ(exec.stats().withErrors, 1u);
+    EXPECT_EQ(exec.stats().completed, 1u);
     EXPECT_EQ(exec.freeNodes(), limits::kExecutorActionPool);
 }
 
-TEST_F(ExecutorTest, AdapterTimeoutResultIsAFailure) {
+TEST_F(ExecutorTest, ATimedOutStepIsReportedAndTheNextOneRuns) {
     build({{act(1), act(2)}});
     adapter.results = {ExecResult::timeout()};
     run(0);
     exec.pump(0);
-    EXPECT_EQ(adapter.log.size(), 1u);
+    EXPECT_EQ(adapter.log, (std::vector<int32_t>{1, 2}));
+    EXPECT_EQ(reports.last().outcome, SequenceOutcome::CompletedWithErrors);
     EXPECT_EQ(reports.last().error, ErrorCode::AdapterTimeout);
     EXPECT_EQ(exec.stats().timeouts, 1u);
 }
@@ -182,19 +188,19 @@ TEST_F(ExecutorTest, PendingMidSequenceParksTheLaneUntilComplete) {
     EXPECT_EQ(adapter.log, (std::vector<int32_t>{1, 2, 3}));
 }
 
-TEST_F(ExecutorTest, PendingFailureStopsTheSequence) {
+TEST_F(ExecutorTest, APendingStepThatFailsIsReportedAndTheNextOneRuns) {
     build({{act(1), act(2)}});
     adapter.results = {ExecResult::pending()};
     run(0);
     exec.pump(0);
     exec.complete(adapter.tickets[0], ExecResult::failed(ErrorCode::AdapterFailed), 50);
     exec.pump(50);
-    EXPECT_EQ(adapter.log.size(), 1u);
-    EXPECT_EQ(reports.last().outcome, SequenceOutcome::Failed);
+    EXPECT_EQ(adapter.log, (std::vector<int32_t>{1, 2}));
+    EXPECT_EQ(reports.last().outcome, SequenceOutcome::CompletedWithErrors);
     EXPECT_EQ(reports.last().actionIndex, 0);
 }
 
-TEST_F(ExecutorTest, PendingTimesOut) {
+TEST_F(ExecutorTest, APendingStepTimesOutAndTheNextOneRuns) {
     build({{act(1), act(2)}});
     adapter.results = {ExecResult::pending()};
     run(0);
@@ -202,12 +208,14 @@ TEST_F(ExecutorTest, PendingTimesOut) {
     exec.pump(499);
     EXPECT_TRUE(reports.finished.empty());
     exec.pump(500);
-    EXPECT_EQ(reports.last().outcome, SequenceOutcome::Failed);
+    EXPECT_EQ(adapter.cancelled, (std::vector<Ticket>{adapter.tickets[0]}));
+    EXPECT_EQ(adapter.log, (std::vector<int32_t>{1, 2}));
+    EXPECT_EQ(reports.last().outcome, SequenceOutcome::CompletedWithErrors);
     EXPECT_EQ(reports.last().error, ErrorCode::AdapterTimeout);
     // A late result for that ticket is ignored.
     exec.complete(adapter.tickets[0], ExecResult::accepted(), 600);
     exec.pump(600);
-    EXPECT_EQ(adapter.log.size(), 1u);
+    EXPECT_EQ(adapter.log.size(), 2u);
     EXPECT_EQ(reports.finished.size(), 1u);
 }
 
@@ -222,7 +230,7 @@ TEST_F(ExecutorTest, PendingLastActionDoesNotBlockTheLane) {
     ASSERT_EQ(reports.finished.size(), 1u);  // only the second has finished
     exec.complete(adapter.tickets[0], ExecResult::failed(ErrorCode::AdapterFailed), 30);
     ASSERT_EQ(reports.finished.size(), 2u);
-    EXPECT_EQ(reports.last().outcome, SequenceOutcome::Failed);
+    EXPECT_EQ(reports.last().outcome, SequenceOutcome::CompletedWithErrors);
     EXPECT_EQ(exec.inFlight(), 0u);
 }
 

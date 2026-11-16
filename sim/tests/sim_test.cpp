@@ -380,6 +380,27 @@ TEST(SimSeed, EveryResetPathForgetsTheHubName) {
     EXPECT_EQ(after.hub().hubSettings().identity().name, kSimDefaultName);
 }
 
+// POST /sim/reset (a pinned hub's reset) and a wipe forget the run history,
+// as the board's restart would: an activity made again shows no old runs.
+TEST(SimSeed, EveryResetPathForgetsTheRuns) {
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true);
+    SimHub &hub = runner.hub();
+    LastRun last;
+    ASSERT_EQ(hub.activate("act_watch_apple_tv"), ErrorCode::Ok);
+    hub.advance(3000);
+    ASSERT_TRUE(hub.engine().lastRunShared(&last));
+    ASSERT_TRUE(runner.runLine("reset"));
+    hub.advance(100);
+    EXPECT_FALSE(hub.engine().lastRunShared(&last));
+
+    ASSERT_EQ(hub.activate("act_watch_apple_tv"), ErrorCode::Ok);
+    hub.advance(3000);
+    ASSERT_TRUE(hub.engine().lastRunShared(&last));
+    hub.wipe(nullptr);
+    hub.advance(100);
+    EXPECT_FALSE(hub.engine().lastRunShared(&last));
+}
+
 // A restart asked for before POST /sim/reset never fires after it.
 TEST(SimApi, AResetDropsAPendingRestart) {
     SimAuth a;
@@ -971,18 +992,19 @@ TEST_F(RealHa, ActionsGoThroughTheClientToTheFakeServer) {
     EXPECT_EQ(hub().engine().executor().stats().rejected, 0u);
 }
 
-TEST_F(RealHa, DownRefusedAndUnansweredCallsFail) {
+TEST_F(RealHa, DownAndRefusedCallsFailAndUnansweredIsNoReply) {
     // HA refuses: adapter_failed.
     call(*api, http::Method::Post, "/sim/ha", "fail=media_player.volume_set");
     http::Response r = volume();
     EXPECT_NE(r.body.find("adapter_failed"), std::string::npos) << r.body;
     call(*api, http::Method::Post, "/sim/ha", "fail=none");
 
-    // No answer: the action times out (5 s), not hangs.
+    // No answer: no reply after 1 s, not a failure (HA may have acted), and
+    // never a hang.
     call(*api, http::Method::Post, "/sim/ha", "commands=0");
     r = volume();
-    EXPECT_NE(r.body.find("\"status\":\"timeout\""), std::string::npos) << r.body;
-    EXPECT_NE(r.body.find("adapter_timeout"), std::string::npos) << r.body;
+    EXPECT_NE(r.body.find("\"status\":\"accepted\""), std::string::npos) << r.body;
+    EXPECT_EQ(r.body.find("adapter_timeout"), std::string::npos) << r.body;
     call(*api, http::Method::Post, "/sim/ha", "commands=1");
 
     // HA down: adapter_unavailable at once, and the integration says so.

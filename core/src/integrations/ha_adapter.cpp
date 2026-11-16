@@ -3,6 +3,8 @@
 #include <optional>
 #include <string>
 
+#include "hubbo/integrations/state_check.h"
+
 namespace hubbo::integrations {
 
 HomeAssistantAdapter::HomeAssistantAdapter(const char *integrationId, HomeAssistantClient &client)
@@ -21,22 +23,42 @@ ExecResult HomeAssistantAdapter::execute(const ExecRequest &request) {
     call.paramsPresent = request.paramsPresent;
     if (!call.entityId.assign(request.providerRef)) return ExecResult::failed(ErrorCode::AdapterFailed);
     call.custom = request.call;
+    call.checkState = request.checkState;
     if (!calls_.push(call)) return ExecResult::failed(ErrorCode::AdapterUnavailable);
     return ExecResult::pending();
 }
 
-void HomeAssistantAdapter::finish(Ticket ticket, ErrorCode error) {
-    Result r;
-    r.ticket = ticket;
-    r.result = error == ErrorCode::Ok ? ExecResult::accepted() : ExecResult::failed(error);
+void HomeAssistantAdapter::cancel(Ticket ticket, uint32_t nowMs) {
+    (void)nowMs;
+    cancels_.push(ticket);
+}
+
+bool HomeAssistantAdapter::cancelled(Ticket ticket) {
+    Ticket t = 0;
+    while (cancels_.pop(&t)) {
+        cancelled_[cancelledNext_] = t;
+        cancelledNext_ = (cancelledNext_ + 1) % (sizeof cancelled_ / sizeof cancelled_[0]);
+    }
+    for (const Ticket c : cancelled_) {
+        if (c == ticket && c != 0) return true;
+    }
+    return false;
+}
+
+void HomeAssistantAdapter::finish(Ticket ticket, ExecResult result) {
     // Full only if the engine stopped polling; the executor's timeout then
     // reports it.
-    results_.push(r);
+    results_.push(Result{ticket, result});
+}
+
+void HomeAssistantAdapter::finish(Ticket ticket, ErrorCode error) {
+    finish(ticket, error == ErrorCode::Ok ? ExecResult::accepted() : ExecResult::failed(error));
 }
 
 void HomeAssistantAdapter::service() {
     Call call;
     while (calls_.pop(&call)) {
+        if (cancelled(call.ticket)) continue;  // the executor has forgotten it
         // HA answers success for an entity it doesn't have, so a stale one
         // (missing from the latest discovery) is refused here, unsent.
         if (client_.entityStale(call.entityId.view())) {
@@ -50,44 +72,73 @@ void HomeAssistantAdapter::service() {
         }
         const char *attribute = call.custom ? nullptr : caps->stateAttribute(call.commandIndex);
         if (attribute == nullptr) {
-            send(call, *caps, nullptr, HomeAssistantClient::kCommandTimeoutMs);
+            ha::ServiceCall built;
+            if (!build(call, *caps, nullptr, &built)) continue;
+            if (call.checkState && checkable(built)) {
+                check(call.ticket, built);
+            } else {
+                send(call.ticket, built);
+            }
             continue;
         }
         // Read the one attribute fresh, then send. Each press reads: two
-        // quick presses may both see the old state (accepted).
-        const uint64_t readAt = client_.nowMs();
+        // quick presses may both see the old state (accepted). A command
+        // that acts on the current state is never checked: it sets no state.
         const ErrorCode started = client_.readAttribute(
             std::string(call.entityId.view()), attribute,
-            [this, call, caps, readAt](ErrorCode result, std::optional<ha::ServiceValue> value) {
+            [this, call, caps](ErrorCode result, std::optional<ha::ServiceValue> value) {
                 if (result == ErrorCode::EntityNotFound || result == ErrorCode::AdapterUnavailable) {
                     finish(call.ticket, result);  // no such entity, or no connection to send on
                     return;
                 }
-                // The read and the call share kCommandTimeoutMs.
-                const uint64_t spent = client_.nowMs() - readAt;
-                if (spent >= HomeAssistantClient::kCommandTimeoutMs) return finish(call.ticket, ErrorCode::AdapterTimeout);
                 // A failed or timed-out read still sends, as unknown (a toggle
                 // mutes; a step refuses: StateUnavailable).
-                send(call, *caps, result == ErrorCode::Ok && value ? &*value : nullptr,
-                     static_cast<uint32_t>(HomeAssistantClient::kCommandTimeoutMs - spent));
+                ha::ServiceCall built;
+                if (build(call, *caps, result == ErrorCode::Ok && value ? &*value : nullptr, &built)) {
+                    send(call.ticket, built);
+                }
             });
         if (started != ErrorCode::Ok) finish(call.ticket, ErrorCode::AdapterUnavailable);  // no queueing
     }
 }
 
-void HomeAssistantAdapter::send(const Call &call, const ha::EntityCapabilities &capabilities,
-                                const ha::ServiceValue *state, uint32_t timeoutMs) {
-    ha::ServiceCall serviceCall;
+bool HomeAssistantAdapter::build(const Call &call, const ha::EntityCapabilities &capabilities,
+                                 const ha::ServiceValue *state, ha::ServiceCall *out) {
     const ErrorCode built = HaCatalogs::buildCall(capabilities, call.commandIndex, call.params, call.paramsPresent,
-                                                  call.custom.get(), state, &serviceCall);
+                                                  call.custom.get(), state, out);
+    if (built == ErrorCode::Ok) return true;
     // A stepped command with no current state (a cover's unknown position)
     // sends nothing and says why; anything else is the adapter's fault.
-    if (built != ErrorCode::Ok) {
-        return finish(call.ticket, built == ErrorCode::StateUnavailable ? built : ErrorCode::AdapterFailed);
-    }
-    const Ticket ticket = call.ticket;
+    finish(call.ticket, built == ErrorCode::StateUnavailable ? built : ErrorCode::AdapterFailed);
+    return false;
+}
+
+void HomeAssistantAdapter::check(Ticket ticket, const ha::ServiceCall &call) {
+    // A fresh read of the one entity; anything but a clear "already set"
+    // within kStateCheckMs (a failed or slow read, an unavailable or
+    // unknown entity) sends the step as usual.
+    const ErrorCode started =
+        client_.readState(call.entityId, kStateCheckMs, [this, ticket, call](ErrorCode result, std::string_view entity) {
+            if (result == ErrorCode::Ok && alreadySet(call, entity)) return finish(ticket, ExecResult::skipped());
+            send(ticket, call);
+        });
+    if (started != ErrorCode::Ok) send(ticket, call);
+}
+
+void HomeAssistantAdapter::send(Ticket ticket, const ha::ServiceCall &call) {
+    // Cancelled while its state was read (an Off right after an activate):
+    // never sent, so the shutdown that replaced it checks what's really there.
+    if (cancelled(ticket)) return;
     const ErrorCode sent = client_.callService(
-        serviceCall, [this, ticket](ErrorCode result) { finish(ticket, result); }, timeoutMs);
+        call,
+        [this, ticket](ErrorCode result) {
+            // No answer within kReplyLimitMs is no reply, not a failure: HA
+            // may well have acted (some integrations answer only after their
+            // own timeout). The client forgets the call: a late reply is dropped.
+            if (result == ErrorCode::AdapterTimeout) return finish(ticket, ExecResult::noReply());
+            finish(ticket, result);
+        },
+        kReplyLimitMs);
     if (sent != ErrorCode::Ok) finish(ticket, ErrorCode::AdapterUnavailable);  // no queueing
 }
 
