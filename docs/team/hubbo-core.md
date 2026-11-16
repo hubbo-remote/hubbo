@@ -1,12 +1,94 @@
 # hubbo-core: working notes
 
-Current as of the smart-buttons branch (ha-remote, setup-fixes and everything before are committed).
-Design: `docs/design/smart-buttons.md`; the profile spec is `~/src/hubbo-devices/docs/spec.md`.
+Current as of the activity-runs branch (smart buttons and everything before are committed).
+Design: `docs/design/activity-runs.md` and `docs/design/state-checks.md`; the profile spec is `~/src/hubbo-devices/docs/spec.md`.
 This file covers state, decisions and traps only.
 
 ## State
 
-- Smart buttons (smart-buttons, uncommitted; docs/design/smart-buttons.md). Simplified 2026-11-15
+- State checks and the 1 s HA reply limit (activity-runs branch, uncommitted;
+  docs/design/state-checks.md). Lead-approved shape: both live in the HA adapter, not the executor.
+  - `ExecRequest::checkState`: the executor sets it for the Transition lane only (startup and
+    shutdown); the engine task does nothing else (no read, no wait, no allocation).
+  - `ExecStatus::Skipped` (error `ErrorCode::AlreadySet` "already_set") and `NoReply` (error Ok):
+    neither a failure (`succeeded()` in domain/adapter.h; stepFailed ignores them, so a run can be
+    Completed and failedSteps() doesn't count them). `StepResult::Skipped` / `NoReply`
+    ("skipped", "no_reply"); a skipped step has ran=true and the read time as duration.
+  - Adapter (integration task): build the call, then if checkState, no stateAttribute and
+    `checkable()` (power, or fields; never raw call_service: else no read at all):
+    `client.readState(entity, kStateCheckMs 300)` -> `alreadySet()` (integrations/state_check.*,
+    parses only "s" and the fields' attributes with a filter;
+    the generic rule: turn_on = "on", or a media_player's playing/paused/idle/buffering (a scene's
+    timestamp or a climate's mode never counts), turn_off = off or standby, every data field == the same-named attribute, numbers 1e-6 relative; raw call_service,
+    no-field non-power services, lists/objects, unavailable/unknown: run). A failed or slow read
+    sends. Every HA call is sent with `kReplyLimitMs` 1000; the client's AdapterTimeout becomes
+    NoReply, and the client forgets the call, so a late reply is dropped. The executor's 5 s
+    deadline is only a backstop now. A mute toggle's read keeps kStateReadTimeoutMs (2 s).
+  - `HomeAssistantClient::readState(entity, timeoutMs, done(err, entity json view))`; readAttribute
+    is built on it.
+  - Fake HA: media players start "off" (state "" = off), turn_on/turn_off set state, select_source
+    sets the `source` attribute (turn_off drops it); a player reports `source` only once one is
+    set. `FakeHaEntity::attributes` (JSON by name), `setState`/`setAttribute`, `slow` (entity ->
+    ms, by `clock`; answers held in the server, dropped on a new connection, delivered by the
+    transport's poll). SimHub sets the clock. `setAttribute` takes JSON or plain text, `setSlow`
+    (0 clears). /sim/ha `state=`, `attr=`, `slow=` (`none` clears every one). Scenario verbs
+    `ha real` (switch to the real client over the fake, unpinned only; `reset` reconnects) then
+    `ha state|attr|slow`. The command log shows "done -> skipped already_set" / "done -> no_reply".
+  - `HomeAssistantAdapter::cancel()` hands the ticket to the integration task (a third SPSC ring;
+    it keeps the last 32 cancelled): a cancelled call is dropped when popped and in send(), so a
+    startup step cancelled during its read is never sent (review fix: Off right after activate
+    left the TV on). A call HA already has can't be taken back.
+  - /sim/reset (SimHub::factoryReset) and wipe() clear the run history (`RunHistory::clear()`),
+    as the board's restart would.
+  - /simplify skipped: moving the checked call into the read's closure (the read can fail to
+    start and the call is still needed); the fake applying every data field as an attribute
+    (brightness_pct would then exist and the rule would skip on it: less like HA); folding
+    `muted` into `attributes` (touches the mute tests).
+  - Tests: StateCheck.* (state_check_test.cpp), AdapterTest.AStepAlreadySetIsSkippedUnsent,
+    AStepIsSentWhenTheCheckCantTell, NoReplyWithinOneSecond..., StateChecksTest.* in
+    activity_runs_test.cpp (switch skips power and runs inputs, slow reply completes, fast error
+    fails, buttons never read), scenarios state_checks_skip_what_is_on and slow_reply_is_no_reply.
+- Activity runs (activity-runs, uncommitted; docs/design/activity-runs.md).
+  - Keep going: a failed or timed-out step never stops a sequence (any origin). The executor notes
+    the first error per sequence (`FirstError` on Sequence and InFlight; `stepFailed`) and goes on.
+    `SequenceOutcome` {Completed, CompletedWithErrors, Cancelled, Rejected} ("completed_with_errors";
+    Failed is gone); the report's error/actionIndex are the first failed step. A Pending step past
+    its deadline is cancelled at its adapter, reported via onActionCompleted as a Timeout, then the
+    next step runs (in-flight last steps likewise). An unreachable adapter is a failed step
+    (Internal), like a disabled integration's. `failureCode()` is in domain/adapter.h.
+    `ExecutorStats::withErrors` (was failed). Engine: an API execute still answers Failed/Timeout
+    from the first error. A pending release is judged by its own completion
+    (`Engine::resolveRelease`, `HoldLedger::takeReleasing(seq, index)`); one still pending when its
+    sequence ends (cancelled) forces releaseAll (`forceRelease`).
+  - History: `engine/run_history.h` `RunHistory` (8 `ActivityRun`s × 32 `RunStep`s; `StepResult`,
+    `RunOutcome`, `stepResultName`, `runOutcomeName`, `failedSteps()`). Fed by Engine::Relay from
+    the executor's records; `Engine::transition()` calls `begin()` after enqueue with the sequence
+    id and the queue result (a rejected run is recorded Rejected, steps cancelled). Steps come
+    from the compiled span (`CompiledConfig::deviceOf`), so unrun steps are listed. Command ids are
+    the catalogs' `const char*` (adapter lifetime). Only Startup/Shutdown origins; times are the
+    engine clock (millis = uint32 uptimeMs; the reader computes "ago" from `ActivityRuns::nowMs`,
+    which the runtime port fills: SimRuntime from hub nowMs, firmware millis()). Each run has an
+    `id` (also on LastRun), counted from 1, never reused, not reset by clear(). A wait step stays
+    Pending until the next step starts or the run ends, then Ok with its real length (cut off:
+    Cancelled). `RunStep::hasDuration()` = ran and not Pending (api shows no duration otherwise).
+    `begin()` records no steps for a span `CompiledConfig::fits()` rejects (enqueue uses it too).
+  - Cross-task: the engine writes its ring; `poll()` publishes changed runs (dirty bit per run) to
+    a second ring under a std::atomic_flag try-lock (busy: next poll). `read()` (any task) spins
+    on the flag while it copies out newest first. `Engine::setRunHistory(ptr)` /
+    `runsShared(out)` (false with no history). Firmware heap-allocates it in PSRAM; hub-sim's
+    SimHub owns one, and `SimRuntime::activityRuns` (api's port) reads it. ActivityRuns is about
+    14 KB on the board: never on a task stack. /status reads only the newest in brief:
+    `RunHistory::readLatest(LastRun*)` / `Engine::lastRunShared` (`LastRun` {activityId, kind,
+    outcome, failedSteps}), api's `Runtime::lastRun` (SimRuntime and firmware override it).
+    publish() copies only the dirty runs (one, ~1.7 KB, per step), never all 8.
+  - Tests: core/tests/activity_runs_test.cpp (middle failure goes on, timeouts, switch cancels
+    the rest, Off is a shutdown, the ring keeps 8, buttons not recorded), executor_test keep-going
+    cases, engine_test, scenarios startup_failure_keeps_going.hubbo and ha_timeout.hubbo.
+  - /simplify (2026-11-15) skipped: folding `RunOutcome` into `SequenceOutcome` + a running flag
+    (api already maps RunOutcome); a timeout path reusing complete() (an adapter's cancel might
+    complete synchronously); a yield in read()'s spin (the publish copy is short).
+
+- Smart buttons (committed; docs/design/smart-buttons.md). Simplified 2026-11-15
   after the board test: a slot is only a device id; nothing else is configurable. Repeat is gone.
   - Model: `domain/smart_buttons.h` (`SmartSlot`, `smartSlotName`, `smartSlotForButton`); `SmartButtonsSpec` {slots: vector<optional<string>> always sized 4,
     revision} in domain/config.h; `ConfigSpec::smartButtons`. The old slot object (presses, repeat)
