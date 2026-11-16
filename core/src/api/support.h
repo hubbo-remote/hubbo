@@ -82,7 +82,8 @@ bool readJson(const http::Request &request, http::Response &out, JsonDocument &d
 
 // Strict checks for small fixed-shape objects (auth bodies, execute).
 struct Field {
-    enum class Kind : uint8_t { String, Bool, Integer, Object };
+    // NullableString: a string or null. Any: present, checked by the caller.
+    enum class Kind : uint8_t { String, Bool, Integer, Object, NullableString, Any };
     const char *name;
     Kind kind;
     bool required;

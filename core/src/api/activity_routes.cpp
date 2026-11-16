@@ -1,5 +1,9 @@
 // Activities, global bindings and activity transitions.
 
+#include <memory>
+#include <string_view>
+#include <vector>
+
 #include "hubbo/api/transitions.h"
 #include "hubbo/config/json.h"
 #include "hubbo/config/service.h"
@@ -152,6 +156,49 @@ void addActivityRoutes(RouteSink &sink, ApiContext &ctx) {
                                               body.to<JsonObject>());
                  sendJson(out, 200, body);
              });
+
+    // Try a macro as the editor has it (saved or not): compiled against the
+    // running config, queued on the Macro lane, recorded under run_id.
+    sink.add("/api/v1/macros/run", auth::Operation::RunMacro, [&ctx](auto &request, auto &, auto &out) {
+        JsonDocument doc;
+        if (!readJson(request, out, doc)) return;
+        ValidationReport report;
+        Trigger trigger;
+        std::string_view activityId;  // into doc; "" for a global macro
+        if (checkObject(doc.as<JsonVariantConst>(),
+                        {{"actions", Field::Kind::Any, false},
+                         {"trigger", Field::Kind::String, true},
+                         {"activity_id", Field::Kind::NullableString, true}},
+                        &report)) {
+            const char *key = doc["trigger"];
+            if (!isMacroTrigger(key)) {
+                report.add(ErrorCode::InvalidTrigger, "/trigger");
+            } else {
+                parseTrigger(key, &trigger);
+            }
+            if (const char *id = doc["activity_id"]) {
+                if (ctx.config.findActivity(id) == nullptr) {
+                    report.add(ErrorCode::UnknownActivity, "/activity_id");
+                } else {
+                    activityId = id;
+                }
+            }
+        }
+        std::vector<CompiledCommand> steps;
+        const config::Outcome compiled = ctx.config.compileMacro(doc["actions"], &steps);
+        for (const auto &issue : compiled.issues.issues()) report.add(issue.code, issue.path);
+        if (!report.ok()) return sendIssues(out, report, "The macro is invalid");
+        if (!compiled.ok()) return sendOutcome(out, compiled, "macro");
+
+        const auto run = std::make_unique<EngineRequest>();
+        run->runMacro(steps.data(), steps.size(), trigger, activityId);
+        if (!runEngine(ctx, *run, out)) return;
+        const MacroRunResult &result = run->macro();
+        if (result.error != ErrorCode::Ok) return sendCoreError(out, result.error, "macro");  // queue_full: 503 busy
+        JsonDocument body;
+        body["run_id"] = result.runId;
+        sendJson(out, 202, body);
+    });
 }
 
 }  // namespace hubbo::api
