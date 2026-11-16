@@ -85,7 +85,7 @@ native_tests() {  # <service> <build dir> <build type> [ctest args...]
 build_sim='mkdir -p build && exec 9>build/native.lock && flock 9 &&
     { [ -f build/native/build.ninja ] ||
         cmake -S . -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Debug >/dev/null; } &&
-    cmake --build build/native --target hub-sim >/dev/null'
+    { out=$(cmake --build build/native --target hub-sim 2>&1) || { printf "%s\n" "$out" >&2; exit 1; }; }'
 
 cmd="${1:-help}"
 shift || true
