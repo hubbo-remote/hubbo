@@ -73,7 +73,9 @@ constexpr uint16_t kHidConsumerUsageMax = 0x03FF;
 
 // Executor (see engine/executor.h).
 constexpr size_t kExecutorActionPool = 64;   // queued actions, all lanes
-constexpr size_t kExecutorSequencesPerLane = 16;
+constexpr size_t kExecutorSequencesPerLane = 16;  // Transition and Input lanes
+constexpr size_t kExecutorMacroSequences = 4;     // the Macro lane's queued ones, besides the running one
+constexpr size_t kExecutorMacroNodes = 32;  // pool nodes all macros together may hold (presses keep the rest)
 constexpr size_t kExecutorInFlight = 8;      // fire-and-track pending results
 constexpr uint32_t kDefaultActionTimeoutMs = 5000;
 

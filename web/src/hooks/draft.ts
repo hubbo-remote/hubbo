@@ -4,7 +4,7 @@ import { invalidate, setQueryData } from '@/api/hooks'
 import type { Activity, ActivityDraft, GlobalBindings, LocalValidation, SmartButtons, ValidationIssue } from '@/api/types'
 import { toast, toastError } from '@/components/ui/toast'
 import { useConfigLock } from '@/hooks/data'
-import { parseTrigger, validateActivity, validateBindings, type Catalog } from '@/lib/activity'
+import { inOurWords, parseTrigger, validateActivity, validateBindings, type Catalog } from '@/lib/activity'
 import { SLOTS, validateSmartButtons } from '@/lib/smartButtons'
 import { buttonLabel } from '@/lib/buttons'
 import { plural, same } from '@/lib/utils'
@@ -28,7 +28,7 @@ export interface Store<T extends Revisioned> {
   diff: (mine: T, theirs: T) => string[]
 }
 
-export const toDraft = (a: Activity): ActivityDraft => ({ id: a.id, revision: a.revision, name: a.name, startup: a.startup, shutdown: a.shutdown, bindings: a.bindings })
+export const toDraft = (a: Activity): ActivityDraft => ({ id: a.id, revision: a.revision, name: a.name, startup: a.startup, shutdown: a.shutdown, bindings: a.bindings, macros: a.macros })
 
 export const activityStore = (id: string): Store<ActivityDraft> => ({
   key: `activity/${id}`,
@@ -51,7 +51,7 @@ export const activityStore = (id: string): Store<ActivityDraft> => ({
 export const globalStore: Store<GlobalBindings> = {
   key: 'global-bindings',
   save: async (d, revision) => {
-    const r = await api.replaceGlobalBindings({ bindings: d.bindings, revision })
+    const r = await api.replaceGlobalBindings({ bindings: d.bindings, macros: d.macros, revision })
     setQueryData('global-bindings', r)
     return r
   },
@@ -59,7 +59,7 @@ export const globalStore: Store<GlobalBindings> = {
   validate: (d, catalog) => {
     const errors: ValidationIssue[] = []
     const warnings: ValidationIssue[] = []
-    validateBindings(d.bindings, catalog, errors, warnings)
+    validateBindings(d, catalog, errors, warnings)
     return { errors, warnings }
   },
   diff: bindingsDiff,
@@ -83,7 +83,8 @@ export const smartStore: Store<SmartButtons> = {
 /** How many buttons' bindings differ. */
 function bindingsDiff(mine: Doc, theirs: Doc): string[] {
   const keys = new Set([...Object.keys(mine.bindings), ...Object.keys(theirs.bindings)])
-  const changed = new Set([...keys].filter((k) => !same(mine.bindings[k], theirs.bindings[k])).map((k) => parseTrigger(k)?.button ?? k))
+  const marked = (d: Doc, k: string) => d.macros.includes(k)
+  const changed = new Set([...keys].filter((k) => !same(mine.bindings[k], theirs.bindings[k]) || marked(mine, k) !== marked(theirs, k)).map((k) => parseTrigger(k)?.button ?? k))
   return changed.size ? [`Buttons: ${plural(changed.size, 'button')} ${changed.size === 1 ? 'differs' : 'differ'}`] : []
 }
 
@@ -115,7 +116,7 @@ export function useDraft<T extends Revisioned>(store: Store<T>, server: T | unde
   // Only the store's own draft: until the next set loads, the last one (another kind of doc) stays on show.
   const local = useMemo(() => (s && s.key === store.key ? store.validate(s.draft, catalog) : NO_ISSUES), [s?.draft, s?.key, store, catalog]) // eslint-disable-line react-hooks/exhaustive-deps
   const showErrors = !!s && (s.attempted || s.serverIssues !== null)
-  const errors = showErrors ? (s.serverIssues ?? local.errors) : []
+  const errors = showErrors ? (s.serverIssues?.map((i) => inOurWords(i, local.errors, (s.draft as Partial<Doc>).macros)) ?? local.errors) : []
   const canSave = !!s && dirty && !busy && !pending && !lock.locked
 
   /** A patch, or one made from the latest draft (for edits that land after an await). */

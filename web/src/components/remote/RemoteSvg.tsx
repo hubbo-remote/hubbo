@@ -12,6 +12,8 @@ export interface RemoteSvgProps {
   onSelect?: (id: string) => void
   /** Buttons with validation errors. */
   errors?: ReadonlySet<string>
+  /** Press / Long press macros, as "<button>:tap" / "<button>:hold": their dot gets a stacked look. */
+  macros?: ReadonlySet<string>
   /** Whose bindings these are: an activity's (blue) or the global buttons' (amber). */
   source?: BindingSource
   /** Buttons that fall back to a global binding (this set binds none of them): its event kinds and what it does. */
@@ -93,7 +95,7 @@ function GlyphEl({ g, cx, cy }: { g: Glyph; cx: number; cy: number }) {
  * Hubbo's clickable remote. Each key is a focusable SVG button with an
  * accessible name; arrow keys move between keys spatially, Enter/Space selects.
  */
-export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, onSelect, errors, source = 'activity', inherited, className, label = 'Remote buttons' }: RemoteSvgProps) {
+export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, onSelect, errors, macros, source = 'activity', inherited, className, label = 'Remote buttons' }: RemoteSvgProps) {
   const [focusId, setFocusId] = useState<string>(selected ?? 'select')
   const refs = useRef(new Map<string, SVGGElement>())
   const interactive = !!onSelect
@@ -167,7 +169,7 @@ export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, 
             data-key={k.id}
             role={interactive ? 'button' : 'img'}
             tabIndex={interactive ? (k.id === tabStop ? 0 : -1) : undefined}
-            aria-label={`${name}${ev.length ? `, ${global ? 'global' : 'bound'}: ${ev.map((e) => EV_LABEL[e].toLowerCase()).join(', ')}` : interactive ? ', unbound' : ''}${isErr ? ', has errors' : ''}`}
+            aria-label={`${name}${ev.length ? `, ${global ? 'global' : 'bound'}: ${ev.map((e) => `${EV_LABEL[e].toLowerCase()}${own && macros?.has(`${k.id}:${e}`) ? ' macro' : ''}`).join(', ')}` : interactive ? ', unbound' : ''}${isErr ? ', has errors' : ''}`}
             aria-pressed={interactive ? isSel : undefined}
             onClick={() => onSelect?.(k.id)}
             onFocus={() => setFocusId(k.id)}
@@ -201,9 +203,18 @@ export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, 
             <GlyphEl g={k.glyph} cx={cx} cy={cy} />
             {ev.length > 0 && (
               <g aria-hidden pointerEvents="none">
-                {ev.map((e, i) => (
-                  <circle key={e} cx={px - (ev.length - 1 - i) * 4.6} cy={py} r={2.3} fill={EV_COLOR[e]} stroke="var(--remote-body)" strokeWidth={0.9} />
-                ))}
+                {ev.map((e, i) => {
+                  const x = px - (ev.length - 1 - i) * 4.6
+                  // A macro's dot is a little stack: the same dot twice more, peeking out above.
+                  const stack = own && macros?.has(`${k.id}:${e}`)
+                  return (
+                    <g key={e}>
+                      {stack &&
+                        ([[3.2, 0.45], [1.6, 0.7]] as const).map(([up, opacity]) => <circle key={up} cx={x} cy={py - up} r={2.3} fill={EV_COLOR[e]} opacity={opacity} stroke="var(--remote-body)" strokeWidth={0.9} />)}
+                      <circle cx={x} cy={py} r={2.3} fill={EV_COLOR[e]} stroke="var(--remote-body)" strokeWidth={0.9} />
+                    </g>
+                  )
+                })}
               </g>
             )}
           </g>

@@ -56,7 +56,7 @@ export function Activities() {
     const request = ++dupRequest.current
     setDup({ ...dup, busy: true })
     try {
-      const copy = await api.createActivity({ name: name.trim(), startup: a.startup, shutdown: a.shutdown, bindings: a.bindings })
+      const copy = await api.createActivity({ name: name.trim(), startup: a.startup, shutdown: a.shutdown, bindings: a.bindings, macros: a.macros })
       invalidate('activities')
       toast('Activity duplicated', { variant: 'success' })
       if (request !== dupRequest.current) return // closed meanwhile: the copy is in the list, stay here

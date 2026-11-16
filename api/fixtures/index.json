@@ -232,6 +232,16 @@
       "kind": "200"
     },
     {
+      "file": "activities/macro_run.request.json",
+      "operation": "runMacro",
+      "kind": "request"
+    },
+    {
+      "file": "activities/macro_run.json",
+      "operation": "runMacro",
+      "kind": "202"
+    },
+    {
       "file": "smart_buttons/get.json",
       "operation": "getSmartButtons",
       "kind": "200"

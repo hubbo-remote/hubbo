@@ -41,8 +41,22 @@ function liftGhost(row: HTMLElement, pointerY: number) {
 }
 
 /** Ordered list of actions (startup/shutdown) with add, edit, duplicate, wait, and reorder (drag, or Alt+↑/↓). */
-export function SequenceEditor({ label, actions, onChange, catalog, issues, pathPrefix, lastRun }: { label: string; actions: Action[]; onChange: (a: Action[]) => void; catalog: Catalog; issues: ValidationIssue[]; pathPrefix: string; /** Why steps failed the last time this ran, by index. */ lastRun?: ReadonlyMap<number, string> }) {
-  const [editing, setEditing] = useState<{ index: number; action: Action | null } | null>(null)
+export function SequenceEditor({ label, actions, onChange, catalog, issues, pathPrefix, lastRun, noun = 'step', startAdding }: {
+  label: string
+  actions: Action[]
+  onChange: (a: Action[]) => void
+  catalog: Catalog
+  issues: ValidationIssue[]
+  pathPrefix: string
+  /** Why steps failed the last time this ran, by index. */
+  lastRun?: ReadonlyMap<number, string>
+  /** What the list calls an entry on its add buttons and dialog ("step"; a button's macro says "command"). */
+  noun?: string
+  /** Open the add dialog on mount (a one-command Press growing into a macro). */
+  startAdding?: boolean
+}) {
+  const addNew = () => ({ index: actions.length, action: startAction(catalog, 'sequence', mostUsedDevice(actions)) })
+  const [editing, setEditing] = useState<{ index: number; action: Action | null } | null>(() => (startAdding ? addNew() : null))
   const [timeOk, setTimeOk] = useState(true) // the time field's say, while one is open
   // `slot`: the gap a drop inserts into (0 = before the first step, n = after the last).
   const [drag, setDrag] = useState<{ from: number; slot: number } | null>(null)
@@ -92,7 +106,7 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
   return (
     <div className="grid gap-3">
       {actions.length === 0 ? (
-        <p className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">No steps.</p>
+        <p className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">No {noun}s.</p>
       ) : (
         <ol ref={list} className="grid gap-2" aria-label={`${label} steps`}>
           {actions.map((a, i) => {
@@ -187,8 +201,8 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
         Alt+Up and Alt+Down move a step.
       </p>
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" size="sm" disabled={full} onClick={() => setEditing({ index: actions.length, action: startAction(catalog, 'sequence', mostUsedDevice(actions)) })}>
-          <Plus /> Add step
+        <Button variant="outline" size="sm" disabled={full} onClick={() => setEditing(addNew())}>
+          <Plus /> Add {noun}
         </Button>
         <Button variant="outline" size="sm" disabled={full} onClick={() => onChange([...actions, waitAction()])}>
           <Clock /> Add wait
@@ -197,7 +211,7 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
       <Dialog
         open={!!editing}
         onClose={() => setEditing(null)}
-        title={editing && editing.index < actions.length ? `Edit step ${editing.index + 1}` : `Add ${label.toLowerCase()} step`}
+        title={editing && editing.index < actions.length ? `Edit ${noun} ${editing.index + 1}` : `Add ${label.toLowerCase()} ${noun}`}
         footer={
           <>
             <Button variant="ghost" onClick={() => setEditing(null)}>
@@ -213,7 +227,7 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
                 setEditing(null)
               }}
             >
-              {editing && editing.index < actions.length ? 'Done' : 'Add step'}
+              {editing && editing.index < actions.length ? 'Done' : `Add ${noun}`}
             </Button>
           </>
         }

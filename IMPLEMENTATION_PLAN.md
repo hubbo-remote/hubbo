@@ -260,6 +260,13 @@ no per-device lists. An HA step also waits at most 1 s for HA's reply, then move
 `no_reply`, which isn't a failure. Steps don't depend on each other, nothing is tracked, and waits
 stay. Design: `docs/design/state-checks.md`. Dropped: a "wait until on" step.
 
+## Macros (user, 2026-11-15)
+A button's Press or Long press can be a macro: a marked list of commands (`macros` next to
+`bindings`), edited like startup, run on its own executor lane (one running, four waiting), cancelled
+by an activity switch and shown in the Activity Log. Command or Macro is chosen on an empty row; no
+conversion. The editor's Run tries a macro unsaved (`POST /macros/run`). Advanced triggers stay
+single and are off for a button with a macro. Design: `docs/design/macros.md`.
+
 ## Firmware robustness (queued, user 2026-11-14)
 Found on a second board whose nRF24 lacked its capacitor: after a power-related reset the hub kept
 running (remote, Bluetooth) but never came back on the network.

@@ -131,15 +131,27 @@ void Engine::onRemoteEvent(const remote::RemoteEvent &event) {
             if (observer_ != nullptr) observer_->onUnbound(event);
         } else {
             SequenceInfo info;
-            info.lane = Lane::Input;
+            // A macro: its own lane, so its waits never hold up other
+            // buttons (docs/design/macros.md).
+            const bool macro = span.macro;  // never a smart button's
+            info.lane = macro ? Lane::Macro : Lane::Input;
             info.origin = smart != nullptr ? SequenceOrigin::SmartButton
+                          : macro          ? SequenceOrigin::Macro
                           : global         ? SequenceOrigin::GlobalBinding
                                            : SequenceOrigin::Binding;
             info.trigger = Trigger{event.button, event.kind};
-            if (info.origin == SequenceOrigin::Binding) info.activityId = activeId_;
+            if (!global && smart == nullptr) info.activityId = activeId_;  // a global one has none
             info.generation = generation_;
             uint32_t sequenceId = 0;
             const ErrorCode result = executor_.enqueue(info, *config, span, nowMs_, &sequenceId);
+            // A macro refused by a full lane is only counted, and an accepted
+            // one replaces only finished macros once macros hold their share
+            // of the history (RunHistory::start), so mashing a button never
+            // pushes startups or shutdowns out.
+            if (macro && result == ErrorCode::Ok && history_ != nullptr) {
+                info.id = sequenceId;
+                history_->begin(info, *config, span, result, nowMs_);
+            }
             if (result == ErrorCode::Ok) {
                 stats_.dispatched++;
                 // A binding's up sequence releases the button's holds when it
@@ -332,6 +344,26 @@ void Engine::handle(EngineRequest &request) {
             auto guard = reader_.read();
             pumpAndApply(guard.get());
             return;
+        }
+        case EngineRequest::Kind::RunMacro: {
+            SequenceInfo info;
+            info.lane = Lane::Macro;
+            info.origin = SequenceOrigin::Macro;
+            info.trigger = request.trigger_;
+            info.activityId = request.activityId_;
+            info.generation = generation_;
+            MacroRunResult &r = request.macro_;
+            r = {};
+            r.error = executor_.enqueueSteps(info, request.steps_, request.stepCount_, nowMs_, &info.id);
+            if (r.error == ErrorCode::Ok) {
+                stats_.dispatched++;
+                if (history_ != nullptr) {
+                    r.runId = history_->begin(info, request.steps_, request.stepCount_, r.error, nowMs_);
+                }
+                auto guard = reader_.read();
+                pumpAndApply(guard.get());
+            }
+            break;
         }
     }
     request.done_.store(true, std::memory_order_release);

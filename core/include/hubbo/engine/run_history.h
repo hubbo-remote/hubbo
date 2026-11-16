@@ -10,8 +10,8 @@
 #include "hubbo/engine/compiled.h"
 #include "hubbo/engine/executor.h"
 
-// The last few activity runs (startup and shutdown), step by step, for the
-// API (docs/design/activity-runs.md). RAM only.
+// The last few runs (startups, shutdowns and macros), step by step, for the
+// API (docs/design/activity-runs.md, macros.md). RAM only.
 //
 // The engine task records into its own ring (no lock) and publish()es the
 // runs that changed to a second copy with a try-lock: if a reader holds the
@@ -22,6 +22,11 @@
 namespace hubbo {
 
 constexpr size_t kMaxActivityRuns = 8;  // RunHistory's dirty bits are a uint8_t
+// Of those, macros hold at most the Macro lane's worth (the running one and
+// the queued), so every accepted macro is kept and startups and shutdowns
+// keep the rest.
+constexpr size_t kMaxMacroRuns = limits::kExecutorMacroSequences + 1;
+static_assert(kMaxMacroRuns < kMaxActivityRuns, "room for startups and shutdowns");
 
 // Skipped (already set, error AlreadySet) and NoReply count as ok.
 enum class StepResult : uint8_t { Pending, Ok, Failed, TimedOut, Cancelled, Skipped, NoReply };
@@ -48,8 +53,9 @@ struct RunStep {
 
 struct ActivityRun {
     uint32_t id = 0;  // RunHistory's, from 1, never reused: a new run is a new id
-    IdString activityId;
-    SequenceOrigin kind = SequenceOrigin::Startup;  // Startup or Shutdown
+    IdString activityId;  // "" for a global binding's macro
+    SequenceOrigin kind = SequenceOrigin::Startup;  // Startup, Shutdown or Macro
+    Trigger trigger;  // Macro only: its button and event (Hold: long press, else press)
     uint32_t sequenceId = 0;  // the executor's
     uint32_t startedMs = 0;   // engine clock (millis): the reader computes "ago"
     uint32_t durationMs = 0;  // start to the end, once not Running
@@ -65,6 +71,7 @@ struct LastRun {
     uint32_t id = 0;  // ActivityRun::id
     IdString activityId;
     SequenceOrigin kind = SequenceOrigin::Startup;
+    Trigger trigger;  // ActivityRun::trigger
     RunOutcome outcome = RunOutcome::Running;
     uint8_t failedSteps = 0;  // Failed and TimedOut
 };
@@ -89,11 +96,19 @@ public:
     // Any task: the newest published run in brief. False: no runs yet.
     bool readLatest(LastRun *out) const;
 
+    // Whether runs of this origin are recorded (Startup, Shutdown, Macro).
+    static bool records(SequenceOrigin origin);
+
     // Engine task only. begin() once the sequence is queued (`queued` Ok)
     // or refused, with every step, so a rejected or cancelled run still
     // lists them (none if `span` doesn't fit `config`).
-    void begin(const SequenceInfo &info, const CompiledConfig &config, ActionSpan span, ErrorCode queued,
-               uint32_t nowMs);
+    // Each returns the new run's id, or 0: not kept (every run it could
+    // replace is still running).
+    uint32_t begin(const SequenceInfo &info, const CompiledConfig &config, ActionSpan span, ErrorCode queued,
+                   uint32_t nowMs);
+    // A macro run from the editor: its self-contained steps.
+    uint32_t begin(const SequenceInfo &info, const CompiledCommand *steps, size_t count, ErrorCode queued,
+                   uint32_t nowMs);
     void onDispatched(const DispatchRecord &record);
     void onCompleted(const CompletionRecord &record);
     void onFinished(const SequenceReport &report);
@@ -105,15 +120,20 @@ public:
     void clear();
 
 private:
+    // Slots, not in order: runs[0, count) are kept; ids order them.
     struct Ring {
         ActivityRun runs[kMaxActivityRuns];
-        uint8_t next = 0;   // where the next run goes
         uint8_t count = 0;  // runs recorded, up to kMaxActivityRuns
-        const ActivityRun &newest(size_t i) const { return runs[(next + kMaxActivityRuns - 1 - i) % kMaxActivityRuns]; }
     };
 
-    // The run a report is about: the newest, if it's that run's sequence.
+    // The running run a report is about (its sequence id), if still kept.
     ActivityRun *current(const SequenceInfo &info);
+    // A new run in a free slot, else in place of the oldest finished one
+    // (a macro's, once macros hold kMaxMacroRuns), its steps still to fill.
+    // nullptr: every candidate is still running.
+    ActivityRun *start(const SequenceInfo &info, uint8_t stepCount, uint32_t nowMs);
+    // Its id, after the steps are filled.
+    uint32_t started(ActivityRun &run, ErrorCode queued, uint32_t nowMs);
     void finishRun(ActivityRun &run, SequenceOutcome outcome, ErrorCode error, uint32_t atMs);
     void endWaits(ActivityRun &run, uint32_t atMs);
     void changed(const ActivityRun &run) { dirty_ |= static_cast<uint8_t>(1u << (&run - ring_.runs)); }

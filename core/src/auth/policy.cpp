@@ -51,6 +51,7 @@ constexpr OperationInfo kOperations[] = {
     {Operation::ActivateActivity, "activateActivity", Method::Post, Requirement::TokenOrAdmin, 0},
     {Operation::GetGlobalBindings, "getGlobalBindings", Method::Get, Requirement::TokenOrAdmin, 0},
     {Operation::ReplaceGlobalBindings, "replaceGlobalBindings", Method::Put, Requirement::TokenOrAdmin, 32768},
+    {Operation::RunMacro, "runMacro", Method::Post, Requirement::TokenOrAdmin, 32768},
     {Operation::GetSmartButtons, "getSmartButtons", Method::Get, Requirement::TokenOrAdmin, 0},
     {Operation::ReplaceSmartButtons, "replaceSmartButtons", Method::Put, Requirement::TokenOrAdmin, 4096},
     {Operation::GetSmartButtonActions, "getSmartButtonActions", Method::Get, Requirement::TokenOrAdmin, 0},

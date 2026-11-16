@@ -483,6 +483,13 @@ of remote lag during the write are accepted.
 - BLE always-on was tried and reverted (the user wants it toggleable): `bleRadioState` keeps the
   integration; firmware is unchanged from HEAD. `_ota` RAM 99,008 B, flash 2,382,671 B (36.4%).
 
+## Macros (branch `macros`; core only, no firmware change)
+
+- Phase gate (fw) passed: default RAM 91,232 B, flash 2,388,411 B (36.4%); `_ota` RAM 99,448 B,
+  flash 2,408,623 B (36.8%).
+- Gate sizes vs `bin/hubbo ota` sizes: the gate builds without `HUBBO_OTA_PASSWORD`, so ArduinoOTA
+  is compiled out and it reads lower than the lead's OTA build. Compare gate to gate.
+
 ## Moving a board from other firmware to Hubbo over USB
 
 - Use USB when the board runs other firmware. An OTA can't change the bootloader or the partition

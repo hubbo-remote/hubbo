@@ -3,7 +3,7 @@ import type { Action, ActivityRun, ActivityRunStep } from '@/api/types'
 import { activityName, failuresFor, runKind, runSummary, stepAction, stepReason } from './runs'
 
 const step = (over: Partial<ActivityRunStep>): ActivityRunStep => ({ index: 0, device_id: 'dev_tv', command_id: 'media_player.turn_on', result: 'ok', error: null, duration_ms: 40, ...over })
-const run = (steps: ActivityRunStep[], over: Partial<ActivityRun> = {}): ActivityRun => ({ id: 1, activity_id: 'act_tv', kind: 'startup', started_ago_ms: 0, duration_ms: 100, outcome: 'completed', steps, ...over })
+const run = (steps: ActivityRunStep[], over: Partial<ActivityRun> = {}): ActivityRun => ({ id: 1, activity_id: 'act_tv', kind: 'startup', button: null, trigger: null, started_ago_ms: 0, duration_ms: 100, outcome: 'completed', steps, ...over })
 
 describe('a step in plain words', () => {
   it('says why it failed, and how long a timeout waited', () => {
@@ -30,6 +30,8 @@ describe('a run in one line', () => {
   it('names it and counts what failed', () => {
     expect(runKind(run([]))).toBe('start')
     expect(runKind(run([], { kind: 'shutdown' }))).toBe('stop')
+    expect(runKind(run([], { kind: 'macro', button: 'guide', trigger: 'press' }))).toBe('Guide · macro')
+    expect(runKind(run([], { kind: 'macro', button: 'play', trigger: 'long_press' }))).toBe('Play · long press macro')
     expect(runSummary(run([step({}), step({ result: 'timed_out' })], { outcome: 'completed_with_errors' }))).toBe('1 failed')
     expect(runSummary(run([step({})]))).toBe('completed')
     expect(runSummary(run([step({ result: 'failed' }), step({ result: 'cancelled' })], { outcome: 'cancelled' }))).toBe('cancelled, 1 failed')
@@ -59,5 +61,6 @@ describe('a step as an action', () => {
   it('names the activity, or a stand-in once it’s gone', () => {
     expect(activityName([{ id: 'act_tv', name: 'Watch TV' }], 'act_tv')).toBe('Watch TV')
     expect(activityName([], 'act_gone')).toBe('An activity')
+    expect(activityName([], null)).toBe('Global') // a macro on a global button
   })
 })

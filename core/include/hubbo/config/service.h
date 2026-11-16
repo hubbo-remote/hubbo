@@ -205,6 +205,13 @@ public:
                            const std::vector<ParamInput> &params, CompiledCommand *out,
                            const HaServiceCallSpec *call = nullptr) const;
 
+    // POST /macros/run: the body's `actions` (a JSON array, as a binding's
+    // list in a config), decoded and compiled as a marked macro against the
+    // running config (compileMacro()), maybe unsaved. Ok, or
+    // ValidationFailed with issues at /actions, /actions/<i>/... (decode
+    // and compile alike, so it matches a saved macro's validation).
+    Outcome compileMacro(JsonVariantConst actions, std::vector<CompiledCommand> *out) const;
+
 private:
     // Restore: restore/reset (every object gets the new generation; otherwise
     // objects with revision 0 - the changed one - do). DeleteActivity: the

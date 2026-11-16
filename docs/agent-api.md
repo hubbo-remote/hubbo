@@ -155,7 +155,8 @@ A Home Assistant action takes its `call` in the body:
 {"name": "Watch Apple TV",
  "startup":  [ ...actions... ],
  "shutdown": [ ...actions... ],
- "bindings": {"<button>:<event>": [ ...actions... ]}}
+ "bindings": {"<button>:<event>": [ ...actions... ]},
+ "macros":   ["<button>:<event>", ...]}
 ```
 
 `GET /activities` lists them, with `active_activity_id`. `GET /activities/{id}` adds `id`,
@@ -247,6 +248,30 @@ press**. Write them the way the web admin does, so the admin sees them as you me
    - **Hubbo's own commands** (`activate`, `off`) always go on `tap`, and must be the last
      action in their list.
 
+4. **A macro:** a Press or Long press listed in `macros` (next to `bindings`, in an activity and in
+   the global bindings; left out, it means none), written like a startup: one-shot commands
+   (`press`, not `press_down`/`press_up`, which get `hold_not_allowed`) and `wait`s between them, 1
+   to 32. A list of more than one action must be a macro. It goes where a Press or Long press
+   would: `down` with no Long press, `tap` with one, `hold` for the Long press. Macros run one
+   after another on their own queue, so a macro's waits never hold up other buttons; a press while
+   too many macros wait (4, or too many macro steps) is dropped (and not listed in the runs). A
+   macro of only waits is refused (`sequence_only`). A switch of activity cancels the rest. A Press
+   that isn't a macro passes through as in rule 1.
+
+   ```json
+   "guide:down": [
+     {"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "press", "params": {"command": "Home"}},
+     {"integration_id": "system", "device_id": null, "command_id": "wait", "params": {"duration_ms": 500}},
+     {"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "press", "params": {"command": "DirectionDown"}}],
+   ...
+   "macros": ["guide:down"]
+   ```
+
+   To try a macro without saving it, `POST /macros/run` with `{actions, trigger, activity_id}`
+   (`activity_id` null for a global one): `202 {run_id}` once it's queued, then read the run in
+   `GET /activity-runs`. The same rules apply (`422`), and `503 busy` means too many macros are
+   waiting (nothing queued; retrying is safe).
+
 **Holding never repeats.** Each trigger fires once per press: holding Volume up sends one HA
 `volume_up`, not a stream. Only a Bluetooth `*_down`/`*_up` pair is held as a key for as long as
 the button is.
@@ -265,14 +290,15 @@ nothing.
 
 **Enforced vs advice.** Validate and save refuse (`422`): unknown buttons or events, a `*_down` off
 `down` or without its matching `*_up` (`hold_not_allowed`, `unpaired_hold`), `activate`/`off` not
-last or in a sequence, `wait_connected` in a binding, and every param check. The rest of this
-section is how the web admin writes buttons, so it shows them as Press and Long press: the hub
-accepts `down` with `tap` on one button, or several actions on `hold` (the web then lists that
-button's triggers raw).
+last or in a sequence, a list of more than one action not in `macros`, a wait outside a macro, a
+`*_down`/`*_up` in a macro, a `macros` entry that isn't bound or isn't `down`/`tap`/`hold`, and
+every param check. The rest of this section is how the web admin writes buttons, so it shows
+them as Press and Long press: the hub accepts `down` with `tap` on one button (the web then lists
+that button's triggers raw).
 
-**Global bindings** (`GET /global-bindings`, `PUT /global-bindings` with `{bindings, revision}`)
-hold the buttons that work in every activity: activity buttons (`"tv:tap"` → `activate
-act_watch_apple_tv`), Off (`"off:tap"` → `off`), lights. They apply **per button**: if the active
+**Global bindings** (`GET /global-bindings`, `PUT /global-bindings` with `{bindings, macros,
+revision}`) hold the buttons that work in every activity: activity buttons (`"tv:tap"` →
+`activate act_watch_apple_tv`), Off (`"off:tap"` → `off`), lights. They apply **per button**: if the active
 activity binds any trigger of a button (`down`, `up`, `tap` or `hold`, with at least one action),
 none of that button's globals apply. A button the activity doesn't bind at all gets its globals.
 To see what an activity inherits, read both and take the global buttons the activity doesn't
@@ -357,7 +383,7 @@ Fix and repeat until `"valid": true`. Then:
 curl -s -X PUT -H "$H" -H 'Content-Type: application/json' -d @b.json $HUBBO/activities/act_watch_apple_tv
 ```
 
-`PUT /global-bindings` takes `{bindings, revision}` the same way. It has no dry run: a mistake
+`PUT /global-bindings` takes `{bindings, macros, revision}` the same way. It has no dry run: a mistake
 gets `422` with the same `details`, and nothing is saved.
 
 ### Smart buttons
@@ -413,10 +439,12 @@ Both return `200` once the hub has switched; the sequences run in the background
 
 A step that fails or times out doesn't stop its sequence: the hub records it and goes on to the
 next step (a `wait` still waits). Switching activity mid-run cancels the rest of the old run. To
-see how a startup or shutdown went, `GET /activity-runs` (`#/components/schemas/ActivityRuns`)
-lists the last 8, newest first, each with its `outcome` (`completed`, `completed_with_errors`,
-`cancelled`, `rejected`, or `running`) and every step's `result` and `error`. A restart clears
-them.
+see how a startup, shutdown or macro went, `GET /activity-runs`
+(`#/components/schemas/ActivityRuns`) lists the last 8 (at most 5 of them macros), newest first,
+each with its `kind` (`startup`, `shutdown`, `macro`; a macro also has its `button` and `trigger`,
+`press` or `long_press`, and a global one a null `activity_id`), its `outcome` (`completed`,
+`completed_with_errors`, `cancelled`, `rejected`, or `running`) and every step's `result` and
+`error`. A restart clears them.
 
 In a startup or shutdown, a Home Assistant step is checked against HA's current state first: if
 the device is already on (or off), or already has the value the step sets, it's `skipped`
@@ -427,7 +455,7 @@ always waits.
 ## The hub's state
 
 `GET /status` shows the hub's name (`hubbo.name`), the active activity, the newest activity run
-(`last_run`: its `outcome` and `failed_steps`, or null), and `config.state`:
+(`last_run`: its `kind`, `button`, `outcome` and `failed_steps`, or null), and `config.state`:
 
 - `ok` (or `fresh`, nothing saved yet): normal.
 - `blocked`: the saved configuration can't be used. Nothing is active and every edit gets

@@ -2,6 +2,54 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+
+## Macros (branch `macros`, first pass, iterating; docs/design/macros.md)
+
+- **Model**: macros are explicit. Activities and global bindings carry `macros: string[]` (trigger keys, only
+  down/tap/hold, each bound) next to `bindings`; every write sends it. lib/commands works on a
+  `ButtonSet {bindings, macros}`: `ButtonView` has `press`/`longPress` lists plus `pressMacro`/`longMacro`
+  (from the mark, never the count). A marked Press is its list on `<b>:down` (`<b>:tap` with a Long press),
+  marked; unmarked Press is the single command as before (mirror passthrough). `writeMain`/`writeLongPress`
+  take `{ macro, timed }`; clearing drops the mark; writeLongPress rewrites Press keeping its mark.
+- **Validation** (lib/activity `validateBindings(set)`, mirrors core): unmarked 2+ is `macro_required` at
+  /bindings/<trigger>; /macros/<i> `invalid_trigger` (not down/tap/hold), `duplicate_trigger`,
+  `unbound_macro`; mock shape adds `wrong_type`. Marked lists check like a sequence (waits ok, holds
+  `hold_not_allowed`, only waits `sequence_only`). The mock never records rejected macros.
+- **Editor** (`pressRow`): no conversion paths. Unbound (or inherited) row: outline "Command" and "Macro".
+  A command row: Edit and Clear. A macro row (marked): MacroRow with Add and Clear, any step count. "Macro"
+  on an empty row opens an empty macro row (local `emptyMacro` state) with the add dialog; removing the last
+  step drops the binding and mark but the row stays an empty macro locally. "Macro" on an inherited macro
+  copies it in. Reset on button change. Clearing a macro with steps asks first (Dialog "Clear the <Button>
+  [long press] macro?"); a command row's Clear is instant.
+- **Advanced** is disabled (InfoTip "Not available for a button with a macro.") when the button has a macro,
+  own, inherited or an empty one being built; `showRaw = forced || (advanced && !hasMacro)`. The advanced view
+  never offers Macro (the Long press row there offers Command only).
+- **Run** (Play, next to Clear on a macro with steps): `hooks/runMacro` POSTs /macros/run {actions as on screen,
+  trigger, activity_id|null} → 202 {run_id}, sleeps out its waits (`waitMs`), then polls /activity-runs each second
+  until that run isn't `running`, up to `longestRunMs` (each device step at 5 s, wait_connected at its
+  timeout) + 3 s; then "The macro is still running" (see the Log). The trigger is `ButtonView.pressKey` (or `:hold`). Spinner meanwhile; toasts only problems (busy 503, cancelled, errors). The hub never records rejected macros.
+  Mock: validates like a bound macro (`unknown_activity` at /activity_id); `runOf` builds the run (id from
+  one `lastRunId` counter) at once and it's kept after its `duration_ms`;
+  503 `busy` with 4 waiting.
+  MacroRow = "Macro" tag, Clear, SequenceEditor (noun "command", `startAdding`), the same picker as startup.
+- **Remote**: `macros` set ("<b>:tap"/"<b>:hold") on RemoteSvg stacks the dot (two faded copies above) and
+  says "press macro" in the key's label.
+- **Log**: runs carry `kind` startup/shutdown/macro, `button`, `trigger` press/long_press, nullable
+  `activity_id`. `runKind` says "Guide · macro" / "Play · long press macro" (Layers icon); `activityName(null)`
+  is "Global". Status's failed-run line names the macro and links to /status/activity for a global one. The
+  editor's step warnings use the newest non-macro run.
+- **Mock**: `keepRun` records any run; `/__mock/remote/<b>/press|tap` runs and logs a marked down/tap
+  (activity's if it binds the button, else global). Fixture: Watch Apple TV `macros: ["guide:down"]`. `macros` is optional on input
+  (missing = none, `withMacros`) on create/replace/validate, the global PUT and restore; responses always have it. `guide:down` = Home, wait 500, Down.
+- Every activity write goes through `activityBody` (lib/activity): it sends `macros`. It once didn't, so the hub
+  (missing = none) answered macro_required for any macro. e2e/macros.spec.ts covers build, save, mark and Run.
+- MacroRow passes the button's issues and `/bindings/<trigger>` to SequenceEditor (steps get marked).
+  `buttonForPath(path, macros)` maps `/macros/<i>` to its button.
+- e2e: the unbound Press/Long press row's button is "Command for <Button> press" (was Bind/Change).
+- Hub messages are for agents: `inOurWords` (lib/activity, used by the draft hook) shows our own check's message
+  for the same path and code, or macro copy for macro_required and /macros/* issues only.
+- Open: e2e only covers the Press macro; long press macro runs aren't simulated in the mock (no hold endpoint).
+
 ## Response time gauge (branch `latency-targets`)
 
 - Status Overview: targets p95 < 2 ms, p99 < 5 ms (ARCHITECTURE.md; boards measure ~0.5 / 0.65 / 0.8 ms).

@@ -66,6 +66,7 @@ enum class Operation : uint8_t {
     ActivateActivity,
     GetGlobalBindings,
     ReplaceGlobalBindings,
+    RunMacro,
     GetSmartButtons,
     ReplaceSmartButtons,
     GetSmartButtonActions,

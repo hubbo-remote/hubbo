@@ -56,11 +56,25 @@ void putNullableMs(JsonObject out, const char *key, bool present, uint32_t ms) {
     }
 }
 
-void putRun(JsonObject out, const ActivityRun &run, uint32_t nowMs) {
+// What a run and /status last_run share: id, activity_id (null for a global
+// macro), kind, and a macro's button and trigger (null otherwise).
+template <typename Run>
+void putRunHead(JsonObject out, const Run &run) {
     out["id"] = run.id;
-    out["activity_id"] = run.activityId.c_str();
+    putNullableId(out, "activity_id", run.activityId.view());
     out["kind"] = sequenceOriginName(run.kind);
+    if (run.kind == SequenceOrigin::Macro) {
+        out["button"] = remote::buttonName(run.trigger.button);
+        out["trigger"] = run.trigger.kind == remote::EventKind::Hold ? "long_press" : "press";
+    } else {
+        out["button"] = nullptr;
+        out["trigger"] = nullptr;
+    }
     out["outcome"] = runOutcomeName(run.outcome);
+}
+
+void putRun(JsonObject out, const ActivityRun &run, uint32_t nowMs) {
+    putRunHead(out, run);
     out["started_ago_ms"] = static_cast<uint32_t>(nowMs - run.startedMs);  // wraps safely
     putNullableMs(out, "duration_ms", run.outcome != RunOutcome::Running, run.durationMs);
     JsonArray steps = out["steps"].to<JsonArray>();
@@ -84,10 +98,7 @@ void putLastRun(JsonObject root, const ApiContext &ctx) {
         return;
     }
     JsonObject last = root["last_run"].to<JsonObject>();
-    last["id"] = run.id;
-    last["activity_id"] = run.activityId.c_str();
-    last["kind"] = sequenceOriginName(run.kind);
-    last["outcome"] = runOutcomeName(run.outcome);
+    putRunHead(last, run);
     last["failed_steps"] = run.failedSteps;
 }
 

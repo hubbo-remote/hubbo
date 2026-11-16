@@ -5,7 +5,7 @@ import { api, expect, open } from './hub.ts'
 
 /** Create an empty activity through the API and open it in the editor; returns its id. */
 export async function openNewActivity(page: Page, name: string): Promise<string> {
-  const r = await api(page).post('/activities', { name, startup: [], shutdown: [], bindings: {} })
+  const r = await api(page).post('/activities', { name, startup: [], shutdown: [], bindings: {}, macros: [] })
   expect(r.status()).toBe(201)
   const { id } = (await r.json()) as { id: string }
   await open(page, `/activities/${id}`)
@@ -26,21 +26,24 @@ export async function saveActivity(page: Page) {
  */
 export async function bind(page: Page, button: string, how: 'press' | 'long press', device: string, command: string, key?: string) {
   await page.locator(`[data-key="${button}"]`).click()
-  await page.getByRole('button', { name: new RegExp(`^(Bind|Edit) ${buttonLabel(button)} ${how}$`) }).click()
+  await page.getByRole('button', { name: new RegExp(`^(Command for|Edit) ${buttonLabel(button)} ${how}$`) }).click()
   await page.getByLabel('Device').selectOption({ label: device })
   await page.getByLabel('Command', { exact: true }).selectOption({ label: command })
   if (key) await page.getByLabel('Key', { exact: true }).selectOption(key)
   await page.getByRole('button', { name: 'Apply' }).click()
 }
 
-/** Add a step to the open Startup or Shutdown tab; `fields` fills its settings by label. */
-export async function addStep(page: Page, device: string, command: string, fields: Record<string, string> = {}) {
-  await page.getByRole('button', { name: 'Add step' }).click()
+/**
+ * Add a step to the open Startup or Shutdown tab (or with `noun: 'command'`, a command to a macro); `fields` fills its
+ * settings by label. `opened`: the add dialog is already open (a new macro opens with it).
+ */
+export async function addStep(page: Page, device: string, command: string, fields: Record<string, string> = {}, { noun = 'step', opened = false } = {}) {
+  if (!opened) await page.getByRole('button', { name: `Add ${noun}` }).click()
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('Device').selectOption({ label: device })
   await dialog.getByLabel('Command', { exact: true }).selectOption({ label: command })
   for (const [label, value] of Object.entries(fields)) await dialog.getByLabel(label).fill(value)
-  await dialog.getByRole('button', { name: 'Add step' }).click()
+  await dialog.getByRole('button', { name: `Add ${noun}` }).click()
   await expect(dialog).toBeHidden()
 }
 

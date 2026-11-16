@@ -71,6 +71,8 @@ constexpr const char *kNames[] = {
     "template_not_supported",
     "state_unavailable",
     "already_set",
+    "macro_required",
+    "unbound_macro",
 };
 static_assert(sizeof(kNames) / sizeof(kNames[0]) == static_cast<size_t>(ErrorCode::Count),
               "kNames must name every ErrorCode");

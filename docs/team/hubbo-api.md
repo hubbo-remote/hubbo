@@ -484,6 +484,39 @@ Current as of the smart-buttons branch. Not a log: rewrite sections as they chan
     step's reason.
   - /status reads `Runtime::lastRun(LastRun *)` (core's `RunHistory::readLatest`, about 40 B on
     the stack), so a dashboard poll no longer copies the whole history.
+- **Macros (macros branch; docs/design/macros.md), working first pass, not gated.** Runs gain
+  kind `macro`, `button` (Button) and `trigger` (`press`/`long_press`), both null for
+  startup/shutdown; `activity_id` is null only for a global macro. Macros are explicit:
+  `macros` (trigger keys, next to `bindings`) on activities and global bindings, optional on
+  input/backup (absent = none), always in responses (Activity, GlobalBindings; the PUT body is
+  GlobalBindingsInput). A listed trigger is a macro at any length; an unlisted list of more
+  than one action is `macro_required` at /bindings/<trigger>; bad entries at /macros/<i>
+  (`wrong_type`, `invalid_trigger`, `duplicate_trigger`, `unbound_macro`). maxItems 144. Same on /status last_run
+  (`putRunHead` in status_routes.cpp, a template over ActivityRun/LastRun; core's
+  `Trigger trigger`, Hold = long_press). A dropped macro (lane full: 1 running + 4 queued) is
+  not recorded. Waits are allowed only in a macro (core's compiler); an unmarked wait-only
+  binding stays `sequence_only` (message now "...startup, shutdown or macro").
+  - Fixture: Watch Apple TV `guide:down` = press Home, wait 500, press Down; the newest run
+    (id 13) is that macro, so status last_run is a macro. hub-sim seeds from backup.json, so the
+    seed has this macro too: the contract drops `guide:*` before adding its own.
+  - Contract `macro_runs_flow` (sim only, after activity_runs_flow): activity tap, global dvr
+    (null activity), 1.5 s hold (long_press); full lane with a 2 s wait (sim taps take 100 ms):
+    5 completed in id order, 5 volume_up + 5 volume_down in /sim/log; off mid-macro cancels.
+    The shared `activity_runs()` checker also runs on the mock: it needs button/trigger.
+  - Unit: `ApiTest.AGlobalMacroIsARunWithItsButtonAndNoActivity`,
+    `ApiTest.TryingAMacroQueuesItAsWrittenAndRecordsIt`.
+  - **POST /macros/run** (`runMacro`, token, 32 KB like activity writes; activity_routes.cpp): `{actions, trigger,
+    activity_id}` → 202 `{run_id}`. Trigger (parseTrigger, not `up`) and activity (must exist,
+    needn't be active, not switched to) are checked here; `ConfigService::compileMacro` checks
+    the actions (issues rooted at the body); all issues go out in one 422. Then
+    `EngineRequest::runMacro` → `MacroRunResult`; `queue_full` → 503 busy (not recorded).
+    `Field::Kind::NullableString`/`Any` were added to checkObject for it. queue_full goes through
+    sendCoreError (503 busy). The trigger is checked with core's `isMacroTrigger()`
+    (domain/trigger.h). Open (core's call): compileMacro taking the whole request.
+  - Core limits (documented lightly): macros together hold at most 32 of the 64 action nodes
+    (past that a press or /macros/run is refused like a full lane: 503 busy, not recorded); a
+    binding/macro of only waits is `sequence_only` at .../0/command_id; macros take at most 5
+    of the 8 run-history slots, and a running run is never evicted.
 - **State checks (activity-runs branch; docs/design/state-checks.md).** The wire change is two
   step results: `skipped` (error `already_set`, a duration equal to the read time) and `no_reply`
   (error null, about 1000 ms, up to about 1300 when the step was also checked). Neither counts in

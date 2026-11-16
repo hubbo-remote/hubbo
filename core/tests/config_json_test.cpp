@@ -22,7 +22,7 @@ ValidationReport decodeActivityText(const char *text, ActivityShape shape, Activ
     return report;
 }
 
-const char *kMinimalActivity = R"({"name":"Movie","startup":[],"shutdown":[],"bindings":{}})";
+const char *kMinimalActivity = R"({"name":"Movie","startup":[],"shutdown":[],"bindings":{},"macros":[]})";
 
 }  // namespace
 
@@ -55,7 +55,7 @@ TEST(ConfigJson, ParamTypesSurvive) {
     ActivitySpec a;
     const auto report = decodeActivityText(
         R"({"name":"A","startup":[{"integration_id":"x","device_id":null,"command_id":"c",
-            "params":{"i":3,"f":0.5,"b":true,"s":"HDMI 1"}}],"shutdown":[],"bindings":{}})",
+            "params":{"i":3,"f":0.5,"b":true,"s":"HDMI 1"}}],"shutdown":[],"bindings":{},"macros":[]})",
         ActivityShape::Create, &a);
     ASSERT_TRUE(report.ok());
     const auto &p = a.startup[0].params;
@@ -70,7 +70,7 @@ TEST(ConfigJson, ParamTypesSurvive) {
 TEST(ConfigJson, ShapesPerOperation) {
     EXPECT_TRUE(decodeActivityText(kMinimalActivity, ActivityShape::Create).ok());
     // Create takes no id/revision; Replace needs a revision; Stored needs id + schema_version.
-    EXPECT_TRUE(decodeActivityText(R"({"id":"act_x","name":"A","startup":[],"shutdown":[],"bindings":{}})",
+    EXPECT_TRUE(decodeActivityText(R"({"id":"act_x","name":"A","startup":[],"shutdown":[],"bindings":{},"macros":[]})",
                                    ActivityShape::Create)
                     .has(ErrorCode::UnknownField, "/id"));
     EXPECT_TRUE(decodeActivityText(kMinimalActivity, ActivityShape::Replace).has(ErrorCode::Required, "/revision"));
@@ -79,7 +79,7 @@ TEST(ConfigJson, ShapesPerOperation) {
     EXPECT_TRUE(stored.has(ErrorCode::Required, "/id"));
     EXPECT_TRUE(stored.has(ErrorCode::Required, "/schema_version"));
     EXPECT_TRUE(decodeActivityText(
-                    R"({"name":"A","startup":[],"shutdown":[],"bindings":{},"schema_version":2,"revision":1})",
+                    R"({"name":"A","startup":[],"shutdown":[],"bindings":{},"macros":[],"schema_version":2,"revision":1})",
                     ActivityShape::Replace)
                     .has(ErrorCode::UnsupportedSchema, "/schema_version"));
 }
@@ -101,7 +101,7 @@ TEST(ConfigJson, StrictShapeErrors) {
 
 TEST(ConfigJson, Bounds) {
     const std::string longName(limits::kMaxNameLength + 1, 'n');
-    EXPECT_TRUE(decodeActivityText(("{\"name\":\"" + longName + R"(","startup":[],"shutdown":[],"bindings":{}})").c_str(),
+    EXPECT_TRUE(decodeActivityText(("{\"name\":\"" + longName + R"(","startup":[],"shutdown":[],"bindings":{},"macros":[]})").c_str(),
                                    ActivityShape::Create)
                     .has(ErrorCode::TooLong, "/name"));
     std::string seq = "[";
@@ -109,17 +109,17 @@ TEST(ConfigJson, Bounds) {
         seq += std::string(i ? "," : "") + R"({"integration_id":"system","device_id":null,"command_id":"off","params":{}})";
     }
     seq += "]";
-    EXPECT_TRUE(decodeActivityText(("{\"name\":\"A\",\"startup\":" + seq + R"(,"shutdown":[],"bindings":{}})").c_str(),
+    EXPECT_TRUE(decodeActivityText(("{\"name\":\"A\",\"startup\":" + seq + R"(,"shutdown":[],"bindings":{},"macros":[]})").c_str(),
                                    ActivityShape::Create)
                     .has(ErrorCode::TooLong, "/startup"));
     const auto params = decodeActivityText(
         R"({"name":"A","startup":[{"integration_id":"x","device_id":null,"command_id":"c",
-            "params":{"a":1,"b":2,"c":3,"d":4,"e":5}}],"shutdown":[],"bindings":{}})",
+            "params":{"a":1,"b":2,"c":3,"d":4,"e":5}}],"shutdown":[],"bindings":{},"macros":[]})",
         ActivityShape::Create);
     EXPECT_TRUE(params.has(ErrorCode::TooLong, "/startup/0/params"));
     const auto nested = decodeActivityText(
         R"({"name":"A","startup":[{"integration_id":"x","device_id":null,"command_id":"c",
-            "params":{"a":{"entity_id":"all"}}}],"shutdown":[],"bindings":{}})",
+            "params":{"a":{"entity_id":"all"}}}],"shutdown":[],"bindings":{},"macros":[]})",
         ActivityShape::Create);
     EXPECT_TRUE(nested.has(ErrorCode::WrongType, "/startup/0/params/a"));
 }
@@ -384,7 +384,7 @@ ValidationReport decodeCallText(const std::string &text, HaServiceCallSpec *out 
 }
 
 std::string bindingWith(const std::string &action) {
-    return R"({"name":"TV","startup":[],"shutdown":[],"bindings":{"info:tap":[)" + action + "]}}";
+    return R"({"name":"TV","startup":[],"shutdown":[],"bindings":{"info:tap":[)" + action + R"(]},"macros":[]})";
 }
 
 }  // namespace
@@ -467,7 +467,7 @@ TEST(ConfigJson, ACallBelongsToCallServiceAlone) {
                              R"("command_id":"call_service","params":{},"call":{"service":"a.b","data":)"
                              R"({"entity_id":1,"x":{"y":[{}]}}}}],"shutdown":[],"bindings":{"info:tap":[)"
                              R"({"integration_id":"ha_main","device_id":"dev_lg_tv","command_id":"call_service",)"
-                             R"("params":{},"call":{"service":"a.b","data":{"x":{"y":[{}]}}}}]}})";
+                             R"("params":{},"call":{"service":"a.b","data":{"x":{"y":[{}]}}}}]},"macros":[]})";
     EXPECT_TRUE(decodeActivityText(deep.c_str(), ActivityShape::Create)
                     .has(ErrorCode::ForbiddenParam, "/startup/0/call/data/entity_id"));
 }

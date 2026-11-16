@@ -504,7 +504,7 @@ TEST(SimApi, StorageCanBeMadeUnavailable) {
     SimAuth a;
     ScenarioRunner runner(nullptr, &medium, /*pinned=*/true, nullptr, nullptr, &a.credentials);
     SimApi api(runner, false, a.credentials, &medium);
-    const char *create = R"({"name":"Movie","startup":[],"shutdown":[],"bindings":{}})";
+    const char *create = R"({"name":"Movie","startup":[],"shutdown":[],"bindings":{},"macros":[]})";
 
     EXPECT_EQ(call(api, http::Method::Post, "/sim/storage", "health=unavailable").status, 200);
     const http::Response refused = call(api, http::Method::Post, "/api/v1/activities", "", create);

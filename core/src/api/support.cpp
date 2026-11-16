@@ -66,7 +66,9 @@ const char *issueMessage(ErrorCode code) {
             return "This command holds state until released (e.g. key_down); execute only takes momentary "
                    "commands such as key_tap. Holds are for bindings.";
         case ErrorCode::IntegrationDisabled: return "The device's integration is disabled";
-        case ErrorCode::SequenceOnly: return "This command only works in a startup or shutdown";
+        case ErrorCode::SequenceOnly: return "This command only works in a startup, shutdown or macro";
+        case ErrorCode::MacroRequired: return "More than one command makes this a macro: list it in macros";
+        case ErrorCode::UnboundMacro: return "This macro has no commands";
         case ErrorCode::UnknownKind: return "Not a device kind (see GET /kinds)";
         default: return errorCodeName(code);
     }
@@ -310,6 +312,8 @@ bool checkObject(JsonVariantConst value, std::initializer_list<Field> fields, Va
             case Field::Kind::Bool: typed = v.is<bool>(); break;
             case Field::Kind::Integer: typed = v.is<long long>() && !v.is<bool>(); break;
             case Field::Kind::Object: typed = v.is<JsonObjectConst>(); break;
+            case Field::Kind::NullableString: typed = v.isNull() || v.is<const char *>(); break;
+            case Field::Kind::Any: typed = true; break;
         }
         if (!typed) {
             report->add(ErrorCode::WrongType, at(f.name));

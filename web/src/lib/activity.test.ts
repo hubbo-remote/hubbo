@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import type { Activity } from '../api/types'
+import type { Action, Activity } from '../api/types'
 import { fixture, loadSeed } from '../../mock/fixtures.ts'
 import type { ParamSpec } from '../api/types'
-import { bindsButton, buttonForPath, defaultParams, hubboCommands, mostUsedDevice, drawerParams, fanSpeeds, fieldLabel, speedLabel, speedOf, speedOptions, paramLabel, parseTrigger, percentLabel, percentDefault, percentOptions, percentScale, validateActivity, validateBindings, waitAction, systemAction, type Catalog } from './activity'
+import { bindsButton, buttonForPath, defaultParams, inOurWords, longestRunMs, hubboCommands, mostUsedDevice, drawerParams, fanSpeeds, fieldLabel, speedLabel, speedOf, speedOptions, paramLabel, parseTrigger, percentLabel, percentDefault, percentOptions, percentScale, validateActivity, validateBindings, waitAction, systemAction, type Catalog } from './activity'
 
 const s = loadSeed()
 const cat: Catalog = {
@@ -18,6 +18,8 @@ describe('activity helpers', () => {
     expect(parseTrigger('volume_up:double')).toBeNull()
     expect(buttonForPath('/bindings/info:hold/0/params/key')).toBe('info')
     expect(buttonForPath('/startup/2')).toBeNull()
+    expect(buttonForPath('/macros/1', ['guide:down', 'play:hold'])).toBe('play')
+    expect(buttonForPath('/macros/5', ['guide:down'])).toBeNull()
   })
 
   it('counts a button as bound only when one of its triggers has an action (the hub’s masking rule)', () => {
@@ -31,7 +33,7 @@ describe('activity helpers', () => {
     for (const a of s.activities) expect(validateActivity(a, cat).errors).toEqual([])
     for (const f of ['activities/create.request.json', 'activities/replace.request.json']) expect(validateActivity(fixture<Activity>(f), cat).errors).toEqual([])
     const errors: never[] = []
-    validateBindings(s.globalBindings.bindings, cat, errors, [])
+    validateBindings(s.globalBindings, cat, errors, [])
     expect(errors).toEqual([])
   })
 
@@ -45,6 +47,7 @@ describe('activity helpers', () => {
           'up:down': [{ integration_id: 'ha_main', device_id: 'dev_apple_tv', command_id: 'key_down', params: { key: 'ARROW_UP' } }],
           'tv:tap': [systemAction('activate', { activity_id: 'act_nope' })],
         },
+        macros: [],
       },
       cat,
     )
@@ -54,8 +57,8 @@ describe('activity helpers', () => {
 
   it('holds: down only, released on up; never in sequences', () => {
     const apple = (command_id: string, key = 'ARROW_UP') => ({ integration_id: 'ble', device_id: 'dev_apple_tv', command_id, params: { key } })
-    const codes = (bindings: Record<string, ReturnType<typeof apple>[]>, startup: ReturnType<typeof apple>[] = []) => {
-      const r = validateActivity({ name: 'x', startup, shutdown: [], bindings }, cat)
+    const codes = (bindings: Record<string, Action[]>, startup: Action[] = [], macros: string[] = []) => {
+      const r = validateActivity({ name: 'x', startup, shutdown: [], bindings, macros }, cat)
       return { errors: r.errors.map((e) => `${e.code}@${e.path}`), warnings: r.warnings.map((w) => w.code) }
     }
     expect(codes({ 'up:down': [apple('key_down')], 'up:up': [apple('key_up')] }).errors).toEqual([])
@@ -63,7 +66,33 @@ describe('activity helpers', () => {
     expect(codes({ 'up:down': [apple('key_down')], 'up:up': [apple('key_up', 'ARROW_DOWN')] }).errors).toEqual(['unpaired_hold@/bindings/up:down/0/command_id'])
     expect(codes({ 'up:tap': [apple('key_down')] }).errors).toEqual(['hold_not_allowed@/bindings/up:tap/0/command_id'])
     expect(codes({}, [apple('key_down')]).errors).toEqual(['hold_not_allowed@/startup/0/command_id'])
+    // A macro (a marked down, tap or hold) runs like a startup at any length: waits yes, holds no; only waits is
+    // refused. Unmarked, a trigger holds one command.
+    const wait = waitAction()
+    const home: Action = { integration_id: 'ble', device_id: 'dev_apple_tv', command_id: 'press', params: { command: 'Home' } }
+    expect(codes({ 'up:down': [home, wait, home] }, [], ['up:down']).errors).toEqual([])
+    expect(codes({ 'up:down': [home] }, [], ['up:down']).errors).toEqual([])
+    expect(codes({ 'up:down': [home, home] }).errors).toEqual(['macro_required@/bindings/up:down'])
+    expect(codes({ 'up:down': [home, apple('key_down')] }, [], ['up:down']).errors).toEqual(['hold_not_allowed@/bindings/up:down/1/command_id'])
+    expect(codes({ 'up:tap': [wait] }, [], ['up:tap']).errors).toEqual(['sequence_only@/bindings/up:tap/0/command_id'])
+    expect(codes({ 'up:up': [home], 'up:down': [home] }, [], ['up:up', 'up:tap', 'up:down', 'up:down']).errors).toEqual(['invalid_trigger@/macros/0', 'unbound_macro@/macros/1', 'duplicate_trigger@/macros/3'])
     expect(codes({ 'up:down': [apple('key_down')], 'up:up': [apple('key_up')], 'up:hold': [apple('key_tap', 'AC_HOME')] }).warnings).toEqual(['mixed_semantics'])
+  })
+})
+
+describe('macro issues and runs', () => {
+  it('says the hub’s macro issues in our words, only for the macro rules', () => {
+    const issue = (path: string, code: string) => ({ path, code, message: 'hub words' })
+    expect(inOurWords(issue('/macros/0', 'unbound_macro'), [], ['play:hold']).message).toBe('Play: add a command to the macro')
+    expect(inOurWords(issue('/bindings/play:down', 'macro_required'), []).message).toBe('Play: make this a macro to run more than one command')
+    expect(inOurWords(issue('/bindings/nope:x', 'invalid_trigger'), []).message).toBe('hub words') // not a macro rule
+    expect(inOurWords(issue('/name', 'required'), [{ ...issue('/name', 'required'), message: 'Name is required' }]).message).toBe('Name is required')
+  })
+
+  it('budgets a run from its steps: waits as set, a wait to connect at its limit, other steps at their timeout', () => {
+    const press: Action = { integration_id: 'ble', device_id: 'dev_apple_tv', command_id: 'press', params: { command: 'Home' } }
+    const connect: Action = { integration_id: 'ble', device_id: 'dev_apple_tv', command_id: 'wait_connected', params: { timeout_ms: 8000 } }
+    expect(longestRunMs([press, waitAction(500), connect, press])).toBe(5000 + 500 + 8000 + 5000)
   })
 })
 

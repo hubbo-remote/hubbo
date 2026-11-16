@@ -1,12 +1,12 @@
 {
   "error": {
     "code": "validation_failed",
-    "message": "wait_connected only works in a startup or shutdown",
+    "message": "wait_connected only works in a startup, shutdown or macro",
     "details": [
       {
         "path": "/command_id",
         "code": "sequence_only",
-        "message": "wait_connected only works in a startup or shutdown"
+        "message": "wait_connected only works in a startup, shutdown or macro"
       }
     ]
   }

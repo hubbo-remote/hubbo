@@ -539,6 +539,9 @@ watch_bindings.update({
     "minus:down": [a("dev_family_room_lights", "light.brightness_step", step=-32)],
     "light_1:down": [a("dev_family_room_lights", "light.turn_on", brightness=255, transition=1)],
     "light_2:down": [a("dev_family_room_lights", "light.turn_off", transition=1)],
+    # A macro (listed in `macros`): a Press with a wait (no Long press, so on down).
+    "guide:down": [a("dev_apple_tv", "press", command="Home"), wait(500),
+                   a("dev_apple_tv", "press", command="DirectionDown")],
 })
 
 WATCH = {
@@ -558,7 +561,7 @@ WATCH = {
         a("dev_lg_tv", "media_player.turn_off"),
         a("dev_sonos", "media_player.media_pause"),
     ],
-    "bindings": watch_bindings, "schema_version": 1, "revision": 4,
+    "bindings": watch_bindings, "macros": ["guide:down"], "schema_version": 1, "revision": 4,
 }
 
 PLAY_XBOX = {
@@ -590,6 +593,7 @@ PLAY_XBOX = {
         "red:down": [a("dev_denon", "media_player.volume_set", level=0.35)],
         "info:down": [ha_action("dev_lg_tv", "webostv.button", button="INFO")],
     },
+    "macros": [],
     "schema_version": 1, "revision": 2,
 }
 
@@ -603,6 +607,7 @@ GLOBAL_BINDINGS = {
         "off:tap": [a(None, "off")],
         "light_1:hold": [a("dev_family_room_lights", "light.turn_off")],
     },
+    "macros": [],
     "revision": 6,
 }
 
@@ -648,7 +653,7 @@ BACKUP_SMART_BUTTONS = {"slots": SMART_SLOTS, "revision": 7}
 
 
 def input_of(act):
-    return {k: copy.deepcopy(act[k]) for k in ("name", "startup", "shutdown", "bindings")}
+    return {k: copy.deepcopy(act[k]) for k in ("name", "startup", "shutdown", "bindings", "macros")}
 
 
 # ---------------------------------------------------------------- misc
@@ -691,23 +696,28 @@ INTEGRATIONS = [
 # ---------------------------------------------------------------- activity runs
 
 
-def run(run_id, act, kind, outcome, started_ago_ms, results):
-    """One run of `act`'s `kind` sequence: `results` per action, in order,
-    as (result, error, duration_ms)."""
-    actions = act[kind]
+def run(run_id, act, kind, outcome, started_ago_ms, results, button=None, trigger=None):
+    """One run of `act`'s `kind` sequence (a macro: `button`'s `trigger`
+    binding): `results` per action, in order, as (result, error, duration_ms)."""
+    key = {None: None, "press": "down", "long_press": "hold"}[trigger]
+    actions = act["bindings"][f"{button}:{key}"] if kind == "macro" else act[kind]
     assert len(results) == len(actions)
     steps = [{"index": i, "device_id": x["device_id"], "command_id": x["command_id"],
               "result": r, "error": e, "duration_ms": d} for i, (x, (r, e, d)) in enumerate(zip(actions, results))]
     done = [d for _, _, d in results if d is not None]
-    return {"id": run_id, "activity_id": act["id"], "kind": kind, "started_ago_ms": started_ago_ms,
+    return {"id": run_id, "activity_id": act["id"], "kind": kind, "button": button, "trigger": trigger,
+            "started_ago_ms": started_ago_ms,
             "duration_ms": None if outcome == "running" else sum(done), "outcome": outcome, "steps": steps}
 
 
 OK = ("ok", None, 40)
-# Newest first: Watch Apple TV's startup skipped the TV (already on), got no
-# reply from the Sonos, and went on past the lights failing; before it, Play
-# Xbox's shutdown, and its startup, cut short by the switch.
+# Newest first: a Guide macro in Watch Apple TV (a wait between two presses);
+# Watch Apple TV's startup skipped the TV (already on), got no reply from the
+# Sonos, and went on past the lights failing; before it, Play Xbox's
+# shutdown, and its startup, cut short by the switch.
 ACTIVITY_RUNS = [
+    run(13, WATCH, "macro", "completed", 30000, [("ok", None, 45), ("ok", None, 500), ("ok", None, 40)],
+        button="guide", trigger="press"),
     run(12, WATCH, "startup", "completed_with_errors", 120000,
         [("skipped", "already_set", 25), ("no_reply", None, 1000), ("ok", None, 2100), OK, ("ok", None, 1500), OK,
          ("failed", "entity_not_found", 30)]),
@@ -719,7 +729,8 @@ ACTIVITY_RUNS = [
 
 
 def last_run(r):
-    return {"id": r["id"], "activity_id": r["activity_id"], "kind": r["kind"], "outcome": r["outcome"],
+    return {"id": r["id"], "activity_id": r["activity_id"], "kind": r["kind"], "button": r["button"],
+            "trigger": r["trigger"], "outcome": r["outcome"],
             "failed_steps": sum(s["result"] in ("failed", "timed_out") for s in r["steps"])}  # not skipped/no_reply
 
 
@@ -821,8 +832,8 @@ fx("devices/execute.failed.json", "executeCommand", "200", {
     "message": "adapter_unavailable"})
 fx("devices/execute.press.request.json", "executeCommand", "request", {"params": {"command": "Select"}})
 fx("errors/sequence_only.json", "executeCommand", "422", err(
-    "validation_failed", "wait_connected only works in a startup or shutdown", [
-        ("/command_id", "sequence_only", "wait_connected only works in a startup or shutdown"),
+    "validation_failed", "wait_connected only works in a startup, shutdown or macro", [
+        ("/command_id", "sequence_only", "wait_connected only works in a startup, shutdown or macro"),
     ]))
 
 fx("profiles/list.json", "listProfiles", "200", {"profiles": [profile_summary(p) for p in PROFILES]})
@@ -841,6 +852,10 @@ replace = copy.deepcopy(WATCH)
 replace["bindings"].update(passthrough("green", "key", key="F3"))
 fx("activities/replace.request.json", "replaceActivity", "request", replace)
 fx("activities/global_bindings.json", "getGlobalBindings", "200", GLOBAL_BINDINGS)
+# Trying Watch Apple TV's Guide macro from the editor (as on screen, saved or not).
+fx("activities/macro_run.request.json", "runMacro", "request",
+   {"actions": WATCH["bindings"]["guide:down"], "trigger": "guide:down", "activity_id": WATCH["id"]})
+fx("activities/macro_run.json", "runMacro", "202", {"run_id": 14})
 fx("smart_buttons/get.json", "getSmartButtons", "200", SMART_BUTTONS)
 # Switch 2 gets the LG TV: a kind with no smart actions.
 REPLACED_SLOTS = dict(SMART_SLOTS, switch_2="dev_lg_tv")
@@ -1021,7 +1036,7 @@ fx("admin/backup.empty.json", "downloadBackup", "200", {
     "format": "hubbo-backup", "format_version": 1, "created_at": None,
     "firmware_version": "0.1.0", "board": "waveshare_esp32_s3_eth",
     "integrations": [], "devices": [],
-    "global_bindings": {"bindings": {"off:tap": [a(None, "off")]}, "revision": 1},
+    "global_bindings": {"bindings": {"off:tap": [a(None, "off")]}, "macros": [], "revision": 1},
     "smart_buttons": {"slots": EMPTY_SLOTS, "revision": 1},
     "activities": [], "excluded": ["admin_password", "api_tokens", "integration_secrets", "ble_bonds"],
 })
@@ -1031,7 +1046,7 @@ fx("admin/restore.request.json", "restoreBackup", "request", BACKUP)
 # if this firmware can read it.
 fx("admin/restore.blocked-raw.request.json", "restoreBackup", "request", {
     "format": "hubbo-config", "schema_version": 2, "revision": 41,
-    "integrations": [], "devices": [], "global_bindings": {"bindings": {}, "revision": 1}, "activities": []})
+    "integrations": [], "devices": [], "global_bindings": {"bindings": {}, "macros": [], "revision": 1}, "activities": []})
 fx("errors/restore_unsupported_schema.json", "restoreBackup", "422", err(
     "validation_failed", "This saved configuration is from newer firmware; update first", [
         ("/schema_version", "unsupported_schema", "This saved configuration is from newer firmware; update first"),

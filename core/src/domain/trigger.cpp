@@ -2,6 +2,11 @@
 
 namespace hubbo {
 
+bool isMacroTrigger(std::string_view text) {
+    Trigger trigger;
+    return parseTrigger(text, &trigger) && trigger.kind != remote::EventKind::Up;
+}
+
 bool parseTrigger(std::string_view text, Trigger *out) {
     const size_t colon = text.find(':');
     if (colon == std::string_view::npos || text.find(':', colon + 1) != std::string_view::npos) {

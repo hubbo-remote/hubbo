@@ -110,7 +110,7 @@ export function buildStarter(all: WizardDevice[], answers: WizardAnswers, rules:
     const name = matchButton(d, rule)
     if (!name) continue
     const c = d.commands.get(name.toLowerCase())!
-    bindings = writeMain(bindings, rule.button, c.tap, () => !!c.timed)
+    bindings = writeMain({ bindings, macros: [] }, rule.button, c.tap, { timed: () => !!c.timed }).bindings
     filled.push({ button: rule.button, deviceId: d.id, command: name })
   }
 
@@ -135,7 +135,7 @@ export function buildStarter(all: WizardDevice[], answers: WizardAnswers, rules:
     startup.push(...own)
     if (d.power.type === 'discrete' && power.off) shutdown.push(...d.power.off)
   }
-  return { activity: { name: answers.name.trim(), startup: spaced(startup, byId), shutdown: spaced(shutdown, byId), bindings }, filled }
+  return { activity: { name: answers.name.trim(), startup: spaced(startup, byId), shutdown: spaced(shutdown, byId), bindings, macros: [] }, filled }
 }
 
 // ---- Adapters

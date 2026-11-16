@@ -7,7 +7,7 @@ test.skip(({ isMobile }) => isMobile, 'desktop layout: the phone edits a key in 
 test('bind a Home Assistant action: pick the service, fix the data as you type, test it, save', async ({ page }) => {
   await open(page, '/remote')
   await page.locator('[data-key="info"]').click()
-  await page.getByRole('button', { name: /^(Bind|Edit) Info press$/ }).click()
+  await page.getByRole('button', { name: /^(Command for|Edit) Info press$/ }).click()
   await page.getByLabel('Device').selectOption({ label: 'Family Room LG TV' })
   await page.getByLabel('Command', { exact: true }).selectOption({ label: 'Home Assistant action…' })
 

@@ -26,6 +26,7 @@ Every `revision` in every response must be >= 1. Run via api/contract.sh.
 """
 import argparse
 import contextlib
+import copy
 import gzip
 import http.client
 import http.cookies
@@ -444,7 +445,7 @@ def execute_flow(c):
     # wait_connected belongs in a sequence: fine in startup, refused in a binding.
     wait = {"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "wait_connected",
             "params": {"timeout_ms": 15000}}
-    act = {"name": "Wait check", "startup": [wait], "shutdown": [], "bindings": {}}
+    act = {"name": "Wait check", "startup": [wait], "shutdown": [], "bindings": {}, "macros": []}
     _, ok, _ = c.call("validateActivity", "POST", "/activities/validate", act, expect=200,
                       label="wait_connected in startup")
     expect((ok or {}).get("valid") is True, f"wait_connected in startup: {ok}")
@@ -1325,6 +1326,26 @@ def command_ids(press):
     return out
 
 
+def activity_runs(c, label):
+    """GET /activity-runs, checking the ids are newest first and that
+    /status last_run sums up the newest. Returns the runs."""
+    _, body, _ = c.call("listActivityRuns", "GET", "/activity-runs", expect=200, label=label)
+    got = (body or {}).get("runs", [])
+    ids = [r["id"] for r in got]
+    expect(ids == sorted(ids, reverse=True) and len(set(ids)) == len(ids), f"{label}: ids newest first: {ids}")
+    for r in got:
+        macro = r["kind"] == "macro"
+        expect((r["button"] is not None) == macro and (r["trigger"] is not None) == macro
+               and (r["activity_id"] is not None or macro), f"{label}: run {r['id']}'s button/trigger/activity: {r}")
+    _, st, _ = c.call("getStatus", "GET", "/status", expect=200, label=f"{label}: last_run")
+    want = None
+    if got:
+        want = {k: got[0][k] for k in ("id", "activity_id", "kind", "button", "trigger", "outcome")}
+        want["failed_steps"] = sum(x["result"] in ("failed", "timed_out") for x in got[0]["steps"])
+    expect(st and st.get("last_run") == want, f"{label}: last_run {st and st.get('last_run')}, want {want}")
+    return got
+
+
 def activity_runs_flow(c):
     """/activity-runs and /status last_run agree. On hub-sim (HA connected):
     a startup goes on past a step HA refuses (completed_with_errors), and
@@ -1332,16 +1353,7 @@ def activity_runs_flow(c):
     already on, on another input and slow to answer, Play Xbox skips its
     power, its input change gets no_reply, and the run is completed."""
     def last_run_matches(label):
-        _, body, _ = c.call("listActivityRuns", "GET", "/activity-runs", expect=200, label=label)
-        got = (body or {}).get("runs", [])
-        ids = [r["id"] for r in got]
-        expect(ids == sorted(ids, reverse=True) and len(set(ids)) == len(ids), f"{label}: ids newest first: {ids}")
-        _, st, _ = c.call("getStatus", "GET", "/status", expect=200, label=f"{label}: last_run")
-        want = None
-        if got:
-            want = {k: got[0][k] for k in ("id", "activity_id", "kind", "outcome")}
-            want["failed_steps"] = sum(x["result"] in ("failed", "timed_out") for x in got[0]["steps"])
-        expect(st and st.get("last_run") == want, f"{label}: last_run {st and st.get('last_run')}, want {want}")
+        got = activity_runs(c, label)
         return got[0] if got else {}
 
     def switch(path, label, setup=None, reset=None):
@@ -1389,6 +1401,139 @@ def activity_runs_flow(c):
            and 1000 <= (source.get("duration_ms") or 0) <= 1500, f"the slow Denon's input (1 s limit): {source}")
     expect(run.get("outcome") == "completed", f"a run with skipped and no_reply steps: {run}")
     switch("/activities/off", "off after the state checks")
+
+
+def expect_macro_run(run, label, button, trigger, activity, commands):
+    """A completed macro run: its button, trigger, activity and steps."""
+    expect(run.get("kind") == "macro" and run.get("button") == button and run.get("trigger") == trigger
+           and run.get("activity_id") == activity and run.get("outcome") == "completed"
+           and [x["command_id"] for x in run.get("steps", [])] == commands, f"{label}: {run}")
+
+
+def macro_runs_flow(c):
+    """Macros (triggers listed in `macros`) on hub-sim: a list of more than
+    one action needs marking; an activity's and a global one are runs of
+    kind macro with their button and trigger (a global one has no
+    activity), a wait between the steps, and a one-command macro too;
+    a press while four wait is dropped (not listed); a switch of activity cancels
+    a macro mid-wait. The bindings are put back after."""
+    if MOCK:
+        skip("macro runs as they happen", "the mock's runs are its own; hub-sim runs the engine")
+        return
+    expect(until(lambda: integration_state(c, "ha_main") == "connected"), "macro runs need HA connected")
+    act_id = "act_watch_apple_tv"
+    _, act, _ = c.call("getActivity", "GET", f"/activities/{act_id}", expect=200, label="macro activity")
+    _, gb, _ = c.call("getGlobalBindings", "GET", "/global-bindings", expect=200, label="macro globals")
+    if not act or not gb:
+        return
+    sonos = {"integration_id": "ha_main", "device_id": "dev_sonos"}
+    macro = [dict(sonos, command_id="media_player.volume_up", params={}),
+             {"integration_id": "system", "device_id": None, "command_id": "wait", "params": {"duration_ms": 300}},
+             dict(sonos, command_id="media_player.volume_down", params={})]
+    names = [x["command_id"] for x in macro]
+    # Guide's own binding (the seed's macro on down) gives way to these.
+    plain = {k: v for k, v in act.items() if k != "macros"}
+    plain["bindings"] = {k: v for k, v in act["bindings"].items() if not k.startswith("guide:")}
+    edited = dict(copy.deepcopy(plain), macros=[k for k in act["macros"] if not k.startswith("guide:")])
+    edited["bindings"].update({"guide:tap": macro, "guide:hold": macro[2:]})
+    # Unmarked, a list of more than one action is refused.
+    put_act = {"path": f"/activities/{act_id}", "op": "replaceActivity", "method": "PUT"}
+    refused_at(c, "an unmarked macro", edited, "macro_required", "/bindings/guide:tap", **put_act)
+    for macros, code, at, label in [
+            (["guide:up"], "invalid_trigger", "/macros/0", "a macro on up"),
+            (["guide:tap", "guide:tap"], "duplicate_trigger", "/macros/1", "a macro listed twice"),
+            (["guide:tap", "red:tap"], "unbound_macro", "/macros/1", "a macro with no binding"),
+            ([5], "wrong_type", "/macros/0", "a macro that isn't a trigger")]:
+        refused_at(c, label, dict(edited, macros=macros), code, at, **put_act)
+    # Left out, `macros` means none.
+    _, none, _ = c.call("replaceActivity", "PUT", f"/activities/{act_id}", plain, expect=200, label="no macros")
+    expect((none or {}).get("macros") == [], f"no macros reads back as []: {none and none.get('macros')}")
+    edited["revision"] = (none or edited)["revision"]
+    edited["macros"] += ["guide:tap", "guide:hold"]
+    _, put, _ = c.call("replaceActivity", "PUT", f"/activities/{act_id}", edited, expect=200,
+                       label="Press and Long press macros")
+    globals_ = dict(gb, bindings=dict(gb["bindings"], **{"dvr:down": macro}), macros=gb["macros"] + ["dvr:down"])
+    _, gput, _ = c.call("replaceGlobalBindings", "PUT", "/global-bindings", globals_, expect=200,
+                        label="a global macro")
+    if not put or not gput:
+        return
+    c.call("activateActivity", "POST", f"/activities/{act_id}/activate", expect=200, label="activate for macros")
+    c.control("advance?ms=20000")
+
+    def pressed(button, action, label):
+        c.control(f"remote/{button}/{action}")
+        c.control("advance?ms=2000")
+        runs = activity_runs(c, label)
+        return runs[0] if runs else {}
+
+    for button, action, trigger, activity in [("guide", "tap", "press", act_id),
+                                              ("dvr", "tap", "press", None)]:
+        run = pressed(button, action, f"{button} macro")
+        expect_macro_run(run, f"the {button} macro's run", button, trigger, activity, names)
+        steps = run.get("steps", [])
+        expect(len(steps) == 3 and steps[1]["device_id"] is None and 300 <= (steps[1]["duration_ms"] or 0) < 400,
+               f"the {button} macro's wait: {steps}")
+    c.control("remote/guide/press")
+    c.control("advance?ms=1500")  # past the hold time
+    c.control("remote/guide/release")
+    c.control("advance?ms=2000")
+    run = (activity_runs(c, "a Long press macro") or [{}])[0]
+    expect_macro_run(run, "the Long press macro's run (one command)", "guide", "long_press", act_id,
+                     ["media_player.volume_down"])
+
+    # One runs and four wait (a 2 s wait each, longer than six taps take);
+    # the sixth press is dropped, and not listed.
+    slow = [macro[0], dict(macro[1], params={"duration_ms": 2000}), macro[2]]
+    c.call("replaceActivity", "PUT", f"/activities/{act_id}",
+           dict(edited, bindings=dict(edited["bindings"], **{"guide:tap": slow}), revision=put["revision"]),
+           expect=200, label="a long macro")
+    before = max((r["id"] for r in activity_runs(c, "before a full macro lane")), default=0)
+    log = sim_commands(c)
+    for _ in range(6):
+        c.control("remote/guide/tap")
+    c.control("advance?ms=12000")
+    full = [r for r in activity_runs(c, "a full macro lane") if r["id"] > before]
+    expect([r["outcome"] for r in full] == ["completed"] * 5 and [r["id"] for r in full] == list(range(before + 5, before, -1)),
+           f"a full macro lane: {[(r['id'], r['outcome']) for r in full]}")
+    sent = [e.get("text", "") for e in commands_since(log, sim_commands(c))]
+    ups, downs = (sum("media_player.volume_" + x in t for t in sent) for x in ("up", "down"))
+    expect(ups == 5 and downs == 5, f"a full macro lane sent {ups} volume_up, {downs} volume_down: {sent}")
+
+    # Trying a macro from the editor: queued as written, recorded under its run_id.
+    tried = {"actions": macro, "trigger": "guide:tap", "activity_id": act_id}
+    _, queued, _ = c.call("runMacro", "POST", "/macros/run", tried, expect=202, label="try a macro")
+    c.control("advance?ms=2000")
+    run = next((r for r in activity_runs(c, "a tried macro") if r["id"] == (queued or {}).get("run_id")), {})
+    expect_macro_run(run, "a tried macro's run", "guide", "press", act_id, names)
+    hold = {"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "press_down",
+            "params": {"command": "Select"}}
+    for body, code, at, label in [
+            (dict(tried, actions=[hold]), "hold_not_allowed", "/actions/0/command_id", "try a macro with a hold"),
+            (dict(tried, actions=[macro[1]]), "sequence_only", "/actions/0/command_id", "try a macro of only a wait"),
+            (dict(tried, trigger="guide:up"), "invalid_trigger", "/trigger", "try a macro on up"),
+            (dict(tried, activity_id="act_nope"), "unknown_activity", "/activity_id", "try a macro in no activity")]:
+        refused_at(c, label, body, code, at, "/macros/run", op="runMacro")
+    # One runs and four wait: the sixth try is 503 busy, nothing queued.
+    slow_try = dict(tried, actions=slow)
+    for i in range(5):
+        c.call("runMacro", "POST", "/macros/run", slow_try, expect=202, label=f"try a slow macro {i + 1}")
+    _, busy, _ = c.call("runMacro", "POST", "/macros/run", slow_try, expect=503, label="try a macro, lane full")
+    expect(error_code(busy) == "busy", f"a full macro lane: {busy}")
+    c.control("advance?ms=12000")
+
+    # A switch mid-wait cancels the macro.
+    c.control("remote/guide/tap")
+    c.call("activitiesOff", "POST", "/activities/off", expect=200, label="off mid-macro")
+    c.control("advance?ms=6000")
+    macros = [r for r in activity_runs(c, "a macro cut short") if r["kind"] == "macro"]
+    expect(macros and macros[0]["outcome"] == "cancelled"
+           and any(x["result"] == "cancelled" for x in macros[0]["steps"]), f"a macro cut short: {macros[:1]}")
+
+    _, cur, _ = c.call("getActivity", "GET", f"/activities/{act_id}", expect=200, label="macro restore")
+    c.call("replaceActivity", "PUT", f"/activities/{act_id}", dict(act, revision=(cur or act)["revision"]),
+           expect=200, label="put the activity back")
+    c.call("replaceGlobalBindings", "PUT", "/global-bindings", dict(gb, revision=gput["revision"]), expect=200,
+           label="put the global bindings back")
 
 
 def smart_buttons_flow(c):
@@ -1744,6 +1889,7 @@ def noauth(c, checker):
     integration_param_flow(c)
     mute_toggle_flow(c)
     activity_runs_flow(c)
+    macro_runs_flow(c)
     ha_action_flow(c)
     new_domains_flow(c)
     ha_unlink_flow(c)
@@ -1787,6 +1933,8 @@ def token_role_matrix(c, checker, token):
         execute_flow(c)
         activity_flow(c)
         c.call("listActivityRuns", "GET", "/activity-runs", expect=200, label="token reads activity runs")
+        c.call("runMacro", "POST", "/macros/run", {"actions": [], "trigger": "guide:tap", "activity_id": None},
+               expect=422, label="token tries a macro")
         _, s, _ = c.call("getSession", "GET", "/auth/session", expect=200, label="token session")
         expect(s and s["role"] == "token", f"token session: {s}")
         for op_id, method, path in operations(checker, **{"x-hubbo-role": "admin"}):
@@ -2120,7 +2268,7 @@ def persistence_flow(c, hub, relogin=None):
         bindings = {f"{b}:{e}": [{"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "press",
                                   "params": {"command": "Select"}}] for b in buttons for e in ("down", "up", "tap", "hold")}
         big["activities"].append({"id": f"act_bulk_{n}", "name": f"Bulk {n}", "startup": [], "shutdown": [],
-                                  "bindings": bindings, "schema_version": 1, "revision": 1})
+                                  "bindings": bindings, "macros": [], "schema_version": 1, "revision": 1})
     size = len(json.dumps(big))
     expect(size > 64 * 1024, f"bulk backup is only {size} bytes")
     c.call("restoreBackup", "POST", "/admin/restore", big, expect=200, label=f"restore {size // 1024} KiB backup")
@@ -2165,7 +2313,7 @@ def persistence_flow(c, hub, relogin=None):
     huge = fixture("admin/backup.json")
     for n in range(11):  # 11 x 192 triggers > limits::kMaxCompiledActions (2048)
         huge["activities"].append({
-            "id": f"act_cap_{n}", "name": f"Cap {n}", "startup": [], "shutdown": [], "schema_version": 1,
+            "id": f"act_cap_{n}", "name": f"Cap {n}", "startup": [], "shutdown": [], "schema_version": 1, "macros": [],
             "bindings": {f"{b}:{e}": [{"integration_id": "ble", "device_id": "dev_apple_tv", "command_id": "press",
                                        "params": {"command": "Select"}}]
                          for b in checker_buttons(c) for e in ("down", "up", "tap", "hold")}})

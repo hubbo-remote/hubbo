@@ -180,11 +180,22 @@ export const namedParam = (a: Action) => familyOf(a.command_id)?.param
 
 // ---- A button's bindings as Press / Long press ----
 
+/** A set of button bindings and which of its triggers are macros (`<button>:<event>`, on down, tap or hold). */
+export interface ButtonSet {
+  bindings: Bindings
+  macros: string[]
+}
+
 export interface ButtonView {
-  /** The button's Press action, in tap form (press, key_tap, an HA command...), if its down/up/tap triggers fit. */
-  main: Action | null
-  /** The long-press (`hold` event) action, if it's a single one. */
-  longPress: Action | null
+  /** The button's Press: one command in tap form (press, key_tap, an HA command...), or a macro's list. */
+  press: Action[]
+  /** Press is a macro (marked so), at any length. */
+  pressMacro: boolean
+  /** The trigger a Press macro is on (`<button>:down`, or `:tap` beside a long press); null otherwise. */
+  pressKey: string | null
+  /** The long press (the `hold` event): one command, or a macro's list. */
+  longPress: Action[]
+  longMacro: boolean
   /** Triggers that don't fit and show as they are. */
   raw: EventKind[]
 }
@@ -192,20 +203,23 @@ export interface ButtonView {
 const sameTarget = (a: Action, b: Action) => a.integration_id === b.integration_id && a.device_id === b.device_id && same(a.params, b.params)
 
 /**
- * Read a button. Press is a tap, a matching down/up pair (the mirror: the button passes through), or
- * one HA send on down; anything else stays raw.
+ * Read a button. Press is a macro (its marked down or tap list), a tap, a matching down/up pair (the mirror: the
+ * button passes through), or one HA send on down; anything else stays raw. Long press is the hold, marked or not.
  */
-export function readButton(bindings: Bindings, button: ButtonId): ButtonView {
+export function readButton({ bindings, macros }: ButtonSet, button: ButtonId): ButtonView {
   const at = (e: EventKind) => bindings[triggerKey(button, e)] ?? []
+  const marked = (e: EventKind) => macros.includes(triggerKey(button, e))
   const down = at('down'), up = at('up'), tap = at('tap'), hold = at('hold')
-  const view: ButtonView = { main: null, longPress: hold.length === 1 ? hold[0]! : null, raw: hold.length > 1 ? ['hold'] : [] }
+  const view: ButtonView = { press: [], pressMacro: false, pressKey: null, longPress: hold, longMacro: marked('hold'), raw: [] }
   const d = down[0]
   const f = d && familyOf(d.command_id)
-  if (!down.length && !up.length && tap.length === 1) view.main = tap[0]!
+  const macroOn = marked('down') ? down : marked('tap') ? tap : null
+  if (macroOn && !up.length && (macroOn === down ? !tap.length : !down.length)) [view.press, view.pressMacro, view.pressKey] = [macroOn, true, triggerKey(button, macroOn === down ? 'down' : 'tap')]
+  else if (!down.length && !up.length && tap.length === 1) view.press = tap
   else if (!tap.length && down.length === 1 && up.length === 1 && f && d.command_id === f.down && up[0]!.command_id === f.up && sameTarget(d, up[0]!)) {
-    view.main = { ...d, command_id: f.tap }
-  } else if (d && !tap.length && !up.length && down.length === 1 && !f) view.main = d
-  else if (down.length || up.length || tap.length) view.raw = [...(['down', 'up', 'tap'] as const).filter((e) => at(e).length), ...view.raw]
+    view.press = [{ ...d, command_id: f.tap }]
+  } else if (d && !tap.length && !up.length && down.length === 1 && !f) view.press = down
+  else if (down.length || up.length || tap.length) view.raw = (['down', 'up', 'tap'] as const).filter((e) => at(e).length)
   return view
 }
 
@@ -213,8 +227,11 @@ export function readButton(bindings: Bindings, button: ButtonId): ButtonView {
  * Write Press as Harmony does: with no long press, the button passes straight through (down sends
  * press_down, up press_up, so a hold reaches the device as one; an HA command, which has no down/up,
  * is sent once on down). With a long press, Press is the tap (sent on release, when the press was short).
+ * A macro runs its list as it is: on down, or on the tap with a long press.
  */
-function pressTriggers(button: ButtonId, a: Action, tap: boolean): Bindings {
+function pressTriggers(button: ButtonId, list: Action[], tap: boolean, macro: boolean): Bindings {
+  if (macro) return { [triggerKey(button, tap ? 'tap' : 'down')]: list }
+  const a = list[0]!
   const f = familyOf(a.command_id)
   if (tap || !a.device_id) return { [triggerKey(button, 'tap')]: [a] } // Hubbo's own (switch activity) acts on a press
   if (!f) return { [triggerKey(button, 'down')]: [a] }
@@ -222,37 +239,51 @@ function pressTriggers(button: ButtonId, a: Action, tap: boolean): Bindings {
   const params = { [f.param]: a.params[f.param]! }
   return { [triggerKey(button, 'down')]: [{ ...a, command_id: f.down, params }], [triggerKey(button, 'up')]: [{ ...a, command_id: f.up, params }] }
 }
-const withoutPress = (bindings: Bindings, button: ButtonId) => {
-  const next = { ...bindings }
-  for (const e of ['down', 'up', 'tap'] as const) delete next[triggerKey(button, e)]
-  return next
-}
 
 /** A command a button can't pass through as down/up: a profile command with its own timed hold (only a `press` times it). */
 export type TimedTest = (a: Action) => boolean
 
+/** How a Press or Long press is written: as a macro (a marked list), and which commands are timed presses. */
+export type WriteOpts = { macro?: boolean; timed?: TimedTest }
+
+const asList = (a: Action | Action[] | null) => (Array.isArray(a) ? a : a ? [a] : [])
+const PRESS_EVENTS = ['down', 'up', 'tap'] as const
+
 /**
- * Bindings with this button's Press replaced (null clears it). Long press and other buttons are kept.
- * Press is a tap while a long press is bound, or when `timed` says the command is a timed press.
+ * The set with this button's Press replaced (null or [] clears it, and its macro mark): one command, or with `macro`
+ * a macro's list. Long press and other buttons are kept. One command is a tap while a long press is bound, or when
+ * `timed` says it's a timed press.
  */
-export function writeMain(bindings: Bindings, button: ButtonId, action: Action | null, timed?: TimedTest): Bindings {
-  const next = withoutPress(bindings, button)
-  return action ? { ...next, ...pressTriggers(button, action, !!next[triggerKey(button, 'hold')]?.length || !!timed?.(action)) } : next
+export function writeMain(set: ButtonSet, button: ButtonId, press: Action | Action[] | null, { macro = false, timed }: WriteOpts = {}): ButtonSet {
+  const list = asList(press)
+  const bindings = { ...set.bindings }
+  for (const e of PRESS_EVENTS) delete bindings[triggerKey(button, e)]
+  let macros = set.macros.filter((k) => !PRESS_EVENTS.some((e) => k === triggerKey(button, e)))
+  if (!list.length) return { bindings, macros }
+  const tap = !!bindings[triggerKey(button, 'hold')]?.length || (!macro && !!timed?.(list[0]!))
+  Object.assign(bindings, pressTriggers(button, list, tap, macro))
+  if (macro) macros = [...macros, triggerKey(button, tap ? 'tap' : 'down')]
+  return { bindings, macros }
 }
 
-/** Bindings with this button's long press (the `hold` event) replaced (null clears it); a folded Press is rewritten to match. */
-export function writeLongPress(bindings: Bindings, button: ButtonId, action: Action | null, timed?: TimedTest): Bindings {
-  const main = readButton(bindings, button).main
-  const next = { ...bindings }
-  if (action) next[triggerKey(button, 'hold')] = [action]
-  else delete next[triggerKey(button, 'hold')]
-  return main ? writeMain(next, button, main, timed) : next
+/** The set with this button's long press (the `hold` event) replaced (null or [] clears it); a Press is rewritten to match. */
+export function writeLongPress(set: ButtonSet, button: ButtonId, long: Action | Action[] | null, { macro = false, timed }: WriteOpts = {}): ButtonSet {
+  const list = asList(long)
+  const key = triggerKey(button, 'hold')
+  const was = readButton(set, button)
+  const bindings = { ...set.bindings }
+  let macros = set.macros.filter((k) => k !== key)
+  if (list.length) bindings[key] = list
+  else delete bindings[key]
+  if (list.length && macro) macros = [...macros, key]
+  const next = { bindings, macros }
+  return was.press.length ? writeMain(next, button, was.press, { macro: was.pressMacro, timed }) : next
 }
 
 /** What the remote picture marks a button with: Press (as `tap`), Long press (`hold`), raw triggers as they are. */
 export function viewKinds(v: ButtonView): EventKind[] {
   const out = new Set<EventKind>(v.raw)
-  if (v.main) out.add('tap')
-  if (v.longPress) out.add('hold')
+  if (v.press.length) out.add('tap')
+  if (v.longPress.length) out.add('hold')
   return EVENT_ORDER.filter((e) => out.has(e))
 }

@@ -1,5 +1,7 @@
 #include "hubbo/engine/executor.h"
 
+#include <iterator>
+
 #include "hubbo/domain/ids.h"
 #include "hubbo/domain/time.h"
 
@@ -13,6 +15,7 @@ const char *sequenceOriginName(SequenceOrigin origin) {
         case SequenceOrigin::GlobalBinding: return "global_binding";
         case SequenceOrigin::Api: return "api";
         case SequenceOrigin::SmartButton: return "smart_button";
+        case SequenceOrigin::Macro: return "macro";
     }
     return "binding";
 }
@@ -34,22 +37,51 @@ Executor::Executor(AdapterSet &adapters, uint32_t actionTimeoutMs)
     }
     freeHead_ = 0;
     freeCount_ = limits::kExecutorActionPool;
+    const auto use = [this](Lane lane, Sequence *items, size_t capacity, size_t nodeBudget) {
+        LaneQueue &q = lanes_[static_cast<size_t>(lane)];
+        q.items = items;
+        q.capacity = capacity;
+        q.nodeBudget = nodeBudget;
+    };
+    use(Lane::Transition, transitionItems_, std::size(transitionItems_), limits::kExecutorActionPool);
+    use(Lane::Input, inputItems_, std::size(inputItems_), limits::kExecutorActionPool);
+    use(Lane::Macro, macroItems_, std::size(macroItems_), limits::kExecutorMacroNodes);
 }
 
 Executor::Sequence *Executor::reserve(SequenceInfo &info, uint8_t count, uint32_t nowMs) {
     info.id = nextSequenceId_++;
     info.actionCount = count;
     LaneQueue &lane = lanes_[static_cast<size_t>(info.lane)];
-    if (lane.count == limits::kExecutorSequencesPerLane || freeCount_ < count) {
+    if (lane.count == lane.capacity || lane.nodes + count > lane.nodeBudget || freeCount_ < count) {
         finish(info, SequenceOutcome::Rejected, ErrorCode::QueueFull, 0, nowMs);
         return nullptr;
     }
-    Sequence &seq = lane.items[(lane.first + lane.count) % limits::kExecutorSequencesPerLane];
+    Sequence &seq = lane.items[(lane.first + lane.count) % lane.capacity];
     seq = Sequence{};
     seq.info = info;
     lane.count++;
+    lane.nodes += count;
     stats_.enqueued++;
     return &seq;
+}
+
+template <typename Fill>
+void Executor::link(Sequence &seq, size_t count, Fill fill) {
+    uint16_t tail = kNil;
+    for (size_t i = 0; i < count; i++) {
+        const uint16_t n = takeNode();
+        Node &node = pool_[n];
+        node.target.clear();
+        node.providerRef.clear();
+        node.next = kNil;
+        fill(i, &node);
+        if (tail == kNil) {
+            seq.head = n;
+        } else {
+            pool_[tail].next = n;
+        }
+        tail = n;
+    }
 }
 
 ErrorCode Executor::enqueue(SequenceInfo info, const CompiledConfig &config, ActionSpan span, uint32_t nowMs,
@@ -64,48 +96,26 @@ ErrorCode Executor::enqueue(SequenceInfo info, const CompiledConfig &config, Act
     Sequence *seq = reserve(info, span.count, nowMs);
     if (sequenceId != nullptr) *sequenceId = info.id;
     if (seq == nullptr) return ErrorCode::QueueFull;
-
-    uint16_t tail = kNil;
     const CompiledAction *actions = config.span(span);
-    for (uint8_t i = 0; i < span.count; i++) {
-        const uint16_t n = takeNode();
-        Node &node = pool_[n];
-        node.action = actions[i];
-        node.target.clear();
-        node.providerRef.clear();
-        node.next = kNil;
-        if (const CompiledDevice *device = config.deviceOf(node.action)) {
-            node.target = device->id;
-            node.providerRef = device->providerRef;
-        } else if (node.action.op == ActionOp::Activate) {
-            const auto target = static_cast<size_t>(node.action.params[0].integer);
-            if (target < config.activities.size()) {
-                node.target.assign(config.activities[target].id.view());
-            }
-        }
-        if (tail == kNil) {
-            seq->head = n;
-        } else {
-            pool_[tail].next = n;
-        }
-        tail = n;
-    }
+    link(*seq, span.count, [&](size_t i, Node *node) {
+        node->action = actions[i];
+        config.targetOf(node->action, &node->target, &node->providerRef);
+    });
     return ErrorCode::Ok;
 }
 
-ErrorCode Executor::enqueueCommand(SequenceInfo info, const CompiledCommand &command, uint32_t nowMs,
-                                   uint32_t *sequenceId) {
+ErrorCode Executor::enqueueSteps(SequenceInfo info, const CompiledCommand *steps, size_t count, uint32_t nowMs,
+                                 uint32_t *sequenceId) {
     if (info.generation != generation_) return ErrorCode::Cancelled;
-    Sequence *seq = reserve(info, 1, nowMs);
+    if (count == 0 || count > limits::kMaxSequenceLength) return ErrorCode::TooManyActions;
+    Sequence *seq = reserve(info, static_cast<uint8_t>(count), nowMs);
     if (sequenceId != nullptr) *sequenceId = info.id;
     if (seq == nullptr) return ErrorCode::QueueFull;
-    const uint16_t n = takeNode();
-    Node &node = pool_[n];
-    node.action = command.action;
-    node.target = command.deviceId;
-    node.providerRef = command.providerRef;
-    node.next = kNil;
-    seq->head = n;
+    link(*seq, count, [&](size_t i, Node *node) {
+        node->action = steps[i].action;
+        node->target = steps[i].deviceId;
+        node->providerRef = steps[i].providerRef;
+    });
     return ErrorCode::Ok;
 }
 
@@ -162,6 +172,7 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
         } release{*this, seq.head};
         const Node &node = pool_[release.n];
         seq.head = node.next;
+        lane.nodes--;
         const uint8_t index = seq.nextIndex++;
         const bool last = seq.head == kNil;
         const CompiledAction &action = node.action;
@@ -370,10 +381,11 @@ void Executor::popFront(LaneQueue &lane) {
     while (n != kNil) {
         const uint16_t next = pool_[n].next;
         freeNode(n);
+        lane.nodes--;
         n = next;
     }
     seq = Sequence{};
-    lane.first = (lane.first + 1) % limits::kExecutorSequencesPerLane;
+    lane.first = (lane.first + 1) % lane.capacity;
     lane.count--;
 }
 

@@ -20,6 +20,7 @@ async function runsActivity(page: Page, commands: string[]) {
     ],
     shutdown: [],
     bindings: {},
+    macros: [],
   })
   expect(r.status(), await r.text()).toBe(201)
   return ((await r.json()) as { id: string }).id

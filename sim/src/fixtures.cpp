@@ -46,6 +46,10 @@ BindingSpec bind(std::string trigger, std::vector<ActionSpec> actions) {
     return {std::move(trigger), std::move(actions)};
 }
 
+BindingSpec macro(std::string trigger, std::vector<ActionSpec> actions) {
+    return {std::move(trigger), std::move(actions), /*macro=*/true};
+}
+
 DeviceSpec device(std::string id, std::string name, std::string integration, std::string kind,
                   ProviderSpec provider) {
     DeviceSpec d;

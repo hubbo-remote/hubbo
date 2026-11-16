@@ -229,7 +229,13 @@ const char *kActivity = R"({"name":"Movie Night","startup":[
   {"integration_id":"ha_main","device_id":"dev_lg_tv","command_id":"media_player.turn_on","params":{}}],
   "shutdown":[{"integration_id":"ha_main","device_id":"dev_lg_tv","command_id":"media_player.turn_off","params":{}}],
   "bindings":{"volume_up:down":[{"integration_id":"ha_main","device_id":"dev_denon",
-  "command_id":"media_player.volume_up","params":{}}]}})";
+  "command_id":"media_player.volume_up","params":{}}]},"macros":[]})";
+
+// Macro steps: the Xbox on, and a 300 ms wait.
+const std::string kXboxOn =
+    R"({"integration_id":"ha_main","device_id":"dev_xbox","command_id":"media_player.turn_on","params":{}})";
+const std::string kWait300 =
+    R"({"integration_id":"system","device_id":null,"command_id":"wait","params":{"duration_ms":300}})";
 
 }  // namespace
 
@@ -1879,7 +1885,8 @@ TEST_F(ApiTest, ActivityRunsShowEachStepNewestFirst) {
     std::string lastRun;
     serializeJson(call(http::Method::Get, "/api/v1/status").json["last_run"], lastRun);
     EXPECT_EQ(lastRun, R"({"id":)" + std::to_string(firstId) +
-                           R"(,"activity_id":"act_play_xbox","kind":"startup","outcome":"completed","failed_steps":0})");
+                           R"(,"activity_id":"act_play_xbox","kind":"startup","button":null,"trigger":null,)"
+                           R"("outcome":"completed","failed_steps":0})");
 
     // Off mid-startup: the rest is cancelled, with the run's reason.
     ASSERT_EQ(call(http::Method::Post, "/api/v1/activities/act_play_xbox/activate").status, 200);
@@ -1891,4 +1898,77 @@ TEST_F(ApiTest, ActivityRunsShowEachStepNewestFirst) {
     EXPECT_EQ(cancelled["result"], "cancelled") << dump(r);
     EXPECT_EQ(cancelled["error"], "cancelled");
     EXPECT_TRUE(cancelled["duration_ms"].isNull());
+}
+
+TEST_F(ApiTest, TryingAMacroQueuesItAsWrittenAndRecordsIt) {
+    Reply r = call(http::Method::Post, "/api/v1/macros/run",
+                   R"({"actions":[)" + kXboxOn + "," + kWait300 + "," + kXboxOn +
+                       R"(],"trigger":"dvr:hold","activity_id":"act_play_xbox"})");
+    ASSERT_EQ(r.status, 202) << dump(r);
+    const int runId = r.json["run_id"];
+    EXPECT_GE(runId, 1);
+    hub.advance(2000);
+    r = call(http::Method::Get, "/api/v1/activity-runs");
+    JsonVariant run = r.json["runs"][0];
+    EXPECT_EQ(run["id"], runId) << dump(r);
+    EXPECT_EQ(run["kind"], "macro");
+    EXPECT_EQ(run["activity_id"], "act_play_xbox") << "recorded under the activity, not switched to it";
+    EXPECT_EQ(run["button"], "dvr");
+    EXPECT_EQ(run["trigger"], "long_press");
+    EXPECT_EQ(run["outcome"], "completed");
+    EXPECT_EQ(run["steps"].size(), 3u);
+    EXPECT_TRUE(call(http::Method::Get, "/api/v1/status").json["active_activity_id"].isNull());
+
+    // Every problem at once, rooted at the body.
+    r = call(http::Method::Post, "/api/v1/macros/run",
+             R"({"actions":[{"integration_id":"ble","device_id":"dev_apple_tv","command_id":"press_down",)"
+             R"("params":{"command":"Select"}}],"trigger":"dvr:up","activity_id":"act_nope"})");
+    ASSERT_EQ(r.status, 422) << dump(r);
+    std::string details;
+    serializeJson(r.json["error"]["details"], details);
+    EXPECT_NE(details.find(R"("path":"/trigger","code":"invalid_trigger")"), std::string::npos) << details;
+    EXPECT_NE(details.find(R"("path":"/activity_id","code":"unknown_activity")"), std::string::npos) << details;
+    EXPECT_NE(details.find(R"("path":"/actions/0/command_id","code":"hold_not_allowed")"), std::string::npos)
+        << details;
+    r = call(http::Method::Post, "/api/v1/macros/run", R"({"actions":[],"trigger":"dvr:tap","activity_id":null})");
+    EXPECT_EQ(r.status, 422);
+    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/actions") << dump(r);
+}
+
+TEST_F(ApiTest, AGlobalMacroIsARunWithItsButtonAndNoActivity) {
+    Reply r = call(http::Method::Get, "/api/v1/global-bindings");
+    const std::string revision = std::to_string(r.json["revision"].as<int64_t>());
+    r = call(http::Method::Put, "/api/v1/global-bindings",
+             R"({"bindings":{"dvr:down":[)" + kXboxOn + "," + kWait300 + "," + kXboxOn + R"(]},"macros":["dvr:down"],"revision":)" + revision + "}");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    // Unmarked: more than one command is refused, and a wait alone isn't a binding.
+    const std::string next = std::to_string(r.json["revision"].as<int64_t>());
+    Reply bad = call(http::Method::Put, "/api/v1/global-bindings",
+                     R"({"bindings":{"dvr:down":[)" + kXboxOn + "," + kXboxOn + R"(]},"macros":[],"revision":)" + next + "}");
+    EXPECT_EQ(bad.status, 422) << dump(bad);
+    EXPECT_EQ(bad.json["error"]["details"][0]["code"], "macro_required") << dump(bad);
+    EXPECT_EQ(bad.json["error"]["details"][0]["path"], "/bindings/dvr:down") << dump(bad);
+    bad = call(http::Method::Put, "/api/v1/global-bindings",
+               R"({"bindings":{"dvr:down":[)" + kWait300 + R"(]},"macros":[],"revision":)" + next + "}");
+    EXPECT_EQ(bad.status, 422) << dump(bad);
+    EXPECT_EQ(bad.json["error"]["details"][0]["code"], "sequence_only");
+
+    hub.tap(remote::Button::Dvr);
+    hub.advance(2000);
+    r = call(http::Method::Get, "/api/v1/activity-runs");
+    ASSERT_EQ(r.json["runs"].size(), 1u) << dump(r);
+    JsonVariant run = r.json["runs"][0];
+    EXPECT_EQ(run["kind"], "macro") << dump(r);
+    EXPECT_TRUE(run["activity_id"].isNull());
+    EXPECT_EQ(run["button"], "dvr");
+    EXPECT_EQ(run["trigger"], "press");
+    EXPECT_EQ(run["outcome"], "completed");
+    ASSERT_EQ(run["steps"].size(), 3u);
+    EXPECT_EQ(run["steps"][1]["command_id"], "wait");
+    EXPECT_GE(run["steps"][1]["duration_ms"].as<int>(), 300);
+    std::string lastRun;
+    serializeJson(call(http::Method::Get, "/api/v1/status").json["last_run"], lastRun);
+    EXPECT_EQ(lastRun, R"({"id":)" + std::to_string(run["id"].as<int>()) +
+                           R"(,"activity_id":null,"kind":"macro","button":"dvr","trigger":"press",)"
+                           R"("outcome":"completed","failed_steps":0})");
 }

@@ -209,22 +209,25 @@ TEST_F(EngineTest, LostReleaseTimesOutAndReleasesKeys) {
 
 TEST_F(EngineTest, OverflowOnReleaseStillReleasesKeys) {
     ConfigSpec cfg = fixtureConfig();
-    // Make every number button park the input lane so it fills up.
+    // Every number button is a slow HA call: once the in-flight table is
+    // full, one parks the input lane and the rest fill it up.
+    const auto slow = [] { return std::vector<ActionSpec>{haAction("dev_lights", "light.turn_on")}; };
     for (int n = 0; n <= 9; n++) {
-        cfg.activities[0].bindings.push_back(bind("number_" + std::to_string(n) + ":down", {waitMs(5000)}));
+        cfg.activities[0].bindings.push_back(sim::bind("number_" + std::to_string(n) + ":down", slow()));
     }
-    cfg.activities[0].bindings.push_back(bind("number_enter:down", {waitMs(5000)}));
-    cfg.activities[0].bindings.push_back(bind("number_dot_dash:down", {waitMs(5000)}));
+    cfg.activities[0].bindings.push_back(sim::bind("number_enter:down", slow()));
+    cfg.activities[0].bindings.push_back(sim::bind("number_dot_dash:down", slow()));
     ASSERT_TRUE(hub.load(cfg).ok());
     hub.activate("act_watch_apple_tv");
     hub.advance(1000);
+    hub.homeAssistant().setLatency(4000);
     hub.press(Button::Up);  // key_down goes out before the lane is blocked
     ASSERT_EQ(hub.ble().heldConsumer("dev_apple_tv"), 0x42);
     const Button fillers[] = {Button::Number0, Button::Number1, Button::Number2, Button::Number3,
                               Button::Number4, Button::Number5, Button::Number6, Button::Number7,
                               Button::Number8, Button::Number9, Button::NumberEnter, Button::NumberDotDash};
     // Press and release fillers repeatedly to queue >16 parked sequences.
-    for (int round = 0; round < 2; round++) {
+    for (int round = 0; round < 3; round++) {
         for (Button b : fillers) {
             hub.press(b);
             hub.release(b);
@@ -294,93 +297,6 @@ TEST_F(EngineTest, AnActivityPassThroughMasksTheGlobalTap) {
     hub.advance(1000);
     EXPECT_EQ(take(), (Lines{"ble dev_apple_tv key_down key=MENU", "ble dev_apple_tv key_up key=MENU"}));
     EXPECT_STREQ(hub.engine().activeActivityId(), "act_watch_apple_tv");
-}
-
-// Review high #3: a step of the up sequence fails before its own release,
-// which still runs (a failed step never stops a sequence).
-TEST_F(EngineTest, AHoldIsReleasedWhenItsUpSequenceFailsFirst) {
-    ConfigSpec cfg = fixtureConfig();
-    unbind(cfg.activities[0], "play");
-    cfg.activities[0].bindings.push_back(bind("play:down", {bleKey("key_down", "KEY_X")}));
-    cfg.activities[0].bindings.push_back(
-        bind("play:up", {haAction("dev_lights", "light.turn_on"), bleKey("key_up", "KEY_X")}));
-    ASSERT_TRUE(hub.load(cfg).ok());
-    hub.activate("act_watch_apple_tv");
-    hub.advance(1000);
-    take();
-    hub.press(Button::Play);
-    hub.advance(100);
-    ASSERT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 1u);
-    hub.homeAssistant().failNext("light.turn_on", ErrorCode::AdapterFailed);
-    const uint32_t forced = hub.engine().stats().forcedReleases;
-    hub.release(Button::Play);
-    hub.advance(100);
-    EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 0u);
-    EXPECT_EQ(hub.engine().openHolds(), 0u);
-    EXPECT_EQ(hub.engine().stats().forcedReleases, forced);  // the binding's own key_up
-    EXPECT_EQ(hub.bleHosts().reports().back(), kNoKeys);
-}
-
-// A slow but correct up sequence releases the key itself: the ledger
-// forgets the hold and forces nothing.
-TEST_F(EngineTest, TheBindingsOwnReleaseClosesTheHold) {
-    ConfigSpec cfg = fixtureConfig();
-    unbind(cfg.activities[0], "play");
-    cfg.activities[0].bindings.push_back(bind("play:down", {bleKey("key_down", "KEY_X")}));
-    cfg.activities[0].bindings.push_back(bind("play:up", {waitMs(2000), bleKey("key_up", "KEY_X")}));
-    ASSERT_TRUE(hub.load(cfg).ok());
-    hub.activate("act_watch_apple_tv");
-    hub.advance(1000);
-    const uint32_t forced = hub.engine().stats().forcedReleases;
-    hub.tap(Button::Play);
-    hub.advance(1000);
-    EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 1u);  // still the binding's to release
-    hub.advance(1100);
-    EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 0u);
-    EXPECT_EQ(hub.engine().openHolds(), 0u);
-    EXPECT_EQ(hub.engine().stats().forcedReleases, forced);
-}
-
-// The up sequence is cancelled (a transition) before it reaches its release.
-TEST_F(EngineTest, AHoldIsReleasedWhenItsUpSequenceIsCancelled) {
-    ConfigSpec cfg = fixtureConfig();
-    unbind(cfg.activities[0], "play");
-    cfg.activities[0].bindings.push_back(bind("play:down", {bleKey("key_down", "KEY_X")}));
-    cfg.activities[0].bindings.push_back(bind("play:up", {waitMs(5000), bleKey("key_up", "KEY_X")}));
-    ASSERT_TRUE(hub.load(cfg).ok());
-    hub.activate("act_watch_apple_tv");
-    hub.advance(1000);
-    hub.tap(Button::Play);
-    hub.advance(100);
-    ASSERT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 1u);
-    hub.activate("act_play_xbox");
-    EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 0u);
-    EXPECT_EQ(hub.engine().openHolds(), 0u);
-    take();
-    hub.advance(6000);
-    EXPECT_FALSE(anyContains(take(), "key_up key=KEY_X"));  // the cancelled sequence never resumes
-}
-
-// Ledger full: the hold that doesn't fit is released at once; the rest on
-// the up. Nothing stays held.
-TEST_F(EngineTest, AHoldThatDoesNotFitTheLedgerIsReleasedAtOnce) {
-    ConfigSpec cfg = fixtureConfig();
-    unbind(cfg.activities[0], "play");
-    std::vector<ActionSpec> downs(HoldLedger::kCapacity + 1, bleKey("key_down", "KEY_X"));
-    cfg.activities[0].bindings.push_back(sim::bind("play:down", downs));
-    cfg.activities[0].bindings.push_back(bind("play:up", {bleKey("key_up", "KEY_X")}));
-    ASSERT_TRUE(hub.load(cfg).ok());
-    hub.activate("act_watch_apple_tv");
-    hub.advance(1000);
-    const uint32_t forced = hub.engine().stats().forcedReleases;
-    hub.press(Button::Play);
-    hub.advance(100);
-    EXPECT_EQ(hub.engine().openHolds(), HoldLedger::kCapacity);
-    EXPECT_EQ(hub.engine().stats().forcedReleases, forced + 1);
-    hub.release(Button::Play);
-    hub.advance(100);
-    EXPECT_EQ(hub.engine().openHolds(), 0u);
-    EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 0u);
 }
 
 TEST(HoldLedgerTest, FixedCapacityTakeOneAtATime) {
@@ -753,16 +669,14 @@ constexpr ParamSpec kKeyParam[] = {ParamSpec::integer("k", 0, 100)};
 constexpr CommandSpec kAsyncCommands[] = {
     {"hold", kKeyParam, 1, CommandEffect::Hold, "let_go"},
     {"let_go", kKeyParam, 1},
-    {"nope", nullptr, 0},  // fails at once
 };
 
 // Holds synchronously; releases asynchronously (Pending, delivered by poll()).
 struct AsyncHoldAdapter : IntegrationAdapter {
     const char *integrationId() const override { return "async"; }
-    CommandCatalog commandsFor(const DeviceSpec &) const override { return {kAsyncCommands, 3}; }
+    CommandCatalog commandsFor(const DeviceSpec &) const override { return {kAsyncCommands, 2}; }
     ExecResult execute(const ExecRequest &r) override {
         calls.push_back(std::string(r.command->id) + (r.ticket == 0 ? " direct" : ""));
-        if (std::string_view(r.command->id) == "nope") return ExecResult::failed(ErrorCode::AdapterFailed);
         if (std::string_view(r.command->id) == "hold" || r.ticket == 0) return ExecResult::accepted();
         pending.push_back(r.ticket);
         return ExecResult::pending();
@@ -789,12 +703,7 @@ protected:
         cfg.integrations = {integration("async", "async", "Async")};
         cfg.devices = {device("dev", "Dev", "async", "other", {"async", "ref.dev", ""})};
         cfg.globalBindings = {sim::bind("play:down", {action("async", "dev", "hold", {param("k", 5)})}),
-                              sim::bind("play:up", {action("async", "dev", "let_go", {param("k", 5)})}),
-                              sim::bind("select:down", {action("async", "dev", "hold", {param("k", 7)})}),
-                              // A step fails before the release: the release
-                              // still went.
-                              sim::bind("select:up", {action("async", "dev", "nope", {}),
-                                                      action("async", "dev", "let_go", {param("k", 7)})})};
+                              sim::bind("play:up", {action("async", "dev", "let_go", {param("k", 5)})})};
         ValidationReport report;
         std::unique_ptr<CompiledConfig> compiled = compileConfig(cfg, adapters, &report);
         EXPECT_TRUE(compiled) << (report.ok() ? "" : report.issues()[0].path);
@@ -827,22 +736,6 @@ TEST_F(AsyncReleaseTest, ACompletedReleaseClosesTheHold) {
     EXPECT_EQ(engine.openHolds(), 0u);
     EXPECT_EQ(adapter.releaseAlls, 0);
     EXPECT_EQ(adapter.calls, (std::vector<std::string>{"hold", "let_go"}));  // nothing forced
-}
-
-TEST_F(AsyncReleaseTest, AReleaseIsJudgedByItsOwnResultNotAnEarlierStep) {
-    engine.onRemoteEvent({Button::Select, remote::EventKind::Down, 1});
-    engine.poll(2);
-    engine.onRemoteEvent({Button::Select, remote::EventKind::Up, 10});
-    engine.poll(11);
-    ASSERT_EQ(adapter.pending.size(), 1u);
-    EXPECT_EQ(engine.openHolds(), 1u);
-    adapter.deliver = true;
-    const uint32_t forced = engine.stats().forcedReleases;
-    engine.poll(20);
-    EXPECT_EQ(engine.openHolds(), 0u);
-    EXPECT_EQ(adapter.releaseAlls, 0);  // the release went: nothing forced
-    EXPECT_EQ(engine.stats().forcedReleases, forced);
-    EXPECT_EQ(adapter.calls, (std::vector<std::string>{"hold", "nope", "let_go"}));
 }
 
 TEST_F(AsyncReleaseTest, AReleaseThatFailsLaterFallsBackToReleaseAll) {

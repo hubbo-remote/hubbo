@@ -88,6 +88,11 @@ enum class ErrorCode : uint8_t {
     // Not an error: why a startup or shutdown step was skipped (its entity
     // was already in the state the step sets; ExecStatus::Skipped).
     AlreadySet,
+    // A binding with more than one action that isn't a macro (not listed in
+    // its owner's "macros").
+    MacroRequired,
+    // A "macros" entry whose trigger has no binding (or an empty one).
+    UnboundMacro,
 
     Count
 };

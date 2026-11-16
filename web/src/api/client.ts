@@ -1,7 +1,10 @@
 // Typed client for /api/v1 (api/openapi.yaml). Every request the UI makes
 // goes through here. Session auth is an HttpOnly, SameSite=Strict cookie the
 // browser handles; there's no CSRF token (the hub checks Origin instead).
+import { activityBody } from '@/lib/activity'
 import type {
+  MacroRunAccepted,
+  MacroRunRequest,
   ActivityRuns,
   Activity,
   ActivityInput,
@@ -185,9 +188,6 @@ const post = <T>(p: string, b?: unknown) => request<T>('POST', p, b)
 const put = <T>(p: string, b: unknown) => request<T>('PUT', p, b)
 const del = (p: string) => request<void>('DELETE', p)
 
-/** Strip editor-only fields; PUT accepts id/revision/schema_version, POST does not. */
-const activityBody = (a: ActivityInput) => ({ name: a.name, startup: a.startup, shutdown: a.shutdown, bindings: a.bindings })
-
 export const api = {
   // auth
   session: () => get<Session>('/auth/session'),
@@ -221,6 +221,8 @@ export const api = {
   off: () => post<TransitionResult>('/activities/off'),
   globalBindings: () => get<GlobalBindings>('/global-bindings'),
   activityRuns: () => get<ActivityRuns>('/activity-runs'),
+  /** Runs a macro as given (saved or not); it shows in the runs once done. */
+  runMacro: (b: MacroRunRequest) => post<MacroRunAccepted>('/macros/run', b),
   replaceGlobalBindings: (g: GlobalBindings) => put<GlobalBindings>('/global-bindings', g),
   smartButtons: () => get<SmartButtons>('/smart-buttons'),
   replaceSmartButtons: (s: SmartButtonsInput) => put<SmartButtons>('/smart-buttons', s),
