@@ -49,8 +49,9 @@ public:
     // A release whose result is still pending (sequence `sequenceId`, action
     // `index`): kept open until takeReleasing() resolves it.
     void markReleasing(int slot, uint32_t sequenceId, uint8_t index);
-    // Removes one hold whose release was in flight in `sequenceId`.
-    bool takeReleasing(uint32_t sequenceId, OpenHold *out);
+    // Removes one hold whose release was in flight in `sequenceId` (at
+    // action `index`; -1: any action).
+    bool takeReleasing(uint32_t sequenceId, int index, OpenHold *out);
 
     // Removes one hold open for `button` (takeAny: any button) into `out`;
     // false if none. One at a time, so releasing never needs more than one

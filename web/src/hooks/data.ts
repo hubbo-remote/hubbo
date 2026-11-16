@@ -15,6 +15,15 @@ export const useActivities = () => useQuery('activities', () => api.activities()
 export const useActivity = (id: string | null) => useQuery(id ? `activity/${id}` : null, () => api.activity(id!))
 export const useGlobalBindings = () => useQuery('global-bindings', () => api.globalBindings())
 export const useSmartButtons = () => useQuery('smart-buttons', () => api.smartButtons())
+/**
+ * The last few startups and shutdowns (GET /activity-runs), fetched again only when /status (polled anyway) shows a
+ * new newest run or that run finishing: its `last_run` id and outcome are the key. Nothing until /status is in.
+ */
+export function useActivityRuns() {
+  const status = useStatus().data
+  const last = status?.last_run
+  return useQuery(status ? `activity-runs/${last ? `${last.id}:${last.outcome}` : 'none'}` : null, () => api.activityRuns(), { keepPrevious: true })
+}
 
 /** What the slots would do with these devices (picked, not saved yet), by device id. */
 export function useSmartActions(ids: string[]) {

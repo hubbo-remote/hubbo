@@ -29,6 +29,11 @@ std::string error(uint32_t id, const std::string &code) {
            code + "\",\"message\":\"" + code + "\"}}";
 }
 
+// An entity's extra attributes (FakeHaEntity::attributes, checked JSON) over `a`.
+void putAttributes(const FakeHaEntity &e, JsonObject a) {
+    for (const auto &[name, json] : e.attributes) a[name] = serialized(json);
+}
+
 std::string valueText(JsonVariantConst v) {
     if (v.is<bool>()) return v.as<bool>() ? "true" : "false";
     if (v.is<long long>()) return std::to_string(v.as<long long>());
@@ -49,6 +54,8 @@ void FakeHaServer::reset() {
     rejectAuth = false;
     stallConnect = false;
     failing.clear();
+    slow.clear();
+    delayed_.clear();
     fillerEntities = 0;
     lastCall_ = "null";
     entities_.clear();
@@ -84,6 +91,49 @@ void FakeHaServer::removeEntity(std::string_view entityId) {
     entities_.erase(std::remove_if(entities_.begin(), entities_.end(),
                                    [&](const FakeHaEntity &e) { return e.info.entityId == entityId; }),
                     entities_.end());
+}
+
+FakeHaEntity *FakeHaServer::find(std::string_view entityId) {
+    for (auto &e : entities_) {
+        if (e.info.entityId == entityId) return &e;
+    }
+    return nullptr;
+}
+
+bool FakeHaServer::setState(std::string_view entityId, std::string state) {
+    FakeHaEntity *e = find(entityId);
+    if (e == nullptr) return false;
+    e->state = std::move(state);
+    return true;
+}
+
+bool FakeHaServer::setAttribute(std::string_view entityId, const std::string &name, const std::string &value) {
+    FakeHaEntity *e = find(entityId);
+    if (e == nullptr || name.empty()) return false;
+    JsonDocument parsed;
+    std::string json = value;
+    if (deserializeJson(parsed, value)) {  // text
+        parsed.set(value);
+        json = serialize(parsed);
+    }
+    for (auto &[key, current] : e->attributes) {
+        if (key == name) {
+            current = json;
+            return true;
+        }
+    }
+    e->attributes.emplace_back(name, json);
+    return true;
+}
+
+bool FakeHaServer::setSlow(std::string_view entityId, uint32_t ms) {
+    if (find(entityId) == nullptr) return false;
+    if (ms == 0) {
+        slow.erase(std::string(entityId));
+    } else {
+        slow[std::string(entityId)] = ms;
+    }
+    return true;
 }
 
 bool FakeHaServer::setMuted(std::string_view entityId, bool muted) {
@@ -123,6 +173,7 @@ void FakeHaServer::addEntity(FakeHaEntity entity) {
 std::vector<std::string> FakeHaServer::onOpen() {
     connections_++;
     subscriptions_.clear();  // a new connection has none
+    delayed_.clear();        // nor the old one's answers
     authed_ = false;
     return {"{\"type\":\"auth_required\",\"ha_version\":\"2026.11.0\"}"};
 }
@@ -173,10 +224,30 @@ std::vector<std::string> FakeHaServer::onMessage(const std::string &text) {
                 if (e.info.entityId == target && e.position) e.position = doc["service_data"]["position"].as<int>();
             }
         }
+        const std::string target = doc["target"]["entity_id"] | "";
         if (service == "media_player.volume_mute" && doc["service_data"]["is_volume_muted"].is<bool>()) {
-            setMuted(std::string(doc["target"]["entity_id"] | ""), doc["service_data"]["is_volume_muted"].as<bool>());
+            setMuted(target, doc["service_data"]["is_volume_muted"].as<bool>());
         }
-        return {result(id, "{\"context\":{\"id\":\"ctx\"},\"response\":null}")};
+        // As a device would: power and a player's input take effect.
+        const std::string action = doc["service"] | "";
+        if (action == "turn_on" || action == "turn_off") setState(target, action == "turn_on" ? "on" : "off");
+        if (action == "turn_off") {  // as HA: a player that's off reports no input
+            if (FakeHaEntity *e = find(target)) {
+                e->attributes.erase(std::remove_if(e->attributes.begin(), e->attributes.end(),
+                                                   [](const auto &kv) { return kv.first == "source"; }),
+                                    e->attributes.end());
+            }
+        }
+        if (service == "media_player.select_source" && doc["service_data"]["source"].is<const char *>()) {
+            setAttribute(target, "source", serialize(JsonDocument(doc["service_data"]["source"])));  // as JSON
+        }
+        std::string reply = result(id, "{\"context\":{\"id\":\"ctx\"},\"response\":null}");
+        const auto delay = slow.find(target);
+        if (delay != slow.end()) {
+            delayed_.push_back({(clock ? clock() : 0) + delay->second, std::move(reply)});
+            return {};
+        }
+        return {std::move(reply)};
     }
     if (!answerCommands) return {};
     if (type == "config/entity_registry/list_for_display") return {result(id, displayJson())};
@@ -210,6 +281,16 @@ std::vector<std::string> FakeHaServer::onMessage(const std::string &text) {
     return {error(id, "unknown_command")};
 }
 
+std::vector<std::string> FakeHaServer::takeDue() {
+    std::vector<std::string> due;
+    const uint64_t now = clock ? clock() : 0;
+    while (!delayed_.empty() && delayed_.front().dueMs <= now) {
+        due.push_back(std::move(delayed_.front().text));
+        delayed_.erase(delayed_.begin());
+    }
+    return due;
+}
+
 std::string FakeHaServer::compressedStates(const std::vector<std::string> &ids) const {
     const auto wanted = [&](const std::string &entityId) {
         return ids.empty() || std::find(ids.begin(), ids.end(), entityId) != ids.end();
@@ -226,17 +307,18 @@ std::string FakeHaServer::compressedStates(const std::vector<std::string> &ids) 
             JsonDocument attrs;
             deserializeJson(attrs, e.attributesJson);
             if (e.muted) attrs["is_volume_muted"] = *e.muted;
+            putAttributes(e, attrs.as<JsonObject>());
             s["a"] = attrs;
             continue;
         }
         const bool player = ha::entityDomain(e.info.entityId) == ha::EntityDomain::MediaPlayer;
-        s["s"] = !e.state.empty() ? e.state : player ? "on" : "off";
+        s["s"] = e.state.empty() ? "off" : e.state;
         JsonObject a = s["a"].to<JsonObject>();
         a["friendly_name"] = e.friendlyName;
         if (player) {
             a["volume_level"] = 0.35;
             a["is_volume_muted"] = e.muted.value_or(false);
-            if (!e.info.sourceList.empty()) a["source"] = e.info.sourceList.front();
+            // Its input (`source`) only once one is set: select_source or /sim/ha attr=.
         }
         a["supported_features"] = e.info.supportedFeatures;
         auto list = [&](const char *key, const std::vector<std::string> &items) {
@@ -259,6 +341,7 @@ std::string FakeHaServer::compressedStates(const std::vector<std::string> &ids) 
             a["min_humidity"] = e.info.minHumidity;
             a["max_humidity"] = e.info.maxHumidity;
         }
+        putAttributes(e, a);
     }
     for (size_t i = 0; i < fillerEntities; i++) {
         const std::string entityId = "sensor.filler_" + std::to_string(i);
@@ -495,6 +578,9 @@ void FakeHaTransport::poll(uint32_t timeoutMs) {
     if (stalled_ && !closing_ && !server_.stallConnect) {
         stalled_ = false;
         openLink();
+    }
+    if (open_ && !closing_) {
+        for (std::string &reply : server_.takeDue()) events_.push_back({Event::Text, std::move(reply)});
     }
     for (size_t n = 0; n < maxEventsPerPoll && !events_.empty(); n++) {
         Queued q = std::move(events_.front());

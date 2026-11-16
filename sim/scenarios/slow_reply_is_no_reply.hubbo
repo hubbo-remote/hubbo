@@ -1,0 +1,24 @@
+# An integration that acts at once but answers late: after 1 s the step is
+# no_reply, not a failure, and the startup goes on. The receiver is already
+# on, on its TV input, so its power is skipped and its input change is sent.
+ha real
+ha state media_player.denon on
+ha attr media_player.denon source TV Audio
+ha slow media_player.denon 5000
+activate act_play_xbox
+advance 2100  # past the 2 s wait: the inputs are sent
+expect ha_main dev_xbox media_player.turn_on -> pending
+expect ha_main dev_lg_tv media_player.turn_on -> pending
+expect ha_main dev_denon media_player.turn_on -> pending
+expect ha_main dev_denon media_player.turn_on done -> skipped already_set
+expect system - wait duration_ms=2000
+expect ha_main dev_lg_tv media_player.select_source source="HDMI 2" -> pending
+expect ha_main dev_denon media_player.select_source source=Game -> pending
+expect_none
+advance 800
+expect_none  # still waiting for the Denon
+advance 200
+expect ha_main dev_denon media_player.select_source done -> no_reply
+expect_event startup act_play_xbox completed
+advance 5000
+expect_none

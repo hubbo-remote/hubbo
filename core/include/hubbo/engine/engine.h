@@ -10,6 +10,7 @@
 #include "hubbo/engine/compiled.h"
 #include "hubbo/engine/executor.h"
 #include "hubbo/engine/hold_ledger.h"
+#include "hubbo/engine/run_history.h"
 #include "hubbo/engine/snapshot.h"
 #include "hubbo/engine/spsc.h"
 #include "hubbo/remote/input.h"
@@ -202,6 +203,17 @@ public:
     bool ready() const { return reader_.attached(); }
 
     void setObserver(EngineObserver *observer);
+    // Where startup and shutdown runs are recorded (run_history.h); set
+    // once, before the engine runs. Null (the default): not recorded.
+    void setRunHistory(RunHistory *history) { history_ = history; }
+    // Any task: the recorded runs, newest first. False without a history.
+    bool runsShared(ActivityRuns *out) const {
+        if (history_ == nullptr) return false;
+        history_->read(out);
+        return true;
+    }
+    // Any task: the newest run in brief. False without a history or runs.
+    bool lastRunShared(LastRun *out) const { return history_ != nullptr && history_->readLatest(out); }
 
     // RemoteInput sink (engine task). Event time is taken as "now".
     void onRemoteEvent(const remote::RemoteEvent &event) override;
@@ -274,7 +286,9 @@ private:
     void endActivity();
     // The hold ledger (hold_ledger.h).
     void trackHolds(const DispatchRecord &record);
+    void resolveRelease(const CompletionRecord &record);
     void resolveReleases(const SequenceReport &report);
+    void forceRelease(const OpenHold &hold);
     void releaseHolds(remote::Button button);
     void releaseAllHolds();
     void releaseHold(const OpenHold &hold);
@@ -284,6 +298,7 @@ private:
     AdapterSet &adapters_;
     Executor executor_;
     EngineObserver *observer_ = nullptr;
+    RunHistory *history_ = nullptr;
 
     int activeIndex_ = -1;
     IdString activeId_;

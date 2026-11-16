@@ -50,6 +50,7 @@ struct Completions : CompletionSink {
 class AdapterTest : public ::testing::Test {
 protected:
     AdapterTest() {
+        server.clock = [this] { return now; };
         client.configure("ws://ha.local:8123/api/websocket", server.token);
         integrationTask(300);
     }
@@ -290,6 +291,156 @@ TEST_F(AdapterTest, TheNewDomainsRoundTripAndCallTheRightServices) {
     }
 }
 
+// ---- startup and shutdown steps: state checks and the reply limit ---------
+
+namespace {
+
+constexpr const char *kDenonPlayer = "media_player.denon";
+
+// The Denon with power and inputs.
+DeviceSpec poweredDenon() {
+    DeviceSpec d = denonDevice();
+    d.haCapabilities->supportedFeatures |= ha::media_player_feature::kTurnOn | ha::media_player_feature::kTurnOff;
+    return d;
+}
+
+}  // namespace
+
+TEST_F(AdapterTest, AStepAlreadySetIsSkippedUnsent) {
+    const CommandCatalog catalog = adapter.commandsFor(poweredDenon());
+    ASSERT_TRUE(server.setState(kDenonPlayer, "on"));
+    ExecRequest r = request(catalog, "media_player.turn_on", 1, kDenonPlayer);
+    r.checkState = true;
+    EXPECT_EQ(adapter.execute(r).status, ExecStatus::Pending);
+    integrationTask();
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 1u);
+    EXPECT_EQ(sink.results[0].second.status, ExecStatus::Skipped);
+    EXPECT_EQ(sink.results[0].second.error, ErrorCode::AlreadySet);
+    EXPECT_TRUE(server.calls().empty());
+
+    // Not checked (a button press): sent whatever the state.
+    r.ticket = 2;
+    r.checkState = false;
+    EXPECT_EQ(adapter.execute(r).status, ExecStatus::Pending);
+    integrationTask();
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 2u);
+    EXPECT_EQ(sink.results[1].second.status, ExecStatus::Accepted);
+    EXPECT_EQ(server.calls(), (std::vector<std::string>{"media_player.turn_on media_player.denon"}));
+
+    // A step the rule can't skip (sets no state) isn't even read.
+    const auto reads = [&] {
+        return std::count_if(server.received().begin(), server.received().end(), [](const std::string &m) {
+            return m.find(R"("type":"subscribe_entities")") != std::string::npos;
+        });
+    };
+    const auto before = reads();
+    ExecRequest up = request(catalog, "media_player.volume_up", 9, kDenonPlayer);
+    up.checkState = true;
+    EXPECT_EQ(adapter.execute(up).status, ExecStatus::Pending);
+    integrationTask();
+    adapter.poll(0, sink);
+    EXPECT_EQ(reads(), before);
+    EXPECT_EQ(server.calls().size(), 2u);
+
+    // Off: a checked step runs.
+    ASSERT_TRUE(server.setState(kDenonPlayer, "off"));
+    r.ticket = 3;
+    r.checkState = true;
+    EXPECT_EQ(adapter.execute(r).status, ExecStatus::Pending);
+    integrationTask();
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 4u);
+    EXPECT_EQ(sink.results[3].second.status, ExecStatus::Accepted);
+    EXPECT_EQ(server.calls().size(), 3u);
+}
+
+TEST_F(AdapterTest, ACancelledStepIsNeverSent) {
+    // Activate, then Off before the startup step's read is back: the startup
+    // step is cancelled and never sent, so the shutdown's own check sees the
+    // Denon still off and skips (and the Denon stays off).
+    const CommandCatalog catalog = adapter.commandsFor(poweredDenon());
+    ExecRequest on = request(catalog, "media_player.turn_on", 1, kDenonPlayer);
+    on.checkState = true;
+    EXPECT_EQ(adapter.execute(on).status, ExecStatus::Pending);
+    adapter.service();  // the read is out; its answer comes on the next tick
+    adapter.cancel(1, 0);
+    ExecRequest off = request(catalog, "media_player.turn_off", 2, kDenonPlayer);
+    off.checkState = true;
+    EXPECT_EQ(adapter.execute(off).status, ExecStatus::Pending);
+    integrationTask(HomeAssistantAdapter::kReplyLimitMs);
+    adapter.poll(0, sink);
+    EXPECT_TRUE(server.calls().empty());
+    ASSERT_EQ(sink.results.size(), 1u);
+    EXPECT_EQ(sink.results[0].first, 2u);
+    EXPECT_EQ(sink.results[0].second.status, ExecStatus::Skipped);
+
+    // Cancelled before the integration task took it: not even read.
+    on.ticket = 3;
+    EXPECT_EQ(adapter.execute(on).status, ExecStatus::Pending);
+    adapter.cancel(3, 0);
+    integrationTask(HomeAssistantAdapter::kReplyLimitMs);
+    adapter.poll(0, sink);
+    EXPECT_TRUE(server.calls().empty());
+    EXPECT_EQ(sink.results.size(), 1u);
+}
+
+TEST_F(AdapterTest, AStepIsSentWhenTheCheckCantTell) {
+    const CommandCatalog catalog = adapter.commandsFor(poweredDenon());
+    ExecRequest r = request(catalog, "media_player.turn_on", 1, kDenonPlayer);
+    r.checkState = true;
+    // Unavailable (or unknown): sent.
+    ASSERT_TRUE(server.setState(kDenonPlayer, "unavailable"));
+    EXPECT_EQ(adapter.execute(r).status, ExecStatus::Pending);
+    integrationTask();
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 1u);
+    EXPECT_EQ(sink.results[0].second.status, ExecStatus::Accepted);
+    EXPECT_EQ(server.calls().size(), 1u);
+
+    // A read with no answer in kStateCheckMs: sent then (on, but it can't
+    // know), and HA's silence after that is no reply.
+    ASSERT_TRUE(server.setState(kDenonPlayer, "on"));
+    server.answerCommands = false;
+    r.ticket = 2;
+    EXPECT_EQ(adapter.execute(r).status, ExecStatus::Pending);
+    integrationTask(HomeAssistantAdapter::kStateCheckMs - 100);
+    EXPECT_EQ(server.calls().size(), 1u);  // still reading
+    integrationTask(200);
+    EXPECT_EQ(server.calls().size(), 2u);
+    integrationTask(HomeAssistantAdapter::kReplyLimitMs);
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 2u);
+    EXPECT_EQ(sink.results[1].second.status, ExecStatus::NoReply);
+}
+
+TEST_F(AdapterTest, NoReplyWithinOneSecondIsNoReplyAndALateAnswerIsDropped) {
+    const CommandCatalog catalog = adapter.commandsFor(poweredDenon());
+    server.slow[kDenonPlayer] = 5000;  // acts at once, answers after 5 s
+    EXPECT_EQ(adapter.execute(request(catalog, "media_player.turn_on", 1, kDenonPlayer)).status, ExecStatus::Pending);
+    integrationTask(HomeAssistantAdapter::kReplyLimitMs - 100);  // sent on the first tick
+    adapter.poll(0, sink);
+    EXPECT_TRUE(sink.results.empty());
+    integrationTask(200);
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 1u);
+    EXPECT_EQ(sink.results[0].second.status, ExecStatus::NoReply);
+    EXPECT_EQ(sink.results[0].second.error, ErrorCode::Ok);
+    integrationTask(5000);  // HA's late answer: nobody is listening
+    adapter.poll(0, sink);
+    EXPECT_EQ(sink.results.size(), 1u);
+
+    // HA's own errors come back fast: still a failure.
+    server.failing.insert("media_player.turn_off");
+    EXPECT_EQ(adapter.execute(request(catalog, "media_player.turn_off", 2, kDenonPlayer)).status,
+              ExecStatus::Pending);
+    integrationTask();
+    adapter.poll(0, sink);
+    ASSERT_EQ(sink.results.size(), 2u);
+    EXPECT_EQ(sink.results[1].second.status, ExecStatus::Failed);
+}
+
 // ---- a command that reads the current state first (mute toggle) ----------
 
 namespace {
@@ -367,17 +518,16 @@ TEST_F(AdapterTest, MuteToggleWhenTheReadTimesOutStillMutes) {
     integrationTask(HomeAssistantClient::kStateReadTimeoutMs - 100);
     EXPECT_TRUE(muteCalls(server).empty());  // still reading
     integrationTask(200);
-    // Sent within the executor's 5 s bound (the fake records it unanswered).
+    // Sent (the fake records it unanswered); the call then waits up to
+    // kReplyLimitMs for HA's answer.
     EXPECT_EQ(muteCalls(server), (std::vector<std::string>{kMute}));
-    // The read and the call share kCommandTimeoutMs (the executor's 5 s):
-    // the call gets what the read left.
-    integrationTask(HomeAssistantClient::kCommandTimeoutMs - HomeAssistantClient::kStateReadTimeoutMs - 100);
+    integrationTask(HomeAssistantAdapter::kReplyLimitMs - 200);
     adapter.poll(0, sink);
     EXPECT_TRUE(sink.results.empty());  // the call's own result is still to come
-    integrationTask(100);  // 5 s since the read began
+    integrationTask(200);
     adapter.poll(0, sink);
     ASSERT_EQ(sink.results.size(), 1u);  // one result for the ticket: the call's
-    EXPECT_EQ(sink.results[0].second.error, ErrorCode::AdapterTimeout);
+    EXPECT_EQ(sink.results[0].second.status, ExecStatus::NoReply);
 }
 
 TEST_F(AdapterTest, MuteToggleFailures) {

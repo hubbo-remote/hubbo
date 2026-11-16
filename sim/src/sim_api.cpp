@@ -143,7 +143,11 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
     // ?remove=<entity_id> (HA forgets the entity: calls get not_found, the
     // next discovery misses it), and ?muted=<entity_id>:0|1 (a media
     // player's is_volume_muted, as a volume_mute call sets it; 400 unless
-    // it names a media player the fake has). The answer: the client's
+    // it names a media player the fake has), ?state=<entity_id>:<state>,
+    // ?attr=<entity_id>:<name>=<value> (a JSON value, else taken as text:
+    // source=Game, volume_level=0.5) and ?slow=<entity_id>:<ms> (HA answers
+    // that entity's calls after ms; slow=none clears every one); 400 unless
+    // the fake has the entity. The answer: the client's
     // state, the number of calls and `last_call` (FakeHaServer::lastCallJson(),
     // null until a call; /sim/reset clears it).
     host(Method::Post, "/sim/ha", [this](auto &r, auto &, auto &out) {
@@ -158,12 +162,43 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
         } else if (!fail.empty()) {
             hub.haServer().failing.insert(fail);
         }
+        // <entity_id>:<rest>, split at the first ':' (entity ids have none).
+        const auto split = [](const std::string &v, std::string *entity, std::string *rest) {
+            const size_t colon = v.find(':');
+            if (colon == std::string::npos) return false;
+            *entity = v.substr(0, colon);
+            *rest = v.substr(colon + 1);
+            return true;
+        };
+        FakeHaServer &server = hub.haServer();
+        std::string entity, rest;
         const std::string muted(http::queryValue(r.query, "muted"));
-        if (!muted.empty()) {
-            const size_t colon = muted.rfind(':');
-            const std::string flag = colon == std::string::npos ? "" : muted.substr(colon + 1);
-            if ((flag != "0" && flag != "1") || !hub.haServer().setMuted(muted.substr(0, colon), flag == "1")) {
-                http::jsonError(out, 400, "bad_request", "muted needs <media player entity_id>:0|1");
+        if (!muted.empty() && (!split(muted, &entity, &rest) || (rest != "0" && rest != "1") ||
+                               !server.setMuted(entity, rest == "1"))) {
+            http::jsonError(out, 400, "bad_request", "muted needs <media player entity_id>:0|1");
+            return;
+        }
+        const std::string state(http::queryValue(r.query, "state"));
+        if (!state.empty() && (!split(state, &entity, &rest) || !server.setState(entity, rest))) {
+            http::jsonError(out, 400, "bad_request", "state needs <entity_id>:<state> for an entity the fake has");
+            return;
+        }
+        const std::string attr(http::queryValue(r.query, "attr"));
+        if (!attr.empty()) {
+            const size_t eq = split(attr, &entity, &rest) ? rest.find('=') : std::string::npos;
+            if (eq == std::string::npos || !server.setAttribute(entity, rest.substr(0, eq), rest.substr(eq + 1))) {
+                http::jsonError(out, 400, "bad_request", "attr needs <entity_id>:<name>=<value> for an entity the fake has");
+                return;
+            }
+        }
+        const std::string slow(http::queryValue(r.query, "slow"));
+        if (slow == "none") {
+            server.slow.clear();
+        } else if (!slow.empty()) {
+            const bool parts = split(slow, &entity, &rest) && !rest.empty() && rest.size() <= 7 &&
+                               rest.find_first_not_of("0123456789") == std::string::npos;
+            if (!parts || !server.setSlow(entity, static_cast<uint32_t>(std::stoul(rest)))) {
+                http::jsonError(out, 400, "bad_request", "slow needs <entity_id>:<ms> for an entity the fake has");
                 return;
             }
         }

@@ -3,7 +3,7 @@ import { api, expect, open, test } from './hub.ts'
 test('start an activity from the home page, then Off', async ({ page }) => {
   const hub = api(page)
   await open(page, '/')
-  const xbox = page.getByRole('main').getByRole('button', { name: /^Play Xbox/ })
+  const xbox = page.getByRole('list', { name: 'Activities' }).getByRole('button', { name: /^Play Xbox/ })
   await xbox.click()
   await expect(xbox).toHaveAttribute('aria-pressed', 'true')
   await expect.poll(hub.activeActivity).toBe('act_play_xbox')
@@ -26,7 +26,7 @@ test.describe('when the hub switches but can\'t queue the startup', () => {
 
   test('says it switched and why the startup didn’t run, with no retry', async ({ page }) => {
     await open(page, '/')
-    const xbox = page.getByRole('main').getByRole('button', { name: /^Play Xbox/ })
+    const xbox = page.getByRole('list', { name: 'Activities' }).getByRole('button', { name: /^Play Xbox/ })
     await xbox.click()
     await expect(page.getByText('Play Xbox is on, but its startup didn’t run')).toBeVisible()
     await expect(page.getByText('Hubbo was busy. Try again.')).toBeVisible()

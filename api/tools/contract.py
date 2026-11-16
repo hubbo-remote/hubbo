@@ -1325,6 +1325,72 @@ def command_ids(press):
     return out
 
 
+def activity_runs_flow(c):
+    """/activity-runs and /status last_run agree. On hub-sim (HA connected):
+    a startup goes on past a step HA refuses (completed_with_errors), and
+    off's shutdown is then the newest run. State checks: with the Denon
+    already on, on another input and slow to answer, Play Xbox skips its
+    power, its input change gets no_reply, and the run is completed."""
+    def last_run_matches(label):
+        _, body, _ = c.call("listActivityRuns", "GET", "/activity-runs", expect=200, label=label)
+        got = (body or {}).get("runs", [])
+        ids = [r["id"] for r in got]
+        expect(ids == sorted(ids, reverse=True) and len(set(ids)) == len(ids), f"{label}: ids newest first: {ids}")
+        _, st, _ = c.call("getStatus", "GET", "/status", expect=200, label=f"{label}: last_run")
+        want = None
+        if got:
+            want = {k: got[0][k] for k in ("id", "activity_id", "kind", "outcome")}
+            want["failed_steps"] = sum(x["result"] in ("failed", "timed_out") for x in got[0]["steps"])
+        expect(st and st.get("last_run") == want, f"{label}: last_run {st and st.get('last_run')}, want {want}")
+        return got[0] if got else {}
+
+    def switch(path, label, setup=None, reset=None):
+        """POST `path` with the fake HA set up, let the run finish, and
+        return the newest run."""
+        if setup:
+            c.control(f"ha?{setup}")
+        op = "activitiesOff" if path.endswith("/off") else "activateActivity"
+        c.call(op, "POST", path, expect=200, label=label)
+        c.control("advance?ms=6000")  # the runs' waits, and the slow Denon's 5 s reply
+        if reset:
+            c.control(f"ha?{reset}")
+        return last_run_matches(label)
+
+    last_run_matches("activity runs")
+    if MOCK:
+        skip("activity runs as they happen", "the mock's runs are its own; hub-sim runs the engine")
+        return
+    expect(until(lambda: integration_state(c, "ha_main") == "connected"), "activity runs need HA connected")
+
+    act = "act_watch_apple_tv"
+    # The LG off, so its turn_on isn't skipped (the fake remembers power).
+    run = switch(f"/activities/{act}/activate", "a failing step",
+                 "state=media_player.family_room_lg_tv:off&fail=media_player.turn_on", "fail=none")
+    steps = run.get("steps", [])
+    expect(run.get("activity_id") == act and run.get("kind") == "startup"
+           and run.get("outcome") == "completed_with_errors", f"a startup with a failing step: {run}")
+    expect(steps and steps[0]["command_id"] == "media_player.turn_on" and steps[0]["result"] == "failed"
+           and steps[0]["error"] not in (None, "adapter_unavailable"), f"the step HA refused: {steps[:1]}")
+    expect(len(steps) > 1 and all(x["result"] not in ("pending", "cancelled") for x in steps[1:]),
+           f"the steps after it still ran: {steps}")
+    run = switch("/activities/off", "off after a failing step")
+    expect(run.get("kind") == "shutdown" and run.get("activity_id") == act
+           and run.get("outcome") in ("completed", "completed_with_errors"), f"off's shutdown: {run}")
+
+    denon = "media_player.family_room_denon"
+    run = switch("/activities/act_play_xbox/activate", "state checks",
+                 f"state={denon}:on&attr={denon}:source=TV&slow={denon}:5000", "slow=none")
+    by_step = {(x["device_id"], x["command_id"]): x for x in run.get("steps", [])}
+    power = by_step.get(("dev_denon", "media_player.turn_on"), {})
+    source = by_step.get(("dev_denon", "media_player.select_source"), {})
+    expect(power.get("result") == "skipped" and power.get("error") == "already_set",
+           f"the Denon's power, already on: {power}")
+    expect(source.get("result") == "no_reply" and source.get("error") is None
+           and 1000 <= (source.get("duration_ms") or 0) <= 1500, f"the slow Denon's input (1 s limit): {source}")
+    expect(run.get("outcome") == "completed", f"a run with skipped and no_reply steps: {run}")
+    switch("/activities/off", "off after the state checks")
+
+
 def smart_buttons_flow(c):
     """The four slots: as seeded with their derived actions, a replace and
     its actions, revision conflicts, an unknown device, a slot's device
@@ -1677,6 +1743,7 @@ def noauth(c, checker):
     hub_flow(c)
     integration_param_flow(c)
     mute_toggle_flow(c)
+    activity_runs_flow(c)
     ha_action_flow(c)
     new_domains_flow(c)
     ha_unlink_flow(c)
@@ -1719,6 +1786,7 @@ def token_role_matrix(c, checker, token):
         registry_flow(c)
         execute_flow(c)
         activity_flow(c)
+        c.call("listActivityRuns", "GET", "/activity-runs", expect=200, label="token reads activity runs")
         _, s, _ = c.call("getSession", "GET", "/auth/session", expect=200, label="token session")
         expect(s and s["role"] == "token", f"token session: {s}")
         for op_id, method, path in operations(checker, **{"x-hubbo-role": "admin"}):

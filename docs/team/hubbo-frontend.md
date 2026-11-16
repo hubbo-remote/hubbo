@@ -2,6 +2,62 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## Activity runs (branch `activity-runs`; docs/design/activity-runs.md)
+
+- **Activity Log** (Status tab `activity`, `/status/activity`; `components/ActivityLog.tsx`; UX iteration,
+  e2e not caught up). Moved off the Activities page (RecentActivity.tsx deleted). A timeline: each run a
+  round status node (check / X / spinner / slash) on a left rail; header = name (semibold; newest larger) +
+  outline start/stop Badge (Play/Power, `runKind`) + right: mono time + outcome Badge (`runSummary`;
+  success/destructive/secondary); a facts line "5 steps · 2 skipped · 1.8 s" (run.duration_ms). Steps hang
+  off the rail with glyphs (ok check success/70, skip SkipForward, no_reply Send, failed X, wait Hourglass,
+  pending spinner), then a device outline Badge with a domain icon (media_player MonitorPlay, remote Radio,
+  light Lightbulb, switch ToggleRight, BLE Bluetooth, else Box), the command, and a right-aligned result
+  (secondary/destructive Badge from `stepReason`, else a mono duration). From sm up steps share subgrid
+  columns so results line up; a phone wraps. Offsets: run gutter pl-9, rail left 13px, step rows start
+  30px in (-mx-1.5 for the hover bg), so glyphs sit at -left-6. sr-only joiners keep each line one
+  sentence. A run step has no params, so a wait reads "Wait" plus its duration. Empty: History icon + copy.
+  `ActivityLog activityId` filters to one activity and drops the name from each run header: the activity
+  editor's fourth tab "Log" (no count: it's the last ≤8 runs hub-wide), empty copy "Start this activity…".
+  Refetches /activity-runs only when `/status.last_run`'s `id:outcome` changes (rides the shell's poll).
+  Overview: one line "<Activity> · N steps failed · View log" when last_run has failures (may be dropped).
+  The tiles list keeps `aria-label="Activities"`. `useActivityRuns()` keys itself on /status `last_run`
+  (id:outcome; nothing until /status is in), so the editor's warnings and the Log tab share one fetch.
+  `stepAction`/`activityName` (lib/runs) are the shared step→Action and name-or-"An activity" helpers.
+  The Overview line loads activities only on a failure (`FailedRunLine`); its "View log" link goes to that
+  activity's own Log tab and is always underlined (axe link-in-text-block in dark mode).
+- **Editor tabs are routes**, like Status: `/activities/:id/:tab?` (buttons default; startup, shutdown,
+  log; unknown → NotFound). Tab clicks `navigate(…, { replace: true })`; the draft survives (same keyed Editor).
+- **Badge**: `success`/`destructive` text is darkened in light mode (color-mix with black, like `warning`):
+  the base colours on their own /15 tint were 4.36:1 and 3.64:1 (axe, found via /status/activity).
+- e2e: `activity-runs.spec` covers Status → Activity Log, the activity's Log tab (no name), the Startup
+  "Failed last time" and the Overview line + View log; a11y covers /status/activity.
+- **Activity page**: `SequenceEditor` takes `lastRun` (index → reason); a failing step gets an amber
+  border and "Failed last time: …". `failuresFor(run, kind, steps)`: only the newest run of this
+  activity, only if it was that kind, only steps still the same command at that index.
+- `lib/runs.ts` (pure; UI + mock): `stepReason` (error code → words; timed_out "timed out after 5 s";
+  cancelled "skipped: another activity took over", or "skipped: Hubbo was too busy" for queue_full; unknown codes "failed (code words)"), `isFailure`, `failedSteps`, `runTitle`,
+  `runSummary` (rejected → "didn’t run": activate.spec checks there is no "Couldn’t start" text),
+  `failuresFor`. Durations use `duration()` in lib/utils (shared with describe.ts).
+- **Mock**: runs seeded from activity_runs/list.json (RAM, max 8, empty on first run); activate and off
+  record a run at once (a stale device's step fails entity_not_found and the rest go on; a wait takes its
+  duration; startupRejected → rejected, steps cancelled with queue_full, as the hub does); `/status.last_run` from the newest.
+- Tests: e2e `activity-runs.spec` (fresh HA device, HA forgets it, activate → dashboard line, steps, the
+  activity's warning; on hub-sim `advance`), runs.test.ts, mock unit tests (fixture parity, recording).
+- **State checks** (docs/design/state-checks.md): steps can be `skipped` (already_set) → "already on" /
+  "already off" (power) / "already set" (setters; the run step has no params, by design) and `no_reply` →
+  "sent, no reply". Neither is a failure (`isFailure`), so no "Failed last time" and runs stay "all steps ok".
+  Mock: a fake HA state per entity (`entityStates`/`fakeState`), set like hub-sim's /sim/ha:
+  `?state=<entity>:<state>` (told apart from the integration `?state=` by the ':'), `?attr=<entity>:<name>=<JSON
+  or text>`, `?slow=<entity>:<ms>|none`. `alreadySet` is the hub's generic rule; a sent turn_on/off or
+  select_source updates the fake like hub-sim's (not every field: HA has no `transition` attribute); turn_off
+  clears `source`. Only `<domain>.<service>` steps are checked, never `call_service`. Mock run ids count on
+  from the fixture's newest. A slow
+  entity over 1 s gives no_reply (1000 ms). e2e: "a step HA already shows is skipped…".
+  hub-sim's fake HA: players start off, power/source persist until /sim/reset (which also clears run history),
+  `commands=0` → no_reply. Its /sim/log adds "… done -> skipped already_set|no_reply" lines;
+  watch-apple-tv's `sentSince` drops them (dispatch order only; the lights' shutdown turn_off is skipped there).
+- On hub-sim, HA names media_player.turn_on "Power on" (the mock says "Turn on"); the spec accepts both.
+
 ## Smart buttons (branch `smart-buttons`; docs/design/smart-buttons.md; simplified 2026-11-15 after the .196 board test)
 
 - **Global**: Light 1/2 and Switch 1/2's panel starts with a Device select (`SlotDevice`; None + lights,

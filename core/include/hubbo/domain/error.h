@@ -85,6 +85,9 @@ enum class ErrorCode : uint8_t {
     // A command that needs the entity's current state (cover.position_step's
     // current_position) couldn't get it: unknown, unavailable or unread.
     StateUnavailable,
+    // Not an error: why a startup or shutdown step was skipped (its entity
+    // was already in the state the step sets; ExecStatus::Skipped).
+    AlreadySet,
 
     Count
 };

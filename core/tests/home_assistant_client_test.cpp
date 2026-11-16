@@ -238,6 +238,7 @@ TEST_F(ClientTest, DiscoveryWalksTheResultsInStepsAndKeepsOnlySupportedDomains) 
     named.name = "Den";
     named.platform = "sonos";
     named.uniqueId = "RINCON_1";
+    named.state = "playing";
     server.addEntity(named);
     connect();
 
@@ -276,7 +277,7 @@ TEST_F(ClientTest, DiscoveryWalksTheResultsInStepsAndKeepsOnlySupportedDomains) 
             EXPECT_EQ(c.name, "Den speaker");  // friendly_name first
             EXPECT_EQ(c.platform, "sonos");
             EXPECT_EQ(c.domain, "media_player");
-            EXPECT_EQ(c.state, "on");
+            EXPECT_EQ(c.state, "playing");
         }
         if (c.entityId == "switch.porch") {  // YAML-only: no registry entry
             EXPECT_EQ(c.platform, "");

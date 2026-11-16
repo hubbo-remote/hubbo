@@ -27,6 +27,9 @@ import type {
   GlobalBindings,
   SlotId,
   SmartButtons,
+  ActivityRun,
+  ActivityRuns,
+  ActivityRunStep,
   SmartButtonsInput,
   Hub,
   IntegrationConfig,
@@ -55,6 +58,7 @@ import { checkFirmwareImage } from './firmware.ts'
 import { fixture, fixtureBytes, loadSeed, type Seed } from './fixtures.ts'
 import { activityShape, bindingsShape, DEVICE_ID, smartButtonsShape, unknownFields } from './shape.ts'
 import { emptySmartButtons, isSlot, SLOTS, validateSmartButtons } from '../src/lib/smartButtons.ts'
+import { failedSteps } from '../src/lib/runs.ts'
 import { noActions, slotActions } from './smartActions.ts'
 
 export interface MockRequest {
@@ -87,6 +91,12 @@ export interface MockOptions {
   /** Hub ms a firmware update or factory reset moves per real ms. Default 1/3 (a 6 s write); e2e uses 0, so only `advance` moves it, like hub-sim. */
   timeScale?: number
   random?: () => number
+}
+
+/** `a:b:c` → [`a`, `b:c`]: an entity id never holds the separator, a value may. */
+const splitOnce = (s: string, sep: string): [string, string] => {
+  const i = s.indexOf(sep)
+  return i < 0 ? [s, ''] : [s.slice(0, i), s.slice(i + 1)]
 }
 
 /** What `POST /__mock/reset` may change until the next reset (e2e uses this). */
@@ -234,6 +244,13 @@ export function createMock(opts: MockOptions = {}) {
   let eraseReady: boolean
   /** Entities HA has forgotten (POST /__mock/ha?remove=): their devices go stale at the next discovery. */
   let removedEntities: Set<string>
+  /**
+   * What HA shows for an entity (POST /__mock/ha?state=&attr=, like hub-sim's fake): a sequence step that would change
+   * nothing is skipped (state checks). A sent turn_on/turn_off or setter updates it, as HA would.
+   */
+  let entityStates: Map<string, { state: string; attributes: Record<string, unknown> }>
+  /** How late HA answers an entity's service calls (POST /__mock/ha?slow=<entity>:<ms>): past 1 s a step ends `no_reply`. */
+  let slowEntities: Map<string, number>
   /** Each HA entity's own command variants (e.g. its source list), from the fixture device on it. */
   let entityCommands: Map<string, Command[]>
   /** What only an entity's details carry (§3b): its integration's services, the skipped ones, its registry id. */
@@ -246,6 +263,8 @@ export function createMock(opts: MockOptions = {}) {
   let discovery: { state: DiscoverStatus['state']; startedAt?: number; elapsedMs?: number }
   let transitions: number // TransitionResult.generation
   let lastEventAt: number
+  /** The hub's last few startups and shutdowns (RAM only, newest first), with when each started. */
+  let runs: { run: ActivityRun; at: number }[]
   /** The last remote event (POST /__mock/remote/…); the fixture's until then. */
   let lastEvent: { button: ButtonId; kind: EventKind } | null
   /** The smart button slot + and − act on (RAM only, like the hub): Light 1 after a reboot. */
@@ -312,12 +331,15 @@ export function createMock(opts: MockOptions = {}) {
     // A YAML-only entity (no registry entry, so no platform or unique_id), like hub-sim's fake HA.
     if (!haCandidate('switch.patio_fountain')) db.discover.candidates.push({ provider: { type: 'home_assistant', entity_id: 'switch.patio_fountain' }, name: 'Patio Fountain', domain: 'switch', suggested_kind: 'switch', supported: true, command_ids: ['switch.turn_on', 'switch.turn_off'], dropped_options: 0, registered_device_id: null })
     removedEntities = new Set()
+    entityStates = new Map()
+    slowEntities = new Map()
     // A registered entity's commands are its device's; a free one's come from its fixture, when it has one.
     entityCommands = new Map(db.discover.candidates.flatMap((c) => {
       const caps = c.registered_device_id ? db.capabilities.get(c.registered_device_id) : db.entityCapabilities.get(c.provider.entity_id)
       return caps ? [[c.provider.entity_id, caps.commands] as const] : []
     }))
     transitions = 17
+    runs = mode.firstRun ? [] : fixture<ActivityRuns>('activity_runs/list.json').runs.map((run) => ({ run, at: Date.now() - run.started_ago_ms }))
     lastEventAt = Date.now() - 5230
     lastEvent = null
     selectedSlot = 'light_1'
@@ -703,6 +725,61 @@ export function createMock(opts: MockOptions = {}) {
     return { ...db.firmware, update: { state, progress, error: fw.state === 'failed' ? fw.error : null } }
   }
 
+  /**
+   * The hub's state check (docs/design/state-checks.md): HA already shows what the step would set. Power: turn_on when
+   * on, turn_off when off or standby; every field must equal the attribute of the same name (numbers within a hair;
+   * lists and objects never). A step with nothing it can check, or an unknown state, runs.
+   */
+  function alreadySet(entityId: string, service: string, x: Action): boolean {
+    const e = entityStates.get(entityId)
+    if (!e || ['unavailable', 'unknown'].includes(e.state)) return false
+    const power = service === 'turn_on' ? !['off', 'standby'].includes(e.state) : service === 'turn_off' ? ['off', 'standby'].includes(e.state) : null
+    const fields = Object.entries(x.params)
+    if (power === false || (power === null && !fields.length)) return false
+    return fields.every(([k, v]) => {
+      const a = e.attributes[k]
+      if (typeof v === 'number') return typeof a === 'number' && Math.abs(a - v) < 1e-6
+      return (typeof v === 'string' || typeof v === 'boolean') && a === v
+    })
+  }
+
+  /** HA after a sent step, like hub-sim's fake: turn_on/turn_off set the power (an off player has no source), select_source the source. */
+  function haSent(entityId: string, service: string, x: Action) {
+    const e = service === 'select_source' || service === 'turn_on' || service === 'turn_off' ? fakeState(entityId) : null
+    if (!e) return
+    if (service === 'select_source') e.attributes.source = x.params.source
+    else e.state = service === 'turn_on' ? 'on' : 'off'
+    if (service === 'turn_off') delete e.attributes.source
+  }
+
+  /** An entity's state in the fake HA, made on first use as hub-sim's fake media players start: off. */
+  const fakeState = (id: string) => entityStates.get(id) ?? entityStates.set(id, { state: 'off', attributes: {} }).get(id)!
+
+  /**
+   * A startup or shutdown, as the hub keeps it: it runs at once here, and each step keeps going past a failure. A step
+   * on a stale device fails like an execute does (entity_not_found); a wait takes its time; the rest are ok.
+   */
+  function recordRun(a: Activity, kind: 'startup' | 'shutdown', rejected = false) {
+    const steps = a[kind].map((x, index): ActivityRunStep => {
+      const base = { index, device_id: x.device_id, command_id: x.command_id }
+      if (rejected) return { ...base, result: 'cancelled', error: 'queue_full', duration_ms: null }
+      const d = db.devices.find((dev) => dev.id === x.device_id)
+      if (d?.availability === 'stale') return { ...base, result: 'failed', error: 'entity_not_found', duration_ms: 1 }
+      const entity = d?.provider.type === 'home_assistant' ? d.provider.entity_id : null
+      // Only an HA service step (`<domain>.<service>`) is checked; a `call_service` action never is, like the hub.
+      const service = x.command_id.split('.')[1] ?? ''
+      if (entity && service && alreadySet(entity, service, x)) return { ...base, result: 'skipped', error: 'already_set', duration_ms: 5 }
+      if (entity) haSent(entity, service, x)
+      const late = entity ? slowEntities.get(entity) : undefined
+      const ms = late ?? (x.command_id === 'wait' ? Number(x.params.duration_ms ?? 0) : 40)
+      return ms > 1000 && late !== undefined ? { ...base, result: 'no_reply', error: null, duration_ms: 1000 } : { ...base, result: 'ok', error: null, duration_ms: ms }
+    })
+    const failed = steps.some((s) => s.result === 'failed')
+    const outcome = rejected ? 'rejected' : failed ? 'completed_with_errors' : 'completed'
+    const run: ActivityRun = { id: (runs[0]?.run.id ?? 0) + 1, activity_id: a.id, kind, started_ago_ms: 0, duration_ms: rejected ? null : steps.reduce((n, s) => n + (s.duration_ms ?? 0), 0), outcome, steps }
+    runs = [{ run, at: Date.now() }, ...runs].slice(0, 8)
+  }
+
   /** GET /smart-buttons: the slots, and what each does with its device (derived like the hub; read-only). */
   function smartButtons(): SmartButtons {
     const actions = Object.fromEntries(
@@ -721,6 +798,8 @@ export function createMock(opts: MockOptions = {}) {
     s.time = isoNow()
     s.active_activity_id = db.activeActivityId
     s.selected_slot = selectedSlot
+    const last = runs[0]?.run
+    s.last_run = last ? { id: last.id, activity_id: last.activity_id, kind: last.kind, outcome: last.outcome, failed_steps: failedSteps(last) } : null
     s.config = config
     s.auth_state = authState()
     s.integrations = integrations().map(({ id, type, state, detail }) => ({ id, type, state, ...(detail ? { detail } : {}) }))
@@ -864,6 +943,7 @@ export function createMock(opts: MockOptions = {}) {
     ['POST', /^\/activities\/off$/, 'token', () => {
       const cur = db.activities.find((a) => a.id === db.activeActivityId)
       db.activeActivityId = null
+      if (cur) recordRun(cur, 'shutdown')
       const none = { status: 'none', queued_actions: 0 } as const
       const r: TransitionResult = { switched: !!cur, active_activity_id: null, previous_activity_id: cur?.id ?? null, generation: ++transitions, startup: none, shutdown: cur ? { status: 'queued', queued_actions: cur.shutdown.length } : none }
       return ok(r)
@@ -905,10 +985,12 @@ export function createMock(opts: MockOptions = {}) {
       if (!a) return err(404, 'not_found', 'No such activity')
       const prev = db.activeActivityId
       db.activeActivityId = a.id
+      recordRun(a, 'startup', mode.startupRejected)
       const startup = mode.startupRejected ? ({ status: 'rejected', queued_actions: 0, reason: 'queue_full' } as const) : ({ status: 'queued', queued_actions: a.startup.length } as const)
       const r: TransitionResult = { switched: true, active_activity_id: a.id, previous_activity_id: prev, generation: ++transitions, startup, shutdown: { status: 'none', queued_actions: 0 } }
       return ok(r)
     }],
+    ['GET', /^\/activity-runs$/, 'token', () => ok({ runs: runs.map(({ run, at }) => ({ ...run, started_ago_ms: Date.now() - at })) } satisfies ActivityRuns)],
     ['GET', /^\/global-bindings$/, 'token', () => ok(db.globalBindings)],
     ['GET', /^\/smart-buttons$/, 'token', () => ok(smartButtons())],
     ['GET', /^\/smart-buttons\/actions$/, 'token', (req) => {
@@ -1381,6 +1463,22 @@ export function createMock(opts: MockOptions = {}) {
           renamedFrom.set(to, remove)
         }
         db.discover.candidates = db.discover.candidates.flatMap((c) => (c.provider.entity_id !== remove ? [c] : to ? [{ ...c, provider: { ...c.provider, entity_id: to }, registered_device_id: null }] : []))
+        return ok()
+      }
+      // State checks, like hub-sim's /sim/ha: state=<entity>:<state>, attr=<entity>:<name>=<JSON or text>, slow=<entity>:<ms>|none.
+      const entityState = req.query.get('state')?.includes(':') ? req.query.get('state') : null
+      const attrs = req.query.getAll('attr'), slow = req.query.get('slow')
+      if (entityState || attrs.length || slow) {
+        if (entityState) { const [id, s] = splitOnce(entityState, ':'); fakeState(id).state = s }
+        for (const a of attrs) {
+          const [id, kv] = splitOnce(a, ':')
+          const [name, raw] = splitOnce(kv, '=')
+          let v: unknown = raw
+          try { v = JSON.parse(raw) } catch { /* plain text */ }
+          fakeState(id).attributes[name] = v
+        }
+        if (slow === 'none') slowEntities.clear()
+        else if (slow) { const [id, ms] = splitOnce(slow, ':'); slowEntities.set(id, Number(ms)) }
         return ok()
       }
       const auth = req.query.get('auth')

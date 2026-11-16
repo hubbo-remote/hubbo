@@ -411,9 +411,23 @@ Both return `200` once the hub has switched; the sequences run in the background
   (`switched: false`).
 - `503 busy` means nothing changed; retrying is safe.
 
+A step that fails or times out doesn't stop its sequence: the hub records it and goes on to the
+next step (a `wait` still waits). Switching activity mid-run cancels the rest of the old run. To
+see how a startup or shutdown went, `GET /activity-runs` (`#/components/schemas/ActivityRuns`)
+lists the last 8, newest first, each with its `outcome` (`completed`, `completed_with_errors`,
+`cancelled`, `rejected`, or `running`) and every step's `result` and `error`. A restart clears
+them.
+
+In a startup or shutdown, a Home Assistant step is checked against HA's current state first: if
+the device is already on (or off), or already has the value the step sets, it's `skipped`
+(`already_set`) and nothing is sent. An HA step that gets no answer within 1 s is `no_reply`: the
+device may well have acted, and the sequence goes on. Neither counts as a failure, and a `wait`
+always waits.
+
 ## The hub's state
 
-`GET /status` shows the hub's name (`hubbo.name`), the active activity, and `config.state`:
+`GET /status` shows the hub's name (`hubbo.name`), the active activity, the newest activity run
+(`last_run`: its `outcome` and `failed_steps`, or null), and `config.state`:
 
 - `ok` (or `fresh`, nothing saved yet): normal.
 - `blocked`: the saved configuration can't be used. Nothing is active and every edit gets

@@ -111,7 +111,7 @@ export function Activities() {
           An activity turns on your devices and sets up the remote for them.
         </EmptyState>
       ) : (
-        <ul className={GRID}>
+        <ul className={GRID} aria-label="Activities">
           {list.map((a) => {
             const on = a.id === activeId
             return (

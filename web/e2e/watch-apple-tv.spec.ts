@@ -16,8 +16,9 @@ const [APPLE_TV_ID, DENON_ID, LIGHTS_ID, LG_ID] = ['dev_apple_tv', 'dev_denon', 
 /** Commands hub-sim sent since `since` (sim time), as "device command [params]". */
 async function sentSince(page: Page, since: number): Promise<string[]> {
   const log = (await (await page.request.get(`${SIM_URL}/sim/log`)).json()) as { commands: { at_ms: number; text: string }[] }
-  // "ha_main dev_denon media_player.turn_on -> pending" → "dev_denon media_player.turn_on"; "system - wait …" → "wait …"
-  return log.commands.filter((l) => l.at_ms > since).map((l) => l.text.replace(/ -> \w+$/, '').replace(/^\S+ (- )?/, ''))
+  // "ha_main dev_denon media_player.turn_on -> pending" → "dev_denon media_player.turn_on"; "system - wait …" → "wait …".
+  // The dispatch order only: "… done -> skipped already_set" / "no_reply" lines report how a step ended.
+  return log.commands.filter((l) => l.at_ms > since && !l.text.includes(' done -> ')).map((l) => l.text.replace(/ -> \w+$/, '').replace(/^\S+ (- )?/, ''))
 }
 const simNow = async (page: Page): Promise<number> => (await advance(page, 0)).sim_time_ms
 const press = (page: Page, button: string, action: 'press' | 'release' | 'tap') => control(page, `remote/${button}/${action}`)
@@ -64,7 +65,7 @@ test('build Watch Apple TV by hand, then use it from the remote', async ({ page 
   // Start it from the home page; the startup runs in order, waiting out its wait.
   let t = await simNow(page)
   await open(page, '/')
-  const tile = page.getByRole('main').getByRole('button', { name: /^E2E Watch Apple TV/ })
+  const tile = page.getByRole('list', { name: 'Activities' }).getByRole('button', { name: /^E2E Watch Apple TV/ })
   await tile.click()
   await expect.poll(api(page).activeActivity).toBe(id)
   await advance(page, 3_000)

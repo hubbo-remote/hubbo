@@ -19,6 +19,7 @@ const PAGES: [string, string][] = [
   ['/devices/dev_denon', 'Family Room Denon'],
   ['/integrations', 'Integrations'],
   ['/status/overview', 'Response time'],
+  ['/status/activity', 'Activity Log'],
   ['/status/backups', 'Restore'],
   ['/status/firmware', 'Firmware'],
   ['/status/diagnostics', 'Raw status'],

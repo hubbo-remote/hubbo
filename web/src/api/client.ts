@@ -2,6 +2,7 @@
 // goes through here. Session auth is an HttpOnly, SameSite=Strict cookie the
 // browser handles; there's no CSRF token (the hub checks Origin instead).
 import type {
+  ActivityRuns,
   Activity,
   ActivityInput,
   ActivityList,
@@ -219,6 +220,7 @@ export const api = {
   activate: (id: string) => post<TransitionResult>(`/activities/${enc(id)}/activate`),
   off: () => post<TransitionResult>('/activities/off'),
   globalBindings: () => get<GlobalBindings>('/global-bindings'),
+  activityRuns: () => get<ActivityRuns>('/activity-runs'),
   replaceGlobalBindings: (g: GlobalBindings) => put<GlobalBindings>('/global-bindings', g),
   smartButtons: () => get<SmartButtons>('/smart-buttons'),
   replaceSmartButtons: (s: SmartButtonsInput) => put<SmartButtons>('/smart-buttons', s),

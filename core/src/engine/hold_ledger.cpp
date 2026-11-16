@@ -51,10 +51,11 @@ void HoldLedger::markReleasing(int slot, uint32_t sequenceId, uint8_t index) {
     holds_[slot].releasingIndex = index;
 }
 
-bool HoldLedger::takeReleasing(uint32_t sequenceId, OpenHold *out) {
+bool HoldLedger::takeReleasing(uint32_t sequenceId, int index, OpenHold *out) {
     if (sequenceId == 0) return false;
     for (size_t i = 0; i < kCapacity; i++) {
-        if (used_[i] && holds_[i].releasingSequence == sequenceId) {
+        if (used_[i] && holds_[i].releasingSequence == sequenceId &&
+            (index < 0 || holds_[i].releasingIndex == index)) {
             *out = holds_[i];
             used_[i] = false;
             return true;

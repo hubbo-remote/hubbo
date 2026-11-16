@@ -460,6 +460,23 @@ of remote lag during the write are accepted.
   - The size-cliff probe: `ping -s N` sweep. To read a long response from a sick board, a small
     advertised MSS doesn't help when the board can't allocate.
 
+## Activity runs (branch `activity-runs`; on .196, idle checked)
+
+- `EngineRuntime::activityRuns()` → `engine_.runsShared()` (whole history, about 14 KB; sets
+  `out->nowMs = millis()`, the clock for each run's "ago") and
+  `lastRun()` → `engine_.lastRunShared()` (the newest run, about 40 B, for /status polls).
+- `_ota` env builds: RAM 98,664 B, flash 2,370,531 B (36.2%).
+- State checks (`docs/design/state-checks.md`, core only; the 300 ms one-entity read and 1 s reply cap
+  are on the integration task): no firmware change. `_ota` RAM 98,736 B, flash 2,377,519 B (36.3%).
+- On .196 (lead's OTA, idle only, up 30–140 s): loop max gap 0.44–2.2 ms, 0 over 5 ms (75 s
+  window with the 30 s status print: 1,457 us). Internal free 75.1 KB, min 71.9 KB, largest 34.8 KB.
+  Loop stack left 3,144 B. Pending: the same counters right after the user's activity switching.
+  The HA task's stack low isn't readable (`tasks` doesn't print stack watermarks).
+- Phase gate (fw) passed: default RAM 90,792 B, flash 2,357,595 B (36.0%); `_ota` RAM 99,008 B,
+  flash 2,378,495 B (36.3%).
+- Gotcha: the console's `tasks` command costs the loop about 5 ms itself (5,108 us, 1 over 5 ms).
+  Run `lat reset` after it before measuring.
+
 ## Moving a board from other firmware to Hubbo over USB
 
 - Use USB when the board runs other firmware. An OTA can't change the bootloader or the partition

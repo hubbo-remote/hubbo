@@ -111,9 +111,8 @@ class HomeAssistantClient : private WebSocketTransport::Listener {
 public:
     static constexpr uint32_t kCommandTimeoutMs = 5000;
     static constexpr uint32_t kDiscoveryTimeoutMs = 30000;  // per discovery command
-    // A state read before a call (readAttribute). The call after it gets
-    // what's left of kCommandTimeoutMs (callService's timeoutMs), so the two
-    // together stay within the executor's 5 s action bound.
+    // A state read before a call (readAttribute). With the adapter's 1 s
+    // reply limit after it, the two stay within the executor's 5 s bound.
     static constexpr uint32_t kStateReadTimeoutMs = 2000;
     static constexpr uint32_t kAuthTimeoutMs = 10000;
     static constexpr uint32_t kPingIntervalMs = 30000;
@@ -182,6 +181,12 @@ public:
     // called. Runs alongside calls, a discovery and a details fetch.
     using ReadDone = std::function<void(ErrorCode result, std::optional<ha::ServiceValue> value)>;
     ErrorCode readAttribute(const std::string &entityId, const std::string &attribute, ReadDone done);
+    // Integration task: the same fresh read, whole: `done` gets Ok with the
+    // entity's compressed state as HA sent it ({"s":<state>,"a":{...}}; a
+    // view valid only during the call), or the errors above, with
+    // AdapterTimeout after `timeoutMs`. Returns as readAttribute does.
+    using StateDone = std::function<void(ErrorCode result, std::string_view entity)>;
+    ErrorCode readState(const std::string &entityId, uint32_t timeoutMs, StateDone done);
 
     // Any task. Runtime status only (never saved): the entity is missing
     // from the latest completed discovery. Discovery is the only source: HA
@@ -364,9 +369,6 @@ private:
     // Entity details (integration task).
     void detailsResult(Kind kind, bool success, std::string text);
     void finishDetails(ErrorCode result);
-    // A state read's answer (integration task).
-    static void readResult(const std::string &entityId, const std::string &attribute, const ReadDone &done,
-                           ErrorCode result, const std::string *text);
 
     WebSocketTransport &transport_;
     Clock clock_;

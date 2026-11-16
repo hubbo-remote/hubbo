@@ -51,6 +51,12 @@ struct SimRuntime : api::Runtime {
         s.remote.paired = true;
         return s;
     }
+    bool activityRuns(ActivityRuns *out) const override {
+        if (!hub.engine().runsShared(out)) return false;
+        out->nowMs = hub.nowMs();
+        return true;
+    }
+    bool lastRun(LastRun *out) const override { return hub.engine().lastRunShared(out); }
     const AdapterSet &adapters() const override { return hub.adapters(); }
     const char *integrationState(std::string_view) const override { return "connected"; }
     sim::SimHub &hub;
@@ -1834,4 +1840,55 @@ TEST_F(ApiTest, SmartButtonActionsByKindFromTheOfferedCommands) {
         EXPECT_EQ(r.status, 422) << bad;
         EXPECT_EQ(r.json["error"]["details"][0]["code"], "invalid_id") << bad;
     }
+}
+
+TEST_F(ApiTest, ActivityRunsShowEachStepNewestFirst) {
+    Reply r = call(http::Method::Get, "/api/v1/activity-runs");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["runs"].size(), 0u);
+    EXPECT_TRUE(call(http::Method::Get, "/api/v1/status").json["last_run"].isNull());
+
+    // Play Xbox's startup: 6 steps, a 2 s wait in the middle.
+    ASSERT_EQ(call(http::Method::Post, "/api/v1/activities/act_play_xbox/activate").status, 200);
+    r = call(http::Method::Get, "/api/v1/activity-runs");
+    ASSERT_EQ(r.json["runs"].size(), 1u) << dump(r);
+    JsonVariant run = r.json["runs"][0];
+    const int firstId = run["id"];
+    EXPECT_GE(firstId, 1);
+    EXPECT_EQ(run["activity_id"], "act_play_xbox");
+    EXPECT_EQ(run["kind"], "startup");
+    EXPECT_EQ(run["outcome"], "running") << dump(r);
+    EXPECT_TRUE(run["duration_ms"].isNull());
+    ASSERT_EQ(run["steps"].size(), 6u);
+    EXPECT_EQ(run["steps"][0]["index"], 0);
+    EXPECT_EQ(run["steps"][0]["device_id"], "dev_xbox");
+    EXPECT_EQ(run["steps"][0]["command_id"], "media_player.turn_on");
+    EXPECT_TRUE(run["steps"][3]["device_id"].isNull()) << "wait is a system step";
+    EXPECT_EQ(run["steps"][5]["result"], "pending");
+    EXPECT_TRUE(run["steps"][5]["duration_ms"].isNull());
+
+    hub.advance(5000);
+    r = call(http::Method::Get, "/api/v1/activity-runs");
+    run = r.json["runs"][0];
+    EXPECT_EQ(run["outcome"], "completed") << dump(r);
+    EXPECT_GE(run["duration_ms"].as<int>(), 2000);
+    EXPECT_GE(run["started_ago_ms"].as<int>(), 5000);
+    EXPECT_EQ(run["steps"][5]["result"], "ok") << dump(r);
+    EXPECT_TRUE(run["steps"][5]["error"].isNull());
+    EXPECT_FALSE(run["steps"][5]["duration_ms"].isNull());
+    std::string lastRun;
+    serializeJson(call(http::Method::Get, "/api/v1/status").json["last_run"], lastRun);
+    EXPECT_EQ(lastRun, R"({"id":)" + std::to_string(firstId) +
+                           R"(,"activity_id":"act_play_xbox","kind":"startup","outcome":"completed","failed_steps":0})");
+
+    // Off mid-startup: the rest is cancelled, with the run's reason.
+    ASSERT_EQ(call(http::Method::Post, "/api/v1/activities/act_play_xbox/activate").status, 200);
+    ASSERT_EQ(call(http::Method::Post, "/api/v1/activities/off").status, 200);
+    hub.advance(5000);
+    r = call(http::Method::Get, "/api/v1/activity-runs");
+    EXPECT_GT(r.json["runs"][0]["id"].as<int>(), r.json["runs"][1]["id"].as<int>()) << "ids count up";
+    JsonVariant cancelled = r.json["runs"][1]["steps"][5];
+    EXPECT_EQ(cancelled["result"], "cancelled") << dump(r);
+    EXPECT_EQ(cancelled["error"], "cancelled");
+    EXPECT_TRUE(cancelled["duration_ms"].isNull());
 }

@@ -16,6 +16,7 @@
   },
   "active_activity_id": null,
   "selected_slot": "light_1",
+  "last_run": null,
   "network": {
     "link": "up",
     "ip": "192.0.2.56",

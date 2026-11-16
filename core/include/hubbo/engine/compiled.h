@@ -127,6 +127,15 @@ struct CompiledConfig {
     int findActivity(std::string_view id) const;  // index or -1 (cold path)
 
     const CompiledAction *span(const ActionSpan &s) const { return actions.data() + s.offset; }
+    // Whether `s` is a sequence span() may read (in bounds, not too long).
+    bool fits(const ActionSpan &s) const {
+        return s.count <= limits::kMaxSequenceLength && static_cast<size_t>(s.offset) + s.count <= actions.size();
+    }
+    // The device an Adapter or Unavailable action targets, or nullptr.
+    const CompiledDevice *deviceOf(const CompiledAction &action) const {
+        const bool device = action.op == ActionOp::Adapter || action.op == ActionOp::Unavailable;
+        return device && action.deviceIndex < devices.size() ? &devices[action.deviceIndex] : nullptr;
+    }
 
     // The binding for a trigger. Fallback is per button: if the active
     // activity binds any trigger of the button, only its bindings apply (an

@@ -5,6 +5,7 @@
 #include <sstream>
 #include <vector>
 
+#include "fake_ha.h"
 #include "fixtures.h"
 
 namespace hubbo::sim {
@@ -100,16 +101,24 @@ void ScenarioRunner::reset() {
         hub_->forgetActive();  // a reset starts with nothing active
         (void)hub_->hubSettings().forget();  // and the default name
         report = hub_->load(seed_);
+        if (realHomeAssistant_) {  // `ha real`: connected to the fake HA, as it was
+            hub_->haClient().configure("ws://ha.local:8123/api/websocket", hub_->haServer().token);
+            hub_->advance(500);
+        }
     }
     if (!report.ok() && trace_ != nullptr) {
         for (const auto &issue : report.issues()) {
             *trace_ << "fixture invalid: " << errorCodeName(issue.code) << " at " << issue.path << "\n";
         }
     }
+    drain();
+    lastResult_ = ErrorCode::Ok;
+}
+
+void ScenarioRunner::drain() {
     commandCursor_ = hub_->commands().size();
     eventCursor_ = hub_->events().size();
     hidCursor_ = hub_->bleHosts().reports().size();
-    lastResult_ = ErrorCode::Ok;
 }
 
 void ScenarioRunner::reboot() {
@@ -119,6 +128,16 @@ void ScenarioRunner::reboot() {
     eventCursor_ = 0;
     hidCursor_ = 0;
     lastResult_ = ErrorCode::Ok;
+}
+
+bool ScenarioRunner::useRealHomeAssistant() {
+    if (pinned_) return fail("'ha real' needs an unpinned hub");
+    if (!realHomeAssistant_) {
+        realHomeAssistant_ = true;
+        addFakeHaSnapshots(&seed_, FakeHaServer());  // its commands come from the snapshots
+    }
+    reset();  // a fresh hub, now over the fake HA server
+    return hub_->haClient().state() == integrations::HaState::Connected || fail("the fake HA didn't connect");
 }
 
 bool ScenarioRunner::fail(std::string message) {
@@ -210,13 +229,26 @@ bool ScenarioRunner::runLine(const std::string &raw) {
         return true;
     }
     if (verb == "ha") {
-        if (words.empty()) return fail("usage: ha latency|fail|available|unavailable");
+        if (words.empty()) return fail("usage: ha latency|fail|available|unavailable|real");
+        if (words[0] == "real") return words.size() == 1 ? useRealHomeAssistant() : fail("usage: ha real");
         if (hub.realHomeAssistant()) {
-            // The real adapter: only the fake server's reachability.
-            if (words[0] != "available" && words[0] != "unavailable") {
-                return fail("only 'ha available|unavailable' with the real HA adapter");
+            // The real adapter: the fake server's reachability and entities.
+            FakeHaServer &server = hub.haServer();
+            if (words[0] == "state" && words.size() == 3) {
+                return server.setState(words[1], words[2]) || fail("the fake HA has no " + words[1]);
             }
-            hub.haServer().reachable = words[0] == "available";
+            if (words[0] == "attr" && words.size() >= 4) {
+                std::string value = words[3];  // the rest of the line: JSON, else text
+                for (size_t i = 4; i < words.size(); i++) value += ' ' + words[i];
+                return server.setAttribute(words[1], words[2], value) || fail("the fake HA has no " + words[1]);
+            }
+            if (words[0] == "slow" && words.size() == 3) {
+                return number(2, 0, &ms) && (server.setSlow(words[1], ms) || fail("the fake HA has no " + words[1]));
+            }
+            if (words[0] != "available" && words[0] != "unavailable") {
+                return fail("with the real HA adapter: ha available|unavailable|state|attr|slow");
+            }
+            server.reachable = words[0] == "available";
             hub.serviceIntegrations();
             return true;
         }
@@ -306,9 +338,7 @@ bool ScenarioRunner::runLine(const std::string &raw) {
         return true;
     }
     if (verb == "drain") {
-        commandCursor_ = hub.commands().size();
-        eventCursor_ = hub.events().size();
-        hidCursor_ = hub.bleHosts().reports().size();
+        drain();
         return true;
     }
     if (verb == "print") {

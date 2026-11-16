@@ -2,6 +2,7 @@ import type { Action } from '@/api/types'
 import { commandFor, isSystem, LEVEL_SCALE, numberChoices, paramUnit, percentLabel, withUnit, type Catalog } from '@/lib/activity'
 import { commandTitle, friendlyName, namedParam, toggleLabel, toggleOf } from '@/lib/commands'
 import { callLabel } from '@/lib/haCall'
+import { duration } from '@/lib/utils'
 import { paramValueLabel } from '@/lib/keys'
 
 export function commandLabel(a: Action, cat: Catalog): string {
@@ -10,9 +11,6 @@ export function commandLabel(a: Action, cat: Catalog): string {
   const t = toggleOf(a, cmd)
   return friendlyName(a) ?? (t ? toggleLabel(cmd!, ...t) : cmd && commandTitle(cmd)) ?? a.command_id
 }
-
-/** 500 ms, 1 s, 1.5 s, 2.25 s: milliseconds under a second, else seconds without trailing zeros. */
-const duration = (ms: number) => (ms >= 1000 ? `${Number((ms / 1000).toFixed(3))} s` : `${ms} ms`)
 
 export function paramSummary(a: Action, cat?: Catalog): string {
   if (isSystem(a) && a.command_id === 'wait') return duration(Number(a.params.duration_ms ?? 0))

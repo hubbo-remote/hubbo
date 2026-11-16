@@ -158,6 +158,27 @@ paths:
               schema: {$ref: '#/components/schemas/Status'}
         '401': {$ref: '#/components/responses/Unauthenticated'}
 
+  /activity-runs:
+    get:
+      tags: [status]
+      operationId: listActivityRuns
+      x-hubbo-role: token
+      summary: The last few activity runs, step by step
+      description: |
+        The hub keeps the last 8 runs of an activity's startup (activate) or
+        shutdown (off), newest first, in RAM: a restart clears them. Button
+        presses aren't kept. Failed steps don't stop a run
+        (`ActionSequence`); switching activity mid-run cancels the rest
+        (`cancelled` steps). `GET /status` `last_run` sums up the newest.
+      responses:
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '200':
+          description: The runs, newest first
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActivityRuns'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+
   /remote/status:
     get:
       tags: [remote]
@@ -2050,7 +2071,7 @@ components:
     Status:
       type: object
       additionalProperties: false
-      required: [hubbo, uptime_s, auth_mode, auth_state, config, active_activity_id, selected_slot, network, remote, integrations, diagnostics]
+      required: [hubbo, uptime_s, auth_mode, auth_state, config, active_activity_id, selected_slot, last_run, network, remote, integrations, diagnostics]
       properties:
         hubbo:
           type: object
@@ -2073,6 +2094,11 @@ components:
             The smart button slot `plus`/`minus` act on: the slot whose button
             was pressed last. `light_1` after a reboot.
           allOf: [{$ref: '#/components/schemas/SmartSlotId'}]
+        last_run:
+          description: The newest activity run (`GET /activity-runs`), or null if none since the hub started.
+          oneOf:
+            - {$ref: '#/components/schemas/LastActivityRun'}
+            - {type: 'null'}
         network:
           type: object
           additionalProperties: false
@@ -2100,6 +2126,107 @@ components:
                 type: string
                 maxLength: 120
         diagnostics: {$ref: '#/components/schemas/Diagnostics'}
+    ActivityRunKind:
+      description: '`startup` (activate) or `shutdown` (off).'
+      type: string
+      enum: [startup, shutdown]
+    ActivityRunOutcome:
+      description: |
+        `running`; `completed`: every step ok, skipped or no_reply;
+        `completed_with_errors`: it reached the end and one or more steps
+        failed or timed out;
+        `cancelled`: a switch of activity (or off) stopped it; `rejected`: it
+        couldn't be queued.
+      type: string
+      enum: [running, completed, completed_with_errors, cancelled, rejected]
+    LastActivityRun:
+      type: object
+      additionalProperties: false
+      required: [id, activity_id, kind, outcome, failed_steps]
+      properties:
+        id:
+          description: The run's `id` in `GET /activity-runs`.
+          type: integer
+          minimum: 1
+        activity_id: {$ref: '#/components/schemas/ActivityId'}
+        kind: {$ref: '#/components/schemas/ActivityRunKind'}
+        outcome: {$ref: '#/components/schemas/ActivityRunOutcome'}
+        failed_steps:
+          description: Steps that failed or timed out.
+          type: integer
+          minimum: 0
+    ActivityRunStep:
+      type: object
+      additionalProperties: false
+      required: [index, device_id, command_id, result, error, duration_ms]
+      properties:
+        index:
+          description: The action's position in the sequence, from 0.
+          type: integer
+          minimum: 0
+        device_id:
+          description: Null for a system step (`wait`, `activate`, `off`).
+          allOf: [{$ref: '#/components/schemas/NullableDeviceId'}]
+        command_id: {$ref: '#/components/schemas/CommandId'}
+        result:
+          description: |
+            `ok`; `skipped`: Home Assistant already showed what the step sets,
+            so nothing was sent; `no_reply`: sent,
+            and HA didn't answer within 1 s (the device may well have acted;
+            not a failure); `failed`; `timed_out`; `cancelled`; `pending`
+            while the run hasn't reached it.
+          type: string
+          enum: [ok, skipped, no_reply, failed, timed_out, cancelled, pending]
+        error:
+          description: |
+            Why it failed or timed out, as an error code (`adapter_timeout`,
+            `entity_not_found`, ...). A cancelled step carries the run's
+            reason (`cancelled`, or `queue_full` for a rejected run). A
+            skipped step has `already_set`. Null when ok, no_reply or
+            pending.
+          type: [string, 'null']
+          maxLength: 48
+        duration_ms:
+          description: Null if it never started.
+          type: [integer, 'null']
+          minimum: 0
+    ActivityRun:
+      type: object
+      additionalProperties: false
+      required: [id, activity_id, kind, started_ago_ms, duration_ms, outcome, steps]
+      properties:
+        id:
+          description: |
+            The run's number, counting up from 1 since the hub started (a
+            restart starts again). Stable while the run is listed.
+          type: integer
+          minimum: 1
+        activity_id: {$ref: '#/components/schemas/ActivityId'}
+        kind: {$ref: '#/components/schemas/ActivityRunKind'}
+        started_ago_ms:
+          description: How long ago it started.
+          type: integer
+          minimum: 0
+        duration_ms:
+          description: Start to the last step's result; null while running.
+          type: [integer, 'null']
+          minimum: 0
+        outcome: {$ref: '#/components/schemas/ActivityRunOutcome'}
+        steps:
+          description: One per action, in order.
+          type: array
+          maxItems: 32
+          items: {$ref: '#/components/schemas/ActivityRunStep'}
+    ActivityRuns:
+      type: object
+      additionalProperties: false
+      required: [runs]
+      properties:
+        runs:
+          description: Newest first, at most 8.
+          type: array
+          maxItems: 8
+          items: {$ref: '#/components/schemas/ActivityRun'}
     LatencyStats:
       type: object
       additionalProperties: false
@@ -2417,6 +2544,10 @@ components:
           params: {maxProperties: 0}
       else: {not: {required: [call]}}
     ActionSequence:
+      description: |
+        Run in order. A step that fails or times out is recorded
+        (`GET /activity-runs`) and the next one starts; it never stops the
+        sequence.
       type: array
       maxItems: 32
       items: {$ref: '#/components/schemas/Action'}

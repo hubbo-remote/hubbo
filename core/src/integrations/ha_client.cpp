@@ -24,6 +24,28 @@ std::string serialize(const JsonDocument &doc) {
 
 std::string stringOr(JsonVariantConst v) { return v | ""; }
 
+// A bool, number or string as a ServiceValue; nullopt for null, an object or
+// an array.
+std::optional<ha::ServiceValue> serviceValue(JsonVariantConst v) {
+    ha::ServiceValue out;
+    if (v.is<bool>()) {
+        out.kind = ha::ServiceValue::Kind::Bool;
+        out.boolean = v.as<bool>();
+    } else if (v.is<int32_t>()) {
+        out.kind = ha::ServiceValue::Kind::Int;
+        out.integer = v.as<int32_t>();
+    } else if (v.is<double>()) {
+        out.kind = ha::ServiceValue::Kind::Number;
+        out.number = v.as<double>();
+    } else if (v.is<const char *>()) {
+        out.kind = ha::ServiceValue::Kind::String;
+        out.string = v.as<const char *>();
+    } else {
+        return std::nullopt;
+    }
+    return out;
+}
+
 void stringList(JsonVariantConst v, std::vector<std::string> *out) {
     if (!v.is<JsonArrayConst>()) return;
     for (JsonVariantConst item : v.as<JsonArrayConst>()) {
@@ -670,48 +692,39 @@ void HomeAssistantClient::finishDetails(ErrorCode result) {
 
 // ---- state reads -----------------------------------------------------------
 
-ErrorCode HomeAssistantClient::readAttribute(const std::string &entityId, const std::string &attribute,
-                                             ReadDone done) {
+ErrorCode HomeAssistantClient::readState(const std::string &entityId, uint32_t timeoutMs, StateDone done) {
     if (state() != HaState::Connected) return ErrorCode::AdapterUnavailable;
     if (!supportedDomain(entityId)) return ErrorCode::InvalidId;  // also an invalid id
-    return sendCommand(Kind::ReadState, subscribeOne(entityId), kStateReadTimeoutMs,
-                       [entityId, attribute, done = std::move(done)](ErrorCode result, const std::string *text) {
-                           readResult(entityId, attribute, done, result, text);
+    return sendCommand(Kind::ReadState, subscribeOne(entityId), timeoutMs,
+                       [entityId, done = std::move(done)](ErrorCode result, const std::string *text) {
+                           if (!done) return;
+                           if (result != ErrorCode::Ok) return done(result, {});
+                           const std::string &t = *text;
+                           if (!json::member(t, json::member(t, "event"), "a").found()) {
+                               return done(ErrorCode::AdapterFailed, {});
+                           }
+                           const json::Span entity = entityState(t, entityId);
+                           if (!entity.found()) return done(ErrorCode::EntityNotFound, {});
+                           done(ErrorCode::Ok, entity.in(t));
                        });
 }
 
-void HomeAssistantClient::readResult(const std::string &entityId, const std::string &attribute,
-                                     const ReadDone &done, ErrorCode result, const std::string *text) {
-    if (!done) return;
-    if (result != ErrorCode::Ok) return done(result, std::nullopt);
-    // event.a.<entity_id>.a.<attribute>: only that one value is parsed.
-    const std::string &t = *text;
-    if (!json::member(t, json::member(t, "event"), "a").found()) return done(ErrorCode::AdapterFailed, std::nullopt);
-    const json::Span entity = entityState(t, entityId);
-    if (!entity.found()) return done(ErrorCode::EntityNotFound, std::nullopt);
-    const json::Span value = json::member(t, json::member(t, entity, "a"), attribute);
-    if (!value.found()) return done(ErrorCode::Ok, std::nullopt);
-    JsonDocument doc;
-    const std::string_view element = value.in(t);
-    if (deserializeJson(doc, element.data(), element.size())) return done(ErrorCode::AdapterFailed, std::nullopt);
-    const JsonVariantConst v = doc.as<JsonVariantConst>();
-    ha::ServiceValue out;
-    if (v.is<bool>()) {
-        out.kind = ha::ServiceValue::Kind::Bool;
-        out.boolean = v.as<bool>();
-    } else if (v.is<int32_t>()) {
-        out.kind = ha::ServiceValue::Kind::Int;
-        out.integer = v.as<int32_t>();
-    } else if (v.is<double>()) {
-        out.kind = ha::ServiceValue::Kind::Number;
-        out.number = v.as<double>();
-    } else if (v.is<const char *>()) {
-        out.kind = ha::ServiceValue::Kind::String;
-        out.string = v.as<const char *>();
-    } else {
-        return done(ErrorCode::Ok, std::nullopt);  // null, object, array
-    }
-    done(ErrorCode::Ok, std::move(out));
+ErrorCode HomeAssistantClient::readAttribute(const std::string &entityId, const std::string &attribute,
+                                             ReadDone done) {
+    return readState(entityId, kStateReadTimeoutMs,
+                     [attribute, done = std::move(done)](ErrorCode result, std::string_view entity) {
+                         if (!done) return;
+                         if (result != ErrorCode::Ok) return done(result, std::nullopt);
+                         // a.<attribute>: only that one value is parsed.
+                         const json::Span value = json::member(entity, json::member(entity, "a"), attribute);
+                         if (!value.found()) return done(ErrorCode::Ok, std::nullopt);
+                         JsonDocument doc;
+                         const std::string_view element = value.in(entity);
+                         if (deserializeJson(doc, element.data(), element.size())) {
+                             return done(ErrorCode::AdapterFailed, std::nullopt);
+                         }
+                         done(ErrorCode::Ok, serviceValue(doc.as<JsonVariantConst>()));
+                     });
 }
 
 // ---- cross-task mailboxes --------------------------------------------------

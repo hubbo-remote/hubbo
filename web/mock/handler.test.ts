@@ -3,7 +3,7 @@
 // against the spec.
 import { gunzipSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
-import type { Activity, ApiErrorBody, Capabilities, DiscoverStatus, ExecuteResult, EntityDetailsStatus, FirmwareStatus, Session, SmartButtons, SmartButtonsInput, Status, TransitionResult } from '../src/api/types.ts'
+import type { Activity, ActivityRuns, ApiErrorBody, Capabilities, DiscoverStatus, ExecuteResult, EntityDetailsStatus, FirmwareStatus, Session, SmartButtons, SmartButtonsInput, Status, TransitionResult } from '../src/api/types.ts'
 import { fixture, fixtureBytes } from './fixtures.ts'
 import { GUIDE_PATH } from './docs.ts'
 import { buildFirmwareImage } from './firmware.ts'
@@ -887,5 +887,66 @@ describe('smart buttons', () => {
     expect((await get(m)).slots.light_1).toBe(null)
     expect((await m.handle(req('POST', '/admin/restore', backup))).status).toBe(200)
     expect((await get(m)).slots.light_1).toBe('dev_family_room_lights')
+  })
+})
+
+describe('activity runs', () => {
+  const runsOf = async (m: ReturnType<typeof createMock>) => ((await m.handle(req('GET', '/activity-runs'))).body as ActivityRuns).runs
+  const lastRun = async (m: ReturnType<typeof createMock>) => ((await m.handle(req('GET', '/status'))).body as Status).last_run
+
+  it('starts with the fixture’s runs, and /status flags the newest', async () => {
+    const m = createMock()
+    const ago = (r: ActivityRuns) => r.runs.map((x) => ({ ...x, started_ago_ms: 0 }))
+    expect(ago({ runs: await runsOf(m) })).toEqual(ago(fixture<ActivityRuns>('activity_runs/list.json')))
+    expect(await lastRun(m)).toEqual(fixture<Status>('status.json').last_run)
+  })
+
+  it('keeps each startup and shutdown, a stale device’s step failed, and the rest going', async () => {
+    const m = createMock({ discoverDelayMs: 0 })
+    await m.handle(req('POST', '/__mock/ha?remove=media_player.family_room_lg_tv'))
+    await m.handle(req('POST', '/admin/integrations/ha_main/discover'))
+    await m.handle(req('GET', '/admin/integrations/ha_main/discover'))
+    await m.handle(req('POST', '/activities/act_watch_apple_tv/activate'))
+    const [run] = await runsOf(m)
+    expect(run).toMatchObject({ activity_id: 'act_watch_apple_tv', kind: 'startup', outcome: 'completed_with_errors' })
+    expect(run!.steps.map((s) => s.result)).toEqual(['failed', 'ok', 'ok', 'ok', 'ok', 'failed', 'ok'])
+    expect(run!.steps[0]).toMatchObject({ device_id: 'dev_lg_tv', error: 'entity_not_found' })
+    expect(await lastRun(m)).toEqual({ id: 13, activity_id: 'act_watch_apple_tv', kind: 'startup', outcome: 'completed_with_errors', failed_steps: 2 }) // ids count on from the fixture's newest
+
+    await m.handle(req('POST', '/activities/off'))
+    expect((await runsOf(m))[0]).toMatchObject({ activity_id: 'act_watch_apple_tv', kind: 'shutdown' })
+    expect(await runsOf(m)).toHaveLength(5) // the fixture's 3 and these 2; at most 8 are kept
+  })
+
+  it('skips a step HA already shows, records a late reply as no_reply, and neither is a failure (state checks)', async () => {
+    const m = createMock()
+    await m.handle(req('POST', '/__mock/ha?state=media_player.family_room_lg_tv:on&attr=media_player.family_room_sonos:source=TV'))
+    await m.handle(req('POST', '/__mock/ha?slow=media_player.family_room_lg_tv:5000'))
+    await m.handle(req('POST', '/activities/act_watch_apple_tv/activate'))
+    const [run] = await runsOf(m)
+    expect(run!.steps.map((s) => s.result)).toEqual(['skipped', 'skipped', 'ok', 'ok', 'ok', 'no_reply', 'ok'])
+    expect(run!.steps[0]).toMatchObject({ error: 'already_set' })
+    expect(await lastRun(m)).toMatchObject({ outcome: 'completed', failed_steps: 0 })
+
+    // What was sent is now true (power, source), so a second startup skips it; the light's fields aren't known, so it runs.
+    await m.handle(req('POST', '/__mock/ha?slow=none'))
+    await m.handle(req('POST', '/activities/act_watch_apple_tv/activate'))
+    expect((await runsOf(m))[0]!.steps.map((s) => s.result)).toEqual(['skipped', 'skipped', 'ok', 'ok', 'ok', 'skipped', 'ok'])
+
+    // Off turns the TV off, and an off player has no source: the next startup powers it on and sets the input again.
+    await m.handle(req('POST', '/activities/off'))
+    await m.handle(req('POST', '/activities/act_watch_apple_tv/activate'))
+    expect((await runsOf(m))[0]!.steps.map((s) => s.result)).toEqual(['ok', 'skipped', 'ok', 'ok', 'ok', 'ok', 'ok'])
+  })
+
+  it('never checks a Home Assistant action (call_service), like the hub', async () => {
+    const m = createMock()
+    await m.handle(req('POST', '/__mock/ha?state=media_player.family_room_lg_tv:on&attr=media_player.family_room_lg_tv:button=%22INFO%22'))
+    const a = (await (await m.handle(req('GET', '/activities/act_watch_apple_tv'))).body) as Activity
+    const call = { integration_id: 'ha_main', device_id: 'dev_lg_tv', command_id: 'call_service', params: {}, call: { service: 'webostv.button', data: { button: 'INFO' } } }
+    const put = await m.handle(req('PUT', '/activities/act_watch_apple_tv', { ...a, startup: [call] }))
+    expect(put.status, JSON.stringify(put.body)).toBe(200)
+    await m.handle(req('POST', '/activities/act_watch_apple_tv/activate'))
+    expect((await runsOf(m))[0]!.steps.map((s) => s.result)).toEqual(['ok'])
   })
 })

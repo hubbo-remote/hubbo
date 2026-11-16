@@ -10,8 +10,15 @@ const char *execStatusName(ExecStatus status) {
         case ExecStatus::Pending: return "pending";
         case ExecStatus::Failed: return "failed";
         case ExecStatus::Timeout: return "timeout";
+        case ExecStatus::Skipped: return "skipped";
+        case ExecStatus::NoReply: return "no_reply";
     }
     return "failed";
+}
+
+ErrorCode failureCode(const ExecResult &result) {
+    if (result.status == ExecStatus::Timeout) return ErrorCode::AdapterTimeout;
+    return result.error == ErrorCode::Ok ? ErrorCode::AdapterFailed : result.error;
 }
 
 ErrorCode AdapterSet::add(IntegrationAdapter &adapter) {

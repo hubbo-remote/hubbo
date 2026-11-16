@@ -5,16 +5,6 @@
 
 namespace hubbo {
 
-namespace {
-
-// The error a non-accepted result stands for.
-ErrorCode failureCode(const ExecResult &result) {
-    if (result.status == ExecStatus::Timeout) return ErrorCode::AdapterTimeout;
-    return result.error == ErrorCode::Ok ? ErrorCode::AdapterFailed : result.error;
-}
-
-}  // namespace
-
 const char *sequenceOriginName(SequenceOrigin origin) {
     switch (origin) {
         case SequenceOrigin::Startup: return "startup";
@@ -30,11 +20,11 @@ const char *sequenceOriginName(SequenceOrigin origin) {
 const char *sequenceOutcomeName(SequenceOutcome outcome) {
     switch (outcome) {
         case SequenceOutcome::Completed: return "completed";
-        case SequenceOutcome::Failed: return "failed";
+        case SequenceOutcome::CompletedWithErrors: return "completed_with_errors";
         case SequenceOutcome::Cancelled: return "cancelled";
         case SequenceOutcome::Rejected: return "rejected";
     }
-    return "failed";
+    return "completed";
 }
 
 Executor::Executor(AdapterSet &adapters, uint32_t actionTimeoutMs)
@@ -70,10 +60,7 @@ ErrorCode Executor::enqueue(SequenceInfo info, const CompiledConfig &config, Act
     if (span.count == 0) {
         return ErrorCode::Ok;
     }
-    if (span.count > limits::kMaxSequenceLength ||
-        static_cast<size_t>(span.offset) + span.count > config.actions.size()) {
-        return ErrorCode::TooManyActions;
-    }
+    if (!config.fits(span)) return ErrorCode::TooManyActions;
     Sequence *seq = reserve(info, span.count, nowMs);
     if (sequenceId != nullptr) *sequenceId = info.id;
     if (seq == nullptr) return ErrorCode::QueueFull;
@@ -87,11 +74,9 @@ ErrorCode Executor::enqueue(SequenceInfo info, const CompiledConfig &config, Act
         node.target.clear();
         node.providerRef.clear();
         node.next = kNil;
-        const bool device = node.action.op == ActionOp::Adapter || node.action.op == ActionOp::Unavailable;
-        if (device && node.action.deviceIndex < config.devices.size()) {
-            const CompiledDevice &device = config.devices[node.action.deviceIndex];
-            node.target.assign(device.id.view());
-            node.providerRef.assign(device.providerRef.view());
+        if (const CompiledDevice *device = config.deviceOf(node.action)) {
+            node.target = device->id;
+            node.providerRef = device->providerRef;
         } else if (node.action.op == ActionOp::Activate) {
             const auto target = static_cast<size_t>(node.action.params[0].integer);
             if (target < config.activities.size()) {
@@ -133,8 +118,9 @@ void Executor::pump(uint32_t nowMs) {
         if (f.used && timeReached(nowMs, f.deadlineMs)) {
             f.used = false;
             cancelPending(f.pending, f.ticket, nowMs);
-            stats_.timeouts++;
-            finish(f.info, SequenceOutcome::Failed, ErrorCode::AdapterTimeout, f.index, nowMs);
+            reportCompletion(f.info, f.index, f.pending, ExecResult::timeout(), nowMs);
+            stepFailed(f.errors, f.index, ExecResult::timeout());
+            finishDone(f.info, f.errors, nowMs);
         }
     }
 }
@@ -144,7 +130,7 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
         Sequence &seq = lane.front();
 
         if (seq.info.generation != generation_) {
-            finishFront(lane, SequenceOutcome::Cancelled, ErrorCode::Cancelled, seq.nextIndex, nowMs);
+            cancelFront(lane, nowMs);
             continue;
         }
         if (seq.state == State::Waiting) {
@@ -152,14 +138,17 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
             seq.state = State::Ready;
         } else if (seq.state == State::Pending) {
             if (!timeReached(nowMs, seq.untilMs)) return;
-            stats_.timeouts++;
-            finishFront(lane, SequenceOutcome::Failed, ErrorCode::AdapterTimeout,
-                        static_cast<uint8_t>(seq.nextIndex - 1), nowMs);
-            continue;
+            // Timed out: stop it, and go on with the next step.
+            const auto index = static_cast<uint8_t>(seq.nextIndex - 1);
+            cancelPending(lane.pending, seq.ticket, nowMs);
+            reportCompletion(seq.info, index, lane.pending, ExecResult::timeout(), nowMs);
+            stepFailed(seq.errors, index, ExecResult::timeout());
+            seq.state = State::Ready;
+            seq.ticket = 0;
         }
 
         if (seq.head == kNil) {
-            finishFront(lane, SequenceOutcome::Completed, ErrorCode::Ok, seq.nextIndex, nowMs);
+            doneFront(lane, nowMs);
             continue;
         }
 
@@ -177,14 +166,18 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
         const bool last = seq.head == kNil;
         const CompiledAction &action = node.action;
 
-        if (action.op == ActionOp::Unavailable) {
+        IntegrationAdapter *adapter = adapters_.at(action.adapterIndex);
+        // A step that can't reach its adapter is a failed step like any other.
+        const bool unreachable = action.op == ActionOp::Adapter && (adapter == nullptr || action.command == nullptr);
+        if (action.op == ActionOp::Unavailable || unreachable) {
+            const ExecResult result =
+                ExecResult::failed(unreachable ? ErrorCode::Internal : ErrorCode::IntegrationDisabled);
             if (observer_ != nullptr) {
-                const IntegrationAdapter *adapter = adapters_.at(action.adapterIndex);
                 observer_->onActionDispatched({seq.info, index, action,
                                                adapter != nullptr ? adapter->integrationId() : "?",
-                                               node.target.c_str(), node.providerRef.c_str(),
-                                               ExecResult::failed(ErrorCode::IntegrationDisabled), nowMs});
+                                               node.target.c_str(), node.providerRef.c_str(), result, nowMs});
             }
+            stepFailed(seq.errors, index, result);
             continue;
         }
         if (action.op != ActionOp::Adapter) {
@@ -203,15 +196,10 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
             // Activate/Off: always last in its sequence (compiler rule).
             transition_ = action.op == ActionOp::Activate ? TransitionRequest::activate(node.target.view())
                                                           : TransitionRequest::off();
-            finishFront(lane, SequenceOutcome::Completed, ErrorCode::Ok, seq.nextIndex, nowMs);
+            doneFront(lane, nowMs);
             return;
         }
 
-        IntegrationAdapter *adapter = adapters_.at(action.adapterIndex);
-        if (adapter == nullptr || action.command == nullptr) {
-            finishFront(lane, SequenceOutcome::Failed, ErrorCode::Internal, index, nowMs);
-            continue;
-        }
         const Ticket ticket = nextTicket();
         const ExecRequest request{action.command,
                                   action.commandIndex,
@@ -222,17 +210,17 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
                                   ticket,
                                   nowMs,
                                   /*answerAtStart=*/seq.info.origin == SequenceOrigin::Api,
-                                  action.call};
+                                  action.call,
+                                  /*checkState=*/seq.info.lane == Lane::Transition};
         const ExecResult result = adapter->execute(request);
         if (observer_ != nullptr) {
             observer_->onActionDispatched({seq.info, index, action, adapter->integrationId(), node.target.c_str(),
                                            node.providerRef.c_str(), result, nowMs});
         }
 
-        if (result.status == ExecStatus::Accepted) continue;
+        if (succeeded(result.status)) continue;
         if (result.status != ExecStatus::Pending) {
-            if (result.status == ExecStatus::Timeout) stats_.timeouts++;
-            finishFront(lane, SequenceOutcome::Failed, failureCode(result), index, nowMs);
+            stepFailed(seq.errors, index, result);
             continue;
         }
 
@@ -245,6 +233,7 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
                 f->used = true;
                 f->ticket = ticket;
                 f->info = seq.info;
+                f->errors = seq.errors;
                 f->index = index;
                 f->deadlineMs = nowMs + timeoutMs;
                 f->pending = pending;
@@ -263,32 +252,24 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
 
 void Executor::complete(Ticket ticket, ExecResult result, uint32_t nowMs) {
     if (ticket == 0 || result.status == ExecStatus::Pending) return;
-    const bool ok = result.status == ExecStatus::Accepted;
 
     for (auto &lane : lanes_) {
         if (lane.count == 0) continue;
         Sequence &seq = lane.front();
         if (seq.state != State::Pending || seq.ticket != ticket) continue;
-        reportCompletion(seq.info, static_cast<uint8_t>(seq.nextIndex - 1), lane.pending, result, nowMs);
-        seq.state = State::Ready;  // done: nothing left to cancel
+        const auto index = static_cast<uint8_t>(seq.nextIndex - 1);
+        reportCompletion(seq.info, index, lane.pending, result, nowMs);
+        seq.state = State::Ready;  // done: nothing left to cancel; the next pump goes on
         seq.ticket = 0;
-        if (!ok) {
-            if (result.status == ExecStatus::Timeout) stats_.timeouts++;
-            finishFront(lane, SequenceOutcome::Failed, failureCode(result), static_cast<uint8_t>(seq.nextIndex - 1),
-                        nowMs);
-        }
+        stepFailed(seq.errors, index, result);
         return;
     }
     for (auto &f : inFlight_) {
         if (!f.used || f.ticket != ticket) continue;
         f.used = false;
         reportCompletion(f.info, f.index, f.pending, result, nowMs);
-        if (ok) {
-            finish(f.info, SequenceOutcome::Completed, ErrorCode::Ok, f.info.actionCount, nowMs);
-        } else {
-            if (result.status == ExecStatus::Timeout) stats_.timeouts++;
-            finish(f.info, SequenceOutcome::Failed, failureCode(result), f.index, nowMs);
-        }
+        stepFailed(f.errors, f.index, result);
+        finishDone(f.info, f.errors, nowMs);
         return;
     }
     // Unknown or stale ticket: ignored by design.
@@ -310,7 +291,7 @@ void Executor::cancelAll(uint32_t newGeneration, uint32_t nowMs) {
     transition_ = {};
     for (auto &lane : lanes_) {
         while (lane.count > 0) {
-            finishFront(lane, SequenceOutcome::Cancelled, ErrorCode::Cancelled, lane.front().nextIndex, nowMs);
+            cancelFront(lane, nowMs);
         }
     }
     for (auto &f : inFlight_) {
@@ -353,14 +334,34 @@ size_t Executor::inFlight() const {
     return n;
 }
 
-void Executor::finishFront(LaneQueue &lane, SequenceOutcome outcome, ErrorCode error, uint8_t index,
-                           uint32_t nowMs) {
+void Executor::cancelFront(LaneQueue &lane, uint32_t nowMs) {
     const Sequence &seq = lane.front();
-    // Cancelled, or past its deadline, while its adapter still works on it.
-    if (seq.state == State::Pending) cancelPending(lane.pending, seq.ticket, nowMs);
+    if (seq.state == State::Pending) cancelPending(lane.pending, seq.ticket, nowMs);  // its adapter still works on it
     const SequenceInfo info = seq.info;  // popFront() resets the slot
+    const uint8_t next = seq.nextIndex;
     popFront(lane);
-    finish(info, outcome, error, index, nowMs);
+    finish(info, SequenceOutcome::Cancelled, ErrorCode::Cancelled, next, nowMs);
+}
+
+void Executor::doneFront(LaneQueue &lane, uint32_t nowMs) {
+    const SequenceInfo info = lane.front().info;  // popFront() resets the slot
+    const FirstError errors = lane.front().errors;
+    popFront(lane);
+    finishDone(info, errors, nowMs);
+}
+
+void Executor::finishDone(const SequenceInfo &info, const FirstError &errors, uint32_t nowMs) {
+    if (errors.code == ErrorCode::Ok) {
+        finish(info, SequenceOutcome::Completed, ErrorCode::Ok, info.actionCount, nowMs);
+    } else {
+        finish(info, SequenceOutcome::CompletedWithErrors, errors.code, errors.index, nowMs);
+    }
+}
+
+void Executor::stepFailed(FirstError &errors, uint8_t index, const ExecResult &result) {
+    if (succeeded(result.status)) return;
+    if (result.status == ExecStatus::Timeout) stats_.timeouts++;
+    errors.note(index, failureCode(result));
 }
 
 void Executor::popFront(LaneQueue &lane) {
@@ -380,7 +381,7 @@ void Executor::finish(const SequenceInfo &info, SequenceOutcome outcome, ErrorCo
                       uint32_t nowMs) {
     switch (outcome) {
         case SequenceOutcome::Completed: stats_.completed++; break;
-        case SequenceOutcome::Failed: stats_.failed++; break;
+        case SequenceOutcome::CompletedWithErrors: stats_.withErrors++; break;
         case SequenceOutcome::Cancelled: stats_.cancelled++; break;
         case SequenceOutcome::Rejected: stats_.rejected++; break;
     }

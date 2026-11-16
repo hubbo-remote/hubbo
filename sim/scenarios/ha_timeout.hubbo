@@ -1,12 +1,17 @@
-# Home Assistant reports a timeout: the sequence stops there.
+# Home Assistant reports a timeout: the step is recorded and the run goes on.
 ha fail media_player.turn_on adapter_timeout
 activate act_watch_apple_tv
 expect ha_main dev_lg_tv media_player.turn_on -> timeout
-expect_event startup act_watch_apple_tv failed adapter_timeout@0
+expect ha_main dev_denon media_player.turn_on
+expect system - wait duration_ms=1000
+advance 1000
+expect ha_main dev_lg_tv media_player.select_source source="HDMI 1"
+expect ha_main dev_denon media_player.select_source source="Media Player"
+expect_event startup act_watch_apple_tv completed_with_errors adapter_timeout@0
 expect_none
 
-# A result that never comes back times out after 5 s, and the late result
-# is ignored.
+# A result that never comes back times out after 5 s, the next step starts
+# then, and the late result is ignored.
 reset
 ha latency 6000
 activate act_watch_apple_tv
@@ -14,6 +19,7 @@ expect ha_main dev_lg_tv media_player.turn_on -> pending
 advance 4999
 expect_none
 advance 1
-expect_event startup act_watch_apple_tv failed adapter_timeout@0
+expect ha_main dev_lg_tv media_player.turn_on done -> timeout adapter_timeout
+expect ha_main dev_denon media_player.turn_on -> pending
 advance 2000
 expect_none

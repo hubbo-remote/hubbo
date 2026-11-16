@@ -1,4 +1,4 @@
-import { Clock, Copy, GripVertical, Pencil, Plus, Trash2 } from 'lucide-react'
+import { AlertTriangle, Clock, Copy, GripVertical, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import type { Action, ParamSpec, ValidationIssue } from '@/api/types'
 import { Button } from '@/components/ui/button'
@@ -13,7 +13,7 @@ import { startAction } from './start'
 import { commandLabel, deviceName, paramSummary } from './describe'
 
 /** Ordered list of actions (startup/shutdown) with add, edit, duplicate, wait, and reorder (drag, or Alt+↑/↓). */
-export function SequenceEditor({ label, actions, onChange, catalog, issues, pathPrefix }: { label: string; actions: Action[]; onChange: (a: Action[]) => void; catalog: Catalog; issues: ValidationIssue[]; pathPrefix: string }) {
+export function SequenceEditor({ label, actions, onChange, catalog, issues, pathPrefix, lastRun }: { label: string; actions: Action[]; onChange: (a: Action[]) => void; catalog: Catalog; issues: ValidationIssue[]; pathPrefix: string; /** Why steps failed the last time this ran, by index. */ lastRun?: ReadonlyMap<number, string> }) {
   const [editing, setEditing] = useState<{ index: number; action: Action | null } | null>(null)
   const [timeOk, setTimeOk] = useState(true) // the time field's say, while one is open
   // `slot`: the gap a drop inserts into (0 = before the first step, n = after the last).
@@ -62,6 +62,7 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
         <ol ref={list} className="grid gap-2" aria-label={`${label} steps`}>
           {actions.map((a, i) => {
             const errs = issueFor(i)
+            const failed = lastRun?.get(i)
             const wait = isWait(a)
             return (
               <li
@@ -71,7 +72,7 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
                 onKeyDown={(e) => onStepKey(e, i)}
                 className={cn(
                   'group relative flex items-center gap-2 rounded-lg border bg-card py-2 pr-2 pl-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  errs.length && 'border-destructive/60 bg-destructive/5',
+                  errs.length ? 'border-destructive/60 bg-destructive/5' : failed && 'border-warning/70',
                   drag?.from === i && 'opacity-50',
                 )}
               >
@@ -122,6 +123,12 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
                       {e.message}
                     </p>
                   ))}
+                  {failed && (
+                    <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <AlertTriangle className="size-3 shrink-0 text-warning" aria-hidden />
+                      Failed last time: {failed}
+                    </p>
+                  )}
                 </div>
                 <div className="flex shrink-0 items-center">
                   <Button variant="ghost" size="icon" className="size-8" aria-label={`Edit step ${i + 1}`} onClick={() => setEditing({ index: i, action: a })}>

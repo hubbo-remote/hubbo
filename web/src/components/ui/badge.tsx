@@ -8,9 +8,10 @@ const badgeVariants = cva('inline-flex items-center gap-1 rounded-md border px-2
       default: 'border-transparent bg-primary text-primary-foreground',
       secondary: 'border-transparent bg-secondary text-secondary-foreground',
       outline: 'text-foreground',
-      success: 'border-transparent bg-success/15 text-success',
+      // On their own tint the base colours fall short of 4.5:1 in light mode, so the text is darkened there (as warning's).
+      success: 'border-transparent bg-success/15 text-[color-mix(in_oklch,var(--success),black_20%)] dark:text-success',
       warning: 'border-transparent bg-warning/20 text-[color-mix(in_oklch,var(--warning),black_35%)] dark:text-warning',
-      destructive: 'border-transparent bg-destructive/15 text-destructive',
+      destructive: 'border-transparent bg-destructive/15 text-[color-mix(in_oklch,var(--destructive),black_30%)] dark:text-destructive',
     },
   },
   defaultVariants: { variant: 'default' },

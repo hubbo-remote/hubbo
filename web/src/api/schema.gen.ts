@@ -85,6 +85,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/activity-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The last few activity runs, step by step
+         * @description The hub keeps the last 8 runs of an activity's startup (activate) or
+         *     shutdown (off), newest first, in RAM: a restart clears them. Button
+         *     presses aren't kept. Failed steps don't stop a run
+         *     (`ActionSequence`); switching activity mid-run cancels the rest
+         *     (`cancelled` steps). `GET /status` `last_run` sums up the newest.
+         */
+        get: operations["listActivityRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/remote/status": {
         parameters: {
             query?: never;
@@ -765,7 +789,8 @@ export interface paths {
          *     earlier HA settings); `422` (detail at `/provider/entity_id`)
          *     `unknown_device` if Hubbo offers no commands for it, `duplicate_id`
          *     if a device already uses the entity (also one HA renamed: the
-         *     details match it by `unique_id`; re-link that device instead); `503
+         *     details match it by `unique_id` within its domain and platform;
+         *     re-link that device instead); `503
          *     integration_unavailable` on a hub without an HA client. An
          *     entity that HA later renames or removes shows as `availability:
          *     stale` once a discovery runs without it; its commands and actions
@@ -1389,6 +1414,8 @@ export interface components {
              *     was pressed last. `light_1` after a reboot.
              */
             selected_slot: components["schemas"]["SmartSlotId"];
+            /** @description The newest activity run (`GET /activity-runs`), or null if none since the hub started. */
+            last_run: components["schemas"]["LastActivityRun"] | null;
             network: {
                 /** @enum {string} */
                 link: "up" | "down";
@@ -1406,6 +1433,75 @@ export interface components {
                 detail?: string;
             }[];
             diagnostics: components["schemas"]["Diagnostics"];
+        };
+        /**
+         * @description `startup` (activate) or `shutdown` (off).
+         * @enum {string}
+         */
+        ActivityRunKind: "startup" | "shutdown";
+        /**
+         * @description `running`; `completed`: every step ok, skipped or no_reply;
+         *     `completed_with_errors`: it reached the end and one or more steps
+         *     failed or timed out;
+         *     `cancelled`: a switch of activity (or off) stopped it; `rejected`: it
+         *     couldn't be queued.
+         * @enum {string}
+         */
+        ActivityRunOutcome: "running" | "completed" | "completed_with_errors" | "cancelled" | "rejected";
+        LastActivityRun: {
+            /** @description The run's `id` in `GET /activity-runs`. */
+            id: number;
+            activity_id: components["schemas"]["ActivityId"];
+            kind: components["schemas"]["ActivityRunKind"];
+            outcome: components["schemas"]["ActivityRunOutcome"];
+            /** @description Steps that failed or timed out. */
+            failed_steps: number;
+        };
+        ActivityRunStep: {
+            /** @description The action's position in the sequence, from 0. */
+            index: number;
+            /** @description Null for a system step (`wait`, `activate`, `off`). */
+            device_id: components["schemas"]["NullableDeviceId"];
+            command_id: components["schemas"]["CommandId"];
+            /**
+             * @description `ok`; `skipped`: Home Assistant already showed what the step sets,
+             *     so nothing was sent; `no_reply`: sent,
+             *     and HA didn't answer within 1 s (the device may well have acted;
+             *     not a failure); `failed`; `timed_out`; `cancelled`; `pending`
+             *     while the run hasn't reached it.
+             * @enum {string}
+             */
+            result: "ok" | "skipped" | "no_reply" | "failed" | "timed_out" | "cancelled" | "pending";
+            /**
+             * @description Why it failed or timed out, as an error code (`adapter_timeout`,
+             *     `entity_not_found`, ...). A cancelled step carries the run's
+             *     reason (`cancelled`, or `queue_full` for a rejected run). A
+             *     skipped step has `already_set`. Null when ok, no_reply or
+             *     pending.
+             */
+            error: string | null;
+            /** @description Null if it never started. */
+            duration_ms: number | null;
+        };
+        ActivityRun: {
+            /**
+             * @description The run's number, counting up from 1 since the hub started (a
+             *     restart starts again). Stable while the run is listed.
+             */
+            id: number;
+            activity_id: components["schemas"]["ActivityId"];
+            kind: components["schemas"]["ActivityRunKind"];
+            /** @description How long ago it started. */
+            started_ago_ms: number;
+            /** @description Start to the last step's result; null while running. */
+            duration_ms: number | null;
+            outcome: components["schemas"]["ActivityRunOutcome"];
+            /** @description One per action, in order. */
+            steps: components["schemas"]["ActivityRunStep"][];
+        };
+        ActivityRuns: {
+            /** @description Newest first, at most 8. */
+            runs: components["schemas"]["ActivityRun"][];
         };
         LatencyStats: {
             count: number;
@@ -1593,6 +1689,11 @@ export interface components {
             params: components["schemas"]["ActionParams"];
             call?: components["schemas"]["HaServiceCall"];
         };
+        /**
+         * @description Run in order. A step that fails or times out is recorded
+         *     (`GET /activity-runs`) and the next one starts; it never stops the
+         *     sequence.
+         */
         ActionSequence: components["schemas"]["Action"][];
         /** @description Trigger → actions. Absent triggers are unbound (no-op). */
         Bindings: {
@@ -2685,6 +2786,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Status"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listActivityRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The runs, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityRuns"];
                 };
             };
             401: components["responses"]["Unauthenticated"];

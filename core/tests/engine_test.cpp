@@ -296,7 +296,8 @@ TEST_F(EngineTest, AnActivityPassThroughMasksTheGlobalTap) {
     EXPECT_STREQ(hub.engine().activeActivityId(), "act_watch_apple_tv");
 }
 
-// Review high #3: the up sequence fails before its own release.
+// Review high #3: a step of the up sequence fails before its own release,
+// which still runs (a failed step never stops a sequence).
 TEST_F(EngineTest, AHoldIsReleasedWhenItsUpSequenceFailsFirst) {
     ConfigSpec cfg = fixtureConfig();
     unbind(cfg.activities[0], "play");
@@ -316,7 +317,7 @@ TEST_F(EngineTest, AHoldIsReleasedWhenItsUpSequenceFailsFirst) {
     hub.advance(100);
     EXPECT_EQ(hub.ble().heldKeyboardKeys("dev_apple_tv"), 0u);
     EXPECT_EQ(hub.engine().openHolds(), 0u);
-    EXPECT_EQ(hub.engine().stats().forcedReleases, forced + 1);  // the ledger, not the binding
+    EXPECT_EQ(hub.engine().stats().forcedReleases, forced);  // the binding's own key_up
     EXPECT_EQ(hub.bleHosts().reports().back(), kNoKeys);
 }
 
@@ -533,13 +534,16 @@ TEST_F(EngineTest, ConfigSwapDuringAStartupLetsItFinishFromItsCopy) {
     EXPECT_TRUE(anyContains(take(), "source=\"HDMI 1\""));
 }
 
-TEST_F(EngineTest, StartupFailureStopsTheSequenceAndIsReported) {
+TEST_F(EngineTest, AStartupFailureIsReportedAndTheStartupGoesOn) {
     hub.homeAssistant().failNext("media_player.turn_on", ErrorCode::AdapterFailed);
     hub.activate("act_watch_apple_tv");
     hub.advance(2000);
-    EXPECT_EQ(take(), (Lines{"ha_main dev_lg_tv media_player.turn_on"}));
+    const Lines lines = take();
+    ASSERT_FALSE(lines.empty());
+    EXPECT_EQ(lines.front(), "ha_main dev_lg_tv media_player.turn_on");  // failed
+    EXPECT_TRUE(anyContains(lines, "source=\"Media Player\""));      // the last step still ran
     const std::string &last = hub.events().back().text;
-    EXPECT_EQ(last, "startup act_watch_apple_tv failed adapter_failed@0");
+    EXPECT_EQ(last, "startup act_watch_apple_tv completed_with_errors adapter_failed@0");
     EXPECT_STREQ(hub.engine().activeActivityId(), "act_watch_apple_tv");  // still selected
 }
 
@@ -749,14 +753,16 @@ constexpr ParamSpec kKeyParam[] = {ParamSpec::integer("k", 0, 100)};
 constexpr CommandSpec kAsyncCommands[] = {
     {"hold", kKeyParam, 1, CommandEffect::Hold, "let_go"},
     {"let_go", kKeyParam, 1},
+    {"nope", nullptr, 0},  // fails at once
 };
 
 // Holds synchronously; releases asynchronously (Pending, delivered by poll()).
 struct AsyncHoldAdapter : IntegrationAdapter {
     const char *integrationId() const override { return "async"; }
-    CommandCatalog commandsFor(const DeviceSpec &) const override { return {kAsyncCommands, 2}; }
+    CommandCatalog commandsFor(const DeviceSpec &) const override { return {kAsyncCommands, 3}; }
     ExecResult execute(const ExecRequest &r) override {
         calls.push_back(std::string(r.command->id) + (r.ticket == 0 ? " direct" : ""));
+        if (std::string_view(r.command->id) == "nope") return ExecResult::failed(ErrorCode::AdapterFailed);
         if (std::string_view(r.command->id) == "hold" || r.ticket == 0) return ExecResult::accepted();
         pending.push_back(r.ticket);
         return ExecResult::pending();
@@ -783,7 +789,12 @@ protected:
         cfg.integrations = {integration("async", "async", "Async")};
         cfg.devices = {device("dev", "Dev", "async", "other", {"async", "ref.dev", ""})};
         cfg.globalBindings = {sim::bind("play:down", {action("async", "dev", "hold", {param("k", 5)})}),
-                              sim::bind("play:up", {action("async", "dev", "let_go", {param("k", 5)})})};
+                              sim::bind("play:up", {action("async", "dev", "let_go", {param("k", 5)})}),
+                              sim::bind("select:down", {action("async", "dev", "hold", {param("k", 7)})}),
+                              // A step fails before the release: the release
+                              // still went.
+                              sim::bind("select:up", {action("async", "dev", "nope", {}),
+                                                      action("async", "dev", "let_go", {param("k", 7)})})};
         ValidationReport report;
         std::unique_ptr<CompiledConfig> compiled = compileConfig(cfg, adapters, &report);
         EXPECT_TRUE(compiled) << (report.ok() ? "" : report.issues()[0].path);
@@ -816,6 +827,22 @@ TEST_F(AsyncReleaseTest, ACompletedReleaseClosesTheHold) {
     EXPECT_EQ(engine.openHolds(), 0u);
     EXPECT_EQ(adapter.releaseAlls, 0);
     EXPECT_EQ(adapter.calls, (std::vector<std::string>{"hold", "let_go"}));  // nothing forced
+}
+
+TEST_F(AsyncReleaseTest, AReleaseIsJudgedByItsOwnResultNotAnEarlierStep) {
+    engine.onRemoteEvent({Button::Select, remote::EventKind::Down, 1});
+    engine.poll(2);
+    engine.onRemoteEvent({Button::Select, remote::EventKind::Up, 10});
+    engine.poll(11);
+    ASSERT_EQ(adapter.pending.size(), 1u);
+    EXPECT_EQ(engine.openHolds(), 1u);
+    adapter.deliver = true;
+    const uint32_t forced = engine.stats().forcedReleases;
+    engine.poll(20);
+    EXPECT_EQ(engine.openHolds(), 0u);
+    EXPECT_EQ(adapter.releaseAlls, 0);  // the release went: nothing forced
+    EXPECT_EQ(engine.stats().forcedReleases, forced);
+    EXPECT_EQ(adapter.calls, (std::vector<std::string>{"hold", "nope", "let_go"}));
 }
 
 TEST_F(AsyncReleaseTest, AReleaseThatFailsLaterFallsBackToReleaseAll) {

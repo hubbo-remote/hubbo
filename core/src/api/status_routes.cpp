@@ -1,6 +1,9 @@
-// /status and /remote/*.
+// /status, /activity-runs and /remote/*.
+
+#include <memory>
 
 #include "hubbo/config/service.h"
+#include "hubbo/engine/run_history.h"
 #include "hubbo/remote/button.h"
 #include "hubbo/remote/input.h"
 #include "routes.h"
@@ -37,6 +40,57 @@ void putRemote(JsonObject r, const RuntimeSnapshot::Remote &remote) {
     counters["unknown_code"] = remote.unknownCodes;
 }
 
+// The runs, heap-allocated (about 14 KB on the board: never on the httpd stack). A
+// runtime without a history has none.
+std::unique_ptr<ActivityRuns> readRuns(const ApiContext &ctx) {
+    auto runs = std::make_unique<ActivityRuns>();
+    if (!ctx.runtime.activityRuns(runs.get())) runs->count = 0;
+    return runs;
+}
+
+void putNullableMs(JsonObject out, const char *key, bool present, uint32_t ms) {
+    if (present) {
+        out[key] = ms;
+    } else {
+        out[key] = nullptr;
+    }
+}
+
+void putRun(JsonObject out, const ActivityRun &run, uint32_t nowMs) {
+    out["id"] = run.id;
+    out["activity_id"] = run.activityId.c_str();
+    out["kind"] = sequenceOriginName(run.kind);
+    out["outcome"] = runOutcomeName(run.outcome);
+    out["started_ago_ms"] = static_cast<uint32_t>(nowMs - run.startedMs);  // wraps safely
+    putNullableMs(out, "duration_ms", run.outcome != RunOutcome::Running, run.durationMs);
+    JsonArray steps = out["steps"].to<JsonArray>();
+    for (size_t i = 0; i < run.stepCount; i++) {
+        const RunStep &step = run.steps[i];
+        JsonObject s = steps.add<JsonObject>();
+        s["index"] = i;
+        putNullableId(s, "device_id", step.deviceId.view());
+        s["command_id"] = step.commandId;
+        s["result"] = stepResultName(step.result);
+        s["error"] = step.error == ErrorCode::Ok ? nullptr : errorCodeName(step.error);
+        putNullableMs(s, "duration_ms", step.hasDuration(), step.durationMs);
+    }
+}
+
+// /status `last_run`: the newest run in brief, or null.
+void putLastRun(JsonObject root, const ApiContext &ctx) {
+    LastRun run;
+    if (!ctx.runtime.lastRun(&run)) {
+        root["last_run"] = nullptr;
+        return;
+    }
+    JsonObject last = root["last_run"].to<JsonObject>();
+    last["id"] = run.id;
+    last["activity_id"] = run.activityId.c_str();
+    last["kind"] = sequenceOriginName(run.kind);
+    last["outcome"] = runOutcomeName(run.outcome);
+    last["failed_steps"] = run.failedSteps;
+}
+
 }  // namespace
 
 void addStatusRoutes(RouteSink &sink, ApiContext &ctx) {
@@ -65,6 +119,14 @@ void addStatusRoutes(RouteSink &sink, ApiContext &ctx) {
         sendJson(out, 200, doc);
     });
 
+    sink.add("/api/v1/activity-runs", auth::Operation::ListActivityRuns, [&ctx](auto &, auto &, auto &out) {
+        const auto runs = readRuns(ctx);
+        JsonDocument doc;
+        JsonArray list = doc["runs"].to<JsonArray>();
+        for (size_t i = 0; i < runs->count; i++) putRun(list.add<JsonObject>(), runs->runs[i], runs->nowMs);
+        sendJson(out, 200, doc);
+    });
+
     sink.add("/api/v1/status", auth::Operation::GetStatus, [&ctx](auto &, auto &, auto &out) {
         const RuntimeSnapshot snap = ctx.runtime.snapshot();
         JsonDocument doc;
@@ -82,6 +144,7 @@ void addStatusRoutes(RouteSink &sink, ApiContext &ctx) {
         doc["auth_state"] = auth::credentialStateName(ctx.credentials.state());
         putNullableId(root, "active_activity_id", snap.activeActivityId);
         root["selected_slot"] = smartSlotName(snap.selectedSlot);
+        putLastRun(root, ctx);
         JsonObject network = doc["network"].to<JsonObject>();
         network["link"] = snap.linkUp ? "up" : "down";
         if (!snap.ip.empty()) network["ip"] = snap.ip;
