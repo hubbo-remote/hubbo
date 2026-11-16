@@ -401,6 +401,35 @@
           "transition": 1
         }
       }
+    ],
+    "guide:down": [
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "press",
+        "params": {
+          "command": "Home"
+        }
+      },
+      {
+        "integration_id": "system",
+        "device_id": null,
+        "command_id": "wait",
+        "params": {
+          "duration_ms": 500
+        }
+      },
+      {
+        "integration_id": "ble",
+        "device_id": "dev_apple_tv",
+        "command_id": "press",
+        "params": {
+          "command": "DirectionDown"
+        }
+      }
     ]
-  }
+  },
+  "macros": [
+    "guide:down"
+  ]
 }

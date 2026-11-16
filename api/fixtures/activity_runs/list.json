@@ -1,9 +1,47 @@
 {
   "runs": [
     {
+      "id": 13,
+      "activity_id": "act_watch_apple_tv",
+      "kind": "macro",
+      "button": "guide",
+      "trigger": "press",
+      "started_ago_ms": 30000,
+      "duration_ms": 585,
+      "outcome": "completed",
+      "steps": [
+        {
+          "index": 0,
+          "device_id": "dev_apple_tv",
+          "command_id": "press",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 45
+        },
+        {
+          "index": 1,
+          "device_id": null,
+          "command_id": "wait",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 500
+        },
+        {
+          "index": 2,
+          "device_id": "dev_apple_tv",
+          "command_id": "press",
+          "result": "ok",
+          "error": null,
+          "duration_ms": 40
+        }
+      ]
+    },
+    {
       "id": 12,
       "activity_id": "act_watch_apple_tv",
       "kind": "startup",
+      "button": null,
+      "trigger": null,
       "started_ago_ms": 120000,
       "duration_ms": 4735,
       "outcome": "completed_with_errors",
@@ -70,6 +108,8 @@
       "id": 11,
       "activity_id": "act_play_xbox",
       "kind": "shutdown",
+      "button": null,
+      "trigger": null,
       "started_ago_ms": 125000,
       "duration_ms": 120,
       "outcome": "completed",
@@ -104,6 +144,8 @@
       "id": 10,
       "activity_id": "act_play_xbox",
       "kind": "startup",
+      "button": null,
+      "trigger": null,
       "started_ago_ms": 3600000,
       "duration_ms": 2150,
       "outcome": "cancelled",

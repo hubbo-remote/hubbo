@@ -165,11 +165,16 @@ paths:
       x-hubbo-role: token
       summary: The last few activity runs, step by step
       description: |
-        The hub keeps the last 8 runs of an activity's startup (activate) or
-        shutdown (off), newest first, in RAM: a restart clears them. Button
-        presses aren't kept. Failed steps don't stop a run
-        (`ActionSequence`); switching activity mid-run cancels the rest
-        (`cancelled` steps). `GET /status` `last_run` sums up the newest.
+        The hub keeps the last 8 runs of an activity's startup (activate),
+        shutdown (off) or a macro (a trigger listed in `macros`), newest
+        first, in RAM: a restart clears them. Macros take at most 5 of the
+        8, so a burst of them doesn't push out the last startup; a running
+        run is never pushed out. Other button presses aren't kept. Failed
+        steps don't stop a run (`ActionSequence`); switching activity
+        mid-run cancels the rest (`cancelled` steps), macros included. A
+        macro refused because too many are waiting (4 macros, or too many
+        macro steps) isn't listed. `GET /status` `last_run` sums up the
+        newest.
       responses:
         '503': {$ref: '#/components/responses/Unavailable'}
         '200':
@@ -720,7 +725,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/GlobalBindings'}
+            schema: {$ref: '#/components/schemas/GlobalBindingsInput'}
       responses:
         '503': {$ref: '#/components/responses/Unavailable'}
         '400': {$ref: '#/components/responses/MalformedJson'}
@@ -736,6 +741,47 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
+
+  /macros/run:
+    post:
+      tags: [activities]
+      operationId: runMacro
+      x-hubbo-role: token
+      x-hubbo-max-body: 32768
+      summary: Try a macro now, as written (saved or not)
+      description: |
+        Queues `actions` as a macro, as if `trigger` had been pressed in
+        `activity_id` (null: a global macro), and answers once it's queued.
+        Nothing is saved. The actions follow a macro's rules (`Macros`):
+        1 to 32, one-shot commands and waits, no `*_down`/`*_up`
+        (`hold_not_allowed`). `trigger` is a `down`, `tap` or `hold` trigger
+        (`invalid_trigger`). `activity_id` must exist (`unknown_activity`);
+        it doesn't have to be active, and the run doesn't switch to it.
+
+        It runs on the macro queue like a pressed macro, and is recorded in
+        `GET /activity-runs` (kind `macro`, its button and trigger) under
+        `run_id`. A switch of activity cancels it. `503 busy` when too many
+        macros are waiting (4, or too many macro steps): nothing was queued,
+        and a retry is safe. Only waits is `sequence_only` at
+        `/actions/0/command_id`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MacroRunRequest'}
+      responses:
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '202':
+          description: Queued
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MacroRunAccepted'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '503': {$ref: '#/components/responses/Unavailable'}
 
   /smart-buttons:
     get:
@@ -1982,7 +2028,7 @@ components:
             `too_long`, `pattern`, `forbidden_param`, `referenced`, `id_mismatch`,
             `weak_password`).
           type: string
-          enum: [required, unknown_field, wrong_type, too_long, pattern, forbidden_param, referenced, id_mismatch, weak_password, hold_not_allowed, unpaired_hold, integration_disabled, invalid_id, invalid_name, invalid_command_id, duplicate_id, unknown_integration, unknown_device, device_required, device_not_allowed, integration_mismatch, unknown_command, unknown_param, duplicate_param, missing_param, invalid_param_type, param_out_of_range, invalid_enum_value, too_many_params, invalid_trigger, duplicate_trigger, unknown_activity, misplaced_transition, too_many_actions, too_many_activities, too_many_devices, capacity_exceeded, unsupported_schema, unknown_profile, unknown_kind, sequence_only, too_deep, template_not_supported]
+          enum: [required, unknown_field, wrong_type, too_long, pattern, forbidden_param, referenced, id_mismatch, weak_password, hold_not_allowed, unpaired_hold, integration_disabled, invalid_id, invalid_name, invalid_command_id, duplicate_id, unknown_integration, unknown_device, device_required, device_not_allowed, integration_mismatch, unknown_command, unknown_param, duplicate_param, missing_param, invalid_param_type, param_out_of_range, invalid_enum_value, too_many_params, invalid_trigger, duplicate_trigger, unknown_activity, misplaced_transition, too_many_actions, too_many_activities, too_many_devices, capacity_exceeded, unsupported_schema, unknown_profile, unknown_kind, sequence_only, too_deep, template_not_supported, macro_required, unbound_macro]
         message:
           type: string
           maxLength: 200
@@ -2127,9 +2173,20 @@ components:
                 maxLength: 120
         diagnostics: {$ref: '#/components/schemas/Diagnostics'}
     ActivityRunKind:
-      description: '`startup` (activate) or `shutdown` (off).'
+      description: '`startup` (activate), `shutdown` (off) or `macro` (a trigger marked as a macro).'
       type: string
-      enum: [startup, shutdown]
+      enum: [startup, shutdown, macro]
+    ActivityRunButton:
+      description: The button that ran a macro; null for startup and shutdown.
+      oneOf:
+        - {$ref: '#/components/schemas/Button'}
+        - {type: 'null'}
+    ActivityRunTrigger:
+      description: |
+        Which of the button's bindings ran the macro (a button can have a
+        Press macro and a Long press macro); null for startup and shutdown.
+      type: [string, 'null']
+      enum: [press, long_press, null]
     ActivityRunOutcome:
       description: |
         `running`; `completed`: every step ok, skipped or no_reply;
@@ -2142,14 +2199,18 @@ components:
     LastActivityRun:
       type: object
       additionalProperties: false
-      required: [id, activity_id, kind, outcome, failed_steps]
+      required: [id, activity_id, kind, button, trigger, outcome, failed_steps]
       properties:
         id:
           description: The run's `id` in `GET /activity-runs`.
           type: integer
           minimum: 1
-        activity_id: {$ref: '#/components/schemas/ActivityId'}
+        activity_id:
+          description: Null only for a macro bound globally (not to an activity).
+          allOf: [{$ref: '#/components/schemas/NullableActivityId'}]
         kind: {$ref: '#/components/schemas/ActivityRunKind'}
+        button: {$ref: '#/components/schemas/ActivityRunButton'}
+        trigger: {$ref: '#/components/schemas/ActivityRunTrigger'}
         outcome: {$ref: '#/components/schemas/ActivityRunOutcome'}
         failed_steps:
           description: Steps that failed or timed out.
@@ -2193,7 +2254,7 @@ components:
     ActivityRun:
       type: object
       additionalProperties: false
-      required: [id, activity_id, kind, started_ago_ms, duration_ms, outcome, steps]
+      required: [id, activity_id, kind, button, trigger, started_ago_ms, duration_ms, outcome, steps]
       properties:
         id:
           description: |
@@ -2201,8 +2262,12 @@ components:
             restart starts again). Stable while the run is listed.
           type: integer
           minimum: 1
-        activity_id: {$ref: '#/components/schemas/ActivityId'}
+        activity_id:
+          description: Null only for a macro bound globally (not to an activity).
+          allOf: [{$ref: '#/components/schemas/NullableActivityId'}]
         kind: {$ref: '#/components/schemas/ActivityRunKind'}
+        button: {$ref: '#/components/schemas/ActivityRunButton'}
+        trigger: {$ref: '#/components/schemas/ActivityRunTrigger'}
         started_ago_ms:
           description: How long ago it started.
           type: integer
@@ -2556,11 +2621,42 @@ components:
       type: object
       maxProperties: 192
       propertyNames: {$ref: '#/components/schemas/Trigger'}
-      additionalProperties:
-        type: array
-        minItems: 1
-        maxItems: 32
-        items: {$ref: '#/components/schemas/Action'}
+      additionalProperties: {$ref: '#/components/schemas/ActionList'}
+    ActionList:
+      description: A binding's or a macro's actions, 1 to 32.
+      type: array
+      minItems: 1
+      maxItems: 32
+      items: {$ref: '#/components/schemas/Action'}
+    Macros:
+      description: |
+        The triggers in `bindings` that are macros: each runs its list as a
+        macro (on the macro queue, recorded in `GET /activity-runs`), at any
+        length, one command included. A trigger with more than one action
+        must be listed here. Only `down`, `tap` and `hold` triggers; each
+        once, and each bound. Absent in a request or backup means none;
+        responses always include it.
+      type: array
+      maxItems: 144
+      uniqueItems: true
+      items: {$ref: '#/components/schemas/Trigger'}
+    MacroRunRequest:
+      type: object
+      additionalProperties: false
+      required: [actions, trigger, activity_id]
+      properties:
+        actions: {$ref: '#/components/schemas/ActionList'}
+        trigger: {$ref: '#/components/schemas/Trigger'}
+        activity_id: {$ref: '#/components/schemas/NullableActivityId'}
+    MacroRunAccepted:
+      type: object
+      additionalProperties: false
+      required: [run_id]
+      properties:
+        run_id:
+          description: The run's `id` in `GET /activity-runs`.
+          type: integer
+          minimum: 1
     ExecuteRequest:
       description: |
         `call` only for `call_service` (a Home Assistant action), and required
@@ -2610,6 +2706,7 @@ components:
         startup: {$ref: '#/components/schemas/ActionSequence'}
         shutdown: {$ref: '#/components/schemas/ActionSequence'}
         bindings: {$ref: '#/components/schemas/Bindings'}
+        macros: {$ref: '#/components/schemas/Macros'}
     ActivityInput:
       description: Body for create.
       allOf: [{$ref: '#/components/schemas/ActivityFields'}]
@@ -2627,7 +2724,7 @@ components:
       unevaluatedProperties: false
     Activity:
       allOf: [{$ref: '#/components/schemas/ActivityFields'}]
-      required: [id, schema_version, revision]
+      required: [id, schema_version, revision, macros]
       properties:
         id: {$ref: '#/components/schemas/ActivityId'}
         schema_version: {type: integer, const: 1}
@@ -2665,14 +2762,21 @@ components:
       required: [bindings]
       properties:
         bindings: {$ref: '#/components/schemas/Bindings'}
+        macros: {$ref: '#/components/schemas/Macros'}
         revision: {$ref: '#/components/schemas/BackupRevision'}
-    GlobalBindings:
+    GlobalBindingsInput:
+      description: Body for replace; `macros` may be left out (none).
       type: object
       additionalProperties: false
       required: [bindings, revision]
       properties:
         bindings: {$ref: '#/components/schemas/Bindings'}
+        macros: {$ref: '#/components/schemas/Macros'}
         revision: {$ref: '#/components/schemas/Revision'}
+    GlobalBindings:
+      allOf: [{$ref: '#/components/schemas/GlobalBindingsInput'}]
+      required: [macros]
+      unevaluatedProperties: false
 
     # ---------- smart buttons ----------
     SmartSlotId:
