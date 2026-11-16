@@ -82,7 +82,7 @@ export function MenuItem({ icon: Icon, destructive, checked, children, ...props 
       role={radio ? 'menuitemradio' : 'menuitem'}
       aria-checked={radio ? checked : undefined}
       className={cn(
-        'flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm outline-none cursor-pointer hover:bg-accent focus-visible:bg-accent disabled:pointer-events-none disabled:opacity-50',
+        'flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm outline-none hover:bg-accent focus-visible:bg-accent disabled:pointer-events-none disabled:opacity-50',
         destructive && 'text-destructive hover:bg-destructive/10 focus-visible:bg-destructive/10',
       )}
       {...props}

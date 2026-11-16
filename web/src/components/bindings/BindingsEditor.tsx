@@ -590,7 +590,7 @@ function BoundList({ bound, selected, onSelect, errorButtons }: { bound: Record<
               onClick={() => onSelect(id)}
               aria-pressed={selected === id}
               className={cn(
-                'inline-flex items-center gap-1.5 rounded-md border bg-card px-2 py-1 text-xs outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring cursor-pointer',
+                'inline-flex items-center gap-1.5 rounded-md border bg-card px-2 py-1 text-xs outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring',
                 selected === id && 'border-[var(--bind)] bg-[var(--bind)]/10',
                 errorButtons.has(id) && 'border-destructive text-destructive',
               )}

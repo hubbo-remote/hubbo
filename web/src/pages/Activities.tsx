@@ -125,7 +125,7 @@ export function Activities() {
                   aria-pressed={on}
                   className={cn(
                     'flex min-h-14 w-full items-center gap-3 rounded-xl border py-3 pr-12 pl-4 text-left shadow-xs transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-60',
-                    on ? 'border-primary bg-primary text-primary-foreground cursor-default' : 'bg-card hover:bg-accent cursor-pointer',
+                    on ? 'border-primary bg-primary text-primary-foreground' : 'bg-card hover:bg-accent',
                   )}
                 >
                   <span className="min-w-0 flex-1 truncate font-semibold">{a.name}</span>

@@ -172,7 +172,7 @@ export const RemoteSvg = memo(function RemoteSvg({ bound = {}, selected = null, 
             onClick={() => onSelect?.(k.id)}
             onFocus={() => setFocusId(k.id)}
             onKeyDown={interactive ? (e) => onKeyDown(e, k.id) : undefined}
-            className={cn('group outline-none', interactive && 'cursor-pointer')}
+            className="group outline-none"
           >
             <title>{global ? `${name}, Global: ${global.text}` : `${name} (${k.id})${ev.length ? ` · ${ev.join(', ')}` : ''}`}</title>
             {/* An invisible minimum hit area: small keys (numbers, colours) stay tappable on a phone. */}

@@ -36,7 +36,7 @@ export function Tabs({ tabs, value, onChange, className, children }: { tabs: Tab
               if (e.key === 'ArrowLeft') move(-1)
             }}
             className={cn(
-              'inline-flex h-7 items-center gap-1.5 rounded-md px-3 text-sm font-medium whitespace-nowrap transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 cursor-pointer',
+              'inline-flex h-7 items-center gap-1.5 rounded-md px-3 text-sm font-medium whitespace-nowrap transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50',
               t.id === value ? 'bg-card text-foreground shadow-sm' : 'hover:text-foreground',
             )}
           >

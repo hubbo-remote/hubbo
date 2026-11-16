@@ -119,7 +119,7 @@ export function HaCandidates({ integration, onPick, emptyText = 'Nothing matches
       <ul className="grid max-h-80 gap-1 overflow-y-auto" aria-label="Devices found">
         {list.map((c) => (
           <li key={c.provider.entity_id}>
-            <button onClick={() => onPick(c)} className="block w-full cursor-pointer rounded-md px-3 py-2 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset">
+            <button onClick={() => onPick(c)} className="block w-full rounded-md px-3 py-2 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset">
               <p className="truncate text-sm font-medium">{c.name}</p>
               <EntityId provider={c.provider} />
             </button>
