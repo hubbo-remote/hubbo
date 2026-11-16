@@ -248,6 +248,18 @@ Set on the Global remote; activities override like any button. Quick +/- step ta
 call. Also fixes boot using up internal RAM (the saved config now loads into PSRAM). Design:
 `docs/design/smart-buttons.md`.
 
+## Activity runs (user, 2026-11-15)
+A failed step no longer stops a sequence: it's reported and the next step runs. The hub keeps the last
+8 activity runs step by step, and the web admin shows them (dashboard, activity page). Design:
+`docs/design/activity-runs.md`.
+
+## State checks (user, 2026-11-15)
+On the same branch as activity runs. In startup and shutdown, an HA step is skipped when HA's
+current state already matches it. The rule is generic: power, plus fields that match attributes;
+no per-device lists. An HA step also waits at most 1 s for HA's reply, then moves on and records
+`no_reply`, which isn't a failure. Steps don't depend on each other, nothing is tracked, and waits
+stay. Design: `docs/design/state-checks.md`. Dropped: a "wait until on" step.
+
 ## Firmware robustness (queued, user 2026-11-14)
 Found on a second board whose nRF24 lacked its capacitor: after a power-related reset the hub kept
 running (remote, Bluetooth) but never came back on the network.
@@ -266,7 +278,7 @@ running (remote, Bluetooth) but never came back on the network.
 - Multiple remotes and remote profiles.
 - Long press, double/triple click trigger recognition; multi-action button editor.
 - Inbound Home Assistant integration to activate activities/control registered devices via hub API token.
-- More sophisticated transition and device power policies **only after deliberate review** of stateless principle.
+- More sophisticated transition and device power policies **only after deliberate review** of stateless principle. (The first was reviewed and approved on 2026-11-15: HA state checks, `docs/design/state-checks.md`.)
 
 ## Cross-cutting acceptance and handoff checklist
 Every milestone PR includes: changed architecture/API sections; tests and reproducible commands; hardware exercised; latency p50/p95/p99 where applicable; free internal RAM/PSRAM/flash footprint; failure/recovery behavior; security boundary tests; known limitations; demo instructions; next milestone prerequisites.
