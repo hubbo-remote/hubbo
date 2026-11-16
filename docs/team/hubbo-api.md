@@ -453,6 +453,53 @@ Current as of the smart-buttons branch. Not a log: rewrite sections as they chan
 - **Remote keys per integration:** designed, parked for a later phase. It uses a per-integration
   `ha-keys.json` that turns into a profile-shaped `press` command; the HA action is the fallback.
 
+- **Activity runs (activity-runs branch; docs/design/activity-runs.md).** A failed step no longer
+  stops a sequence. The hub keeps the last 8 startup and shutdown runs in RAM.
+  - Port: `Runtime::activityRuns(ActivityRuns *out) const` (api.h; core's
+    engine/run_history.h). The firmware and sim implement it with `engine.runsShared`. False means
+    no history, which the API shows as none. `ActivityRuns` is about 14 KB on the board, so
+    `readRuns()` heap-allocates it.
+  - Routes in `status_routes.cpp`:
+    - `GET /activity-runs` (`listActivityRuns`, token) returns `{runs}`, newest first.
+    - `/status` `last_run` (required, nullable) is `{activity_id, kind, outcome, failed_steps}`
+      (failed and timed_out).
+    - Each run and last_run has an `id` (core's `uint32_t id`): it counts from 1, is never reused
+      and survives /sim/reset. The web keys on it.
+    - `started_ago_ms` = `runs->nowMs` − startedMs. The runtime fills nowMs in activityRuns(), so
+      the route doesn't build a snapshot.
+    - A step's `duration_ms` is null unless `RunStep::hasDuration()` (it started and isn't
+      pending; a wait stays pending until the next step starts).
+  - Step `error`: the code for failed or timed_out steps (`adapter_timeout`, ...). A cancelled
+    step carries the run's reason (`cancelled`, or `queue_full` for a rejected run). It's null
+    when ok or pending. `duration_ms` is null if the step never started.
+  - No other API reports a run's outcome. PhaseResult (activate/off) is only queued, rejected or
+    none, because runs are async. `ActionSequence`'s description has the keep-going rule.
+  - Fixtures: activity_runs/list.json (completed_with_errors, completed, cancelled). status*.json
+    carries last_run; blocked has null.
+  - Contract `activity_runs_flow` checks that /activity-runs and /status last_run agree in every
+    mode. On hub-sim only, it also runs `/sim/ha?fail=media_player.turn_on` on Watch Apple TV:
+    the run is completed_with_errors, step 0 failed, and the rest still ran; then off's shutdown
+    is newest. The token matrix makes one GET.
+  - ApiTest ActivityRunsShowEachStepNewestFirst checks running, then completed, then a cancelled
+    step's reason.
+  - /status reads `Runtime::lastRun(LastRun *)` (core's `RunHistory::readLatest`, about 40 B on
+    the stack), so a dashboard poll no longer copies the whole history.
+- **State checks (activity-runs branch; docs/design/state-checks.md).** The wire change is two
+  step results: `skipped` (error `already_set`, a duration equal to the read time) and `no_reply`
+  (error null, about 1000 ms, up to about 1300 when the step was also checked). Neither counts in
+  failed_steps, and a run with only ok, skipped and no_reply steps is `completed`. A skipped step
+  has no value field (the lead's decision). The 1 s limit lives in core's HA adapter.
+  - Fixture: list.json's newest run has a skipped step 0 (TV), a no_reply step 1 (Sonos) and a
+    failed step 6.
+  - Contract `activity_runs_flow` (hub-sim):
+    - It runs after mute_toggle_flow and first asserts that ha_main is connected. Earlier in
+      noauth HA isn't connected, so every step fails with `adapter_unavailable`.
+    - A `switch()` helper sets up `/sim/ha`, POSTs, advances 6 s and resets.
+    - The state check uses `state=<denon>:on&attr=<denon>:source=TV&slow=<denon>:5000`; Play
+      Xbox then gives the Denon's power skipped/already_set, its input no_reply (1000-1500 ms),
+      and the run is completed.
+    - `slow=none` clears every slow entity (it doesn't take `<entity>:none`).
+    - The fake's media players start "off".
 - **Smart buttons (smart-buttons branch; docs/design/smart-buttons.md). Simplified on 2026-11-15
   after the board test:** a slot is only a device id. The hub derives the actions, and repeat is gone.
   - Routes in `smart_button_routes.cpp`: GET /smart-buttons gives `{slots, actions, revision}`.
