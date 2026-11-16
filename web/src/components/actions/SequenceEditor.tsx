@@ -12,6 +12,34 @@ import { CommandPicker } from './CommandPicker'
 import { startAction } from './start'
 import { commandLabel, deviceName, paramSummary } from './describe'
 
+/**
+ * A lifted copy of a step row that follows the pointer while the row is dragged (the row itself stays, dimmed, and
+ * the drop line shows where it lands). A clone, so it looks exactly like the row; inert and hidden from the pointer. No scale with reduced motion.
+ */
+function liftGhost(row: HTMLElement, pointerY: number) {
+  const r = row.getBoundingClientRect()
+  const el = row.cloneNode(true) as HTMLElement
+  el.querySelectorAll('[id]').forEach((n) => n.removeAttribute('id'))
+  el.inert = true // out of the accessibility tree and the tab order
+  el.dataset.dragGhost = ''
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches
+  Object.assign(el.style, {
+    position: 'fixed',
+    left: `${r.left}px`,
+    top: `${r.top}px`,
+    width: `${r.width}px`,
+    margin: '0',
+    zIndex: '50',
+    pointerEvents: 'none',
+    opacity: '0.8',
+    boxShadow: '0 10px 24px -6px rgb(0 0 0 / 0.25)',
+    transform: still ? '' : 'scale(1.02)',
+  })
+  document.body.append(el)
+  const dy = pointerY - r.top
+  return { move: (y: number) => void (el.style.top = `${y - dy}px`), remove: () => el.remove() }
+}
+
 /** Ordered list of actions (startup/shutdown) with add, edit, duplicate, wait, and reorder (drag, or Alt+↑/↓). */
 export function SequenceEditor({ label, actions, onChange, catalog, issues, pathPrefix, lastRun }: { label: string; actions: Action[]; onChange: (a: Action[]) => void; catalog: Catalog; issues: ValidationIssue[]; pathPrefix: string; /** Why steps failed the last time this ran, by index. */ lastRun?: ReadonlyMap<number, string> }) {
   const [editing, setEditing] = useState<{ index: number; action: Action | null } | null>(null)
@@ -19,6 +47,13 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
   // `slot`: the gap a drop inserts into (0 = before the first step, n = after the last).
   const [drag, setDrag] = useState<{ from: number; slot: number } | null>(null)
   const list = useRef<HTMLOListElement>(null)
+  const ghost = useRef<ReturnType<typeof liftGhost> | null>(null)
+  useEffect(() => () => ghost.current?.remove(), [])
+  const drop = () => {
+    ghost.current?.remove()
+    ghost.current = null
+    setDrag(null)
+  }
   const refocus = useRef<number | null>(null)
   const hint = useId()
   const moveTo = (from: number, to: number) => {
@@ -89,17 +124,19 @@ export function SequenceEditor({ label, actions, onChange, catalog, issues, path
                     if (e.button !== 0) return
                     e.preventDefault()
                     e.currentTarget.setPointerCapture(e.pointerId)
+                    ghost.current = liftGhost(e.currentTarget.closest('li')!, e.clientY)
                     setDrag({ from: i, slot: i })
                   }}
                   onPointerMove={(e) => {
-                    const slot = drag && slotAt(e.clientY)
+                    const slot = drag && slotAt(e.clientY) // read the rows before the ghost moves (no forced layout)
+                    ghost.current?.move(e.clientY)
                     if (drag && slot !== drag.slot) setDrag({ ...drag, slot: slot! })
                   }}
                   onPointerUp={() => {
                     if (drag) moveTo(drag.from, drag.slot > drag.from ? drag.slot - 1 : drag.slot)
-                    setDrag(null)
+                    drop()
                   }}
-                  onPointerCancel={() => setDrag(null)}
+                  onPointerCancel={drop}
                 >
                   <GripVertical className="size-4" />
                 </span>

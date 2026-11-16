@@ -115,6 +115,34 @@ test('steps reorder by keyboard (Alt+↑/↓) and by drag', async ({ page }) => 
   expect(stepIds(a.startup)).toEqual([' wait', 'dev_lg_tv media_player.turn_on', 'dev_denon media_player.turn_on'])
 })
 
+test('a step drags by its grip: a lifted copy follows the pointer, both ways, and the order saves', async ({ page }) => {
+  await open(page, '/activities/act_watch_apple_tv/startup')
+  const steps = page.getByRole('list', { name: 'Startup steps' }).getByRole('listitem')
+  await expect(steps.nth(2)).toBeVisible()
+  const before = (await api(page).get('/activities/act_watch_apple_tv')).startup
+  await expect(steps.nth(0).locator('[data-grip]')).toHaveCSS('cursor', 'grab')
+
+  // Drag the grip in small steps, as a pointer does, and drop on the target row's top half (above it).
+  const drag = async (from: number, to: number) => {
+    const grip = (await steps.nth(from).locator('[data-grip]').boundingBox())!
+    const target = (await steps.nth(to).boundingBox())!
+    await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(grip.x + grip.width / 2, target.y + 4, { steps: 12 })
+    await expect(steps.nth(from)).toHaveClass(/opacity-50/) // the row stays, dimmed, in its place
+    const ghost = page.locator('[data-drag-ghost]') // a lifted copy follows the pointer
+    await expect(ghost).toHaveCount(1)
+    await expect(ghost).toContainText(await steps.nth(from).locator('p').first().innerText())
+    await page.mouse.up()
+    await expect(ghost).toHaveCount(0)
+  }
+  await drag(1, 0) // up: the second step goes first
+  await drag(0, 3) // down: back again, then one further (dropped above the fourth)
+  await saveActivity(page)
+  const ids = stepIds(before)
+  expect(stepIds((await api(page).get('/activities/act_watch_apple_tv')).startup)).toEqual([ids[0], ids[2], ids[1], ...ids.slice(3)])
+})
+
 test('a button inherits the global bindings only while the activity binds none of it', async ({ page }) => {
   const id = await openNewActivity(page, 'E2E Inherit')
   await page.locator('[data-key="tv"]').click()
