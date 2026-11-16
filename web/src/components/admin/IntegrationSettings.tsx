@@ -70,13 +70,23 @@ export function SaveError({ error }: { error: ApiError }) {
   return error.code === 'revision_conflict' ? <Alert variant="error">Changed somewhere else. Reload and try again.</Alert> : <ErrorState error={error} />
 }
 
-/** The form's Save button, spinning while it saves. */
-export function SaveButton({ busy }: { busy: boolean }) {
+/**
+ * The form's Save button, spinning while it saves; with `remove`, a way to drop a saved secret (a token, a
+ * password): its `onRemove` saves null for it.
+ */
+export function SaveActions({ busy, remove }: { busy: boolean; remove?: { label: string; onRemove: () => void } }) {
   return (
-    <Button type="submit" disabled={busy}>
-      {busy && <Loader2 className="animate-spin" />}
-      Save
-    </Button>
+    <div className="flex flex-wrap items-center gap-3">
+      <Button type="submit" disabled={busy}>
+        {busy && <Loader2 className="animate-spin" />}
+        Save
+      </Button>
+      {remove && (
+        <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={remove.onRemove}>
+          {remove.label}
+        </Button>
+      )}
+    </div>
   )
 }
 

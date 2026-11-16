@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import type { IntegrationConfig } from '@/api/types'
-import { IntegrationSettings, SaveButton, SaveError, type ConnectionHelp, type SaveSettings } from '@/components/admin/IntegrationSettings'
+import { IntegrationSettings, SaveActions, SaveError, type ConnectionHelp, type SaveSettings } from '@/components/admin/IntegrationSettings'
 import { Alert } from '@/components/ui/alert'
 import { Field, Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
@@ -33,16 +33,18 @@ function HomeAssistantForm({ config, save, busy, error }: { config: IntegrationC
   const [token, setToken] = useState('')
   const [verify, setVerify] = useState(s?.verify_tls ?? true)
   const urlChanged = !!s && url.replace(/\/$/, '') !== s.url.replace(/\/$/, '')
-  const send = () => save({ type: 'home_assistant', url, verify_tls: verify, ...(token ? { access_token: token } : {}) })
+  // `access_token`: a new one, null to remove the saved one, or left out to keep it (like MQTT's password).
+  const send = (access_token?: string | null) =>
+    save({ type: 'home_assistant', url, verify_tls: verify, ...(access_token === undefined ? {} : { access_token }) })
   // In setup, Continue saves what's typed (without waiting for the connection).
   const dirty = !!s && (urlChanged || !!token || verify !== s.verify_tls)
-  const form = usePendingFormSave(dirty, send)
+  const form = usePendingFormSave(dirty, () => send(token || undefined))
   if (!s) return null
   const keepsToken = s.has_access_token && !urlChanged
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
-    void send()
+    void send(token || undefined)
   }
 
   const urlError = error?.details.find((d) => d.path === '/settings/url')?.message
@@ -71,9 +73,7 @@ function HomeAssistantForm({ config, save, busy, error }: { config: IntegrationC
         <Input id="ha-token" type="password" spellCheck={false} placeholder={keepsToken ? '••••••••' : 'Paste token'} value={token} onChange={(e) => setToken(e.target.value)} maxLength={512} required={!keepsToken} />
       </Field>
       {error && !urlError && <SaveError error={error} />}
-      <div>
-        <SaveButton busy={busy} />
-      </div>
+      <SaveActions busy={busy} remove={keepsToken ? { label: 'Remove token', onRemove: () => void send(null).then((ok) => ok && setToken('')) } : undefined} />
     </form>
   )
 }

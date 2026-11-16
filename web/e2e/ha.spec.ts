@@ -102,6 +102,17 @@ test('the token is write-only, and changing the URL says it clears the token', a
   expect(JSON.stringify(await api(page).get('/admin/integrations/ha_main'))).not.toContain('e2e-ha-token-not-real')
 })
 
+test('the saved token can be removed, like the MQTT password', async ({ page }) => {
+  await open(page, '/integrations')
+  const form = haForm(page)
+  await form.getByLabel('Access token').fill('typed-then-removed')
+  await form.getByRole('button', { name: 'Remove token' }).click()
+  await expect(form.getByLabel('Access token')).toHaveValue('') // what was typed goes too
+  await expect(form).toContainText('Create a long-lived token in your Home Assistant profile.')
+  await expect(form.getByRole('button', { name: 'Remove token' })).toHaveCount(0) // nothing saved to remove
+  await expect.poll(async () => (await api(page).get('/admin/integrations/ha_main')).settings.has_access_token).toBe(false)
+})
+
 test('add an HA device: discover, search, preview its commands, register; the dialog stays for the next', async ({ page }) => {
   const dialog = await openAddHa(page)
   const list = dialog.getByRole('list', { name: 'Devices found' })
