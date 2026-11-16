@@ -1,3 +1,4 @@
+import { Circle, Clapperboard, Lightbulb, Music, Pause, Play, Plug, SkipBack, SkipForward, Square, Tv, Undo2, VolumeX, type LucideIcon, type LucideProps } from 'lucide-react'
 import { memo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import type { EventKind } from '@/api/types'
 import { buttonLabel } from '@/lib/buttons'
@@ -26,8 +27,17 @@ const SOURCE_COLOR: Record<BindingSource, string> = { activity: 'var(--remote-bo
 const EV_COLOR: Record<EventKind, string> = { down: 'var(--ev-down)', up: 'var(--ev-up)', tap: 'var(--ev-tap)', hold: 'var(--ev-hold)' }
 /** How each mark reads: Press, Long press, and raw down/up triggers as they are. */
 const EV_LABEL: Record<EventKind, string> = { tap: 'Press', down: 'Down', up: 'Up', hold: 'Long press' }
-const LEGEND: readonly EventKind[] = ['tap', 'hold'] // Press and Long press (raw down/up only show under Advanced)
+const LEGEND: readonly EventKind[] = ['tap', 'hold'] // Press and Long press (raw down/up only show under Advanced triggers)
 
+/**
+ * A Lucide icon centred on the key: a nested 13-unit svg (Lucide's 24-unit grid at about half scale), its stroke
+ * thickened so it matches the hand-drawn arrows' 1.7 here. It takes the glyph colour like the rest (currentColor).
+ */
+const icon = (Icon: LucideIcon, props?: LucideProps) => <Icon x={-6.5} y={-6.5} width={13} height={13} strokeWidth={3} aria-hidden {...props} />
+/** Media keys read as solid shapes, as on a real remote. */
+const FILLED: LucideProps = { fill: 'currentColor' }
+
+// Arrows, plus/minus and the stripe stay plain strokes; everything with a picture is a Lucide icon.
 const ICONS: Record<IconName, ReactNode> = {
   up: <path d="M-5 2.5 0-2.5 5 2.5" />,
   down: <path d="M-5-2.5 0 2.5 5-2.5" />,
@@ -35,66 +45,20 @@ const ICONS: Record<IconName, ReactNode> = {
   right: <path d="M-2.5-5 2.5 0-2.5 5" />,
   plus: <path d="M-4.5 0h9M0-4.5v9" />,
   minus: <path d="M-4.5 0h9" />,
-  music: (
-    <g>
-      <path d="M-1.2 4V-4.6l5.2-1.4v8" />
-      <circle cx="-3" cy="4" r="1.9" className="fill-current" />
-      <circle cx="2.2" cy="2" r="1.9" className="fill-current" />
-    </g>
-  ),
-  tv: (
-    <g>
-      <rect x="-6.5" y="-4.8" width="13" height="8.4" rx="1.4" />
-      <path d="M-3 5.6h6" />
-    </g>
-  ),
-  movie: (
-    <g>
-      <rect x="-6" y="-1.6" width="12" height="7" rx="1" />
-      <path d="M-6.2-3.4 5.6-6.4M-2.6-4.3l1.3 2.5M1.4-5.3l1.3 2.5" />
-    </g>
-  ),
-  bulb: (
-    <g>
-      <path d="M-2.2 2.2C-4.6.7-4.9-3.6-2.4-5.4c1.5-1 3.3-1 4.8 0 2.5 1.8 2.2 6.1-.2 7.6z" />
-      <path d="M-1.6 4.2h3.2" />
-    </g>
-  ),
-  socket: (
-    <g>
-      <rect x="-5.2" y="-5.2" width="10.4" height="10.4" rx="3" />
-      <path d="M-1.9-2.4v2.2M1.9-2.4v2.2M-1.6 2.6a2 1.3 0 0 0 3.2 0" />
-    </g>
-  ),
+  music: icon(Music),
+  tv: icon(Tv),
+  movie: icon(Clapperboard),
+  bulb: icon(Lightbulb),
+  socket: icon(Plug),
   stripe: <path d="M-5 0h10" strokeWidth={2.4} />,
-  play: <path d="M-3.6-5.4 5.4 0l-9 5.4z" className="fill-current" />,
-  pause: <path d="M-3-4.6v9.2M3-4.6v9.2" strokeWidth={2.4} />,
-  stop: <rect x="-4" y="-4" width="8" height="8" rx="1" className="fill-current" />,
-  record: <circle r="4.2" fill="oklch(0.65 0.21 25)" stroke="none" />,
-  next: (
-    <g className="fill-current" stroke="none">
-      <path d="M-10-3.6-5 0l-5 3.6zM-4.6-3.6.4 0l-5 3.6z" />
-      <path d="M3 -3.6 7.6 0 3 3.6zM8.3-3.6h1.6v7.2H8.3z" />
-    </g>
-  ),
-  prev: (
-    <g className="fill-current" stroke="none">
-      <path d="M-3-3.6-7.6 0-3 3.6zM-8.3-3.6h-1.6v7.2h1.6z" />
-      <path d="M10-3.6 5 0l5 3.6zM4.6-3.6-.4 0l5 3.6z" />
-    </g>
-  ),
-  mute: (
-    <g>
-      <path d="M-6-2h2.6L0-5v10l-3.4-3H-6z" />
-      <path d="m2.4-2.4 4 4.8m0-4.8-4 4.8" />
-    </g>
-  ),
-  back: (
-    <g>
-      <path d="M-5.5 1.5H3a3 3 0 0 0 0-6H-2" />
-      <path d="M-3 -1-5.5 1.5-3 4" />
-    </g>
-  ),
+  play: icon(Play, FILLED),
+  pause: icon(Pause, FILLED),
+  stop: icon(Square, FILLED),
+  record: icon(Circle, { fill: 'oklch(0.65 0.21 25)', stroke: 'none' }), // a red dot, as on any recorder
+  next: icon(SkipForward, FILLED),
+  prev: icon(SkipBack, FILLED),
+  mute: icon(VolumeX),
+  back: icon(Undo2),
 }
 
 /** Minimum hit area per key, in viewBox units (≥ 24 px once the remote is ~1.5 px per unit, as on a phone). */
