@@ -72,6 +72,15 @@ public:
     // HTTP task.
     bool run(hubbo::EngineRequest &request) override;
     hubbo::api::RuntimeSnapshot snapshot() const override;
+    // The engine's published copy: millis(), the clock snapshot()'s uptimeMs uses.
+    bool activityRuns(hubbo::ActivityRuns *out) const override {
+        if (!engine_.runsShared(out)) {
+            return false;
+        }
+        out->nowMs = millis();
+        return true;
+    }
+    bool lastRun(hubbo::LastRun *out) const override { return engine_.lastRunShared(out); }
     const hubbo::AdapterSet &adapters() const override { return adapters_; }
     const char *integrationState(std::string_view integrationId) const override;
     std::string integrationDetail(std::string_view integrationId) const override;

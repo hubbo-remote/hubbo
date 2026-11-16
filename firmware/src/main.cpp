@@ -21,6 +21,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <new>
 #include <string>
 
 #include "console.h"
@@ -774,12 +775,12 @@ void printStatus() {
     const auto &es = engine.stats();
     const auto &xs = engine.executor().stats();
     con.printf("  engine: %s, slot %s, %lu events, %lu unbound, %lu dispatched, %lu transitions;"
-                  " sequences %lu ok %lu failed %lu rejected %lu timeouts\n",
+                  " sequences %lu ok %lu with errors %lu rejected %lu timeouts\n",
                   engine.hasActiveActivity() ? engine.activeActivityId() : "(off)",
                   hubbo::smartSlotName(engine.selectedSlotShared()),
                   static_cast<unsigned long>(es.events), static_cast<unsigned long>(es.unbound),
                   static_cast<unsigned long>(es.dispatched), static_cast<unsigned long>(es.transitions),
-                  static_cast<unsigned long>(xs.completed), static_cast<unsigned long>(xs.failed),
+                  static_cast<unsigned long>(xs.completed), static_cast<unsigned long>(xs.withErrors),
                   static_cast<unsigned long>(xs.rejected), static_cast<unsigned long>(xs.timeouts));
     con.printf("  eth: %s %s, http %s (%lu requests), ota %s\n", EthernetLink::stateName(ethernet.state()),
                   ethernet.ipText(), httpServer.running() ? "up" : "down",
@@ -1174,6 +1175,12 @@ void setup() {
         con.println("engine: no config reader slot; remote input is inert");
     }
     engine.setObserver(&engineLog);
+    // The run history (~14 KB) lives in PSRAM; it's set once, before the loop.
+    if (void *mem = heap_caps_malloc(sizeof(hubbo::RunHistory), MALLOC_CAP_SPIRAM)) {
+        engine.setRunHistory(new (mem) hubbo::RunHistory());
+    } else {
+        con.println("engine: no PSRAM for the run history; runs aren't recorded");
+    }
     // The config lives for the whole uptime: parse it into PSRAM, keeping
     // internal RAM for lwIP and the drivers started below (prebuilt rule).
     printMemory("boot: before config ");
