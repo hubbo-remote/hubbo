@@ -47,8 +47,9 @@ export default function Status({ tab = 'overview' }: { tab?: string }) {
   )
 }
 
-const TARGET_P95_MS = 10
-const TARGET_P99_MS = 25
+/** Press-to-send targets (ARCHITECTURE.md): boards measure about 0.5 / 0.65 / 0.8 ms. */
+const TARGET_P95_MS = 2
+const TARGET_P99_MS = 5
 
 function Overview({ status: s }: { status: HubStatus | undefined }) {
   const integ = (type: string) => s?.integrations.find((i) => i.type === type)
@@ -160,10 +161,14 @@ function StatusTile({ icon: Icon, title, state, label, value, detail, className 
   )
 }
 
-/** Percentiles on a 0–30 ms track with the p95/p99 targets marked. */
+/**
+ * Percentiles on a 0–5 ms track (green under the p95 target, amber up to p99's) with a red end cap: anything past
+ * 5 ms pins there.
+ */
 function LatencyMeter({ stats }: { stats: LatencyStats }) {
-  const MAX = 30
-  const pos = (v: number) => `${Math.min(100, (v / MAX) * 100)}%`
+  const MAX = TARGET_P99_MS
+  const CAP = 6 // % of the track for "past 5 ms"
+  const pos = (v: number) => `${v > MAX ? 100 - CAP / 2 : (v / MAX) * (100 - CAP)}%`
   const marks: [string, number, string][] = [
     ['p50', stats.p50_ms, 'bg-primary/60'],
     ['p95', stats.p95_ms, stats.p95_ms > TARGET_P95_MS ? 'bg-destructive' : 'bg-primary'],
@@ -175,14 +180,14 @@ function LatencyMeter({ stats }: { stats: LatencyStats }) {
         <div className="absolute inset-x-0 top-2.5 h-1.5 overflow-hidden rounded-full bg-muted">
           <div className="absolute inset-y-0 left-0 bg-success/30" style={{ width: pos(TARGET_P95_MS) }} />
           <div className="absolute inset-y-0 bg-warning/30" style={{ left: pos(TARGET_P95_MS), width: `calc(${pos(TARGET_P99_MS)} - ${pos(TARGET_P95_MS)})` }} />
-          <div className="absolute inset-y-0 right-0 bg-destructive/25" style={{ left: pos(TARGET_P99_MS) }} />
+          <div className="absolute inset-y-0 right-0 bg-destructive/40" style={{ left: pos(TARGET_P99_MS) }} />
         </div>
         {marks.map(([k, v, c]) => (
           <span key={k} title={`${k} ${v} ms`} className={cn('absolute top-1 size-3.5 -translate-x-1/2 rounded-full ring-2 ring-card', c)} style={{ left: pos(v) }} />
         ))}
       </div>
       <div className="relative h-4 text-[10px] text-muted-foreground tabular-nums">
-        {[0, TARGET_P95_MS, TARGET_P99_MS].map((v) => (
+        {[0, 1, TARGET_P95_MS, TARGET_P99_MS].map((v) => (
           <span key={v} className={cn('absolute', v === 0 ? '' : '-translate-x-1/2')} style={{ left: pos(v) }}>
             {v} ms
           </span>
@@ -197,7 +202,7 @@ function LatencyCard({ stats }: { stats: LatencyStats | null | undefined }) {
   const p = (label: string, v: number | undefined, target?: number) => (
     <div className="grid gap-0.5">
       <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className={cn('text-lg font-semibold tabular-nums', target && v && v > target && 'text-destructive')}>{v != null ? `${v.toFixed(1)} ms` : stats === null ? '–' : <Skeleton className="h-6 w-16" />}</dd>
+      <dd className={cn('text-lg font-semibold tabular-nums', target && v && v > target && 'text-destructive')}>{v != null ? `${v.toFixed(v < 1 ? 2 : 1)} ms` : stats === null ? '–' : <Skeleton className="h-6 w-16" />}</dd>
     </div>
   )
   return (
