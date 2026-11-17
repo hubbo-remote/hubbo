@@ -206,5 +206,26 @@ TEST(HubSettings, TheAdvertisedHostnameIsShownUntilTheNameChanges) {
     EXPECT_EQ(hub.identity().shownHostname(), "hubbo-3f2a");
 }
 
+TEST(HubSettings, CheckForUpdatesIsOnUnlessTurnedOff) {
+    storage::MemoryStateStore store;
+    HubSettings hub(store, kDefault);
+    EXPECT_EQ(hub.load(), ErrorCode::NotFound);
+    EXPECT_TRUE(hub.checkUpdates());  // nothing saved: on
+    ASSERT_EQ(hub.setCheckUpdates(false), ErrorCode::Ok);
+    EXPECT_FALSE(hub.checkUpdates());
+    HubSettings reloaded(store, kDefault);
+    reloaded.load();
+    EXPECT_FALSE(reloaded.checkUpdates());
+    // A reset turns it back on.
+    EXPECT_EQ(reloaded.forget(), ErrorCode::Ok);
+    EXPECT_TRUE(reloaded.checkUpdates());
+    std::string saved;
+    EXPECT_EQ(store.get(kCheckUpdatesKey, &saved), ErrorCode::NotFound);
+    // A failed save changes nothing.
+    store.failWrites = true;
+    EXPECT_EQ(reloaded.setCheckUpdates(false), ErrorCode::StorageFailed);
+    EXPECT_TRUE(reloaded.checkUpdates());
+}
+
 }  // namespace
 }  // namespace hubbo::config
