@@ -27,6 +27,7 @@
 #include "fake_ha.h"
 #include "fake_mqtt.h"
 #include "fakes.h"
+#include "release_feed.h"
 #include "hubbo/config/service.h"
 #include "hubbo/config/boot.h"
 #include "hubbo/engine/active_persister.h"
@@ -135,6 +136,10 @@ public:
     // Firmware updates (the API's FirmwareUpdatePort); writes and the
     // simulated reboot run on hub time. A reset gives a fresh one.
     api::SimulatedFirmwareUpdate &firmware() { return firmware_; }
+    // Online updates (the API's FirmwareReleasePort) over the fake release
+    // feed (/sim/release); checks and downloads run on hub time. A reset
+    // clears the feed and what was checked.
+    SimFirmwareReleases &releases() { return releases_; }
     // Called when a simulated reboot into a new image finishes (the board
     // restarts: SimApi drops every session).
     std::function<void()> onFirmwareRebooted;
@@ -205,6 +210,7 @@ private:
     RealHa ha_;
     api::SimulatedRemote remote_;
     api::SimulatedFirmwareUpdate firmware_;
+    SimFirmwareReleases releases_{firmware_, [this] { return nowMs_; }};
     api::SimulatedFactoryReset factoryReset_;
     FakeAdapters fakes_;
     integrations::BleHostReconciler bleReconciler_{fakes_.bleHosts};  // hosts follow the saved config
