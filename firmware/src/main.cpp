@@ -71,6 +71,7 @@
 #include "restart.h"
 #include "ble_host_runtime.h"
 #include "remote_runtime.h"
+#include "tls_memory.h"
 #include "ws_transport.h"
 
 using hubbo::remote::RemoteEvent;
@@ -1194,7 +1195,7 @@ void setup() {
     ota::setRebootPending([] { return rebootReason.load(std::memory_order_acquire) != nullptr; });
     beginEthernetOnCore0();
     startApi();
-    EspWsTransport::useExternalTlsMemory();
+    tls::useExternalMemory();  // mbedTLS from PSRAM first (tls_memory.h)
     configureHomeAssistant();
     haClient.setYield([] { vTaskDelay(1); });
     const bool haStarted = haTask.start("ha", [] {
