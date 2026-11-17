@@ -1,0 +1,77 @@
+# A tag vX.Y.Z on main is a release (docs/design/firmware-updates.md): build
+# the web admin and the firmware with the same toolchain as bin/hubbo, write
+# and sign the manifest, and publish a GitHub Release the hubs check.
+#
+# The tag's annotation is the release notes, shown on GitHub (the hub links
+# there; the manifest carries no notes). The signing key is the
+# RELEASE_SIGNING_KEY secret (ECDSA P-256, PEM); it's written to a 600 file
+# for one command and never printed.
+name: release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: The tag is on main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
+            { echo "release: $GITHUB_REF_NAME isn't on main" >&2; exit 1; }
+
+      - name: Build the web admin and the firmware
+        run: |
+          bin/hubbo web build
+          HUBBO_FW_VERSION="${GITHUB_REF_NAME#v}" bin/hubbo fw run -e waveshare_esp32_s3_eth
+
+      - name: Write the manifest
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          cp firmware/.pio/build/waveshare_esp32_s3_eth/firmware.bin "dist/hubbo-$version.bin"
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > dist/notes.txt
+          python3 - "$version" "dist/hubbo-$version.bin" > dist/manifest.json <<'EOF'
+          import hashlib, json, re, sys
+          version, image_path = sys.argv[1:3]
+          image = open(image_path, "rb").read()
+          m = re.search(rb"HUBBO-IMAGE/1 board=([!-~]+) layout=([0-9]{1,4}) version=([!-~]{1,64})\0", image)
+          if not m or m.group(3).decode() != version:
+              sys.exit("release: the image's marker doesn't carry version " + version)
+          json.dump({
+              "version": version,
+              "board": m.group(1).decode(),
+              "layout": int(m.group(2)),
+              "size": len(image),
+              "sha256": hashlib.sha256(image).hexdigest(),
+          }, sys.stdout, separators=(",", ":"))
+          EOF
+          cat dist/manifest.json
+
+      - name: Sign the manifest
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          [ -n "$RELEASE_SIGNING_KEY" ] || { echo "release: no RELEASE_SIGNING_KEY secret" >&2; exit 1; }
+          key="$RUNNER_TEMP/release-key.pem"
+          (umask 077; printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key")
+          openssl dgst -sha256 -sign "$key" -out dist/manifest.sig dist/manifest.json
+          rm -f "$key"
+          openssl dgst -sha256 -verify firmware/release-key.pub.pem -signature dist/manifest.sig dist/manifest.json
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" --title "Hubbo $version" --notes-file dist/notes.txt \
+            "dist/hubbo-$version.bin" dist/manifest.json dist/manifest.sig
