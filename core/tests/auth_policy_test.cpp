@@ -60,7 +60,8 @@ TEST(AuthPolicy, RoleMatrix) {
         "startDevicePairing", "getDevicePairing", "cancelDevicePairing", "forgetDevicePairing", "registerDevice", "updateDevice",
         "deleteDevice", "getRemoteConfig", "setRemoteEndpoint", "getRemotePairing", "startRemotePairing", "cancelRemotePairing",
         "changeAdminPassword", "listTokens", "createToken", "revokeToken", "downloadBackup",
-        "restoreBackup", "resetConfiguration", "factoryReset", "getFirmwareStatus", "updateFirmware",
+        "restoreBackup", "resetConfiguration", "factoryReset", "getFirmwareStatus", "checkFirmwareRelease",
+        "installFirmwareRelease", "updateFirmware",
         "getHub", "updateHub", "restartHub",
     };
     // setupAdmin's handler refuses it unless the credentials are fresh.

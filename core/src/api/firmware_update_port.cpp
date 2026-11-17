@@ -2,6 +2,7 @@
 
 #include <cstring>
 
+#include "hubbo/domain/limits.h"
 #include "support.h"
 
 namespace hubbo::api {
@@ -17,7 +18,6 @@ constexpr size_t kHashAppendedOffset = 23;
 constexpr size_t kAppDescOffset = kHeaderBytes + 8;
 constexpr uint32_t kAppDescMagic = 0xABCD5432;
 constexpr uint8_t kImageMagic = 0xE9;
-constexpr size_t kMaxVersionChars = 64;
 
 uint16_t le16(std::string_view b, size_t at) {
     return static_cast<uint16_t>(static_cast<uint8_t>(b[at]) | static_cast<uint8_t>(b[at + 1]) << 8);
@@ -61,7 +61,7 @@ bool findMarker(std::string_view image, Marker *out) {
             !takeField(rest, "version", '\0', &version)) {
             continue;
         }
-        if (!printable(board) || version.size() > kMaxVersionChars || !printable(version) ||
+        if (!printable(board) || version.size() > limits::kMaxFirmwareVersionLength || !printable(version) ||
             !parseDecimal(layout, 9999, &out->layout)) {
             continue;
         }
@@ -100,6 +100,7 @@ FirmwareInstallResult validateFirmwareImage(std::string_view image, const Firmwa
 
 const char *firmwareUpdateStateName(FirmwareUpdateState state) {
     switch (state) {
+        case FirmwareUpdateState::Downloading: return "downloading";
         case FirmwareUpdateState::Writing: return "writing";
         case FirmwareUpdateState::Rebooting: return "rebooting";
         case FirmwareUpdateState::Failed: return "failed";
@@ -109,6 +110,24 @@ const char *firmwareUpdateStateName(FirmwareUpdateState state) {
 }
 
 FirmwareTarget simulatorFirmwareTarget() { return FirmwareTarget{"simulator", 1, 2, 64 * 1024}; }
+
+bool SimulatedFirmwareUpdate::beginDownload() {
+    if (firmwareUpdateRunning(status_.state)) return false;
+    status_ = FirmwareUpdateStatus{FirmwareUpdateState::Downloading, 0, ""};
+    return true;
+}
+
+FirmwareInstallResult SimulatedFirmwareUpdate::finishDownload(std::string_view image) {
+    if (status_.state != FirmwareUpdateState::Downloading) return FirmwareInstallResult::Busy;
+    status_ = FirmwareUpdateStatus{};
+    const FirmwareInstallResult result = install(image);
+    if (result != FirmwareInstallResult::Accepted) failDownload(kInvalidImage);
+    return result;
+}
+
+void SimulatedFirmwareUpdate::failDownload(const char *error) {
+    status_ = FirmwareUpdateStatus{FirmwareUpdateState::Failed, 0, error};
+}
 
 FirmwareInstallResult SimulatedFirmwareUpdate::install(std::string_view image) {
     if (firmwareUpdateRunning(status_.state)) return FirmwareInstallResult::Busy;
@@ -124,7 +143,8 @@ FirmwareInstallResult SimulatedFirmwareUpdate::install(std::string_view image) {
 }
 
 void SimulatedFirmwareUpdate::advance(uint32_t elapsedMs) {
-    if (!firmwareUpdateRunning(status_.state)) return;
+    // A download is the release port's to time: only the write and the reboot run here.
+    if (status_.state != FirmwareUpdateState::Writing && status_.state != FirmwareUpdateState::Rebooting) return;
     elapsedMs_ += elapsedMs;
     if (status_.state == FirmwareUpdateState::Writing) {
         if (elapsedMs_ < kWriteMs) {

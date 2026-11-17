@@ -84,6 +84,8 @@ constexpr OperationInfo kOperations[] = {
     {Operation::ResetConfiguration, "resetConfiguration", Method::Post, Requirement::AdminOnly, 0},
     {Operation::FactoryReset, "factoryReset", Method::Post, Requirement::AdminOnly, 0},
     {Operation::GetFirmwareStatus, "getFirmwareStatus", Method::Get, Requirement::AdminOnly, 0},
+    {Operation::CheckFirmwareRelease, "checkFirmwareRelease", Method::Post, Requirement::AdminOnly, 0},
+    {Operation::InstallFirmwareRelease, "installFirmwareRelease", Method::Post, Requirement::AdminOnly, 1024},
     {Operation::UpdateFirmware, "updateFirmware", Method::Post, Requirement::AdminOnly, kMaxFirmwareImageBytes,
      Body::Binary},
     {Operation::GetHub, "getHub", Method::Get, Requirement::AdminOnly, 0},

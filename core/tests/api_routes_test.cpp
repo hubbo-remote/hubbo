@@ -80,6 +80,28 @@ std::string dump(const Reply &r) {
     return out;
 }
 
+// The release port over a check state the test drives and the simulated
+// update (hub-sim's real one is core's, over its fake feed).
+class FakeReleases : public api::FirmwareReleasePort {
+public:
+    explicit FakeReleases(api::SimulatedFirmwareUpdate &firmware) : firmware_(firmware) {}
+    api::FirmwareReleaseStatus releaseStatus() const override { return {state.read(), 5000}; }
+    api::ReleaseCheckResult requestCheck() override {
+        return state.beginCheck() ? api::ReleaseCheckResult::Accepted : api::ReleaseCheckResult::Busy;
+    }
+    api::ReleaseInstallResult install(std::string_view version) override {
+        if (api::firmwareUpdateRunning(firmware_.status().state)) return api::ReleaseInstallResult::Busy;
+        if (!state.availableAs(version)) return api::ReleaseInstallResult::NotAvailable;
+        firmware_.beginDownload();
+        state.clearRolledBackFrom();
+        return api::ReleaseInstallResult::Accepted;
+    }
+    release::UpdateCheckState state;
+
+private:
+    api::SimulatedFirmwareUpdate &firmware_;
+};
+
 class ApiTest : public ::testing::Test {
 protected:
     ApiTest() {
@@ -207,6 +229,7 @@ protected:
     sim::FakeHaTransport haTransport{haServer};
     integrations::HomeAssistantClient haClient{haTransport};
     api::SimulatedFirmwareUpdate firmware;
+    FakeReleases releases{firmware};
     api::SimulatedFactoryReset factoryReset;
     storage::MemoryStateStore hubState;
     config::HubSettings hubSettings{hubState, "Hubbo 534D"};
@@ -218,7 +241,7 @@ protected:
                                    [] { return integrations::MqttDeviceInfo{}; }, [](const std::string &) {}, [] {}}};
     api::Api api{api::ApiContext{creds, sessions, clock, hub.configService(), runtime, {}, &remote,
                                  &haClient, &secrets, nullptr, &ble, &firmware, &factoryReset, &hubSettings,
-                                 &restart, &mqtt}};
+                                 &restart, &mqtt, &releases}};
     http::Router router;
 
     bool noAuth = true;  // simulated admin unless a test logs in
@@ -841,10 +864,96 @@ TEST_F(ApiTest, SharedTransitionAndRestart) {
     EXPECT_TRUE(restart.pending());
 }
 
+TEST_F(ApiTest, FirmwareReleases) {
+    // Never checked yet.
+    Reply r = call(http::Method::Get, "/api/v1/admin/firmware");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_TRUE(r.json["available"].isNull());
+    EXPECT_EQ(r.json["checking"], false);
+    EXPECT_TRUE(r.json["checked_ago_ms"].isNull());
+    EXPECT_TRUE(r.json["check_error"].isNull());
+    EXPECT_TRUE(r.json["rolled_back_from"].isNull());
+
+    r = call(http::Method::Post, "/api/v1/admin/firmware/check");
+    ASSERT_EQ(r.status, 202) << dump(r);
+    EXPECT_EQ(r.json["checking"], true);
+    r = call(http::Method::Post, "/api/v1/admin/firmware/check");
+    EXPECT_EQ(r.status, 409);
+    EXPECT_EQ(r.code(), "busy");
+    release::CheckOutcome found;
+    release::Manifest manifest;
+    manifest.version = "1.4.0";
+    manifest.board = "simulator";
+    manifest.layout = 1;
+    manifest.size = 4096;
+    manifest.sha256 = std::string(64, 'a');
+    found.available = manifest;
+    found.availability = release::Availability::Available;
+    releases.state.finishCheck(found, 0);
+    releases.state.setRolledBackFrom("1.3.1");
+    r = call(http::Method::Get, "/api/v1/admin/firmware");
+    EXPECT_EQ(r.json["checking"], false);
+    EXPECT_EQ(r.json["checked_ago_ms"], 5000);
+    EXPECT_EQ(r.json["available"]["version"], "1.4.0");
+    EXPECT_EQ(r.json["available"].size(), 1u) << "just the version";
+    EXPECT_EQ(r.json["rolled_back_from"], "1.3.1");
+
+    // A failed check reports its error and keeps the release.
+    ASSERT_EQ(call(http::Method::Post, "/api/v1/admin/firmware/check").status, 202);
+    release::CheckOutcome failed;
+    failed.error = release::CheckError::BadSignature;
+    releases.state.finishCheck(failed, 0);
+    r = call(http::Method::Get, "/api/v1/admin/firmware");
+    EXPECT_EQ(r.json["check_error"], "bad_signature");
+    EXPECT_EQ(r.json["available"]["version"], "1.4.0");
+
+    const auto install = [&](const char *body) {
+        return call(http::Method::Post, "/api/v1/admin/firmware/install", body);
+    };
+    r = install(R"({"version":"1.5.0"})");
+    EXPECT_EQ(r.status, 409);
+    EXPECT_EQ(r.code(), "not_available");
+    r = install(R"({"version":"v1.4.0"})");
+    EXPECT_EQ(r.status, 422);
+    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/version");
+    EXPECT_EQ(install("{}").status, 422);
+    r = install(R"({"version":"1.4.0"})");
+    ASSERT_EQ(r.status, 202) << dump(r);
+    EXPECT_EQ(r.json["update"]["state"], "downloading");
+    EXPECT_TRUE(r.json["rolled_back_from"].isNull()) << "an update clears it";
+    r = install(R"({"version":"1.4.0"})");
+    EXPECT_EQ(r.status, 409);
+    EXPECT_EQ(r.code(), "update_in_progress");
+    EXPECT_EQ(call(http::Method::Post, "/api/v1/admin/restart").code(), "update_in_progress");
+    firmware.failDownload(api::kDownloadFailed);
+    r = call(http::Method::Get, "/api/v1/admin/firmware");
+    EXPECT_EQ(r.json["update"]["state"], "failed");
+    EXPECT_EQ(r.json["update"]["error"], "download_failed");
+}
+
+TEST_F(ApiTest, FirmwareReleasesNeedAPort) {
+    // Uploads only: the release fields read as never checked; check and install are 503.
+    api::Api bare{api::ApiContext{creds, sessions, clock, hub.configService(), runtime, {}, nullptr, nullptr,
+                                  &secrets, nullptr, nullptr, &firmware}};
+    http::Router bareRouter;
+    bare.registerRoutes(bareRouter);
+    std::swap(router, bareRouter);
+    const Reply status = call(http::Method::Get, "/api/v1/admin/firmware");
+    const Reply check = call(http::Method::Post, "/api/v1/admin/firmware/check");
+    const Reply install = call(http::Method::Post, "/api/v1/admin/firmware/install", R"({"version":"1.4.0"})");
+    std::swap(router, bareRouter);
+    ASSERT_EQ(status.status, 200) << dump(status);
+    EXPECT_TRUE(status.json["available"].isNull());
+    EXPECT_TRUE(status.json["checked_ago_ms"].isNull());
+    EXPECT_EQ(check.status, 503);
+    EXPECT_EQ(install.status, 503);
+}
+
 TEST_F(ApiTest, HubNameAndRestart) {
     Reply r = call(http::Method::Get, "/api/v1/admin/hub");
     ASSERT_EQ(r.status, 200) << dump(r);
     EXPECT_EQ(r.json["name"], "Hubbo 534D");  // the platform's default
+    EXPECT_EQ(r.json["check_updates"], true);
     EXPECT_EQ(r.json["hostname"], "hubbo-534d");
     EXPECT_EQ(r.json["hostname_conflict"], false);
 
@@ -854,6 +963,16 @@ TEST_F(ApiTest, HubNameAndRestart) {
     EXPECT_EQ(r.json["hostname"], "hubbo-534d-2");
     EXPECT_EQ(r.json["hostname_conflict"], true);
     EXPECT_EQ(call(http::Method::Get, "/api/v1/status").json["network"]["hostname"], "hubbo-534d-2");
+
+    // "Check for updates": on by default, saved, and alone or with a name.
+    r = call(http::Method::Put, "/api/v1/admin/hub", R"({"check_updates":false})");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["check_updates"], false);
+    EXPECT_EQ(r.json["name"], "Hubbo 534D") << "the name stays";
+    EXPECT_FALSE(hubSettings.checkUpdates());
+    EXPECT_EQ(call(http::Method::Put, "/api/v1/admin/hub", "{}").status, 422);
+    EXPECT_EQ(call(http::Method::Put, "/api/v1/admin/hub", R"({"check_updates":"no"})").status, 422);
+    ASSERT_EQ(call(http::Method::Put, "/api/v1/admin/hub", R"({"check_updates":true})").status, 200);
 
     std::vector<config::HubIdentity> applied;
     hubSettings.onChanged([&](const config::HubIdentity &identity) { applied.push_back(identity); });

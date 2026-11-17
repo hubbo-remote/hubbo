@@ -87,6 +87,32 @@ TEST(SimulatedFirmwareUpdate, WritesRebootsAndEndsIdle) {
     EXPECT_STREQ(firmwareUpdateStateName(fw.status().state), "idle");
 }
 
+TEST(SimulatedFirmwareUpdate, ADownloadWaitsForItsImage) {
+    SimulatedFirmwareUpdate fw;
+    ASSERT_TRUE(fw.beginDownload());
+    EXPECT_FALSE(fw.beginDownload());
+    EXPECT_EQ(fw.install(image()), R::Busy);
+    // Time passing doesn't end a download; only its image (or a failure) does.
+    fw.advance(SimulatedFirmwareUpdate::kWriteMs + SimulatedFirmwareUpdate::kRebootMs);
+    EXPECT_EQ(fw.status().state, FirmwareUpdateState::Downloading);
+    ASSERT_EQ(fw.finishDownload(image()), R::Accepted);
+    EXPECT_EQ(fw.status().state, FirmwareUpdateState::Writing);
+    EXPECT_EQ(fw.status().progress, 0);
+    fw.advance(SimulatedFirmwareUpdate::kWriteMs);
+    EXPECT_EQ(fw.status().state, FirmwareUpdateState::Rebooting);
+
+    SimulatedFirmwareUpdate failing;
+    ASSERT_TRUE(failing.beginDownload());
+    failing.failDownload(kDownloadFailed);
+    EXPECT_EQ(failing.status().state, FirmwareUpdateState::Failed);
+    EXPECT_EQ(failing.status().error, "download_failed");
+    ASSERT_TRUE(failing.beginDownload());
+    ImageSpec bad;
+    bad.badHash = true;
+    EXPECT_NE(failing.finishDownload(image(bad)), R::Accepted);
+    EXPECT_EQ(failing.status().error, "invalid_image");
+}
+
 TEST(SimulatedFirmwareUpdate, FailedWriteAllowsAnotherTry) {
     SimulatedFirmwareUpdate fw;
     fw.failWrites = true;

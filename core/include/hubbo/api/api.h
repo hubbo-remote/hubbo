@@ -3,10 +3,12 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "hubbo/api/authenticator.h"
 #include "hubbo/api/factory_reset_port.h"
+#include "hubbo/api/firmware_release_port.h"
 #include "hubbo/api/firmware_update_port.h"
 #include "hubbo/api/remote_port.h"
 #include "hubbo/api/restart_port.h"
@@ -163,6 +165,10 @@ struct ApiContext {
     // The MQTT bridge of integration "mqtt_main": settings changes reach it
     // through applyMqttSettings(). Null: they're saved, nothing applies them.
     integrations::MqttBridge *mqtt = nullptr;
+    // Online firmware updates (GET /admin/firmware's release fields, POST
+    // /admin/firmware/check and /install); null: the fields read as never
+    // checked, and check/install answer 503.
+    FirmwareReleasePort *releases = nullptr;
 };
 
 // SecretStore key of the "ha_main" access token. Never in config, backups,
@@ -203,6 +209,11 @@ public:
     // (normalizing up to 2048 candidates), so the platform can let other
     // tasks and the watchdog run (the board: vTaskDelay(1)). Optional.
     void setYield(std::function<void()> yield);
+    // hub-sim only: the running firmware's version (HubInfo::version), after
+    // its simulated reboot into an installed image or /sim/release running=,
+    // so GET /admin/firmware, /status and backups show it as a board would.
+    // The board never calls it. Call it on the thread that serves requests.
+    void setFirmwareVersion(std::string version) { ctx_.info.version = std::move(version); }
 
 private:
     ApiContext ctx_;
