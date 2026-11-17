@@ -34,6 +34,7 @@
 #include "esp_random_source.h"
 #include "ethernet_link.h"
 #include "factory_reset.h"
+#include "firmware_releases.h"
 #include "firmware_update.h"
 #include "flash_fs.h"
 #include "integration_task.h"
@@ -381,6 +382,10 @@ void onOtaWritten() {
 }
 
 FirmwareUpdate firmwareUpdate(&requestReboot, hash);  // updates from the web admin
+// Online updates: checks, release installs and the new image's trial.
+FirmwareReleases releases(firmwareUpdate, stateStore, hubSettings, ethernet, hash,
+                          {[](std::function<void()> job) { return httpServer.post(std::move(job)); },
+                           &requestReboot});
 FactoryReset factoryReset(&requestReboot);           // POST /admin/factory-reset
 Restart restart(&requestReboot);                     // POST /admin/restart
 
@@ -630,6 +635,7 @@ void startApi() {
     context.remote = &remoteRuntime;
     context.bleHosts = &bleHosts;
     context.firmware = &firmwareUpdate;
+    context.releases = &releases;
     context.factoryReset = &factoryReset;
     context.hub = &hubSettings;
     context.restart = &restart;
@@ -1108,6 +1114,49 @@ std::string wsEcho(std::string_view query) {
         queryValue(query, "async") == "1" ? 0 : 30000);
 }
 
+// Online updates against a local test feed (the API's routes need a login):
+// ?op=test&base=<url>&running=<X.Y.Z> sets the feed and the version checks
+// compare against (signatures still need the release key, or this build's
+// test key: release_key.h); op=check and op=install&version=X call the
+// API's port; op=crash restarts at once (no flush), as a crash would, to try
+// the trial's rollback. Every answer ends with the status.
+std::string releaseDebug(std::string_view query) {
+    const std::string op = queryValue(query, "op");
+    std::string r;
+    if (op == "test") {
+        r = releases.setTest(queryValue(query, "base"), queryValue(query, "running"))
+                ? "test feed queued\n"
+                : "update task busy\n";
+    } else if (op == "check") {
+        r = releases.requestCheck() == hubbo::api::ReleaseCheckResult::Accepted ? "check started\n" : "busy\n";
+    } else if (op == "install") {
+        const hubbo::api::ReleaseInstallResult result = releases.install(queryValue(query, "version"));
+        r = result == hubbo::api::ReleaseInstallResult::Accepted       ? "install started\n"
+            : result == hubbo::api::ReleaseInstallResult::NotAvailable ? "not available\n"
+                                                                        : "busy\n";
+    } else if (op == "crash") {
+        httpServer.post([] {
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_restart();
+        });
+        return "restarting with no flush\n";
+    }
+    const hubbo::api::FirmwareReleaseStatus status = releases.releaseStatus();
+    const hubbo::api::FirmwareUpdateStatus update = firmwareUpdate.status();
+    const char *error = hubbo::release::checkErrorName(status.check.error);
+    char line[256];
+    snprintf(line, sizeof(line),
+             "running %s; checking %d, checked %d (%lu ms ago), error %s, available %s, rolled_back_from %s; "
+             "update %s %u%% %s, trial %d\n",
+             image::version(), status.check.checking, status.check.checked,
+             static_cast<unsigned long>(status.checkedAgoMs), error != nullptr ? error : "null",
+             status.check.available ? status.check.available->version.c_str() : "null",
+             status.check.rolledBackFrom.empty() ? "null" : status.check.rolledBackFrom.c_str(),
+             hubbo::api::firmwareUpdateStateName(update.state), static_cast<unsigned>(update.progress),
+             update.error.c_str(), firmwareUpdate.trial());
+    return r + line;
+}
+
 void addDevEndpoints() {
     httpServer.addDebugGet("/debug/log", [](std::string_view) { return con.recent(); });
     httpServer.addDebugGet("/debug/run", queueDevCommand);
@@ -1115,8 +1164,9 @@ void addDevEndpoints() {
     httpServer.addDebugGet("/debug/coredump", coreDump);
     httpServer.addDebugGet("/debug/ws-echo", wsEcho);  // ?url=ws[s]://<test server>
     httpServer.addDebugGet("/debug/dns", dnsLookup);   // ?host=<name>
+    httpServer.addDebugGet("/debug/release", releaseDebug);  // online updates against a test feed
     con.println("debug: dev console on /debug/log, /debug/run, /debug/bench, /debug/coredump, /debug/ws-echo,"
-                " /debug/dns"
+                " /debug/dns, /debug/release"
                 " (dev build)");
 }
 #endif
@@ -1219,6 +1269,10 @@ void setup() {
     // all started above, ask for internal or DMA memory explicitly. See README.
     heap_caps_malloc_extmem_enable(0);
     startMqtt();  // after: esp-mqtt's client and buffers go to PSRAM
+    releases.boot(bootConfig.state != hubbo::config::ConfigState::StorageUnavailable);  // loaded: ok, blocked or fresh
+    if (!releases.start()) {
+        con.println("update: task failed to start; no update checks");
+    }
 
     printMemory();
     enableLoopWDT();

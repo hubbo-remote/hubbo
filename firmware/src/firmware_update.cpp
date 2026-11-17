@@ -50,66 +50,118 @@ hubbo::api::FirmwareUpdateStatus FirmwareUpdate::status() const {
     return status;
 }
 
-FirmwareInstallResult FirmwareUpdate::install(std::string_view image) {
-    if (!ota::claim(ota::Owner::Web)) {
-        return FirmwareInstallResult::Busy;  // ArduinoOTA is writing, or a reboot is pending
+bool FirmwareUpdate::claimForUpdate() {
+    // On trial, the running image isn't confirmed yet (esp_ota_begin refuses).
+    // Ours running: it holds the claim. Then the owner flag: ArduinoOTA
+    // writing, or a reboot pending.
+    return !trial() && !hubbo::api::firmwareUpdateRunning(state_.load()) && ota::claim(ota::Owner::Web);
+}
+
+FirmwareInstallResult FirmwareUpdate::check(std::string_view image, const esp_partition_t **slot,
+                                            std::string *version) {
+    *slot = esp_ota_get_next_update_partition(nullptr);
+    if (*slot == nullptr) {
+        return FirmwareInstallResult::Unavailable;
     }
-    const FirmwareUpdateState state = state_.load();
-    if (state == FirmwareUpdateState::Writing || state == FirmwareUpdateState::Rebooting) {
-        return FirmwareInstallResult::Busy;  // ours: the claim stays with the running update
+    const uint32_t startUs = micros();
+    const FirmwareInstallResult valid = hubbo::api::validateFirmwareImage(image, targetFor(**slot), hash_, version);
+    con.printf("update: %s %s, %u bytes (result %u, checked in %lu ms)\n",
+               valid == FirmwareInstallResult::Accepted ? "accepted" : "refused", version->c_str(),
+               static_cast<unsigned>(image.size()), static_cast<unsigned>(valid),
+               static_cast<unsigned long>((micros() - startUs) / 1000));
+    return valid;
+}
+
+FirmwareInstallResult FirmwareUpdate::install(std::string_view image) {
+    if (!claimForUpdate()) {
+        return FirmwareInstallResult::Busy;
     }
     auto refuse = [](FirmwareInstallResult result) {
         ota::release(ota::Owner::Web);
         return result;
     };
-
-    const esp_partition_t *slot = esp_ota_get_next_update_partition(nullptr);
-    if (slot == nullptr) {
-        return refuse(FirmwareInstallResult::Unavailable);
-    }
+    const esp_partition_t *slot = nullptr;
     std::string version;
-    const uint32_t startUs = micros();
-    const FirmwareInstallResult valid = hubbo::api::validateFirmwareImage(image, targetFor(*slot), hash_, &version);
-    const uint32_t checkMs = (micros() - startUs) / 1000;
+    const FirmwareInstallResult valid = check(image, &slot, &version);
     if (valid != FirmwareInstallResult::Accepted) {
-        con.printf("update: refused %u bytes (result %u, %lu ms)\n", static_cast<unsigned>(image.size()),
-                   static_cast<unsigned>(valid), static_cast<unsigned long>(checkMs));
         return refuse(valid);
     }
-
     auto *copy = static_cast<uint8_t *>(heap_caps_malloc(image.size(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (copy == nullptr) {
         con.printf("update: no PSRAM for a %u-byte copy\n", static_cast<unsigned>(image.size()));
         return refuse(FirmwareInstallResult::Unavailable);
     }
     memcpy(copy, image.data(), image.size());
+    if (startWrite(copy, image.size(), slot, std::move(version)) != ESP_OK) {
+        heap_caps_free(copy);
+        return refuse(FirmwareInstallResult::Unavailable);
+    }
+    return FirmwareInstallResult::Accepted;
+}
+
+bool FirmwareUpdate::beginDownload() {
+    if (!claimForUpdate()) {
+        return false;
+    }
+    progress_.store(0, std::memory_order_relaxed);
+    error_.store("", std::memory_order_relaxed);
+    state_.store(FirmwareUpdateState::Downloading, std::memory_order_release);
+    return true;
+}
+
+void FirmwareUpdate::failDownload(const char *error) {
+    con.printf("update: release install failed (%s)\n", error);
+    fail(error);
+}
+
+FirmwareInstallResult FirmwareUpdate::installDownloaded(uint8_t *image, size_t size) {
+    auto refuse = [&](const char *error, FirmwareInstallResult result) {
+        heap_caps_free(image);
+        failDownload(error);
+        return result;
+    };
+    const esp_partition_t *slot = nullptr;
+    std::string version;
+    const FirmwareInstallResult valid = check(std::string_view(reinterpret_cast<const char *>(image), size), &slot,
+                                              &version);
+    if (valid == FirmwareInstallResult::Unavailable) {
+        return refuse("no_slot", valid);
+    }
+    if (valid != FirmwareInstallResult::Accepted) {
+        return refuse(hubbo::api::kInvalidImage, valid);
+    }
+    if (startWrite(image, size, slot, std::move(version)) != ESP_OK) {
+        return refuse("ota_unavailable", FirmwareInstallResult::Unavailable);
+    }
+    return FirmwareInstallResult::Accepted;
+}
+
+esp_err_t FirmwareUpdate::startWrite(uint8_t *image, size_t size, const esp_partition_t *slot, std::string version) {
     // Sequential writes: nothing is erased here; each write erases its sector.
     esp_ota_handle_t handle = 0;
     const esp_err_t begun = esp_ota_begin(slot, OTA_WITH_SEQUENTIAL_WRITES, &handle);
     if (begun != ESP_OK) {
-        heap_caps_free(copy);
         con.printf("update: esp_ota_begin failed (%s)\n", esp_err_to_name(begun));
-        return refuse(FirmwareInstallResult::Unavailable);
+        return begun;
     }
-    image_ = copy;
-    size_ = image.size();
+    image_ = image;
+    size_ = size;
     handle_ = handle;
     slot_ = slot;
+    version_ = std::move(version);
     progress_.store(0, std::memory_order_relaxed);
     state_.store(FirmwareUpdateState::Writing, std::memory_order_release);
     // Internal RAM stack (the default): it runs with the cache off.
     if (xTaskCreatePinnedToCore(&writerTask, "fw_write", kWriterStackBytes, this, kWriterPriority, nullptr,
                                 kWriterCore) != pdPASS) {
         esp_ota_abort(handle);
-        heap_caps_free(copy);
         image_ = nullptr;
         state_.store(FirmwareUpdateState::Idle, std::memory_order_release);
         con.println("update: couldn't start the writer task");
-        return refuse(FirmwareInstallResult::Unavailable);
+        return ESP_ERR_NO_MEM;
     }
-    con.printf("update: accepted %s, %u bytes (checked in %lu ms); writing to %s\n", version.c_str(),
-               static_cast<unsigned>(size_), static_cast<unsigned long>(checkMs), slot->label);
-    return FirmwareInstallResult::Accepted;
+    con.printf("update: writing %s to %s\n", version_.c_str(), slot->label);
+    return ESP_OK;
 }
 
 void FirmwareUpdate::writerTask(void *self) {
@@ -164,6 +216,9 @@ void FirmwareUpdate::write() {
                static_cast<unsigned long>(millis() - startMs),
                static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
     state_.store(FirmwareUpdateState::Rebooting, std::memory_order_release);
+    if (written_) {
+        written_(version_);  // the trial's record, before the reboot
+    }
     reboot_("firmware update");  // the owner claim stays: no other update before the restart
 }
 
@@ -172,8 +227,10 @@ void FirmwareUpdate::fail(const char *error) {
     heap_caps_free(image_);
     image_ = nullptr;
     error_.store(error, std::memory_order_relaxed);
-    state_.store(FirmwareUpdateState::Failed, std::memory_order_release);
+    // Release before Failed shows: claimForUpdate() checks the state first, so
+    // until then a new update is Busy and never shares this claim.
     ota::release(ota::Owner::Web);
+    state_.store(FirmwareUpdateState::Failed, std::memory_order_release);
 }
 
 }  // namespace hubbo::fw
