@@ -528,6 +528,12 @@ of remote lag during the write are accepted.
   Idle after: loop 0.4-2.4 ms, 0 over 5 ms; internal 72.5 KB free. Real GitHub check: 404 (repo
   private) -> unreachable in 2.7 s.
 - Sizes: `_ota` RAM 102,256 B, flash 2,491,543 B (38.0%); default RAM 91,584 B, flash 2,439,255 B.
+- Pinned toolchain (2026-11-17): platformio.ini `platform_packages` pins framework 4.30312.261024,
+  esp32s3-libs 3.3.12, xtensa 14.2.0+20260121, esptool, scons. The platform asks only for
+  `~4.30312.0`, so a fresh PlatformIO dir (CI, a worktree) floated to 4.30312.261116, whose build
+  script adds `-Os` after our `-O2` (everything at -Os, 358 KB smaller; v0.1.0 shipped that way and
+  was deleted). Same IDF, libs and bootloader otherwise. The user chose to stay on -O2. A fresh-dir
+  build now gives RAM 91,464 B, flash 2,438,067 B, the same as local.
 - Gotchas: a connection to the hub's own Ethernet IP fails (ESP_ERR_HTTP_CONNECT); use 127.0.0.1.
   A fast (LAN) download starved IDLE0 -> task watchdog at ~35%: the read loop calls
   `tls::yieldIfDue()` (a tick per 20 ms); re-measured after /simplify: full LAN download, no reset,
