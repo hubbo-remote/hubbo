@@ -1664,11 +1664,12 @@ paths:
       tags: [admin]
       operationId: getFirmwareStatus
       x-hubbo-role: admin
-      summary: Firmware version and update state
+      summary: Firmware version, update state and the latest release
       description: |
         Poll it during an update. After `rebooting`, the hub stops answering
         for a few seconds, then comes back `idle` with the new `version` (and
-        every session gone: log in again).
+        every session gone: log in again). It also shows the latest signed
+        release newer than this one (`available`) and the last check.
       responses:
         '503': {$ref: '#/components/responses/Unavailable'}
         '200':
@@ -1678,6 +1679,78 @@ paths:
               schema: {$ref: '#/components/schemas/FirmwareStatus'}
         '401': {$ref: '#/components/responses/Unauthenticated'}
         '403': {$ref: '#/components/responses/Forbidden'}
+
+  /admin/firmware/check:
+    post:
+      tags: [admin]
+      operationId: checkFirmwareRelease
+      x-hubbo-role: admin
+      summary: Check for a firmware release now
+      description: |
+        Starts a check of the latest release whether or not `check_updates`
+        is on, and answers `202` with `checking: true`. Poll `GET
+        /admin/firmware` until `checking` is false: then `available` is the
+        release (or null) and `check_error` says why a check failed. A
+        check takes a few seconds; one that fails keeps `available` from
+        the last good check.
+      responses:
+        '202':
+          description: The check has started
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FirmwareStatus'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409':
+          description: A check is already running (`busy`); poll `GET /admin/firmware` instead
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/firmware/install:
+    post:
+      tags: [admin]
+      operationId: installFirmwareRelease
+      x-hubbo-role: admin
+      x-hubbo-max-body: 1024
+      summary: Install the available firmware release
+      description: |
+        `version` must be `available.version` from `GET /admin/firmware`.
+        The hub answers `202`, downloads the image (`downloading`), checks
+        its size and SHA-256 against the signed release, and then writes it
+        like an upload (`writing`, `rebooting`). A failed download ends in
+        `failed` with `download_failed`, `image_mismatch` or
+        `invalid_image`, and the running firmware stays. The new firmware
+        starts on trial: if it doesn't come up healthy within about 2
+        minutes, the hub goes back to this one and reports
+        `rolled_back_from`. The remote may pause for about a minute.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/FirmwareInstall'}
+      responses:
+        '202':
+          description: The download has started
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FirmwareStatus'}
+        '400': {$ref: '#/components/responses/MalformedJson'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409':
+          description: |
+            `not_available`: that version isn't the available release (check
+            again). `update_in_progress`: an update is running, or the hub is
+            rebooting.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '503': {$ref: '#/components/responses/Unavailable'}
 
   /admin/firmware/update:
     post:
@@ -1694,8 +1767,10 @@ paths:
         Hubbo marker for this board and partition layout, and its appended
         SHA-256 matches. Then it answers `202` and writes the image in the
         background (`GET /admin/firmware` shows the progress), sets it to boot
-        and reboots. There's no rollback. During the write the remote may lag
-        for up to about 30 s. The body limit is the OTA slot size.
+        and reboots. Like a release, it starts on trial and goes back if it
+        doesn't come up healthy (`rolled_back_from`). During the write the
+        remote may lag for up to about 30 s. The body limit is the OTA slot
+        size.
       requestBody:
         required: true
         content:
@@ -1761,11 +1836,12 @@ paths:
       operationId: updateHub
       x-hubbo-role: admin
       x-hubbo-max-body: 1024
-      summary: Rename the hub
+      summary: Rename the hub, or change its settings
       description: |
-        Spaces at either end are dropped, then the rest must be a `HubName`;
-        otherwise `422 validation_failed` at `/name` (`required`, `too_long`
-        or `invalid_name`). `hostname` follows the name (see `Hub`).
+        Send `name`, `check_updates` or both. Spaces at either end of the
+        name are dropped, then the rest must be a `HubName`; otherwise `422
+        validation_failed` at `/name` (`required`, `too_long` or
+        `invalid_name`). `hostname` follows the name (see `Hub`).
       requestBody:
         required: true
         content:
@@ -2006,6 +2082,7 @@ components:
         - setup_already_done
         - details_required
         - update_in_progress
+        - not_available
         - invalid_image
         - wrong_board
         - unavailable
@@ -2125,7 +2202,7 @@ components:
           required: [name, version, board]
           properties:
             name: {$ref: '#/components/schemas/HubName'}
-            version: {type: string, maxLength: 32}
+            version: {type: string, maxLength: 64}
             build: {type: string, maxLength: 64}
             board: {type: string, maxLength: 32}
         uptime_s: {type: integer, minimum: 0}
@@ -3793,7 +3870,7 @@ components:
         format: {const: hubbo-backup}
         format_version: {type: integer, const: 1}
         created_at: {$ref: '#/components/schemas/Timestamp'}
-        firmware_version: {type: string, maxLength: 32}
+        firmware_version: {type: string, maxLength: 64}
         board: {type: string, maxLength: 32}
         remote:
           description: Pairing (radio address and channel). Not a credential.
@@ -3908,9 +3985,15 @@ components:
     Hub:
       type: object
       additionalProperties: false
-      required: [name, hostname, hostname_conflict]
+      required: [name, hostname, hostname_conflict, check_updates]
       properties:
         name: {$ref: '#/components/schemas/HubName'}
+        check_updates:
+          description: |
+            Check for firmware releases at boot and every 24 hours (on by
+            default). Off, only `POST /admin/firmware/check` checks. Nothing
+            ever installs by itself.
+          type: boolean
         hostname:
           description: |
             Read-only: the `.local` hostname the hub advertises. It comes
@@ -3935,19 +4018,72 @@ components:
     HubUpdate:
       type: object
       additionalProperties: false
-      required: [name]
+      minProperties: 1
       properties:
         name: {type: string, examples: [Living Room]}
+        check_updates: {type: boolean}
+    FirmwareInstall:
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        version: {$ref: '#/components/schemas/ReleaseVersion'}
+    ReleaseVersion:
+      description: A release's version, plain `X.Y.Z`.
+      type: string
+      maxLength: 17
+      pattern: '^(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})$'
+      examples: [1.4.0]
+    FirmwareRelease:
+      description: >-
+        A signed release newer than the running firmware, for this board. Its
+        notes are on the project's GitHub release of the same version.
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        version: {$ref: '#/components/schemas/ReleaseVersion'}
     FirmwareStatus:
       type: object
       additionalProperties: false
-      required: [version, board, update]
+      required: [version, board, update, available, checking, checked_ago_ms, check_error, rolled_back_from]
       properties:
         version:
-          description: The running firmware's version (`git describe`).
+          description: |
+            The running firmware's version: `X.Y.Z` for a release, a `git
+            describe` for a development build (which is never offered a
+            release).
           type: string
-          maxLength: 32
+          maxLength: 64
         board: {type: string, maxLength: 32}
+        available:
+          description: The latest release, when it's newer than this one and installable here; else null.
+          oneOf:
+            - {$ref: '#/components/schemas/FirmwareRelease'}
+            - {type: 'null'}
+        checking:
+          description: A check is running.
+          type: boolean
+        checked_ago_ms:
+          description: Milliseconds since the last check finished; null if none has since boot.
+          type: [integer, 'null']
+          minimum: 0
+        check_error:
+          description: |
+            Why the last check failed, or null. `unreachable`: no answer, or
+            an HTTP error. `bad_signature`: the release isn't signed with
+            Hubbo's key, so it was ignored. `bad_manifest`: signed, but not
+            readable. Whatever the error, `available` stays what the last
+            good check found.
+          type: [string, 'null']
+          enum: [unreachable, bad_signature, bad_manifest, null]
+        rolled_back_from:
+          description: |
+            The version the hub went back from, because it didn't come up
+            healthy after an update; null otherwise. Cleared by the next
+            update.
+          type: [string, 'null']
+          maxLength: 64
         update:
           type: object
           additionalProperties: false
@@ -3955,18 +4091,24 @@ components:
           properties:
             state:
               description: |
-                `idle`: nothing running. `writing`: erasing and writing the
-                inactive slot. `rebooting`: written and set to boot; the hub
-                restarts shortly. `failed`: the latest update stopped (`error`);
-                the running firmware stays and still boots.
+                `idle`: nothing running. `downloading`: fetching a release's
+                image. `writing`: erasing and writing the inactive slot.
+                `rebooting`: written and set to boot; the hub restarts
+                shortly. `failed`: the latest update stopped (`error`); the
+                running firmware stays and still boots.
               type: string
-              enum: [idle, writing, rebooting, failed]
+              enum: [idle, downloading, writing, rebooting, failed]
             progress:
-              description: Percent of the image written (`writing`; 100 once `rebooting`).
+              description: |
+                Percent of the image received (`downloading`; 0 when unknown)
+                or written (`writing`; 100 once `rebooting`).
               type: integer
               minimum: 0
               maximum: 100
             error:
-              description: '`failed` only: a short code such as `write_failed` or `verify_failed`.'
+              description: |
+                `failed` only: a short code such as `write_failed` or
+                `verify_failed`; for a release, `download_failed`,
+                `image_mismatch` or `invalid_image`.
               type: [string, 'null']
               maxLength: 64

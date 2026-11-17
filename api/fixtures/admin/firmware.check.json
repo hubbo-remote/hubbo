@@ -1,0 +1,14 @@
+{
+  "version": "1.3.0",
+  "board": "waveshare_esp32_s3_eth",
+  "update": {
+    "state": "idle",
+    "progress": 0,
+    "error": null
+  },
+  "available": null,
+  "checking": true,
+  "checked_ago_ms": 3600000,
+  "check_error": null,
+  "rolled_back_from": null
+}
