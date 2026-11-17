@@ -49,6 +49,7 @@ import type {
   ValidationIssue,
   BluetoothStatus,
   EntityDetailsStatus,
+  FirmwareRelease,
   FirmwareStatus,
 } from '../src/api/types.ts'
 import { BLE_MAX_DEVICES, BLE_PAIR_WINDOW_MAX_S, BLE_PAIR_WINDOW_MIN_S, BLE_PAIR_WINDOW_S, REMOTE_CHANNEL_MAX, REMOTE_SCAN_TIMEOUT_S } from '../src/api/constants.ts'
@@ -125,6 +126,22 @@ type Handler = (req: MockRequest, m: string[]) => MockResponse | Promise<MockRes
 const DEV_SID = 'dev'
 /** Like hub-sim's SimulatedFirmwareUpdate: a write takes 2 s, then rebooting 1 s (the mock's hub is down for its second half). */
 const FW_WRITE_MS = 2000
+/** Like hub-sim's SimFirmwareReleases: a check takes 0.5 s; installing a release downloads it for 1 s first. */
+const FW_CHECK_MS = 500
+const FW_DOWNLOAD_MS = 1000
+type CheckError = NonNullable<FirmwareStatus['check_error']>
+/** This hub's partition layout (the image marker's `layout`). */
+const HUB_LAYOUT = 1
+/** The release the mock's feed publishes, until `/__mock/release` changes it: the API fixture's. */
+const defaultRelease = () => fixture<FirmwareStatus>('admin/firmware.available.json').available!
+/** Like core's firmware_release: a release is a plain X.Y.Z; anything else (a development build) is never older. */
+const RELEASE = /^(\d+)\.(\d+)\.(\d+)$/
+function isNewer(candidate: string, running: string): boolean {
+  const a = RELEASE.exec(candidate), b = RELEASE.exec(running)
+  if (!a || !b) return false
+  for (let i = 1; i <= 3; i++) if (Number(a[i]) !== Number(b[i])) return Number(a[i]) > Number(b[i])
+  return false
+}
 const FW_REBOOT_MS = 1000
 /** The OTA slot (POST /admin/firmware/update x-hubbo-max-body). */
 const FW_SLOT_BYTES = 6_553_600
@@ -235,7 +252,19 @@ export function createMock(opts: MockOptions = {}) {
   /** Like hub-sim's /sim/ha?auth=reject and ?connect=stall: how the fake HA answers the next connect (after a save). */
   let haNextConnect: 'ok' | 'reject' | 'stall' = 'ok'
   /** A firmware update in hub time: `advancedMs` from /__mock/advance plus scaled real time since `startedAt`. */
-  let fw: { state: 'idle' } | { state: 'writing'; startedAt: number; advancedMs: number; version: string } | { state: 'failed'; error: string }
+  // A release install downloads first, then writes like an upload.
+  let fw: { state: 'idle' } | { state: 'downloading' | 'writing'; startedAt: number; advancedMs: number; version: string } | { state: 'failed'; error: string }
+  /**
+   * Like hub-sim's POST /sim/release: the release the feed publishes (with its manifest's board, layout and
+   * min_version; unpublished = GitHub's 404, so a check is unreachable), or a fault. Mock-only `download=fail`.
+   */
+  let feed: { release: FirmwareRelease; board: string; layout: number; minVersion: string; published: boolean; fault: CheckError | null; downloadFails: boolean }
+  /** The hub's update check: the release it found, when (real ms), and a check running (in hub time). */
+  let check: { available: FirmwareRelease | null; error: CheckError | null; checkedAt: number | null; running: { startedAt: number; advancedMs: number } | null }
+  /** Hub setting "Check for updates" (`check_updates`). */
+  let checkUpdates: boolean
+  /** The version a rolled-back update tried to run, until the next update starts. */
+  let rolledBackFrom: string | null
   /** Like hub-sim's POST /sim/firmware: writes fail; the hub can't take an update. Mock-only: the new image doesn't take (the old one boots again). */
   let fwFail: boolean
   let fwReady: boolean
@@ -310,6 +339,12 @@ export function createMock(opts: MockOptions = {}) {
     bleRadioDown = false
     haNextConnect = 'ok'
     fw = { state: 'idle' }
+    feed = { release: defaultRelease(), board: db.firmware.board, layout: HUB_LAYOUT, minVersion: '', published: true, fault: null, downloadFails: false }
+    // A set-up hub checked a while ago (at boot); a new one hasn't yet.
+    check = { available: null, error: null, checkedAt: null, running: null }
+    if (!mode.firstRun) finishCheck(Date.now() - 3 * 3600_000)
+    checkUpdates = true
+    rolledBackFrom = null
     fwFail = false
     fwReady = true
     fwRevert = false
@@ -672,7 +707,13 @@ export function createMock(opts: MockOptions = {}) {
 
   const hubMs = (t: { startedAt: number; advancedMs: number }) => t.advancedMs + (opts.timeScale ?? 1 / 3) * (Date.now() - t.startedAt)
   /** Hub ms since the running update started. */
-  const firmwareMs = () => (fw.state === 'writing' ? hubMs(fw) : 0)
+  const firmwareMs = () => (fw.state === 'writing' || fw.state === 'downloading' ? hubMs(fw) : 0)
+  /** An update is running (a download, the write or the restart): the hub refuses another, and a restart or reset. */
+  const updating = () => ['downloading', 'writing', 'rebooting', 'down'].includes(firmwarePhase())
+  function setRunning(version: string) {
+    db.firmware = { ...db.firmware, version }
+    db.status.hubbo.version = version
+  }
 
   /** True while the hub restarts (it answers nothing); as it comes back, `onBack` runs once. */
   function restarting(): boolean {
@@ -688,7 +729,7 @@ export function createMock(opts: MockOptions = {}) {
   const hub = (): Hub => {
     const own = hostnameOf(db.status.hubbo.name)
     const hostname = db.status.network.hostname ?? own
-    return { name: db.status.hubbo.name, hostname, hostname_conflict: hostname !== own }
+    return { name: db.status.hubbo.name, hostname, hostname_conflict: hostname !== own, check_updates: checkUpdates }
   }
   /** A rename (or a fresh hub) advertises the name's own hostname. */
   function setHubName(name: string) {
@@ -704,7 +745,17 @@ export function createMock(opts: MockOptions = {}) {
    * Where a firmware update is, in hub time. The reboot's end is applied here: the new version
    * runs and every session is gone (they live in RAM), like the board.
    */
-  function firmwarePhase(): 'idle' | 'writing' | 'rebooting' | 'down' | 'failed' {
+  function firmwarePhase(): 'idle' | 'downloading' | 'writing' | 'rebooting' | 'down' | 'failed' {
+    if (fw.state === 'downloading') {
+      const ms = hubMs(fw)
+      if (ms < FW_DOWNLOAD_MS) return 'downloading'
+      if (feed.downloadFails) {
+        fw = { state: 'failed', error: 'download_failed' }
+        return 'failed'
+      }
+      // Like hub-sim: the time past the download goes on to the write.
+      fw = { state: 'writing', startedAt: Date.now(), advancedMs: ms - FW_DOWNLOAD_MS, version: fw.version }
+    }
     if (fw.state !== 'writing') return fw.state
     const ms = firmwareMs()
     if (ms < FW_WRITE_MS) return 'writing'
@@ -712,12 +763,13 @@ export function createMock(opts: MockOptions = {}) {
       fw = { state: 'failed', error: 'write_failed' }
       return 'failed'
     }
+    rolledBackFrom = null // written: a past rollback is old news
     if (ms < FW_WRITE_MS + FW_REBOOT_MS / 2) return 'rebooting'
     if (ms < FW_WRITE_MS + FW_REBOOT_MS) return 'down'
-    if (!fwRevert) {
-      db.firmware = { ...db.firmware, version: fw.version }
-      db.status.hubbo.version = fw.version
-    }
+    if (!fwRevert) setRunning(fw.version)
+    else rolledBackFrom = fw.version
+    // Like the board: the checks live in RAM, so a restart forgets them (a rollback is remembered).
+    check = { available: null, error: null, checkedAt: null, running: null }
     sessions.clear()
     fw = { state: 'idle' }
     return 'idle'
@@ -726,8 +778,38 @@ export function createMock(opts: MockOptions = {}) {
   function firmwareStatus(): FirmwareStatus {
     const phase = firmwarePhase()
     const state = phase === 'down' ? 'rebooting' : phase // (handle() answers nothing while down)
-    const progress = state === 'writing' ? Math.floor((firmwareMs() * 100) / FW_WRITE_MS) : state === 'rebooting' ? 100 : 0
-    return { ...db.firmware, update: { state, progress, error: fw.state === 'failed' ? fw.error : null } }
+    const ms = firmwareMs()
+    const progress =
+      state === 'downloading' ? Math.floor((ms * 100) / FW_DOWNLOAD_MS)
+      : state === 'writing' ? Math.floor((ms * 100) / FW_WRITE_MS)
+      : state === 'rebooting' ? 100
+      : 0
+    if (check.running && hubMs(check.running) >= FW_CHECK_MS) finishCheck(Date.now())
+    return {
+      version: db.firmware.version,
+      board: db.firmware.board,
+      update: { state, progress, error: fw.state === 'failed' ? fw.error : null },
+      available: check.available,
+      checking: !!check.running,
+      checked_ago_ms: check.checkedAt === null ? null : Date.now() - check.checkedAt,
+      check_error: check.error,
+      rolled_back_from: rolledBackFrom,
+    }
+  }
+
+  /**
+   * A check reads the feed, like core: no release (GitHub's 404) or a fault is the check's error and keeps what
+   * the last good check found; else the release, if it's for this board and layout, newer, and installable from here.
+   */
+  function finishCheck(at: number) {
+    const { release, board, layout, minVersion, published, fault } = feed
+    const running = db.firmware.version
+    check.running = null
+    check.checkedAt = at
+    check.error = published ? fault : 'unreachable'
+    if (check.error) return
+    const fits = board === db.firmware.board && layout === HUB_LAYOUT && isNewer(release.version, running) && !(minVersion && isNewer(minVersion, running))
+    check.available = fits ? release : null
   }
 
   /**
@@ -1400,8 +1482,7 @@ export function createMock(opts: MockOptions = {}) {
       return ok(config)
     }],
     ['POST', /^\/admin\/factory-reset$/, 'admin', () => {
-      const update = firmwarePhase()
-      if (update === 'writing' || update === 'rebooting') return fixtureError(409, 'errors/factory_reset_during_update.json')
+      if (updating()) return fixtureError(409, 'errors/factory_reset_during_update.json')
       if (!eraseReady) return err(503, 'unavailable', "The hub can't do a factory reset right now")
       // Back fresh: no admin, sessions, tokens, remote or config; Bluetooth bonds erased with the rest.
       startRestart(() => {
@@ -1413,20 +1494,26 @@ export function createMock(opts: MockOptions = {}) {
     ['GET', /^\/admin\/hub$/, 'admin', () => ok(hub())],
     ['PUT', /^\/admin\/hub$/, 'admin', (req) => {
       const body = (req.body ?? {}) as Record<string, unknown>
-      const extra = Object.keys(body).filter((k) => k !== 'name')
+      const extra = Object.keys(body).filter((k) => k !== 'name' && k !== 'check_updates')
       if (extra.length) return invalid(unknownFields(extra)) // hostname is read-only
-      if (typeof body.name !== 'string') return invalid([{ path: '/name', code: 'wrong_type', message: 'Name must be text' }])
-      const name = body.name.replace(/^ +| +$/g, '') // spaces only: a tab or newline is a control character
-      if (!name) return invalid([{ path: '/name', code: 'required', message: 'Name is required' }])
-      // In core's order: control characters, then length.
-      if (CONTROL.test(name)) return invalid([{ path: '/name', code: 'invalid_name', message: 'Name must be text without control characters' }])
-      if ([...name].length > 32) return fixtureError(422, 'errors/hub_name_invalid.json')
-      setHubName(name)
+      if (body.name === undefined && body.check_updates === undefined) return invalid([{ path: '', code: 'required', message: 'Send a name or check_updates' }])
+      if (body.check_updates !== undefined && typeof body.check_updates !== 'boolean') return invalid([{ path: '/check_updates', code: 'wrong_type', message: 'check_updates must be true or false' }])
+      // Check every field that's there, then apply them.
+      let name: string | undefined
+      if (body.name !== undefined) {
+        if (typeof body.name !== 'string') return invalid([{ path: '/name', code: 'wrong_type', message: 'Name must be text' }])
+        name = body.name.replace(/^ +| +$/g, '') // spaces only: a tab or newline is a control character
+        if (!name) return invalid([{ path: '/name', code: 'required', message: 'Name is required' }])
+        // In core's order: control characters, then length.
+        if (CONTROL.test(name)) return invalid([{ path: '/name', code: 'invalid_name', message: 'Name must be text without control characters' }])
+        if ([...name].length > 32) return fixtureError(422, 'errors/hub_name_invalid.json')
+      }
+      if (name !== undefined) setHubName(name)
+      if (body.check_updates !== undefined) checkUpdates = body.check_updates as boolean
       return ok(hub())
     }],
     ['POST', /^\/admin\/restart$/, 'admin', () => {
-      const update = firmwarePhase()
-      if (update === 'writing' || update === 'rebooting') return fixtureError(409, 'errors/restart_during_update.json')
+      if (updating()) return fixtureError(409, 'errors/restart_during_update.json')
       startRestart(() => sessions.clear()) // sessions live in RAM
       return { status: 202, body: fixture('admin/restart.json') }
     }],
@@ -1437,11 +1524,30 @@ export function createMock(opts: MockOptions = {}) {
       if (image.byteLength > FW_SLOT_BYTES) return err(413, 'payload_too_large', 'The image is larger than the update slot')
       if (!/^application\/octet-stream\b/i.test(req.headers['content-type'] ?? '')) return err(415, 'unsupported_media_type', 'Send the image as application/octet-stream')
       if (req.headers['content-length'] === undefined) return fixtureError(411, 'errors/length_required.json')
-      if (fw.state === 'writing') return fixtureError(409, 'errors/update_in_progress.json')
+      if (updating()) return fixtureError(409, 'errors/update_in_progress.json')
       if (!fwReady) return err(503, 'unavailable', 'The hub can’t take an update right now')
       const checked = await checkFirmwareImage(image, db.firmware.board)
       if ('code' in checked) return err(422, checked.code, checked.message)
       fw = { state: 'writing', startedAt: Date.now(), advancedMs: 0, version: checked.version }
+      return ok(firmwareStatus(), 202)
+    }],
+    ['POST', /^\/admin\/firmware\/check$/, 'admin', () => {
+      firmwareStatus() // settles a check that's done
+      if (check.running) return err(409, 'busy', 'A check is already running')
+      check.running = { startedAt: Date.now(), advancedMs: 0 }
+      return ok(firmwareStatus(), 202)
+    }],
+    ['POST', /^\/admin\/firmware\/install$/, 'admin', (req) => {
+      const body = (req.body ?? {}) as Record<string, unknown>
+      const extra = Object.keys(body).filter((k) => k !== 'version')
+      if (extra.length) return invalid(unknownFields(extra))
+      if (body.version === undefined) return invalid([{ path: '/version', code: 'required', message: 'version is required' }])
+      if (typeof body.version !== 'string') return invalid([{ path: '/version', code: 'wrong_type', message: 'version must be text' }])
+      if (!RELEASE.test(body.version)) return invalid([{ path: '/version', code: 'pattern', message: 'version must be X.Y.Z' }])
+      if (updating()) return fixtureError(409, 'errors/update_in_progress.json')
+      if (check.available?.version !== body.version) return err(409, 'not_available', `${body.version} isn't the available update`)
+      fw = { state: 'downloading', startedAt: Date.now(), advancedMs: 0, version: body.version }
+      rolledBackFrom = null
       return ok(firmwareStatus(), 202)
     }],
 
@@ -1462,6 +1568,31 @@ export function createMock(opts: MockOptions = {}) {
     ['POST', /^\/__mock\/factory-reset$/, 'public', (req) => {
       if (req.query.has('ready')) eraseReady = req.query.get('ready') === '1'
       return ok({ ready: eraseReady })
+    }],
+    // Like hub-sim's POST /sim/release?version=&board=&layout=&min_version=&fault=none|…&none=1&running=&rolled_back_from=:
+    // what the feed publishes (any release field publishes it; none=1 withdraws it), the running version and a past
+    // rollback. Mock-only ?download=fail: an install's download fails.
+    ['POST', /^\/__mock\/release$/, 'public', (req) => {
+      const q = req.query
+      const bad = (path: string, message: string) => invalid([{ path, code: 'invalid_enum_value', message }])
+      const fault = q.get('fault')
+      if (fault !== null && !['none', 'unreachable', 'bad_signature', 'bad_manifest'].includes(fault)) return bad('/fault', 'fault=none|unreachable|bad_signature|bad_manifest')
+      const version = q.get('version'), layout = q.get('layout')
+      if (version !== null && !RELEASE.test(version)) return bad('/version', 'version must be X.Y.Z')
+      if (layout !== null && !/^[1-9]\d{0,3}$/.test(layout)) return bad('/layout', 'layout must be 1..9999')
+      if (q.has('none') && q.get('none') !== '1') return bad('/none', 'none must be 1')
+      if (fault) feed.fault = fault === 'none' ? null : (fault as CheckError)
+      if (version !== null) feed.release = { ...feed.release, version }
+      if (q.has('board')) feed.board = q.get('board')!
+      if (layout !== null) feed.layout = Number(layout)
+      if (q.has('min_version')) feed.minVersion = q.get('min_version')!
+      if (['version', 'board', 'layout', 'min_version'].some((k) => q.has(k))) feed.published = true
+      if (q.has('none')) feed.published = false
+      if (q.has('download')) feed.downloadFails = q.get('download') === 'fail'
+      const running = q.get('running')
+      if (running) setRunning(running)
+      if (q.has('rolled_back_from')) rolledBackFrom = q.get('rolled_back_from') || null
+      return ok(feed)
     }],
     ['POST', /^\/__mock\/firmware$/, 'public', (req) => {
       if (req.query.has('fail')) fwFail = req.query.get('fail') === '1'
@@ -1487,8 +1618,9 @@ export function createMock(opts: MockOptions = {}) {
       if (blePair) blePair.endsAt -= ms
       if (details) details.startedAt -= ms
       if (discovery.startedAt !== undefined) discovery.startedAt -= ms
-      if (fw.state === 'writing') fw.advancedMs += ms
+      if (fw.state === 'writing' || fw.state === 'downloading') fw.advancedMs += ms
       if (restart) restart.advancedMs += ms
+      if (check.running) check.running.advancedMs += ms
       return ok()
     }],
     // The HA client's state, as the fake HA server would drive it (cleared by the next settings change).
@@ -1595,7 +1727,7 @@ export function createMock(opts: MockOptions = {}) {
     if ((firmwarePhase() === 'down' || restarting()) && !req.path.startsWith('/__mock/')) return { status: 0 }
     // Per-route limits (x-hubbo-max-body): restore takes a whole config; firmware images are streamed.
     const limit = req.path.startsWith('/admin/restore') ? RESTORE_MAX_BODY : MAX_BODY
-    const firmware = req.path.startsWith('/admin/firmware')
+    const firmware = req.path === '/admin/firmware/update' // the binary upload
     if (req.rawBody && req.rawBody.byteLength > limit && !firmware) {
       return err(413, 'payload_too_large', `Request bodies are limited to ${limit / 1024} KiB`)
     }

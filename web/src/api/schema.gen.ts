@@ -96,11 +96,14 @@ export interface paths {
          * The last few activity runs, step by step
          * @description The hub keeps the last 8 runs of an activity's startup (activate),
          *     shutdown (off) or a macro (a trigger listed in `macros`), newest
-         *     first, in RAM: a restart clears them. Other button presses aren't
-         *     kept. Failed steps don't stop a run (`ActionSequence`); switching
-         *     activity mid-run cancels the rest (`cancelled` steps), macros
-         *     included. A macro pressed while 4 are already queued is dropped and
-         *     isn't listed. `GET /status` `last_run` sums up the newest.
+         *     first, in RAM: a restart clears them. Macros take at most 5 of the
+         *     8, so a burst of them doesn't push out the last startup; a running
+         *     run is never pushed out. Other button presses aren't kept. Failed
+         *     steps don't stop a run (`ActionSequence`); switching activity
+         *     mid-run cancels the rest (`cancelled` steps), macros included. A
+         *     macro refused because too many are waiting (4 macros, or too many
+         *     macro steps) isn't listed. `GET /status` `last_run` sums up the
+         *     newest.
          */
         get: operations["listActivityRuns"];
         put?: never;
@@ -577,8 +580,10 @@ export interface paths {
          *
          *     It runs on the macro queue like a pressed macro, and is recorded in
          *     `GET /activity-runs` (kind `macro`, its button and trigger) under
-         *     `run_id`. A switch of activity cancels it. `503 busy` when 4 macros
-         *     already wait: nothing was queued, and a retry is safe.
+         *     `run_id`. A switch of activity cancels it. `503 busy` when too many
+         *     macros are waiting (4, or too many macro steps): nothing was queued,
+         *     and a retry is safe. Only waits is `sequence_only` at
+         *     `/actions/0/command_id`.
          */
         post: operations["runMacro"];
         delete?: never;
@@ -1215,14 +1220,68 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Firmware version and update state
+         * Firmware version, update state and the latest release
          * @description Poll it during an update. After `rebooting`, the hub stops answering
          *     for a few seconds, then comes back `idle` with the new `version` (and
-         *     every session gone: log in again).
+         *     every session gone: log in again). It also shows the latest signed
+         *     release newer than this one (`available`) and the last check.
          */
         get: operations["getFirmwareStatus"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/firmware/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check for a firmware release now
+         * @description Starts a check of the latest release whether or not `check_updates`
+         *     is on, and answers `202` with `checking: true`. Poll `GET
+         *     /admin/firmware` until `checking` is false: then `available` is the
+         *     release (or null) and `check_error` says why a check failed. A
+         *     check takes a few seconds; one that fails keeps `available` from
+         *     the last good check.
+         */
+        post: operations["checkFirmwareRelease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/firmware/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Install the available firmware release
+         * @description `version` must be `available.version` from `GET /admin/firmware`.
+         *     The hub answers `202`, downloads the image (`downloading`), checks
+         *     its size and SHA-256 against the signed release, and then writes it
+         *     like an upload (`writing`, `rebooting`). A failed download ends in
+         *     `failed` with `download_failed`, `image_mismatch` or
+         *     `invalid_image`, and the running firmware stays. The new firmware
+         *     starts on trial: if it doesn't come up healthy within about 2
+         *     minutes, the hub goes back to this one and reports
+         *     `rolled_back_from`. The remote may pause for about a minute.
+         */
+        post: operations["installFirmwareRelease"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1247,8 +1306,10 @@ export interface paths {
          *     Hubbo marker for this board and partition layout, and its appended
          *     SHA-256 matches. Then it answers `202` and writes the image in the
          *     background (`GET /admin/firmware` shows the progress), sets it to boot
-         *     and reboots. There's no rollback. During the write the remote may lag
-         *     for up to about 30 s. The body limit is the OTA slot size.
+         *     and reboots. Like a release, it starts on trial and goes back if it
+         *     doesn't come up healthy (`rolled_back_from`). During the write the
+         *     remote may lag for up to about 30 s. The body limit is the OTA slot
+         *     size.
          */
         post: operations["updateFirmware"];
         delete?: never;
@@ -1267,10 +1328,11 @@ export interface paths {
         /** The hub's name and hostname */
         get: operations["getHub"];
         /**
-         * Rename the hub
-         * @description Spaces at either end are dropped, then the rest must be a `HubName`;
-         *     otherwise `422 validation_failed` at `/name` (`required`, `too_long`
-         *     or `invalid_name`). `hostname` follows the name (see `Hub`).
+         * Rename the hub, or change its settings
+         * @description Send `name`, `check_updates` or both. Spaces at either end of the
+         *     name are dropped, then the rest must be a `HubName`; otherwise `422
+         *     validation_failed` at `/name` (`required`, `too_long` or
+         *     `invalid_name`). `hostname` follows the name (see `Hub`).
          */
         put: operations["updateHub"];
         post?: never;
@@ -1349,7 +1411,7 @@ export interface components {
          */
         Trigger: string;
         /** @enum {string} */
-        ErrorCode: "malformed_json" | "validation_failed" | "unsupported_media_type" | "payload_too_large" | "method_not_allowed" | "length_required" | "unauthenticated" | "invalid_credentials" | "forbidden" | "csrf_failed" | "not_found" | "revision_conflict" | "device_in_use" | "activity_in_use" | "config_blocked" | "storage_unavailable" | "limit_reached" | "busy" | "setup_required" | "setup_already_done" | "details_required" | "update_in_progress" | "invalid_image" | "wrong_board" | "unavailable" | "integration_unavailable" | "not_implemented" | "internal_error";
+        ErrorCode: "malformed_json" | "validation_failed" | "unsupported_media_type" | "payload_too_large" | "method_not_allowed" | "length_required" | "unauthenticated" | "invalid_credentials" | "forbidden" | "csrf_failed" | "not_found" | "revision_conflict" | "device_in_use" | "activity_in_use" | "config_blocked" | "storage_unavailable" | "limit_reached" | "busy" | "setup_required" | "setup_already_done" | "details_required" | "update_in_progress" | "not_available" | "invalid_image" | "wrong_board" | "unavailable" | "integration_unavailable" | "not_implemented" | "internal_error";
         ErrorDetail: {
             /** @description JSON Pointer into the request body ('' for the whole body). */
             path: string;
@@ -1480,8 +1542,6 @@ export interface components {
          * @enum {string|null}
          */
         ActivityRunTrigger: "press" | "long_press" | null;
-        /** @description Null only for a macro bound globally (not to an activity). */
-        ActivityRunActivityId: components["schemas"]["ActivityId"] | null;
         /**
          * @description `running`; `completed`: every step ok, skipped or no_reply;
          *     `completed_with_errors`: it reached the end and one or more steps
@@ -1494,7 +1554,8 @@ export interface components {
         LastActivityRun: {
             /** @description The run's `id` in `GET /activity-runs`. */
             id: number;
-            activity_id: components["schemas"]["ActivityRunActivityId"];
+            /** @description Null only for a macro bound globally (not to an activity). */
+            activity_id: components["schemas"]["NullableActivityId"];
             kind: components["schemas"]["ActivityRunKind"];
             button: components["schemas"]["ActivityRunButton"];
             trigger: components["schemas"]["ActivityRunTrigger"];
@@ -1534,7 +1595,8 @@ export interface components {
              *     restart starts again). Stable while the run is listed.
              */
             id: number;
-            activity_id: components["schemas"]["ActivityRunActivityId"];
+            /** @description Null only for a macro bound globally (not to an activity). */
+            activity_id: components["schemas"]["NullableActivityId"];
             kind: components["schemas"]["ActivityRunKind"];
             button: components["schemas"]["ActivityRunButton"];
             trigger: components["schemas"]["ActivityRunTrigger"];
@@ -1744,8 +1806,10 @@ export interface components {
         ActionSequence: components["schemas"]["Action"][];
         /** @description Trigger → actions. Absent triggers are unbound (no-op). */
         Bindings: {
-            [key: string]: components["schemas"]["Action"][];
+            [key: string]: components["schemas"]["ActionList"];
         };
+        /** @description A binding's or a macro's actions, 1 to 32. */
+        ActionList: components["schemas"]["Action"][];
         /**
          * @description The triggers in `bindings` that are macros: each runs its list as a
          *     macro (on the macro queue, recorded in `GET /activity-runs`), at any
@@ -1756,7 +1820,7 @@ export interface components {
          */
         Macros: components["schemas"]["Trigger"][];
         MacroRunRequest: {
-            actions: components["schemas"]["Action"][];
+            actions: components["schemas"]["ActionList"];
             trigger: components["schemas"]["Trigger"];
             activity_id: components["schemas"]["NullableActivityId"];
         };
@@ -1849,11 +1913,7 @@ export interface components {
             macros?: components["schemas"]["Macros"];
             revision: components["schemas"]["Revision"];
         };
-        GlobalBindings: {
-            bindings: components["schemas"]["Bindings"];
-            macros: components["schemas"]["Macros"];
-            revision: components["schemas"]["Revision"];
-        };
+        GlobalBindings: WithRequired<components["schemas"]["GlobalBindingsInput"], "macros">;
         /** @enum {string} */
         SmartSlotId: "light_1" | "light_2" | "switch_1" | "switch_2";
         /** @description All four, always. Each is the slot's device, or null. */
@@ -2619,6 +2679,12 @@ export interface components {
         Hub: {
             name: components["schemas"]["HubName"];
             /**
+             * @description Check for firmware releases at boot and every 24 hours (on by
+             *     default). Off, only `POST /admin/firmware/check` checks. Nothing
+             *     ever installs by itself.
+             */
+            check_updates: boolean;
+            /**
              * @description Read-only: the `.local` hostname the hub advertises. It comes
              *     from the name: lowercased, each run of characters other than
              *     `a-z` and `0-9` becomes one `-`, with none at either end;
@@ -2639,24 +2705,70 @@ export interface components {
         };
         HubUpdate: {
             /** @example Living Room */
-            name: string;
+            name?: string;
+            check_updates?: boolean;
+        };
+        FirmwareInstall: {
+            version: components["schemas"]["ReleaseVersion"];
+        };
+        /**
+         * @description A release's version, plain `X.Y.Z`.
+         * @example 1.4.0
+         */
+        ReleaseVersion: string;
+        /** @description A signed release newer than the running firmware, for this board. Its notes are on the project's GitHub release of the same version. */
+        FirmwareRelease: {
+            version: components["schemas"]["ReleaseVersion"];
         };
         FirmwareStatus: {
-            /** @description The running firmware's version (`git describe`). */
+            /**
+             * @description The running firmware's version: `X.Y.Z` for a release, a `git
+             *     describe` for a development build (which is never offered a
+             *     release).
+             */
             version: string;
             board: string;
+            /** @description The latest release, when it's newer than this one and installable here; else null. */
+            available: components["schemas"]["FirmwareRelease"] | null;
+            /** @description A check is running. */
+            checking: boolean;
+            /** @description Milliseconds since the last check finished; null if none has since boot. */
+            checked_ago_ms: number | null;
+            /**
+             * @description Why the last check failed, or null. `unreachable`: no answer, or
+             *     an HTTP error. `bad_signature`: the release isn't signed with
+             *     Hubbo's key, so it was ignored. `bad_manifest`: signed, but not
+             *     readable. Whatever the error, `available` stays what the last
+             *     good check found.
+             * @enum {string|null}
+             */
+            check_error: "unreachable" | "bad_signature" | "bad_manifest" | null;
+            /**
+             * @description The version the hub went back from, because it didn't come up
+             *     healthy after an update; null otherwise. Cleared by the next
+             *     update.
+             */
+            rolled_back_from: string | null;
             update: {
                 /**
-                 * @description `idle`: nothing running. `writing`: erasing and writing the
-                 *     inactive slot. `rebooting`: written and set to boot; the hub
-                 *     restarts shortly. `failed`: the latest update stopped (`error`);
-                 *     the running firmware stays and still boots.
+                 * @description `idle`: nothing running. `downloading`: fetching a release's
+                 *     image. `writing`: erasing and writing the inactive slot.
+                 *     `rebooting`: written and set to boot; the hub restarts
+                 *     shortly. `failed`: the latest update stopped (`error`); the
+                 *     running firmware stays and still boots.
                  * @enum {string}
                  */
-                state: "idle" | "writing" | "rebooting" | "failed";
-                /** @description Percent of the image written (`writing`; 100 once `rebooting`). */
+                state: "idle" | "downloading" | "writing" | "rebooting" | "failed";
+                /**
+                 * @description Percent of the image received (`downloading`; 0 when unknown)
+                 *     or written (`writing`; 100 once `rebooting`).
+                 */
                 progress: number;
-                /** @description `failed` only: a short code such as `write_failed` or `verify_failed`. */
+                /**
+                 * @description `failed` only: a short code such as `write_failed` or
+                 *     `verify_failed`; for a release, `download_failed`,
+                 *     `image_mismatch` or `invalid_image`.
+                 */
                 error: string | null;
             };
         };
@@ -4443,6 +4555,82 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    checkFirmwareRelease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The check has started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FirmwareStatus"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            /** @description A check is already running (`busy`); poll `GET /admin/firmware` instead */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    installFirmwareRelease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FirmwareInstall"];
+            };
+        };
+        responses: {
+            /** @description The download has started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FirmwareStatus"];
+                };
+            };
+            400: components["responses"]["MalformedJson"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            /**
+             * @description `not_available`: that version isn't the available release (check
+             *     again). `update_in_progress`: an update is running, or the hub is
+             *     rebooting.
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["ValidationFailed"];
             503: components["responses"]["Unavailable"];
         };
     };
