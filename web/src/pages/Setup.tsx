@@ -2,7 +2,6 @@ import { Check, ChevronRight, Loader2 } from 'lucide-react'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useLocation } from 'wouter'
 import { api, errorMessage } from '@/api/client'
-import { useQuery } from '@/api/hooks'
 import { HomeAssistantSettings } from '@/components/admin/HomeAssistantForm'
 import { MqttSettings } from '@/components/admin/MqttForm'
 import { NetworkInfo } from '@/components/admin/NetworkInfo'
@@ -17,7 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Field, Input, ShowErrors } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { toastError } from '@/components/ui/toast'
-import { useIntegrations, useSession, useStatus } from '@/hooks/data'
+import { useHub, useIntegrations, useSession, useStatus } from '@/hooks/data'
 import { StepSaveContext, type PendingSave } from '@/hooks/stepSave'
 import { healthLabel, isUnset } from '@/lib/health'
 import { HUB_NAME_MAX, hubNameProblem, saveHubName, trimHubName } from '@/lib/hub'
@@ -86,7 +85,7 @@ export default function Setup({ onDone, start }: { onDone: () => void; start?: s
   }
   // The name step saves on Continue, only a changed name; a refused one doesn't hold up setup.
   const onName = current === stepIndex('hub')
-  const hub = useQuery(current !== null && current > 0 ? 'hub' : null, () => api.hub()) // needs the admin's session
+  const hub = useHub(current !== null && current > 0) // needs the admin's session
   const [hubName, setHubName] = useState<string | null>(null)
   const name = hubName ?? hub.data?.name // until it's read, Continue waits (Skip keeps the hub's own)
   const [nameTried, setNameTried] = useState(false)

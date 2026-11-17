@@ -17,7 +17,7 @@ numbers and traps. Design: `docs/design/phase5-appliance.md`.
     - `lastError()` names the failed stage: certificate rejected (verify flags), upgrade HTTP
       status, or connect/TLS codes.
     - Fragments are reassembled up to 4 MB.
-    - mbedTLS allocates from PSRAM (`useExternalTlsMemory()`).
+    - mbedTLS allocates from PSRAM (`tls::useExternalMemory()`, tls_memory.h; handshakes in a `tls::YieldScope`).
   - `integration_task.*` (was ha_task): core 0, priority 4, 8 KB PSRAM stack; a job queue plus a service callback that
     returns `client.hasWork()` (an idle pass sleeps 10 ms on the queue).
   - `main.cpp` wires `haTransport` → `haClient` → `haAdapter("ha_main")`; the service is
@@ -489,6 +489,85 @@ of remote lag during the write are accepted.
   flash 2,408,623 B (36.8%).
 - Gate sizes vs `bin/hubbo ota` sizes: the gate builds without `HUBBO_OTA_PASSWORD`, so ArduinoOTA
   is compiled out and it reads lower than the lead's OTA build. Compare gate to gate.
+
+## Firmware updates (branch `firmware-updates`; built, on .196, not committed)
+
+- Files: `firmware_releases.*` (api::FirmwareReleasePort, the update task, the trial, the rollback
+  record), `esp_release_feed.*` (release::ReleaseFeed: esp_http_client + bundle, redirects, tx buffer
+  2048, 10 s per op, 30 s manifest, 180 s image; ECDSA verify with mbedTLS), `tls_memory.*` (PSRAM
+  allocator + per-task `YieldScope`, thread_local; `yieldIfDue()` for non-blocking loops; ws_transport
+  uses it), `release_key.h` +
+  `scripts/release_key.py` (builds in `release-key.pub.pem`). `verifyRollbackLater()` returns true
+  (firmware_releases.cpp), in every build.
+- FirmwareUpdate: `beginDownload`/`setDownloadProgress`/`failDownload`/`installDownloaded` (takes the
+  PSRAM buffer, no copy; validates on httpd with its hash), `setTrial` (all updates Busy),
+  `setOnWritten` (writer task -> httpd: StateStore `fw_pending` = version, clears `fw_rolled_back`).
+- Update task: IntegrationTask "update" (core 0, prio 4, PSRAM stack; idle passes sleep 1 s, the new
+  `start(..., idleWaitMs)`). Never writes flash or calls `esp_ota_get_state_partition` (a flash read):
+  store writes and `esp_ota_mark_app_valid_cancel_rollback` are posted to httpd. The image download
+  uses core's `release::downloadImage` (fetch + checkImage). Feed and releases share main's `EspHash`.
+- Boot: `fw_pending` != running version -> rolled back (`fw_rolled_back`, shown until the next
+  update). PENDING_VERIFY -> trial: each 1 s, Ethernet up + config Ok/Blocked/Fresh + GET
+  http://127.0.0.1/api/v1/status answers (any status) -> mark valid on httpd. Not by 120 s ->
+  `requestReboot("update trial failed")`. Pending record but no PENDING_VERIFY: one log line, no trial.
+- Dev only: `/debug/release?op=test&base=&running=`, `op=check`, `op=install&version=`,
+  `op=crash`; every answer ends with the status. The 13th (last free) URI handler.
+- Test key (review fix: no runtime key override): `HUBBO_TEST_RELEASE_KEY_FILE` (passed through by
+  the toolchain service; path relative to the repo) builds a second key into dev
+  (`HUBBO_DEV_CONSOLE`) builds only, as `kTestPem`; the build prints `*** release key: this dev
+  build also accepts the test key ...`. Unset -> `kTestPem = nullptr`. Put the throwaway public key
+  at `firmware/.pio/test-release-key.pub.pem` (gitignored); delete it and reflash after testing.
+- A verify failure refetches the manifest + signature once (two fetches, then bad_signature).
+  `fail()` stores the error before releasing the OTA claim. `claimForUpdate()` refuses during a trial.
+- Measured on .196 against a local feed (python http.server on the host, throwaway key):
+  wrong key -> bad_signature (484 ms); right key -> available. Install: 2,541,520 B downloaded in
+  13.0 s, written in ~17 s, rebooted, trial healthy after 4-7 s. Failing image (no answer to its
+  self request) -> restart at 120 s -> previous image, `rolled_back_from 9.9.9`. Same-size tampered
+  image -> image_mismatch; bigger -> download_failed. Download only: loop max gap 3.2 ms, 0 over
+  5 ms, internal min 70.8 KB. The write: 20-22 ms max gap, 1,242 over 5 ms (the known flash stall).
+  Idle after: loop 0.4-2.4 ms, 0 over 5 ms; internal 72.5 KB free. Real GitHub check: 404 (repo
+  private) -> unreachable in 2.7 s.
+- Sizes: `_ota` RAM 102,256 B, flash 2,491,543 B (38.0%); default RAM 91,584 B, flash 2,439,255 B.
+- Gotchas: a connection to the hub's own Ethernet IP fails (ESP_ERR_HTTP_CONNECT); use 127.0.0.1.
+  A fast (LAN) download starved IDLE0 -> task watchdog at ~35%: the read loop calls
+  `tls::yieldIfDue()` (a tick per 20 ms); re-measured after /simplify: full LAN download, no reset,
+  loop max gap 2.5 ms, 0 over 5 ms.
+  Port 8099 on the host is taken; the test feed used 18099.
+- Re-verified after the review fixes (2026-11-17, test-key build): trial healthy after 5 s; wrong
+  key -> 2 manifest fetches, bad_signature in 1,652 ms; test key -> available, "signed with the dev
+  build's test key"; install 2,541,520 B in 13.2 s, download max gap 0.4 ms, write max gap 16.5 ms;
+  9.9.9 trial healthy after 4 s. Then reflashed without the variable (`kTestPem = nullptr`, no
+  build line): trial healthy after 7 s, idle loop max gap 1.4 ms, 0 over 5 ms, internal 72.7 KB free
+  (min 71.1 KB). `_ota` RAM 99,680 B, flash 2,460,271 B.
+- Open: the trial-busy refusal wasn't hit on the board (the trial ends as Ethernet comes up).
+
+### The spike (2026-11-16)
+
+Design: `docs/design/firmware-updates.md`. Spike code kept out of the tree.
+- Rollback: the framework (IDF v5.5.5) has `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`. .196's
+  bootloader is byte-identical to the one we build (sha256 84bb3656… over 19,968 B; desc: idf v5.5.5,
+  built Sep 16 2026). With `extern "C" bool verifyRollbackLater() { return true; }` a new OTA boots
+  PENDING_VERIFY. Unmarked + `esp_restart()`: back to the old image. Unmarked + task watchdog: back
+  to the old image (reset reason task watchdog). `esp_ota_mark_app_valid_cancel_rollback()` + restart
+  stays.
+- While PENDING_VERIFY, `esp_ota_begin` returns ESP_ERR_OTA_ROLLBACK_INVALID_STATE (FirmwareUpdate's
+  path); ArduinoOTA writes partitions directly, so `bin/hubbo ota` still works during a trial.
+- `esp_app_desc_t.version` is the lib-builder's ("6671d0b"), not ours: `rolled_back_from` needs our
+  version from somewhere else (e.g. saved before the reboot).
+- HTTPS (esp_http_client + `esp_crt_bundle_attach`, our PSRAM TLS allocator) on the HA task, idle:
+  internal peak −1.1 to −2.1 KB; PSRAM −55 KB connected, −64 KB peak. HA task stack low 4,060 of
+  8,192 B. The handshake needs the allocator's 20 ms yield slices (ws_transport's are private: share
+  them). Manifest-style URL: 3 hops (github.com 302 ×2, then release-assets.githubusercontent.com),
+  hop 0 2.5–2.8 s (handshake), hop 1 30–260 ms, hop 2 630–670 ms (new host). `buffer_size_tx` must
+  be ≥ ~1 KB (2048 used): the 929-char Location fails `open` with ESP_FAIL at the default 512.
+  rx default 512 is fine with 5.5 KB header blocks. 2,267,912 B into PSRAM in 9.0 s (252 KB/s), sha256
+  matched the host. Loop max gap during fetches 0.4–2.4 ms, 0 over 5 ms.
+- Cert bundle: already linked (ws_transport), 68,983 B. esp_http_client + spike code: +41 KB flash.
+- ECDSA P-256: `mbedtls_pk_parse_public_key` + `mbedtls_pk_verify(MBEDTLS_MD_SHA256)` over an
+  `openssl dgst -sha256 -sign` DER signature: OK; tampered: −0x4e00. 362–395 ms per verify (software
+  ECC, no yield), internal peak 1.5 KB.
+- Gotcha: `esp_flash_read` into a PSRAM buffer took the internal minimum down by about 17 KB
+  (inferred: a bounce buffer).
 
 ## Moving a board from other firmware to Hubbo over USB
 

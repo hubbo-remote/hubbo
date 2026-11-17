@@ -273,8 +273,13 @@ export const api = {
   /** Erases everything (202); the hub restarts into first-run setup. */
   factoryReset: () => post<void>('/admin/factory-reset'),
   firmware: () => get<FirmwareStatus>('/admin/firmware'),
+  /** Checks for a release now (202), then poll `firmware`; 409 while a check runs. */
+  checkFirmware: () => post<FirmwareStatus>('/admin/firmware/check'),
+  /** Installs the available release (202), then poll `firmware`; 409 `not_available` or `update_in_progress`. */
+  installFirmware: (version: string) => post<FirmwareStatus>('/admin/firmware/install', { version }),
   hub: () => get<Hub>('/admin/hub'),
   renameHub: (name: string) => put<Hub>('/admin/hub', { name }),
+  setCheckUpdates: (on: boolean) => put<Hub>('/admin/hub', { check_updates: on }),
   /** Restarts the hub (202); every session ends. 409 `update_in_progress` while an update runs. */
   restart: () => post<void>('/admin/restart'),
   uploadFirmware,

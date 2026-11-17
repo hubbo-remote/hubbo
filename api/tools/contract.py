@@ -590,6 +590,7 @@ def admin_flow(c, checker, candidate=None):
                label="restore fixture")
 
     firmware_flow(c)
+    firmware_release_flow(c)
 
 
 # ---------------------------------------------------------------- firmware
@@ -599,6 +600,8 @@ SIM_SLOT = 64 * 1024      # and its slot
 SIM_WRITE_MS, SIM_REBOOT_MS = 2000, 1000  # SimulatedFirmwareUpdate::kWriteMs, kRebootMs
 SIM_FACTORY_RESET_MS = 1000  # SimulatedFactoryReset::kRestartMs
 SIM_RESTART_MS = 1000  # SimulatedRestart::kRestartMs (POST /admin/restart)
+CHECK_MS = 500  # SimFirmwareReleases::kCheckMs (the mock: FW_CHECK_MS, set below)
+DOWNLOAD_MS = 1000  # SimFirmwareReleases::kDownloadMs (the mock: FW_DOWNLOAD_MS)
 
 
 def firmware_image(board=SIM_BOARD, layout=1, version="v9.9.9-contract", magic=0xE9, chip=9, min_rev=0,
@@ -704,6 +707,109 @@ def admin_login(c, label):
     status, _, headers = c.call("login", "POST", "/auth/login", {"username": ADMIN, "password": PASSWORD},
                                 expect=200, label=label)
     return http.cookies.SimpleCookie(headers.get("Set-Cookie"))["hubbo_session"].value if status == 200 else None
+
+
+def release_check(c, label, probe_busy=False):
+    """Check now, let the check finish, and return GET /admin/firmware.
+    `probe_busy`: a second check while it runs is 409 busy."""
+    _, body, _ = c.call("checkFirmwareRelease", "POST", "/admin/firmware/check", expect=202, label=label)
+    expect(body and body["checking"] is True, f"{label}: {body}")
+    if probe_busy:
+        _, body, _ = c.call("checkFirmwareRelease", "POST", "/admin/firmware/check", expect=409,
+                            label="check while one runs")
+        expect(error_code(body) == "busy", f"second check: {body}")
+    c.control(f"advance?ms={CHECK_MS}")
+    _, s, _ = c.call("getFirmwareStatus", "GET", "/admin/firmware", expect=200, label=f"{label}: done")
+    expect(s and s["checking"] is False and isinstance(s["checked_ago_ms"], int), f"{label}: still checking: {s}")
+    return s or {}
+
+
+def available_version(s):
+    return (s.get("available") or {}).get("version")
+
+
+def firmware_release_flow(c):
+    """Online updates against the fake feed (hub-sim's /sim/release, the
+    mock's /__mock/release): a check finds a release, failed checks report
+    and keep it, releases this hub can't take aren't offered, and an install
+    downloads, writes and reboots. Ends with no release published and the
+    running version it started with. Returns the cookie it ends with."""
+    _, s, _ = c.call("getFirmwareStatus", "GET", "/admin/firmware", expect=200, label="release fields")
+    expect(s and all(k in s for k in ("available", "checking", "checked_ago_ms", "check_error", "rolled_back_from")),
+           f"release fields: {s}")
+    started_on = (s or {}).get("version", "0.0.0-sim")
+    board = (s or {}).get("board", SIM_BOARD)  # the mock's is the real board's
+    c.control("release?none=1&running=1.3.0")
+    s = release_check(c, "check with no release")
+    # GitHub's 404: unreachable, and `available` stays what the last good check found.
+    expect(s["check_error"] == "unreachable", f"no release: {s}")
+    good = {"version": "1.4.0", "board": board, "layout": "1", "min_version": ""}
+    c.control("release?" + urllib.parse.urlencode(dict(good, fault="none")))
+    s = release_check(c, "check now", probe_busy=True)
+    expect(s["check_error"] is None and s["available"] == {"version": "1.4.0"}, f"release found: {s}")
+    # A failed check reports why and keeps the release from the last good one.
+    for fault in ("unreachable", "bad_signature", "bad_manifest"):
+        c.control(f"release?fault={fault}")
+        s = release_check(c, f"check: {fault}")
+        expect(s["check_error"] == fault and available_version(s) == "1.4.0", f"{fault}: {s}")
+    c.control("release?fault=none")
+    # Releases this hub can't take aren't offered (a good check, no error).
+    for fields, label in (({"board": "other_board"}, "another board"), ({"layout": "2"}, "another layout"),
+                          ({"version": "1.3.0"}, "not newer"), ({"min_version": "1.3.5"}, "needs a newer base")):
+        c.control("release?" + urllib.parse.urlencode(dict(good, **fields)))
+        s = release_check(c, f"check: {label}")
+        expect(s["check_error"] is None and s["available"] is None, f"{label}: {s}")
+    c.control("release?" + urllib.parse.urlencode(dict(good, running="0.0.0-sim")))
+    s = release_check(c, "check from a development build")
+    expect(s["available"] is None, f"a development build is never offered one: {s}")
+    c.control("release?running=1.3.0")
+    s = release_check(c, "check again")
+    expect(available_version(s) == "1.4.0", f"available again: {s}")
+
+    def install(version, expect_status, label):
+        return c.call("installFirmwareRelease", "POST", "/admin/firmware/install", {"version": version},
+                      expect=expect_status, label=label)[1]
+
+    body = install("1.5.0", 409, "install another version")
+    expect(error_code(body) == "not_available", f"install 1.5.0: {body}")
+    body = install("v1.4.0", 422, "install a version that isn't X.Y.Z")
+    expect(("pattern", "/version") in [(d["code"], d["path"]) for d in error_details(body)], f"v1.4.0: {body}")
+    c.call("installFirmwareRelease", "POST", "/admin/firmware/install", {}, expect=422, label="install no version")
+    c.control("release?rolled_back_from=1.3.9")
+    body = install("1.4.0", 202, "install 1.4.0")
+    expect(body and body.get("update", {}).get("state") == "downloading" and body.get("rolled_back_from") is None,
+           f"install: {body}")
+    body = install("1.4.0", 409, "install during a download")
+    expect(error_code(body) == "update_in_progress", f"second install: {body}")
+    body = upload(c, firmware_image(board=board), 409, "upload during a download")
+    expect(error_code(body) == "update_in_progress", f"upload during a download: {body}")
+    c.control(f"advance?ms={DOWNLOAD_MS}")
+    expect(firmware_state(c).get("state") == "writing", "downloaded: writing")
+    for _ in range(SIM_WRITE_MS // 250):  # the write's own time, however the download's step counted
+        if firmware_state(c).get("state") != "writing":
+            break
+        c.control("advance?ms=250")
+    expect(firmware_state(c).get("state") == "rebooting", "written: rebooting")
+    c.control(f"advance?ms={SIM_RESTART_MS}")
+    relogin_after_restart(c, "the release's reboot")
+    _, s, _ = c.call("getFirmwareStatus", "GET", "/admin/firmware", expect=200, label="after the release's reboot")
+    expect(s and s["update"]["state"] == "idle" and s["version"] == "1.4.0" and s["available"] is None,
+           f"running the release: {s}")
+
+    # A rollback shows until the next update; a failed download fails the update.
+    c.control("release?rolled_back_from=1.5.0")
+    _, s, _ = c.call("getFirmwareStatus", "GET", "/admin/firmware", expect=200, label="after a rollback")
+    expect(s and s["rolled_back_from"] == "1.5.0", f"rolled back: {s}")
+    c.control("release?version=1.5.0&running=1.4.0")
+    expect(available_version(release_check(c, "check for 1.5.0")) == "1.5.0", "1.5.0 available")
+    c.control("release?download=fail" if MOCK else "release?fault=unreachable")
+    install("1.5.0", 202, "install whose download fails")
+    c.control(f"advance?ms={DOWNLOAD_MS}")
+    st = firmware_state(c)
+    expect(st.get("state") == "failed" and st.get("error") == "download_failed", f"failed download: {st}")
+    c.control(f"release?none=1&fault=none&running={started_on}&rolled_back_from="
+              + ("&download=ok" if MOCK else ""))
+    return c.cookie
 
 
 def relogin_after_restart(c, what):
@@ -827,7 +933,8 @@ def get_hub(c, label):
 def rename_hub(c, name, hostname, label, sent=None):
     """PUT `sent` (default: `name`) and expect the hub to be called `name`."""
     _, hub, _ = c.call("updateHub", "PUT", "/admin/hub", {"name": sent or name}, expect=200, label=label)
-    expect(hub == {"name": name, "hostname": hostname, "hostname_conflict": False}, f"{label}: {hub}")
+    expect(hub == {"name": name, "hostname": hostname, "hostname_conflict": False, "check_updates": True},
+           f"{label}: {hub}")
 
 
 def hub_flow(c):
@@ -857,12 +964,21 @@ def hub_flow(c):
         _, e, _ = c.call("updateHub", "PUT", "/admin/hub", {"name": name}, expect=422, label=f"hub name: {label}")
         got = [(d["code"], d["path"]) for d in error_details(e)]
         expect((code, "/name") in got, f"hub name {label}: expected {code} at /name, got {got}")
-    for body, label in [({"name": 5}, "a number"), ({}, "no name"),
+    for body, label in [({"name": 5}, "a number"), ({}, "an empty body"),
                         ({"name": "Den", "hostname": "den"}, "a hostname (read-only)")]:
         c.call("updateHub", "PUT", "/admin/hub", body, expect=422, label=f"hub name: {label}")
     expect(get_hub(c, "hub after refused names").get("name") == "x" * 32, "a refused name changed the hub")
     rename_hub(c, "Living Room", "living-room", "rename the hub back")
     rename_hub(c, "Living Room", "living-room", "the same name again")
+    # "Check for updates": on by default, set alone (the name stays), back on.
+    expect(get_hub(c, "check_updates by default").get("check_updates") is True, "check_updates is on by default")
+    _, hub, _ = c.call("updateHub", "PUT", "/admin/hub", {"check_updates": False}, expect=200,
+                       label="turn update checks off")
+    expect(hub and hub["check_updates"] is False and hub["name"] == "Living Room", f"check_updates off: {hub}")
+    c.call("updateHub", "PUT", "/admin/hub", {"check_updates": "no"}, expect=422, label="check_updates not a bool")
+    _, hub, _ = c.call("updateHub", "PUT", "/admin/hub", {"name": "Living Room", "check_updates": True}, expect=200,
+                       label="a name and check_updates together")
+    expect(hub and hub["check_updates"] is True, f"check_updates back on: {hub}")
 
     _, body, _ = c.call("restartHub", "POST", "/admin/restart", expect=202)
     expect(body == {}, f"restart: {body}")
@@ -1983,6 +2099,7 @@ def auth_mode(c, checker):
         ha_unlink_flow(c)
         hub_flow(c)
         cookie = firmware_flow(c)
+        cookie = firmware_release_flow(c)
     if not token:
         return
     if MOCK:
@@ -2677,8 +2794,10 @@ def main():
     ap.add_argument("--mode", choices=("noauth", "auth", "mock", "mock-auth"), required=True)
     ap.add_argument("--ctl", help="contract.sh supervisor directory (enables the restart checks)")
     args = ap.parse_args()
-    global MOCK
+    global MOCK, CHECK_MS, DOWNLOAD_MS
     MOCK = args.mode.startswith("mock")
+    if MOCK:
+        CHECK_MS, DOWNLOAD_MS = 1000, 2000  # web/mock/handler.ts FW_CHECK_MS, FW_DOWNLOAD_MS
     wait_for(args.base, 90 if MOCK else 10)  # the mock's container installs node_modules first
     checker = v.SpecValidator(v.load_spec())
     global GUIDE, SPEC_LINK  # the index's links, as the spec fixes them

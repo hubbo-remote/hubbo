@@ -56,7 +56,7 @@ integrations::MqttBridge::Hooks SimHub::mqttHooks() {
     hooks.activeActivityId = [this] { return engine_.activeActivityIdShared(); };
     hooks.liveInfo = [this] {
         integrations::MqttDeviceInfo info;
-        info.version = "0.0.0-sim";
+        info.version = releases_.version();
         info.board = "simulator";
         info.ip = "127.0.0.1";
         info.mac = integrations::mqttMacText(kSimMac);
@@ -104,6 +104,7 @@ ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
     ha_.client.reconnect();  // at once, not after the backoff; stale entities forgotten
     resetBle();
     firmware_ = api::SimulatedFirmwareUpdate();
+    releases_.reset();
     factoryReset_ = freshFactoryResetPort();
     restart_.reset();  // keeps the restarted callback SimApi set
     mqttBroker_.reset();
@@ -114,7 +115,6 @@ ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
     runs_.clear();  // RAM only on the board: a reset starts with none
     return report;
 }
-
 
 void SimHub::wipe(auth::Credentials *credentials) {
     stopEverything();
@@ -132,11 +132,13 @@ void SimHub::wipe(auth::Credentials *credentials) {
 }
 
 void SimHub::advanceFirmware(uint32_t ms) {
+    const uint32_t updateMs = releases_.advance(ms);  // a check or a download first
     const api::FirmwareUpdateState before = firmware_.status().state;
-    firmware_.advance(ms);  // write, then the simulated reboot
+    firmware_.advance(updateMs);  // write, then the simulated reboot
     const bool updating = before == api::FirmwareUpdateState::Writing || before == api::FirmwareUpdateState::Rebooting;
     if (!updating || firmware_.status().state != api::FirmwareUpdateState::Idle) return;
     // Idle after Writing or Rebooting only comes from a finished reboot.
+    releases_.rebooted();
     if (onFirmwareRebooted) onFirmwareRebooted();
 }
 

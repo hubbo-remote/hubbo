@@ -5,6 +5,31 @@ Design: `docs/design/activity-runs.md` and `docs/design/state-checks.md`; the pr
 This file covers state, decisions and traps only.
 
 ## State
+- Firmware updates (branch firmware-updates, uncommitted; docs/design/firmware-updates.md), /simplify done:
+  - `integrations/firmware_release.h` (`hubbo::release`): parseVersion (plain X.Y.Z only; else a
+    dev build, never offered anything), compareVersions, parseManifest (strict per field, unknown
+    fields ignored, incl. CI's "notes": the card links to the GitHub release; <= 4 KB, sha256 64
+    lowercase hex, size <= slot (the download check needs it), min_version absent or X.Y.Z, never null), availability(), sha256Hex, checkImage, ReleaseFeed port
+    (fetchManifest verifies the signature: firmware's mbedTLS; fetchImage into the caller's
+    buffer), checkForUpdate, downloadImage (fetch + checkImage: Ok/Failed/Mismatch, for the
+    firmware's and the sim's install), UpdateCheckState (mutex; `available` is a
+    shared_ptr<const Manifest> so a poll copies a pointer; an errored check keeps the last
+    available; forgetChecks() for a reboot keeps rolledBackFrom).
+  - api's `api/firmware_release_port.h` FirmwareReleasePort is built on these; hub-sim implements it
+    (`SimFirmwareReleases` in sim/src/release_feed.*, `SimHub::releases()`, ctx.releases): check
+    500 ms, download 1000 ms of hub time (the write starts with the tick's leftover), failures
+    via SimulatedFirmwareUpdate's beginDownload/finishDownload/failDownload (api's).
+  - One running version: SimFirmwareReleases owns it (`version()`, `setVersion()`), and
+    `onVersion` (SimApi -> `Api::setFirmwareVersion`, api's, sim-only, request thread; serve mode
+    advances time on that thread too) keeps HubInfo::version and MQTT device info in step. Set by
+    `/sim/release?running=`, the simulated reboot (installed image's; forgets every check) and
+    /sim/reset (SimHub::factoryReset -> releases reset: default "0.0.0-sim", a dev build). The API's
+    factory reset is wipe(), not factoryReset(): it keeps the version, as a board does.
+  - `FakeReleaseFeed::fault` is a `release::CheckError`; `/sim/release` fields are in sim_api.cpp.
+  - HubSettings `checkUpdates()`/`setCheckUpdates()`, StateStore key "check_updates" ("1"/"0",
+    absent on); forget() resets it. `saveMutex_` serializes both saves.
+  - `sim::simulatorImage(version, board, layout)` is the sim's image builder (sim_test uses it);
+    core/tests/firmware_image_util.h stays the full builder for validator tests.
 - Macros (branch macros, uncommitted; docs/design/macros.md), /simplify done:
   - Explicit, not inferred: `BindingSpec::macro`, from "macros" (array of trigger keys, optional:
     absent = none, everywhere incl. stored/backup (user's call); always encoded; next to "bindings"

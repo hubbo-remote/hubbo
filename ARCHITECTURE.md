@@ -101,6 +101,8 @@ Backup downloads one versioned JSON archive of user-facing config; restore uploa
 
 OTA over Ethernet with signed/authenticated update validation, compatible board ID and partition checks, rollback on failed boot, no interruption of critical RF processing during normal operation (temporary degradation during flash must be measured). 16 MB flash requires deliberate partition plan for two app slots, static web assets and config. Browser-based USB installer via ESP Web Tools or equivalent; GitHub Actions build reproducible PlatformIO firmware for the single MVP board and publish bootloader/partition/app or merged binary plus manifest, checksums and release notes. Additional boards become build-matrix entries later.
 
+As built (2026-11-16, docs/design/firmware-updates.md): a tag `vX.Y.Z` on main is built by GitHub Actions into a Release with the app image and a manifest signed with ECDSA P-256; the public key is in the firmware. The hub checks it daily or on demand, and installs only when the admin chooses. Every new image boots on trial and rolls back unless it's healthy within 2 minutes.
+
 ## Decisions requiring verification, not new product design
 - Exact Waveshare module flash/PSRAM, PoE and SPI pin map; actual RF wiring.
 - Arduino/ESP-IDF version compatibility for `esp_http_server`, BLE and W5500.

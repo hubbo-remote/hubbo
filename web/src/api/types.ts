@@ -89,6 +89,7 @@ export type TokenCreated = S['TokenCreated']
 export type Backup = S['Backup']
 export type RestoreResult = S['RestoreResult']
 export type FirmwareStatus = S['FirmwareStatus']
+export type FirmwareRelease = S['FirmwareRelease']
 
 export type ApiErrorBody = S['Error']
 export type ErrorCode = S['ErrorCode']

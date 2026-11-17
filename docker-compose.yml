@@ -25,6 +25,9 @@ services:
       - HUBBO_OTA_PASSWORD
       - HUBBO_WIPE_ON_BOOT
       - HUBBO_FW_VERSION
+      # Dev-console builds only: a PEM path (repo-relative) whose public key
+      # the firmware also accepts for releases, for local update tests.
+      - HUBBO_TEST_RELEASE_KEY_FILE
 
   # The toolchain set up for ThreadSanitizer (`bin/hubbo tsan`). TSan can't
   # map its shadow memory under the host kernel's full mmap randomization, so

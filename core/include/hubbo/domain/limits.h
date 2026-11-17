@@ -16,6 +16,7 @@ constexpr size_t kMaxNameLength = 64;        // human display names
 constexpr size_t kMaxProviderRefLength = 96; // e.g. HA entity/registry id
 constexpr size_t kMaxParamStringLength = 64; // enum option strings
 constexpr size_t kMaxTypeLength = 32;        // integration/provider type names
+constexpr size_t kMaxFirmwareVersionLength = 64;  // a build's version (a dev build's git describe), as the image marker's
 constexpr size_t kMaxUrlLength = 200;        // Home Assistant base URL
 constexpr size_t kMaxUniqueIdLength = 64;    // HA entity registry id
 constexpr size_t kMaxBleNameLength = 29;     // advertised BLE name (fits the scan response)

@@ -11,6 +11,7 @@ add_library(hubbo_sim_support STATIC
     src/fakes.cpp
     src/fixtures.cpp
     src/hub.cpp
+    src/release_feed.cpp
     src/scenario.cpp
     src/showcase.cpp
 )

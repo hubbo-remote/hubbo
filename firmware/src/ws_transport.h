@@ -30,11 +30,6 @@ public:
     static constexpr uint32_t kFrameReadTimeoutMs = 2000;  // rest of a frame already arriving
     static constexpr size_t kMaxMessageBytes = 4 * 1024 * 1024;
 
-    // Once, at boot: mbedTLS allocates from PSRAM first (the prebuilt
-    // sdkconfig pins it to internal RAM, and a TLS session's record buffers
-    // and handshake are tens of KB). Affects every mbedTLS user.
-    static void useExternalTlsMemory();
-
     EspWsTransport() = default;
     ~EspWsTransport() override;
     EspWsTransport(const EspWsTransport &) = delete;

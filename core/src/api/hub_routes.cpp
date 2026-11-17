@@ -1,4 +1,5 @@
-// GET/PUT /admin/hub (the hub's name, over config::HubSettings) and
+// GET/PUT /admin/hub (the hub's name and check_updates, over
+// config::HubSettings) and
 // POST /admin/restart (over RestartPort).
 
 #include "hubbo/api/transitions.h"
@@ -10,11 +11,12 @@ namespace hubbo::api {
 
 namespace {
 
-void sendHub(http::Response &out, const config::HubIdentity &identity) {
+void sendHub(http::Response &out, const config::HubSettings &hub, const config::HubIdentity &identity) {
     JsonDocument doc;
     doc["name"] = identity.name;
     doc["hostname"] = identity.shownHostname();
     doc["hostname_conflict"] = identity.hostnameConflict();
+    doc["check_updates"] = hub.checkUpdates();
     sendJson(out, 200, doc);
 }
 
@@ -31,7 +33,7 @@ void sendNameIssue(http::Response &out, ErrorCode code) {
 void addHubRoutes(RouteSink &sink, ApiContext &ctx) {
     sink.add("/api/v1/admin/hub", auth::Operation::GetHub, [&ctx](auto &, auto &, auto &out) {
         if (ctx.hub == nullptr) return sendError(out, 503, "unavailable", "This hub can't be named");
-        sendHub(out, ctx.hub->identity());
+        sendHub(out, *ctx.hub, ctx.hub->identity());
     });
 
     sink.add("/api/v1/admin/hub", auth::Operation::UpdateHub, [&ctx](auto &request, auto &, auto &out) {
@@ -39,14 +41,25 @@ void addHubRoutes(RouteSink &sink, ApiContext &ctx) {
         JsonDocument doc;
         if (!readJson(request, out, doc)) return;
         ValidationReport report;
-        if (!checkObject(doc.as<JsonVariantConst>(), {{"name", Field::Kind::String, true}}, &report)) {
-            return sendIssues(out, report, "The name is invalid");
+        const JsonVariantConst body = doc.as<JsonVariantConst>();
+        if (!checkObject(body, {{"name", Field::Kind::String, false}, {"check_updates", Field::Kind::Bool, false}},
+                         &report)) {
+            return sendIssues(out, report, "The hub settings are invalid");
         }
-        config::HubIdentity identity;
-        const ErrorCode result = ctx.hub->rename(doc["name"].as<std::string_view>(), &identity);
-        if (result == ErrorCode::StorageFailed) return sendCoreError(out, result, "hub name");
-        if (result != ErrorCode::Ok) return sendNameIssue(out, result);
-        sendHub(out, identity);
+        if (body.as<JsonObjectConst>().size() == 0) {
+            return sendDetail(out, "", "required", "Send a name or check_updates");
+        }
+        config::HubIdentity identity = ctx.hub->identity();
+        if (body["name"].is<const char *>()) {
+            const ErrorCode result = ctx.hub->rename(body["name"].as<std::string_view>(), &identity);
+            if (result == ErrorCode::StorageFailed) return sendCoreError(out, result, "hub name");
+            if (result != ErrorCode::Ok) return sendNameIssue(out, result);
+        }
+        if (body["check_updates"].is<bool>()) {
+            const ErrorCode result = ctx.hub->setCheckUpdates(body["check_updates"].as<bool>());
+            if (result != ErrorCode::Ok) return sendCoreError(out, result, "hub settings");
+        }
+        sendHub(out, *ctx.hub, identity);
     });
 
     sink.add("/api/v1/admin/restart", auth::Operation::RestartHub, [&ctx](auto &, auto &, auto &out) {

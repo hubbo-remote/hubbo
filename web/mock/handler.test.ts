@@ -222,11 +222,13 @@ describe('hub name, like core', () => {
     const setup = await m.handle(req('POST', '/auth/setup', fixture('auth/setup.request.json'), {})) // an admin, to read it
     const as = { cookie: setup.headers!['set-cookie']!.split(';')[0]! }
     const hub = async () => (await m.handle(req('GET', '/admin/hub', undefined, as))).body
-    expect(await hub()).toEqual({ name: 'Hubbo 534D', hostname: 'hubbo-534d', hostname_conflict: false })
+    expect(await hub()).toEqual({ name: 'Hubbo 534D', hostname: 'hubbo-534d', hostname_conflict: false, check_updates: true })
     await m.handle(req('POST', '/__mock/hub?conflict=1'))
-    expect(await hub()).toEqual({ name: 'Hubbo 534D', hostname: 'hubbo-534d-2', hostname_conflict: true })
+    expect(await hub()).toEqual({ name: 'Hubbo 534D', hostname: 'hubbo-534d-2', hostname_conflict: true, check_updates: true })
     expect(((await m.handle(req('GET', '/status', undefined, as))).body as Status).network.hostname).toBe('hubbo-534d-2')
-    expect((await m.handle(req('PUT', '/admin/hub', { name: 'Den' }, as))).body).toEqual({ name: 'Den', hostname: 'den', hostname_conflict: false })
+    expect((await m.handle(req('PUT', '/admin/hub', { name: 'Den' }, as))).body).toEqual({ name: 'Den', hostname: 'den', hostname_conflict: false, check_updates: true })
+    expect(errorOf(await m.handle(req('PUT', '/admin/hub', {}, as))).details?.[0]).toMatchObject({ path: '', code: 'required' }) // like core: name or check_updates
+    expect((await m.handle(req('PUT', '/admin/hub', { check_updates: false }, as))).body).toMatchObject({ name: 'Den', check_updates: false })
   })
 })
 
@@ -649,6 +651,86 @@ describe('firmware update', () => {
     expect((await m.handle(upload(await buildFirmwareImage({ board: BOARD, version: 'v9.0.0' })))).status).toBe(202)
     await advance(m, 2000)
     expect(await fw(m)).toMatchObject({ version: fixture<FirmwareStatus>('admin/firmware.json').version, update: { state: 'failed', error: 'write_failed' } })
+  })
+
+  it('offers a newer release; Install downloads, writes and reboots into it', async () => {
+    const m = createMock({ timeScale: 0 })
+    const release = fixture<FirmwareStatus>('admin/firmware.available.json').available!
+    expect((await fw(m)).available).toEqual(release) // checked at boot
+    expect(errorOf(await m.handle(req('POST', '/admin/firmware/install', { version: '9.9.9' }))).code).toBe('not_available')
+    expect(errorOf(await m.handle(req('POST', '/admin/firmware/install', { version: `v${release.version}` }))).details?.[0]).toMatchObject({ path: '/version', code: 'pattern' })
+    expect(errorOf(await m.handle(req('POST', '/admin/firmware/install', {}))).details?.[0]).toMatchObject({ path: '/version', code: 'required' })
+    // As the browser sends it: raw JSON, parsed by the mock.
+    const started = await m.handle({ ...req('POST', '/admin/firmware/install', { version: release.version }), body: undefined, headers: { 'content-type': 'application/json' } })
+    expect(started.status).toBe(202)
+    expect(started.body).toMatchObject({ rolled_back_from: null, update: { state: 'downloading', progress: 0, error: null } })
+    expect(errorOf(await m.handle(req('POST', '/admin/firmware/install', { version: release.version }))).code).toBe('update_in_progress')
+    await advance(m, 2000)
+    expect((await fw(m)).update.state).toBe('writing')
+    await advance(m, 3000) // written, then rebooted: sign in again
+    const login = await m.handle(req('POST', '/auth/login', fixture('auth/login.request.json')))
+    const after = await m.handle({ ...req('GET', '/admin/firmware'), headers: { cookie: login.headers!['set-cookie']!.split(';')[0]! } })
+    // The checks lived in RAM: forgotten.
+    expect(after.body).toMatchObject({ version: release.version, available: null, checked_ago_ms: null, check_error: null, update: { state: 'idle' } })
+  })
+
+  it('a check reads the feed; a failed one keeps the last release; a rollback is reported', async () => {
+    const m = createMock({ timeScale: 0 })
+    await m.handle(req('POST', '/__mock/release?version=2.0.0'))
+    const checking = await m.handle(req('POST', '/admin/firmware/check'))
+    expect(checking.status).toBe(202)
+    expect(checking.body).toMatchObject({ checking: true })
+    expect(errorOf(await m.handle(req('POST', '/admin/firmware/check'))).code).toBe('busy')
+    expect((await fw(m)).checking).toBe(true)
+    await advance(m, 1000)
+    expect(await fw(m)).toMatchObject({ checking: false, check_error: null, available: { version: '2.0.0' } })
+    await m.handle(req('POST', '/__mock/release?fault=bad_signature&version=3.0.0'))
+    await m.handle(req('POST', '/admin/firmware/check'))
+    await advance(m, 1000)
+    expect(await fw(m)).toMatchObject({ check_error: 'bad_signature', available: { version: '2.0.0' } })
+    // No release: GitHub's 404, so unreachable (the last release stays).
+    await m.handle(req('POST', '/__mock/release?fault=none&none=1'))
+    await m.handle(req('POST', '/admin/firmware/check'))
+    await advance(m, 1000)
+    expect(await fw(m)).toMatchObject({ check_error: 'unreachable', available: { version: '2.0.0' } })
+    // Not for this board or layout, or not installable from here: nothing.
+    const offered = async (change: Record<string, string> = {}) => {
+      const query = new URLSearchParams({ board: BOARD, layout: '1', min_version: '', version: '2.0.0', ...change })
+      await m.handle(req('POST', `/__mock/release?${query}`))
+      await m.handle(req('POST', '/admin/firmware/check'))
+      await advance(m, 1000)
+      return (await fw(m)).available?.version ?? null
+    }
+    expect(await offered()).toBe('2.0.0')
+    expect(await offered({ board: 'other' })).toBeNull()
+    expect(await offered({ layout: '2' })).toBeNull()
+    expect(await offered({ min_version: '1.0.0' })).toBeNull()
+    expect(await offered({ version: '0.0.1' })).toBeNull()
+    await m.handle(req('POST', '/__mock/release?running=1.4.0&rolled_back_from=1.5.0'))
+    expect(await fw(m)).toMatchObject({ version: '1.4.0', rolled_back_from: '1.5.0' })
+  })
+
+  it('an upload clears a past rollback only once it’s written; install doesn’t wait on ready', async () => {
+    const m = createMock({ timeScale: 0 })
+    await m.handle(req('POST', '/__mock/release?rolled_back_from=1.5.0'))
+    expect((await m.handle(upload(await buildFirmwareImage({ board: 'other_board' })))).status).toBe(422)
+    expect((await fw(m)).rolled_back_from).toBe('1.5.0')
+    expect(((await m.handle(upload(await buildFirmwareImage({ board: BOARD })))).body as FirmwareStatus).rolled_back_from).toBe('1.5.0')
+    await advance(m, 2000)
+    expect((await fw(m)).rolled_back_from).toBeNull()
+
+    const m2 = createMock({ timeScale: 0 })
+    await m2.handle(req('POST', '/__mock/firmware?ready=0'))
+    expect((await m2.handle(req('POST', '/admin/firmware/install', { version: (await fw(m2)).available!.version }))).status).toBe(202)
+  })
+
+  it('a failed download leaves the running version', async () => {
+    const m = createMock({ timeScale: 0 })
+    const { version } = (await fw(m)).available!
+    await m.handle(req('POST', '/__mock/release?download=fail'))
+    await m.handle(req('POST', '/admin/firmware/install', { version }))
+    await advance(m, 2000)
+    expect(await fw(m)).toMatchObject({ version: fixture<FirmwareStatus>('admin/firmware.json').version, update: { state: 'failed', error: 'download_failed' } })
   })
 })
 

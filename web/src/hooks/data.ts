@@ -6,6 +6,8 @@ import type { Capabilities, DeviceDetail, SmartSlotActions } from '@/api/types'
 import type { Catalog } from '@/lib/activity'
 
 export const useSession = () => useQuery('session', () => api.session())
+/** `enabled: false` skips the request (the hub's settings need the admin's session). */
+export const useHub = (enabled = true) => useQuery(enabled ? 'hub' : null, () => api.hub())
 /** `enabled: false` skips the request (e.g. before there's a session to make it with). */
 export const useStatus = (pollMs = 3000, enabled = true) => useQuery(enabled ? 'status' : null, () => api.status(), { pollMs })
 export const useDevices = (enabled = true) => useQuery(enabled ? 'devices' : null, () => api.devices())

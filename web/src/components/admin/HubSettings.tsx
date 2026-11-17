@@ -1,7 +1,7 @@
 import { Loader2, Power, Save } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
 import { api, ApiError, errorMessage } from '@/api/client'
-import { useQuery } from '@/api/hooks'
+import { useHub } from '@/hooks/data'
 import { ErrorState, Section } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -24,7 +24,7 @@ export function HubSettings() {
 }
 
 function HubName() {
-  const hub = useQuery('hub', () => api.hub())
+  const hub = useHub()
   if (hub.error && !hub.data) return <ErrorState error={hub.error} retry={hub.refetch} />
   return <Section title="Name">{hub.data ? <NameForm saved={hub.data.name} taken={hub.data.hostname_conflict ? hub.data.hostname : null} /> : <Skeleton className="h-9 w-72" />}</Section>
 }

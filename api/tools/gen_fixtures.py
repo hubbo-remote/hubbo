@@ -734,7 +734,7 @@ def last_run(r):
             "failed_steps": sum(s["result"] in ("failed", "timed_out") for s in r["steps"])}  # not skipped/no_reply
 
 
-HUB = {"name": "Living Room", "hostname": "living-room", "hostname_conflict": False}
+HUB = {"name": "Living Room", "hostname": "living-room", "hostname_conflict": False, "check_updates": True}
 STATUS = {
     "hubbo": {"name": HUB["name"], "version": "0.1.0", "build": "0.1.0+g1a2b3c4",
               "board": "waveshare_esp32_s3_eth"},
@@ -1065,21 +1065,43 @@ fx("errors/hold_not_allowed.json", "executeCommand", "422", err(
     "validation_failed", "key_down holds a key; use key_tap", [
         ("/command_id", "hold_not_allowed", "key_down/key_up are for bindings; execute key_tap instead"),
     ]))
-fx("admin/firmware.json", "getFirmwareStatus", "200", {
-    "version": "v0.5.0", "board": "waveshare_esp32_s3_eth",
-    "update": {"state": "idle", "progress": 0, "error": None}})
-fx("admin/firmware.writing.json", "getFirmwareStatus", "200", {
-    "version": "v0.5.0", "board": "waveshare_esp32_s3_eth",
-    "update": {"state": "writing", "progress": 42, "error": None}})
-fx("admin/firmware.rebooting.json", "getFirmwareStatus", "200", {
-    "version": "v0.5.0", "board": "waveshare_esp32_s3_eth",
-    "update": {"state": "rebooting", "progress": 100, "error": None}})
-fx("admin/firmware.failed.json", "getFirmwareStatus", "200", {
-    "version": "v0.5.0", "board": "waveshare_esp32_s3_eth",
-    "update": {"state": "failed", "progress": 0, "error": "write_failed"}})
-fx("admin/firmware.update.json", "updateFirmware", "202", {
-    "version": "v0.5.0", "board": "waveshare_esp32_s3_eth",
-    "update": {"state": "writing", "progress": 0, "error": None}})
+
+
+def firmware(state="idle", progress=0, error=None, version="0.5.0", **release):
+    """GET /admin/firmware: the update, then the release fields (checked an hour ago, nothing newer)."""
+    out = {"version": version, "board": "waveshare_esp32_s3_eth",
+           "update": {"state": state, "progress": progress, "error": error},
+           "available": None, "checking": False, "checked_ago_ms": 3600000, "check_error": None,
+           "rolled_back_from": None}
+    out.update(release)
+    return out
+
+
+AVAILABLE = {"version": "1.4.0"}
+fx("admin/firmware.json", "getFirmwareStatus", "200", firmware())
+fx("admin/firmware.writing.json", "getFirmwareStatus", "200", firmware("writing", 42))
+fx("admin/firmware.rebooting.json", "getFirmwareStatus", "200", firmware("rebooting", 100))
+fx("admin/firmware.failed.json", "getFirmwareStatus", "200", firmware("failed", error="write_failed"))
+fx("admin/firmware.update.json", "updateFirmware", "202", firmware("writing"))
+# Releases: a release build (plain X.Y.Z; a development build's git describe
+# is never offered one) with 1.4.0 available, its download, a failed check
+# that keeps what the last good one found, and a rollback.
+fx("admin/firmware.available.json", "getFirmwareStatus", "200", firmware(version="1.3.0", available=AVAILABLE))
+fx("admin/firmware.downloading.json", "getFirmwareStatus", "200",
+   firmware("downloading", 35, version="1.3.0", available=AVAILABLE))
+fx("admin/firmware.check_error.json", "getFirmwareStatus", "200",
+   firmware(version="1.3.0", available=AVAILABLE, checked_ago_ms=12000, check_error="unreachable"))
+fx("admin/firmware.rolled_back.json", "getFirmwareStatus", "200",
+   firmware(version="1.4.0", rolled_back_from="1.5.0"))
+fx("admin/firmware.never_checked.json", "getFirmwareStatus", "200", firmware(checked_ago_ms=None))
+fx("admin/firmware.check.json", "checkFirmwareRelease", "202",
+   firmware(version="1.3.0", checking=True))
+fx("errors/check_busy.json", "checkFirmwareRelease", "409", err("busy", "A check is already running"))
+fx("admin/firmware_install.request.json", "installFirmwareRelease", "request", {"version": "1.4.0"})
+fx("admin/firmware.install.json", "installFirmwareRelease", "202",
+   firmware("downloading", version="1.3.0", available=AVAILABLE))
+fx("errors/not_available.json", "installFirmwareRelease", "409",
+   err("not_available", "That version isn't available; check again"))
 fx("errors/update_in_progress.json", "updateFirmware", "409",
    err("update_in_progress", "An update is already running"))
 fx("errors/wrong_board.json", "updateFirmware", "422",
@@ -1093,8 +1115,9 @@ fx("errors/factory_reset_during_update.json", "factoryReset", "409",
 
 fx("admin/hub.json", "getHub", "200", HUB)
 fx("admin/hub.conflict.json", "getHub", "200",
-   {"name": HUB["name"], "hostname": HUB["hostname"] + "-2", "hostname_conflict": True})
+   dict(HUB, hostname=HUB["hostname"] + "-2", hostname_conflict=True))
 fx("admin/hub_update.request.json", "updateHub", "request", {"name": HUB["name"]})
+fx("admin/hub_settings.request.json", "updateHub", "request", {"check_updates": False})
 fx("errors/hub_name_invalid.json", "updateHub", "422", err(
     "validation_failed", "Name must be at most 32 characters", [
         ("/name", "too_long", "Name must be at most 32 characters")]))

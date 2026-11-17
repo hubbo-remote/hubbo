@@ -55,20 +55,32 @@ FirmwareInstallResult validateFirmwareImage(std::string_view image, const Firmwa
                                             std::string *version = nullptr);
 
 enum class FirmwareUpdateState : uint8_t {
-    Idle,       // nothing running (also after a reboot into the new image)
-    Writing,    // the writer task is erasing and writing the inactive slot
+    Idle,         // nothing running (also after a reboot into the new image)
+    Downloading,  // a release install is downloading the image (firmware_release_port.h)
+    Writing,      // the writer task is erasing and writing the inactive slot
     Rebooting,  // written and set to boot; the hub restarts shortly
     Failed,     // the latest update stopped; the running image is untouched as the boot image
 };
-const char *firmwareUpdateStateName(FirmwareUpdateState state);  // "idle", "writing", "rebooting", "failed"
-// Writing or Rebooting: no other update, and no factory reset, may start.
+// "idle", "downloading", "writing", "rebooting", "failed"
+const char *firmwareUpdateStateName(FirmwareUpdateState state);
+// Downloading, Writing or Rebooting: no other update, and no factory reset
+// or restart, may start.
 inline bool firmwareUpdateRunning(FirmwareUpdateState state) {
-    return state == FirmwareUpdateState::Writing || state == FirmwareUpdateState::Rebooting;
+    return state == FirmwareUpdateState::Downloading || state == FirmwareUpdateState::Writing ||
+           state == FirmwareUpdateState::Rebooting;
 }
+
+// Failed `error` codes a release install adds (firmware_release_port.h):
+// the feed didn't deliver the image (FetchResult not Ok); its size or sha256
+// isn't the signed manifest's (release::checkImage()); it failed
+// validateFirmwareImage(), the same rules as an upload.
+constexpr const char *kDownloadFailed = "download_failed";
+constexpr const char *kImageMismatch = "image_mismatch";
+constexpr const char *kInvalidImage = "invalid_image";
 
 struct FirmwareUpdateStatus {
     FirmwareUpdateState state = FirmwareUpdateState::Idle;
-    uint8_t progress = 0;  // Writing: percent of the image written, 0..100
+    uint8_t progress = 0;  // Downloading: percent received (0 if unknown); Writing: percent written; 0..100
     std::string error;     // Failed: a short code ("write_failed", "verify_failed", ...), else ""
 };
 
@@ -100,6 +112,14 @@ public:
         : target_(std::move(target)) {}
     FirmwareUpdateStatus status() const override { return status_; }
     FirmwareInstallResult install(std::string_view image) override;
+
+    // A release install's download (hub-sim's FirmwareReleasePort):
+    // beginDownload() is false while an update runs, else the state is
+    // Downloading; then finishDownload() with the image (validated as an
+    // upload: Writing, or Failed "invalid_image") or failDownload(error).
+    bool beginDownload();
+    FirmwareInstallResult finishDownload(std::string_view image);
+    void failDownload(const char *error);
 
     // Simulation controls.
     void advance(uint32_t elapsedMs);

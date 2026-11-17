@@ -1,9 +1,12 @@
 // GET /admin/firmware and POST /admin/firmware/update, over the platform's
 // FirmwareUpdatePort (firmware_update_port.h). The transport has buffered
 // the whole image; nothing is erased until it has passed every check.
+// POST /admin/firmware/check and /install, over FirmwareReleasePort
+// (firmware_release_port.h): signed releases, downloaded by the hub.
 // POST /admin/factory-reset, over FactoryResetPort: the other route that
 // ends in a restart.
 
+#include "hubbo/api/firmware_release_port.h"
 #include "hubbo/api/firmware_update_port.h"
 #include "routes.h"
 #include "support.h"
@@ -22,13 +25,29 @@ void sendFirmwareStatus(const ApiContext &ctx, http::Response &out, int status) 
     JsonObject update = doc["update"].to<JsonObject>();
     update["state"] = firmwareUpdateStateName(s.state);
     update["progress"] = s.progress;
-    if (s.error.empty()) {
-        update["error"] = nullptr;
+    putNullableId(update, "error", s.error);
+    // Releases: never checked when the platform has no feed.
+    const FirmwareReleaseStatus r = ctx.releases != nullptr ? ctx.releases->releaseStatus() : FirmwareReleaseStatus{};
+    const release::UpdateCheckStatus &check = r.check;
+    if (check.available) {
+        JsonObject available = doc["available"].to<JsonObject>();
+        available["version"] = check.available->version;
     } else {
-        update["error"] = s.error;
+        doc["available"] = nullptr;
     }
+    doc["checking"] = check.checking;
+    if (check.checked) {
+        doc["checked_ago_ms"] = r.checkedAgoMs;
+    } else {
+        doc["checked_ago_ms"] = nullptr;
+    }
+    const char *error = release::checkErrorName(check.error);
+    putNullableId(doc.as<JsonObject>(), "check_error", error != nullptr ? error : "");
+    putNullableId(doc.as<JsonObject>(), "rolled_back_from", check.rolledBackFrom);
     sendJson(out, status, doc);
 }
+
+void sendNoReleases(http::Response &out) { sendError(out, 503, "unavailable", "This hub can't check for releases"); }
 
 // The 4xx/5xx for a refused install (Accepted sends the status instead).
 void sendInstallError(http::Response &out, FirmwareInstallResult result) {
@@ -56,6 +75,39 @@ void addFirmwareRoutes(RouteSink &sink, ApiContext &ctx) {
         if (ctx.firmware == nullptr) return sendNoUpdates(out);
         sendFirmwareStatus(ctx, out, 200);
     });
+
+    sink.add("/api/v1/admin/firmware/check", auth::Operation::CheckFirmwareRelease,
+             [&ctx](auto &, auto &, auto &out) {
+                 if (ctx.firmware == nullptr || ctx.releases == nullptr) return sendNoReleases(out);
+                 if (ctx.releases->requestCheck() == ReleaseCheckResult::Busy) {
+                     return sendError(out, 409, "busy", "A check is already running");
+                 }
+                 sendFirmwareStatus(ctx, out, 202);
+             });
+
+    sink.add("/api/v1/admin/firmware/install", auth::Operation::InstallFirmwareRelease,
+             [&ctx](auto &request, auto &, auto &out) {
+                 if (ctx.firmware == nullptr || ctx.releases == nullptr) return sendNoReleases(out);
+                 JsonDocument doc;
+                 if (!readJson(request, out, doc)) return;
+                 ValidationReport report;
+                 if (!checkObject(doc.as<JsonVariantConst>(), {{"version", Field::Kind::String, true, 32}}, &report)) {
+                     return sendIssues(out, report, "Name the version to install");
+                 }
+                 const std::string_view version = doc["version"].as<std::string_view>();
+                 release::Version parsed;
+                 if (!release::parseVersion(version, &parsed)) {
+                     return sendDetail(out, "/version", "pattern", "A version is X.Y.Z");
+                 }
+                 switch (ctx.releases->install(version)) {
+                     case ReleaseInstallResult::Accepted: break;
+                     case ReleaseInstallResult::Busy:
+                         return sendInstallError(out, FirmwareInstallResult::Busy);
+                     case ReleaseInstallResult::NotAvailable:
+                         return sendError(out, 409, "not_available", "That version isn't available; check again");
+                 }
+                 sendFirmwareStatus(ctx, out, 202);
+             });
 
     // The router has checked the size (the policy table's OTA slot limit)
     // and the octet-stream type of a non-empty body.

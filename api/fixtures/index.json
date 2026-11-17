@@ -592,6 +592,56 @@
       "kind": "202"
     },
     {
+      "file": "admin/firmware.available.json",
+      "operation": "getFirmwareStatus",
+      "kind": "200"
+    },
+    {
+      "file": "admin/firmware.downloading.json",
+      "operation": "getFirmwareStatus",
+      "kind": "200"
+    },
+    {
+      "file": "admin/firmware.check_error.json",
+      "operation": "getFirmwareStatus",
+      "kind": "200"
+    },
+    {
+      "file": "admin/firmware.rolled_back.json",
+      "operation": "getFirmwareStatus",
+      "kind": "200"
+    },
+    {
+      "file": "admin/firmware.never_checked.json",
+      "operation": "getFirmwareStatus",
+      "kind": "200"
+    },
+    {
+      "file": "admin/firmware.check.json",
+      "operation": "checkFirmwareRelease",
+      "kind": "202"
+    },
+    {
+      "file": "errors/check_busy.json",
+      "operation": "checkFirmwareRelease",
+      "kind": "409"
+    },
+    {
+      "file": "admin/firmware_install.request.json",
+      "operation": "installFirmwareRelease",
+      "kind": "request"
+    },
+    {
+      "file": "admin/firmware.install.json",
+      "operation": "installFirmwareRelease",
+      "kind": "202"
+    },
+    {
+      "file": "errors/not_available.json",
+      "operation": "installFirmwareRelease",
+      "kind": "409"
+    },
+    {
       "file": "errors/update_in_progress.json",
       "operation": "updateFirmware",
       "kind": "409"
@@ -628,6 +678,11 @@
     },
     {
       "file": "admin/hub_update.request.json",
+      "operation": "updateHub",
+      "kind": "request"
+    },
+    {
+      "file": "admin/hub_settings.request.json",
       "operation": "updateHub",
       "kind": "request"
     },

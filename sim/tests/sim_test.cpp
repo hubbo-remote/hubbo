@@ -792,30 +792,65 @@ TEST(SimApi, FirmwareFaultsAreDrivenFromSimRoutes) {
     EXPECT_EQ(runner.hub().firmware().status().state, api::FirmwareUpdateState::Idle);
 }
 
-// The smallest app image SimulatedFirmwareUpdate accepts (the layout
-// core/tests/firmware_update_test.cpp documents): image header, app desc,
-// the Hubbo marker, padding and the appended SHA-256.
-namespace {
-std::string simFirmwareImage(const std::string &version) {
-    std::string b(32, '\0');
-    b[0] = '\xE9';
-    b[12] = static_cast<char>(api::kEsp32S3ChipId);
-    b[23] = 1;  // hash appended
-    std::string desc(256, '\0');
-    desc[0] = '\x32';
-    desc[1] = '\x54';
-    desc[2] = '\xCD';
-    desc[3] = '\xAB';  // app desc magic 0xABCD5432
-    b += desc;
-    b += "HUBBO-IMAGE/1 board=simulator layout=1 version=" + version;
-    b += '\0';
-    b.resize(512, '\xFF');
-    uint8_t digest[auth::kSha256Size];
-    auth::SoftwareHash().sha256(reinterpret_cast<const uint8_t *>(b.data()), b.size(), digest);
-    b.append(reinterpret_cast<const char *>(digest), sizeof(digest));
-    return b;
+TEST(SimApi, TheReleaseFeedIsDrivenFromSimRoutes) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials);
+    SimFirmwareReleases &releases = runner.hub().releases();
+    EXPECT_FALSE(releases.feed.published);
+    EXPECT_EQ(releases.version(), SimFirmwareReleases::kDefaultVersion);
+
+    const auto post = [&](const char *query) { return call(api, http::Method::Post, "/sim/release", query).status; };
+    EXPECT_EQ(post("version=1.4.0&running=1.3.0&min_version=1.2.0"), 200);
+    EXPECT_TRUE(releases.feed.published);
+    EXPECT_EQ(releases.feed.version, "1.4.0");
+    EXPECT_EQ(releases.feed.minVersion, "1.2.0");
+    EXPECT_EQ(releases.version(), "1.3.0");
+    const auto shownVersion = [&] {
+        JsonDocument doc;
+        deserializeJson(doc, call(api, http::Method::Get, "/api/v1/status").body);
+        return std::string(doc["hubbo"]["version"] | "");
+    };
+    EXPECT_EQ(shownVersion(), "1.3.0");  // the API shows the same version
+    EXPECT_EQ(post("min_version="), 200);  // empty: none
+    EXPECT_TRUE(releases.feed.minVersion.empty());
+    EXPECT_EQ(post("fault=bad_signature"), 200);
+    EXPECT_EQ(releases.feed.fault, release::CheckError::BadSignature);
+    EXPECT_EQ(post("rolled_back_from=1.5.0"), 200);
+    EXPECT_EQ(releases.state().read().rolledBackFrom, "1.5.0");
+    EXPECT_EQ(post("none=1"), 200);
+    EXPECT_FALSE(releases.feed.published);
+
+    EXPECT_EQ(post("version=v1.4.0"), 400);
+    EXPECT_EQ(post("layout=0"), 400);
+    EXPECT_EQ(post("fault=slow"), 400);
+    EXPECT_EQ(post("none=0"), 400);
+
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/reset").status, 200);
+    EXPECT_FALSE(releases.feed.published);
+    EXPECT_EQ(releases.feed.fault, release::CheckError::None);
+    EXPECT_EQ(releases.version(), SimFirmwareReleases::kDefaultVersion);
+    EXPECT_EQ(shownVersion(), SimFirmwareReleases::kDefaultVersion);
+    EXPECT_TRUE(releases.state().read().rolledBackFrom.empty());
 }
-}  // namespace
+
+// An install's reboot: the API shows the version the hub now runs.
+TEST(SimApi, AnInstalledReleaseIsTheVersionShownAfterTheReboot) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials);
+    SimHub &hub = runner.hub();
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/release", "version=1.4.0&running=1.3.0").status, 200);
+    ASSERT_EQ(hub.releases().requestCheck(), api::ReleaseCheckResult::Accepted);
+    hub.advance(SimFirmwareReleases::kCheckMs);
+    ASSERT_EQ(hub.releases().install("1.4.0"), api::ReleaseInstallResult::Accepted);
+    hub.advance(SimFirmwareReleases::kDownloadMs + api::SimulatedFirmwareUpdate::kWriteMs +
+                api::SimulatedFirmwareUpdate::kRebootMs);
+    JsonDocument doc;
+    deserializeJson(doc, call(api, http::Method::Get, "/api/v1/status").body);
+    EXPECT_STREQ(doc["hubbo"]["version"] | "", "1.4.0");
+    EXPECT_EQ(hub.releases().version(), "1.4.0");
+}
 
 // As the board: the reboot that finishes an update forgets every session.
 TEST(SimApi, FirmwareRebootDropsSessions) {
@@ -828,7 +863,7 @@ TEST(SimApi, FirmwareRebootDropsSessions) {
     ASSERT_EQ(status(), 200);
 
     SimHub &hub = runner.hub();
-    ASSERT_EQ(hub.firmware().install(simFirmwareImage("v9.9.9")), api::FirmwareInstallResult::Accepted);
+    ASSERT_EQ(hub.firmware().install(simulatorImage("v9.9.9")), api::FirmwareInstallResult::Accepted);
     hub.advance(api::SimulatedFirmwareUpdate::kWriteMs);
     EXPECT_EQ(hub.firmware().status().state, api::FirmwareUpdateState::Rebooting);
     EXPECT_EQ(status(), 200);  // not until the reboot
@@ -845,7 +880,7 @@ TEST(SimApi, FailedFirmwareWriteKeepsSessions) {
     int reboots = 0;
     runner.hub().onFirmwareRebooted = [&] { reboots++; };
     runner.hub().firmware().failWrites = true;
-    ASSERT_EQ(runner.hub().firmware().install(simFirmwareImage("v1.0.0")), api::FirmwareInstallResult::Accepted);
+    ASSERT_EQ(runner.hub().firmware().install(simulatorImage("v1.0.0")), api::FirmwareInstallResult::Accepted);
     runner.hub().advance(api::SimulatedFirmwareUpdate::kWriteMs + api::SimulatedFirmwareUpdate::kRebootMs);
     EXPECT_EQ(runner.hub().firmware().status().state, api::FirmwareUpdateState::Failed);
     EXPECT_EQ(reboots, 0);

@@ -5,6 +5,7 @@
 #include "hubbo/api/agent_docs.h"
 #include "hubbo/api/transitions.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <sstream>
 #include <string>
@@ -28,7 +29,7 @@ std::string logJson(const std::vector<LogLine> &log, size_t limit) {
 
 api::HubInfo hubInfo(bool authEnabled) {
     api::HubInfo info;
-    info.version = "0.0.0-sim";
+    info.version = SimFirmwareReleases::kDefaultVersion;
     info.build = "hub-sim";
     info.board = "simulator";
     info.simulatorNoAuth = !authEnabled;
@@ -52,7 +53,21 @@ api::ApiContext context(auth::Credentials &credentials, auth::SessionStore &sess
                            &hub.factoryResetPort(),
                            &hub.hubSettings(),
                            &hub.restartPort(),
-                           &hub.mqtt()};
+                           &hub.mqtt(),
+                           &hub.releases()};
+}
+
+// Whether the query has `key` (even empty, "key=" or "key"): queryValue()
+// is "" both ways.
+bool hasQueryKey(std::string_view query, std::string_view key) {
+    size_t at = 0;
+    while (at <= query.size()) {
+        const size_t end = std::min(query.find('&', at), query.size());
+        const std::string_view part = query.substr(at, end - at);
+        if (part.substr(0, part.find('=')) == key) return true;
+        at = end + 1;
+    }
+    return false;
 }
 
 // "channel=76&address=e7e7e7e7e7" (hex, 40 bits).
@@ -82,6 +97,9 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
       api_(context(credentials_, sessions_, clock_, runtime_, authEnabled, runner.hub(), secrets)),
       productionAuth_(credentials_, sessions_, clock_) {
     runner.hub().onFirmwareRebooted = [this] { sessions_.clear(); };  // as the board's restart
+    // The version the hub runs is the releases port's (a release's reboot,
+    // /sim/release running=, /sim/reset); the API shows it.
+    runner.hub().releases().onVersion = [this](const std::string &version) { api_.setFirmwareVersion(version); };
     runner.hub().restartPort().restarted = [this] { sessions_.clear(); };  // nothing else reboots
     runner.hub().onFactoryReset = [this] { eraseEverything(); };
     api::registerApiRoutes(router_, api_);
@@ -279,6 +297,87 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
         if (!ready.empty()) firmware.ready = ready == "1";
         out.json(200, std::string("{\"fail\":") + (firmware.failWrites ? "true" : "false") +
                           ",\"ready\":" + (firmware.ready ? "true" : "false") + "}");
+    });
+
+    // The fake release feed (docs/design/firmware-updates.md), as query
+    // fields, each optional: version, board, layout, min_version ("":
+    // none), fault=none|unreachable|bad_signature|bad_manifest, none=1 (no
+    // release: a check is unreachable), running=<version> (what this hub
+    // runs; default "0.0.0-sim", a development build that's never offered
+    // one) and rolled_back_from=<version> ("": clear). Setting any release
+    // field publishes it. /sim/reset clears it all. Answers the feed.
+    host(Method::Post, "/sim/release", [this](auto &r, auto &, auto &out) {
+        SimFirmwareReleases &releases = runner_.hub().releases();
+        FakeReleaseFeed next = releases.feed;
+        const auto field = [&](const char *name, std::string *value) {
+            if (!hasQueryKey(r.query, name)) return false;
+            *value = http::queryValue(r.query, name);
+            return true;
+        };
+        std::string value;
+        bool release = false;
+        if (field("version", &value)) {
+            release::Version parsed;
+            if (!release::parseVersion(value, &parsed)) {
+                http::jsonError(out, 400, "bad_request", "version must be X.Y.Z");
+                return;
+            }
+            next.version = value;
+            release = true;
+        }
+        for (const auto &[name, target] : {std::pair<const char *, std::string *>{"board", &next.board},
+                                          {"min_version", &next.minVersion}}) {
+            if (field(name, target)) release = true;
+        }
+        if (field("layout", &value)) {
+            const int layout = std::atoi(value.c_str());
+            if (layout < 1 || layout > 9999 || std::to_string(layout) != value) {
+                http::jsonError(out, 400, "bad_request", "layout must be 1..9999");
+                return;
+            }
+            next.layout = static_cast<uint16_t>(layout);
+            release = true;
+        }
+        if (field("fault", &value)) {
+            bool known = value == "none";
+            next.fault = release::CheckError::None;
+            for (const auto error : {release::CheckError::Unreachable, release::CheckError::BadSignature,
+                                     release::CheckError::BadManifest}) {
+                if (value == release::checkErrorName(error)) {
+                    next.fault = error;
+                    known = true;
+                }
+            }
+            if (!known) {
+                http::jsonError(out, 400, "bad_request", "fault must be none, unreachable, bad_signature or bad_manifest");
+                return;
+            }
+        }
+        if (release) next.published = true;
+        if (field("none", &value)) {
+            if (value != "1") {
+                http::jsonError(out, 400, "bad_request", "none must be 1");
+                return;
+            }
+            next.published = false;
+        }
+        std::string running;
+        const bool setRunning = field("running", &running);
+        std::string rolledBack;
+        const bool setRolledBack = field("rolled_back_from", &rolledBack);
+        releases.feed = next;
+        if (setRunning) releases.setVersion(running);
+        if (setRolledBack) releases.state().setRolledBackFrom(rolledBack);
+        JsonDocument doc;
+        doc["published"] = next.published;
+        doc["version"] = next.version;
+        doc["board"] = next.board;
+        doc["layout"] = next.layout;
+        doc["min_version"] = next.minVersion;
+        doc["running"] = releases.version();
+        std::string body;
+        serializeJson(doc, body);
+        out.json(200, body);
     });
 
     // Factory reset availability: ?ready=0|1 (0: POST /admin/factory-reset

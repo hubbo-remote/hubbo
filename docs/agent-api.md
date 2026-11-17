@@ -464,6 +464,10 @@ always waits.
 
 After the admin restores or resets, every `revision` you hold is stale: GET again.
 
+Firmware updates are the admin's: checking for a release and installing it are admin-only
+(`/admin/firmware/check`, `/admin/firmware/install`), and nothing installs by itself. An update
+ends in a reboot, and a token works again once the hub is back.
+
 ## Errors
 
 ```json

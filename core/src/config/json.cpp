@@ -754,7 +754,7 @@ ParseResult parseBackup(std::string_view text, ConfigSpec *out, BackupInfo *info
     if (!f.get("format_version", true).isUnbound() && !version.is<int64_t>()) f.failAt(ErrorCode::WrongType, "format_version");
     std::optional<std::string> created;
     if (f.nullableString("created_at", &created, true, kMaxTimestampLength) && created) meta.createdAt = *created;
-    f.string("firmware_version", &meta.firmwareVersion, true, limits::kMaxTypeLength);
+    f.string("firmware_version", &meta.firmwareVersion, true, limits::kMaxFirmwareVersionLength);
     f.string("board", &meta.board, true, limits::kMaxTypeLength);
     f.nested("remote", false, [&](JsonVariantConst v, const std::string &p) {
         Fields rf(v, r, p);

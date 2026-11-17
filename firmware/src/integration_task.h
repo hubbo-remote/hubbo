@@ -30,7 +30,10 @@ public:
     // Returns true while there's work the next pass should do at once. It
     // reads the clock itself: its own waits make a time taken before it stale.
     using Service = std::function<bool()>;
-    bool start(const char *name, Service service);
+    // `idleWaitMs`: how long an idle pass sleeps on the job queue (a service
+    // with nothing due for seconds can sleep longer; a posted job still runs
+    // at once).
+    bool start(const char *name, Service service, uint32_t idleWaitMs = kIdleWaitMs);
 
     // Any task: run `job` once on this task. False if not running or the
     // queue is full.
@@ -40,6 +43,7 @@ private:
     static void run(void *self);
 
     Service service_;
+    uint32_t idleWaitMs_ = kIdleWaitMs;
     void *queue_ = nullptr;  // QueueHandle_t of std::function<void()> *
 };
 

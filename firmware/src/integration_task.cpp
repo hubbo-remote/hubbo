@@ -14,7 +14,7 @@ constexpr UBaseType_t kQueueDepth = 8;
 using Job = std::function<void()>;
 }  // namespace
 
-bool IntegrationTask::start(const char *name, Service service) {
+bool IntegrationTask::start(const char *name, Service service, uint32_t idleWaitMs) {
     if (queue_ != nullptr) {
         return true;
     }
@@ -23,6 +23,7 @@ bool IntegrationTask::start(const char *name, Service service) {
         return false;
     }
     service_ = std::move(service);
+    idleWaitMs_ = idleWaitMs;
     queue_ = queue;
     if (xTaskCreatePinnedToCoreWithCaps(&IntegrationTask::run, name, kStackBytes, this, kPriority, nullptr, kCore,
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
@@ -59,7 +60,7 @@ void IntegrationTask::run(void *arg) {
         const int64_t before = esp_timer_get_time();
         const bool busy = self->service_();
         // Nothing waited and nothing pending: sleep on the queue, not spin core 0.
-        wait = !busy && esp_timer_get_time() - before < 1000 ? pdMS_TO_TICKS(kIdleWaitMs) : 0;
+        wait = !busy && esp_timer_get_time() - before < 1000 ? pdMS_TO_TICKS(self->idleWaitMs_) : 0;
     }
 }
 

@@ -177,7 +177,7 @@ Version 0.1 • 2026-11-04
 **Acceptance:** UI served locally from board, no CDN/internet dependency, remote latency unaffected.
 
 ## Phase 5 — Security and appliance management
-**As built:** sized for one home on a trusted LAN (user decisions, 2026-11-09). No HTTPS, secure boot, flash encryption or rollback; the CSRF token and rate limits were removed. See `docs/design/phase5-appliance.md`.
+**As built:** sized for one home on a trusted LAN (user decisions, 2026-11-09). No HTTPS, secure boot or flash encryption; the CSRF token and rate limits were removed. (Rollback came later with online updates, 2026-11-16.) See `docs/design/phase5-appliance.md`.
 
 **Important:** Security boundaries and protected API architecture are implemented from Phase 2 onward; this phase completes production hardening. Never ship Phase 2/3 API exposed on an untrusted network without auth.
 
@@ -266,6 +266,13 @@ A button's Press or Long press can be a macro: a marked list of commands (`macro
 by an activity switch and shown in the Activity Log. Command or Macro is chosen on an empty row; no
 conversion. The editor's Run tries a macro unsaved (`POST /macros/run`). Advanced triggers stay
 single and are off for a button with a macro. Design: `docs/design/macros.md`.
+
+## Firmware updates (user, 2026-11-16)
+Releases come from GitHub: a tag `vX.Y.Z` on main is built and signed by `.github/workflows/release.yml`.
+The hub checks daily (or on Check now) and the admin installs; nothing installs by itself. The image is
+downloaded over HTTPS, checked against the signed manifest, and written by the same path as an upload.
+Each new image boots on trial and rolls back unless healthy within 2 minutes. Stable channel only; the dev
+board keeps `bin/hubbo ota`. Needs the repo public. Design: `docs/design/firmware-updates.md`.
 
 ## Firmware robustness (queued, user 2026-11-14)
 Found on a second board whose nRF24 lacked its capacitor: after a power-related reset the hub kept

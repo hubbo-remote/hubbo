@@ -1,23 +1,17 @@
 #include "ws_transport.h"
 
+#include "tls_memory.h"
+
 #include <esp_tls.h>
 #include <esp_transport.h>
 #include <esp_transport_tcp.h>
 #include <esp_transport_ssl.h>
 #include <esp_transport_ws.h>
 #include <esp_crt_bundle.h>
-#include <esp_heap_caps.h>
-#include <esp_timer.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <mbedtls/platform.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509.h>
 
 #include <cstdio>
-
-#include <atomic>
-
 #include <cstdlib>
 #include <cstring>
 
@@ -63,27 +57,6 @@ bool parseUrl(std::string_view url, std::string *host, uint16_t *port, std::stri
     return true;
 }
 
-// The task in a TLS handshake (openNow()), else null. A handshake is seconds
-// of ECC math without a blocking call (no ECC hardware on the S3, no
-// restartable ECP in the prebuilt mbedTLS), which would starve IDLE0 (the
-// task watchdog) on core 0. mbedTLS allocates often during it (2,400 times
-// per handshake), so its allocator yields a tick every kHandshakeSliceUs.
-std::atomic<TaskHandle_t> handshakeTask{nullptr};
-constexpr int64_t kHandshakeSliceUs = 20000;
-int64_t sliceStartUs = 0;  // handshake task only
-
-void *tlsCalloc(size_t count, size_t size) {
-    if (handshakeTask.load(std::memory_order_relaxed) == xTaskGetCurrentTaskHandle()) {
-        const int64_t now = esp_timer_get_time();
-        if (now - sliceStartUs >= kHandshakeSliceUs) {
-            vTaskDelay(1);
-            sliceStartUs = esp_timer_get_time();
-        }
-    }
-    return heap_caps_calloc_prefer(count, size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-}
-
 // verify_tls off: encrypted, but neither the chain nor the name is checked.
 // The prebuilt esp-tls refuses a connection with no verification option
 // (CONFIG_ESP_TLS_INSECURE is off), so this stands in for the bundle. The
@@ -94,10 +67,6 @@ esp_err_t attachNoVerify(void *conf) {
 }
 
 }  // namespace
-
-void EspWsTransport::useExternalTlsMemory() {
-    mbedtls_platform_set_calloc_free(tlsCalloc, heap_caps_free);
-}
 
 EspWsTransport::~EspWsTransport() {
     release();
@@ -193,10 +162,11 @@ bool EspWsTransport::openNow() {
     esp_transport_ws_set_path(ws, path_.c_str());
     // Blocking: DNS, TCP connect, the TLS handshake and the HTTP upgrade,
     // bounded by the timeout.
-    sliceStartUs = esp_timer_get_time();
-    handshakeTask.store(xTaskGetCurrentTaskHandle(), std::memory_order_relaxed);
-    const int connected = esp_transport_connect(ws, host_.c_str(), port_, kConnectTimeoutMs);
-    handshakeTask.store(nullptr, std::memory_order_relaxed);
+    int connected;
+    {
+        tls::YieldScope yield;  // the handshake (tls_memory.h)
+        connected = esp_transport_connect(ws, host_.c_str(), port_, kConnectTimeoutMs);
+    }
     const int upgrade = esp_transport_ws_get_upgrade_request_status(ws);
     if (connected >= 0 && upgrade == 101) {
         return true;

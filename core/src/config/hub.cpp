@@ -107,6 +107,12 @@ HubSettings::HubSettings(storage::StateStore &store, std::string defaultName)
     : store_(store), defaultName_(std::move(defaultName)), identity_(identityFor(defaultName_)) {}
 
 ErrorCode HubSettings::load() {
+    std::string check;
+    const bool off = store_.get(kCheckUpdatesKey, &check) == ErrorCode::Ok && check == "0";
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        checkUpdates_ = !off;
+    }
     std::string saved;
     ErrorCode read = store_.get(kHubNameKey, &saved);
     if (read == ErrorCode::Ok && checkHubName(saved) != ErrorCode::Ok) read = ErrorCode::Corrupt;
@@ -131,7 +137,7 @@ ErrorCode HubSettings::rename(std::string_view requested, HubIdentity *out) {
     if (checked != ErrorCode::Ok) return checked;
     HubIdentity next = identityFor(std::move(name));
 
-    std::lock_guard<std::mutex> renaming(renameMutex_);
+    std::lock_guard<std::mutex> renaming(saveMutex_);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (matchesStore_ && identity_.name == next.name) {  // no flash write, nothing to re-apply
@@ -151,17 +157,32 @@ ErrorCode HubSettings::rename(std::string_view requested, HubIdentity *out) {
 }
 
 ErrorCode HubSettings::forget() {
-    std::lock_guard<std::mutex> renaming(renameMutex_);
-    const bool removed = store_.remove(kHubNameKey);
+    std::lock_guard<std::mutex> renaming(saveMutex_);
+    const bool nameRemoved = store_.remove(kHubNameKey);
+    const bool removed = store_.remove(kCheckUpdatesKey) && nameRemoved;
     std::lock_guard<std::mutex> lock(mutex_);
     identity_ = identityFor(defaultName_);
+    checkUpdates_ = true;
     matchesStore_ = removed;
     return removed ? ErrorCode::Ok : ErrorCode::StorageFailed;
 }
 
 void HubSettings::setAdvertisedHostname(std::string_view hostname) {
-    std::lock_guard<std::mutex> lock(mutex_);  // never renameMutex_ (see hub.h)
+    std::lock_guard<std::mutex> lock(mutex_);  // never saveMutex_ (see hub.h)
     identity_.advertisedHostname.assign(hostname.data(), hostname.size());
+}
+
+bool HubSettings::checkUpdates() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return checkUpdates_;
+}
+
+ErrorCode HubSettings::setCheckUpdates(bool on) {
+    std::lock_guard<std::mutex> saving(saveMutex_);
+    if (!store_.set(kCheckUpdatesKey, on ? "1" : "0")) return ErrorCode::StorageFailed;
+    std::lock_guard<std::mutex> lock(mutex_);
+    checkUpdates_ = on;
+    return ErrorCode::Ok;
 }
 
 void HubSettings::onChanged(Changed changed) { changed_ = std::move(changed); }

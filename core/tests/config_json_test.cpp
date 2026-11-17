@@ -491,3 +491,17 @@ TEST(ConfigJson, ACallRoundTripsThroughTheConfigAndABackup) {
     ASSERT_EQ(parseBackup(serializeBackup(c, {}), &restored).code, ErrorCode::Ok);
     EXPECT_EQ(*restored.activities[0].bindings.back().actions.at(0).call, *info.call);
 }
+
+// A dev build's long git describe: the backup it writes restores.
+TEST(ConfigJson, ABackupKeepsALongFirmwareVersion) {
+    const ConfigSpec c = sim::fixtureConfig();
+    BackupInfo info;
+    info.firmwareVersion = "v1.4.0-123-gabcdef0-dirty-" + std::string(64 - 26, 'x');
+    ASSERT_EQ(info.firmwareVersion.size(), limits::kMaxFirmwareVersionLength);
+    ConfigSpec restored;
+    BackupInfo back;
+    ASSERT_EQ(parseBackup(serializeBackup(c, info), &restored, &back).code, ErrorCode::Ok);
+    EXPECT_EQ(back.firmwareVersion, info.firmwareVersion);
+    info.firmwareVersion += "x";
+    EXPECT_NE(parseBackup(serializeBackup(c, info), &restored).code, ErrorCode::Ok);
+}
