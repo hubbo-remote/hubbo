@@ -61,6 +61,37 @@ dev firmware and uploads it, reading the OTA password from `~/.config/hubbo/ota-
 it is never printed). The dev board is at 192.168.1.196. Never point it at the family room
 Harmonizer board. Firmware builds (`fw`, `ota`) hold a lock, so only one runs at a time.
 
+## Releasing
+
+A tag `vX.Y.Z` on `main` is a release. `.github/workflows/release.yml` builds it and publishes a
+GitHub Release, and every hub offers it at its next check (`docs/design/firmware-updates.md`).
+
+1. **Test first.** Flash the commit you mean to ship to the dev board and use it.
+2. **Tag `main`.** The tag's message is the release notes on GitHub:
+   ```sh
+   git tag -a v0.2.0 -F notes.txt   # or -m "…"
+   git push origin v0.2.0
+   ```
+3. **CI builds and publishes it** (about 8 minutes). It builds the web admin and the firmware
+   with `HUBBO_FW_VERSION=0.2.0`, checks the image's marker carries that version, writes
+   `manifest.json`, signs it, verifies the signature against `firmware/release-key.pub.pem`, then
+   publishes `hubbo-0.2.0.bin`, `manifest.json` and `manifest.sig`.
+4. **Check it.** The build log's RAM and Flash numbers should equal a local
+   `HUBBO_FW_VERSION=0.2.0 bin/hubbo fw run -e waveshare_esp32_s3_eth`. If they differ, a package
+   isn't pinned: every PlatformIO package in `firmware/platformio.ini` is pinned exactly, because a
+   fresh install otherwise picks newer patches that change the build.
+
+Things to know:
+- **Versions:** plain `X.Y.Z`. Any other version, like a local build's `v0.1.0-3-gabc123-dev`, is
+  a development build and is never offered an update. Bump the last number for fixes, the middle
+  one for features.
+- **One channel:** every release becomes the latest, and hubs only see the latest.
+- **A bad release:** delete it with `gh release delete vX.Y.Z --cleanup-tag`, delete the local
+  tag, and tag again. Once a hub may have installed it, ship a newer version instead.
+- **The signing key** is ECDSA P-256. The private key is the `RELEASE_SIGNING_KEY` Actions secret,
+  with a copy kept off the repo (mode 600). Hubs only accept manifests signed by it, so losing
+  both copies means existing hubs can't take updates; back it up.
+
 ## Toolchain
 
 `docker/toolchain.Dockerfile`: Debian bookworm, CMake + Ninja + GoogleTest, and PlatformIO 6.1.18.
@@ -68,7 +99,8 @@ The container runs as your host uid/gid, so build output in the repo stays yours
 
 - PlatformIO packages live in the `platformio` named volume and persist between runs.
 - The firmware is pinned to `espressif32@8.0.0`, which is arduino-esp32 3.3.12 on GCC 14.2. That's
-  the same core the Harmonizer spike shipped on.
+  the same core the Harmonizer spike shipped on. Its packages are pinned to exact versions too, so
+  CI and a fresh volume build the same image (see Releasing).
 - The container uses host networking. Network (OTA) flashing needs this because espota makes the
   board connect back to the uploading machine.
 - USB flashing from the container needs the board's serial device passed through. It's not set up
