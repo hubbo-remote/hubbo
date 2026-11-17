@@ -2,6 +2,52 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## Firmware updates (branch `firmware-updates`; docs/design/firmware-updates.md; UI first pass, iterating)
+
+- Status → Firmware (`components/admin/FirmwareUpdate.tsx`), as the user shaped it (no notes or size,
+  nothing repeated), top to bottom:
+  - `About`: "Hubbo X" (text-xl semibold) and "Board <name>" (`BOARD_NAMES` maps the Waveshare id).
+  - `UpdateBlock` (accent `bg-primary/5`), only when there's something: "Hubbo X is available",
+    "What’s new" → `releaseNotesUrl` (lib/firmware `RELEASES_URL`, tag `v<X>`, new tab), primary Install
+    → confirm (remote pauses about a minute). The same block shows any install's progress (upload or
+    release): "Installing Hubbo X", Downloading/Uploading → Installing → Restarting.
+  - `Outcome`: one alert (refused, failed with reason, rollback, "Updated to Hubbo X", didn't take).
+  - `Checks` group: the daily switch left; Check now then "Choose file…" right (`ChooseFile`: native
+    input sr-only, labelled "Firmware file", under an outline label-button); the status line
+    ("Up to date · checked 3h ago", "Not checked yet", "Checking…", a short error), hidden while the
+    block shows; once a file is picked, a row under a rule: name with ×, "Hubbo X for <board>", Update.
+  - The firmware query polls 1 s while `checking`. A release install reuses the upload's watch
+    (`pending` = {from, expected}).
+- Copy is plain sentences (the user's call): confirm "Update to Hubbo X?" / "Your remote won’t work for
+  about a minute while Hubbo updates and restarts. You’ll need to sign in again afterwards." (Cancel /
+  Update); status "Hubbo is up to date. Last checked 3m ago." (no line when never checked, or while the
+  block shows; while checking only Check now's arrows spin, a sr-only live region says "Checking…");
+  success "Hubbo is now running X."; failures "The update didn’t install" + "… Hubbo is still running X,
+  so nothing has changed."
+- `available` is `{version}` only (no notes or size; the What's new link replaces them).
+- e2e: `firmware-update.spec` (both targets; each test posts `release?running=1.3.0&version=1.4.0`):
+  check → block → What's new href → confirm Cancel/Update → download/write → sign in → "now running";
+  Check now's spin/disabled, unreachable and bad_signature keep the release, an older one = up to date;
+  rollback alert; the daily switch saves. One /advance runs on through the stages on both targets, so
+  1 s covers the download and then 3 s the write and restart (an advance after the restart would 401). `chooseFirmware` sets the hidden input; firmware.spec expects "Hubbo is now running …"
+  on both targets (hub-sim runs the installed version now) and the rollback warning on the revert test.
+- Versions: a release build reports plain `X.Y.Z` (no "v"); a dev build never sees an update. A failed
+  check keeps `available` from the last good check (every check_error). Check 409 is `busy`.
+- Mock: feed = the fixture `admin/firmware.available.json`'s release ({version}) (running is firmware.json's
+  0.5.0); a set-up hub has checked 3 h ago, first run not yet. Check 0.5 s, download 1 s like hub-sim (hub time; `downloading` is its own `fw` state that hands
+  leftover time to the write, as the sim does;
+  `/__mock/advance` moves both). `/__mock/release` mirrors `/sim/release` (version, board,
+  layout, min_version, fault=none|…, none=1, running, rolled_back_from) + mock-only `download=fail`.
+  Like the sim: any release field publishes; none=1 makes a check `unreachable` (GitHub's 404); another
+  board/layout or a newer min_version offers nothing. Check and install answer 202 with FirmwareStatus;
+  install's version must be X.Y.Z (`pattern`; missing `required`). Only `/admin/firmware/update` skips JSON
+  parsing (it's binary). `?revert=1` now also
+  sets `rolled_back_from`. Like the board: a restart forgets the checks (available, checked_ago_ms,
+  check_error null; rolled_back_from stays); a finished write clears rolled_back_from (an upload keeps it
+  until then; install still clears it at its 202, as the contract expects); install never answers 503. Mock unit tests: install flow, check/busy/fault keeps release, failed download.
+- hub-sim: runs "0.0.0-sim" (dev build), so e2e posts `/sim/release?running=1.3.0` first; check
+  500 ms, download 1000 ms; /sim/reset clears it.
+
 
 ## Macros (branch `macros`, first pass, iterating; docs/design/macros.md)
 
