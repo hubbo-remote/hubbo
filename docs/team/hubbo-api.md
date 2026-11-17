@@ -1,6 +1,6 @@
 # hubbo-api: working notes
 
-Current as of the smart-buttons branch. Not a log: rewrite sections as they change.
+Current as of the firmware-updates branch. Not a log: rewrite sections as they change.
 
 ## State
 
@@ -19,8 +19,9 @@ Current as of the smart-buttons branch. Not a log: rewrite sections as they chan
     `requestHubRestart()`, shared by the routes and the MQTT bridge's hooks;
   - `remote_routes.cpp` / `ble_routes.cpp`: the remote, and Bluetooth device pairing over core's
     `integrations::BleHostPort` (`ctx.bleHosts`; `SimulatedRemote` / hub-sim's hosts);
-  - `firmware_routes.cpp`: GET /admin/firmware and POST /admin/firmware/update over
-    `FirmwareUpdatePort` (`firmware_update_port.h`, with `SimulatedFirmwareUpdate`);
+  - `firmware_routes.cpp`: GET /admin/firmware, POST /admin/firmware/update over
+    `FirmwareUpdatePort` (`firmware_update_port.h`, with `SimulatedFirmwareUpdate`), and
+    POST /admin/firmware/check and /install over `FirmwareReleasePort` (`ctx.releases`);
   - backup, auth, status and activity routes, with shared helpers in `support.h`.
 - `ha/`:
   - `capabilities.*`: the allowlist and `fromSnapshot()`;
@@ -178,10 +179,24 @@ Current as of the smart-buttons branch. Not a log: rewrite sections as they chan
   largest JSON body only; transports size reads from `Router::bodyLimit()`. The router checks
   octet-stream for Binary rows. The handler: 411 without Content-Length, then `install()`.
   `validateFirmwareImage()` is the one validation rule (core); the firmware port calls it too.
-  No rollback. The sim's target is board `simulator`, 64 KiB slot; writes take 2 s, reboot 1 s
+  Trial boot with rollback (`rolled_back_from`). The sim's target is board `simulator`, 64 KiB slot; writes take 2 s, reboot 1 s
   of `advance()`. `/sim/firmware?fail=&ready=` is core's control.
   The reboot drops every session (sim and board): contract.py's `relogin_after_restart()` asserts
   the old cookie gets 401 and logs in again; `firmware_flow` returns the new cookie.
+- **Online updates** (`docs/design/firmware-updates.md`): `FirmwareReleasePort`
+  (`firmware_release_port.h`) over core's `hubbo::release` types (`UpdateCheckState`). One update
+  state: an install shows as `Downloading` on the update port, then the same validation, write and
+  reboot as an upload; `firmwareUpdateRunning` includes Downloading. Install errors:
+  `download_failed`, `image_mismatch`, `invalid_image` (constants in `firmware_update_port.h`;
+  `SimulatedFirmwareUpdate::beginDownload/finishDownload/failDownload` drive it in the sim).
+  Routes: check 202 / 409 `busy` / 503 no port; install `{version}` (X.Y.Z, detail `pattern`):
+  Busy before NotAvailable (409 `update_in_progress` / `not_available`). A null `ctx.releases`
+  reads as never checked and check/install answer 503. A failed check keeps `available` from the
+  last good check (core's rule). Release builds report plain `X.Y.Z`; a dev build's git describe
+  is never offered one. `check_updates` lives in `HubSettings` (GET/PUT /admin/hub; PUT takes
+  name and/or check_updates, `{}` is 422). `Api::setFirmwareVersion()` is hub-sim only (the
+  installed version after its reboot). Contract: `firmware_release_flow` over `/sim/release`
+  (`running=` first: the sim defaults to dev build `0.0.0-sim`); check 500 ms, download 1000 ms.
 - **Factory reset** (§3 end): `POST /admin/factory-reset` (op `factoryReset`) over
   `FactoryResetPort::requestFactoryReset()` (`factory_reset_port.h`; route in `firmware_routes.cpp`):
   503 no port, 409 `update_in_progress` while ctx.firmware is Writing/Rebooting, 503 if refused,
@@ -344,6 +359,11 @@ Current as of the smart-buttons branch. Not a log: rewrite sections as they chan
   end-of-phase instruction (CLAUDE.md), and only your own files, staged by path.
 
 ## Open items
+
+- **Known, accepted (hobby scale):** PUT /admin/hub with both `name` and `check_updates` saves
+  the name first; if saving check_updates then fails (StorageFailed, 503), the rename stays.
+- **firmware-updates:** routes, spec, fixtures, ApiTest and the noauth contract are done. The web
+  mock's release feed is frontend's (the mock modes skip the release flow). No gate yet.
 
 - **mqtt (in progress, no gate yet):**
   - Done: transitions.h; GET/PUT mqtt_main (host and username checked by core's

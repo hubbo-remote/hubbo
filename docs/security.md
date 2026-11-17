@@ -301,13 +301,47 @@ image, buffered in PSRAM by the transport, with its own body limit (the OTA slot
 policy table's one `Body::Binary` row). Before anything is erased, `api::validateFirmwareImage()`
 checks it fits the slot, it's an ESP32-S3 app image for this chip revision (not a merged factory
 image), it carries the Hubbo marker for this board and partition layout, and its appended
-SHA-256 matches. Then the firmware's writer task writes it, sets it to boot and reboots. There's
-no rollback (user decision).
+SHA-256 matches. Then the firmware's writer task writes it, sets it to boot and reboots. The new
+image boots on trial: if it isn't healthy within 2 minutes, the bootloader goes back to the old
+one and `GET /admin/firmware` shows `rolled_back_from`.
 
 These checks stop the realistic mistake, uploading the wrong file. They aren't a signature:
 there's no secure boot, so an attacker with the admin session can flash anything that passes
 them. That's the admin's power by definition. ArduinoOTA (for `bin/hubbo ota`) stays, behind
 its own compiled-in password hash, and shares the one-update-at-a-time owner flag.
+
+### Online updates
+
+The hub can also fetch a release from the project's GitHub releases
+(`docs/design/firmware-updates.md`). Each release carries a `manifest.json` (version, board,
+layout, minimum version, image size and SHA-256) and an ECDSA P-256 signature over the
+manifest's exact bytes. The public key is built into the firmware. The private key lives only in
+a GitHub Actions secret and in `~/.config/hubbo/release-key.pem` (mode 600), which only the lead
+provisions. It never appears in the repo, in logs or in argv.
+
+A check fetches the manifest and its signature, and ignores any manifest the key didn't sign
+(`check_error: bad_signature`). It offers the release only when it's newer than the running
+version, for this board and layout, and the running version meets its minimum. A development
+build (its version is git describe, not `X.Y.Z`) is never offered one. Installing the release
+downloads the image into PSRAM, checks its size and SHA-256 against the signed manifest, and
+then runs the same `validateFirmwareImage()` and write as an upload, followed by the same trial
+boot.
+
+Nothing installs by itself. A check runs at boot and every 24 hours unless the admin turns off
+"Check for updates" (`check_updates`). Installing always needs the admin's
+`POST /admin/firmware/install`. Check and install are admin-only (a token gets `403`).
+
+What a LAN attacker, a DNS spoof or a hijacked download URL can and can't do:
+
+- **Can't** get an unsigned or altered image installed. The manifest must verify against the
+  built-in key, and the image must match the manifest's size and SHA-256.
+- **Can't** downgrade the hub. A replayed older signed manifest isn't newer, so it isn't offered.
+- **Can** block or delay updates (drop or garble the traffic). The hub reports `unreachable`,
+  `bad_signature` or `bad_manifest`, and keeps what the last good check found.
+- **Can** make a download fail (`download_failed`, `image_mismatch`). Nothing is written.
+
+The release key is the trust root. Anyone who holds it can ship an image every hub will
+accept, so it stays out of the repo and off the hub.
 
 ## Factory reset
 
@@ -361,6 +395,10 @@ Covered over HTTP against hub-sim by `api/contract.sh` (both modes):
       mid-update, 202, then every session gone and the name kept.
 - [x] Firmware update: every refusal (411, 413, 415, 422 `wrong_board`/`invalid_image`, 409,
       503) changes nothing; a good image writes, reboots and ends idle; a failed write.
+- [x] Online updates (hub-sim's fake feed): failed checks (`unreachable`, `bad_signature`,
+      `bad_manifest`) keep the last release; another board or layout, a release that isn't
+      newer, an unmet minimum version and a development build are never offered; install refuses
+      another version and anything during an update; a failed download writes nothing.
 - [x] Credentials unreadable at boot or damaged: `unavailable`, setup and login 503.
 - [x] The malicious fixtures are refused (400/422).
 - [x] Body limits (`413`), JSON depth limit (`400`), `415` for non-JSON.
