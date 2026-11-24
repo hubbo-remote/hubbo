@@ -974,6 +974,21 @@ TEST_F(ApiTest, HubNameAndRestart) {
     EXPECT_EQ(call(http::Method::Put, "/api/v1/admin/hub", R"({"check_updates":"no"})").status, 422);
     ASSERT_EQ(call(http::Method::Put, "/api/v1/admin/hub", R"({"check_updates":true})").status, 200);
 
+    // The remote radio's power: max by default, saved, and a bad level
+    // refused before the name in the same body is saved.
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/hub").json["radio_power"], "max");
+    r = call(http::Method::Put, "/api/v1/admin/hub", R"({"radio_power":"low"})");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["radio_power"], "low");
+    EXPECT_EQ(hubSettings.radioPower(), config::RadioPower::Low);
+    r = call(http::Method::Put, "/api/v1/admin/hub", R"({"name":"Den","radio_power":"loud"})");
+    ASSERT_EQ(r.status, 422) << dump(r);
+    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/radio_power");
+    EXPECT_EQ(r.json["error"]["details"][0]["code"], "invalid_enum_value");
+    EXPECT_EQ(hubSettings.identity().name, "Hubbo 534D") << "nothing saved";
+    EXPECT_EQ(hubSettings.radioPower(), config::RadioPower::Low);
+    ASSERT_EQ(call(http::Method::Put, "/api/v1/admin/hub", R"({"radio_power":"max"})").status, 200);
+
     std::vector<config::HubIdentity> applied;
     hubSettings.onChanged([&](const config::HubIdentity &identity) { applied.push_back(identity); });
     r = call(http::Method::Put, "/api/v1/admin/hub", R"({"name":"  Living Room  "})");

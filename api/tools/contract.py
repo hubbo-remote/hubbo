@@ -933,8 +933,8 @@ def get_hub(c, label):
 def rename_hub(c, name, hostname, label, sent=None):
     """PUT `sent` (default: `name`) and expect the hub to be called `name`."""
     _, hub, _ = c.call("updateHub", "PUT", "/admin/hub", {"name": sent or name}, expect=200, label=label)
-    expect(hub == {"name": name, "hostname": hostname, "hostname_conflict": False, "check_updates": True},
-           f"{label}: {hub}")
+    expect(hub == {"name": name, "hostname": hostname, "hostname_conflict": False, "check_updates": True,
+                   "radio_power": "max"}, f"{label}: {hub}")
 
 
 def hub_flow(c):
@@ -979,6 +979,20 @@ def hub_flow(c):
     _, hub, _ = c.call("updateHub", "PUT", "/admin/hub", {"name": "Living Room", "check_updates": True}, expect=200,
                        label="a name and check_updates together")
     expect(hub and hub["check_updates"] is True, f"check_updates back on: {hub}")
+    # The remote radio's power: max by default, each level alone (the rest
+    # stays), a bad one refused with nothing saved. persistence_flow restarts.
+    expect(hub and hub["radio_power"] == "max", f"radio_power is max by default: {hub}")
+    for level in ["low", "medium", "high", "max"]:
+        _, hub, _ = c.call("updateHub", "PUT", "/admin/hub", {"radio_power": level}, expect=200,
+                           label=f"radio_power {level}")
+        expect(hub and hub["radio_power"] == level and hub["name"] == "Living Room" and hub["check_updates"] is True,
+               f"radio_power {level}: {hub}")
+    _, e, _ = c.call("updateHub", "PUT", "/admin/hub", {"name": "Den", "radio_power": "loud"}, expect=422,
+                     label="radio_power: an unknown level")
+    got = [(d["code"], d["path"]) for d in error_details(e)]
+    expect(("invalid_enum_value", "/radio_power") in got, f"radio_power loud: expected invalid_enum_value, got {got}")
+    hub = get_hub(c, "hub after refused radio_power")
+    expect(hub.get("name") == "Living Room" and hub.get("radio_power") == "max", f"a refused radio_power saved: {hub}")
 
     _, body, _ = c.call("restartHub", "POST", "/admin/restart", expect=202)
     expect(body == {}, f"restart: {body}")
@@ -2196,7 +2210,7 @@ def snapshot(c):
                                                   f"/devices/{d['id']}/capabilities", expect=200)[1]
     status = c.call("getStatus", "GET", "/status", expect=200)[1] or {}
     state["active_activity_id"] = status.get("active_activity_id")
-    state["hub_name"] = status.get("hubbo", {}).get("name")
+    state["hub"] = get_hub(c, "snapshot")
     backup = dict(c.call("downloadBackup", "GET", "/admin/backup", expect=200)[1] or {})
     backup.pop("created_at", None)
     state["backup"] = backup
@@ -2304,6 +2318,7 @@ def persistence_flow(c, hub, relogin=None):
 
     # Each kind of edit, then a restart.
     rename_hub(c, "Den", "den", "persist the hub's name")
+    c.call("updateHub", "PUT", "/admin/hub", {"radio_power": "medium"}, expect=200, label="persist radio_power")
     _, created, _ = c.call("createActivity", "POST", "/activities", fixture("activities/create.request.json"),
                            expect=201, label="persist create")
     if not created:

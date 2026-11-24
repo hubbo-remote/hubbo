@@ -1838,10 +1838,13 @@ paths:
       x-hubbo-max-body: 1024
       summary: Rename the hub, or change its settings
       description: |
-        Send `name`, `check_updates` or both. Spaces at either end of the
-        name are dropped, then the rest must be a `HubName`; otherwise `422
-        validation_failed` at `/name` (`required`, `too_long` or
-        `invalid_name`). `hostname` follows the name (see `Hub`).
+        Send any of `name`, `check_updates` and `radio_power`. Spaces at
+        either end of the name are dropped, then the rest must be a
+        `HubName`; otherwise `422 validation_failed` at `/name`
+        (`required`, `too_long` or `invalid_name`). A `radio_power` that
+        isn't one of `RadioPower` is `422 validation_failed` at
+        `/radio_power` (`invalid_enum_value`), and nothing is saved.
+        `hostname` follows the name (see `Hub`).
       requestBody:
         required: true
         content:
@@ -3985,9 +3988,10 @@ components:
     Hub:
       type: object
       additionalProperties: false
-      required: [name, hostname, hostname_conflict, check_updates]
+      required: [name, hostname, hostname_conflict, check_updates, radio_power]
       properties:
         name: {$ref: '#/components/schemas/HubName'}
+        radio_power: {$ref: '#/components/schemas/RadioPower'}
         check_updates:
           description: |
             Check for firmware releases at boot and every 24 hours (on by
@@ -4022,6 +4026,15 @@ components:
       properties:
         name: {type: string, examples: [Living Room]}
         check_updates: {type: boolean}
+        radio_power: {$ref: '#/components/schemas/RadioPower'}
+    RadioPower:
+      description: |
+        How strongly the hub's remote radio transmits (`max` by default).
+        Leave it at `max` unless the radio module has its own amplifier and
+        an external antenna: those can work worse at full power, and a
+        lower setting suits them better.
+      type: string
+      enum: [low, medium, high, max]
     FirmwareInstall:
       type: object
       additionalProperties: false

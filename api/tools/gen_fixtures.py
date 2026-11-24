@@ -734,7 +734,8 @@ def last_run(r):
             "failed_steps": sum(s["result"] in ("failed", "timed_out") for s in r["steps"])}  # not skipped/no_reply
 
 
-HUB = {"name": "Living Room", "hostname": "living-room", "hostname_conflict": False, "check_updates": True}
+HUB = {"name": "Living Room", "hostname": "living-room", "hostname_conflict": False, "check_updates": True,
+       "radio_power": "max"}
 STATUS = {
     "hubbo": {"name": HUB["name"], "version": "0.1.0", "build": "0.1.0+g1a2b3c4",
               "board": "waveshare_esp32_s3_eth"},
@@ -1117,7 +1118,7 @@ fx("admin/hub.json", "getHub", "200", HUB)
 fx("admin/hub.conflict.json", "getHub", "200",
    dict(HUB, hostname=HUB["hostname"] + "-2", hostname_conflict=True))
 fx("admin/hub_update.request.json", "updateHub", "request", {"name": HUB["name"]})
-fx("admin/hub_settings.request.json", "updateHub", "request", {"check_updates": False})
+fx("admin/hub_settings.request.json", "updateHub", "request", {"check_updates": False, "radio_power": "low"})
 fx("errors/hub_name_invalid.json", "updateHub", "422", err(
     "validation_failed", "Name must be at most 32 characters", [
         ("/name", "too_long", "Name must be at most 32 characters")]))
