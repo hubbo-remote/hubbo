@@ -23,6 +23,8 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "console.h"
 #include "ble_hid.h"
@@ -38,6 +40,7 @@
 #include "firmware_update.h"
 #include "flash_fs.h"
 #include "integration_task.h"
+#include "ir_transmitter.h"
 #include "http_server.h"
 #include "hub_name.h"
 #include "image_marker.h"
@@ -53,12 +56,14 @@
 #include "hubbo/domain/adapter.h"
 #include "hubbo/domain/config.h"
 #include "hubbo/domain/error.h"
+#include "hubbo/domain/pronto.h"
 #include "hubbo/engine/active_persister.h"
 #include "hubbo/engine/engine.h"
 #include "hubbo/http/route.h"
 #include "hubbo/integrations/ble_hid.h"
 #include "hubbo/integrations/ha_adapter.h"
 #include "hubbo/integrations/ha_client.h"
+#include "hubbo/integrations/ir.h"
 #include "hubbo/integrations/mqtt_bridge.h"
 #include "hubbo/remote/button.h"
 #include "hubbo/remote/input.h"
@@ -86,6 +91,7 @@ constexpr uint32_t kStatusIntervalMs = 30000;
 constexpr uint32_t kPublishIntervalMs = 250;
 
 HubName hubName;  // Bluetooth and mDNS names, live; DHCP and OTA at boot
+RmtIrTransmitter irTransmitter;  // DRAM: its interrupt writes into it
 
 // --- RF/engine side (declaration order = construction order) -----------------
 
@@ -120,6 +126,8 @@ uint64_t haNowMs() {
 }
 hubbo::integrations::HomeAssistantClient haClient(haTransport, haNowMs);
 hubbo::integrations::HomeAssistantAdapter haAdapter(hubbo::api::kHaIntegrationId, haClient);
+// IR: the adapter runs on the engine task; the transmitter's own task sends.
+hubbo::integrations::IrAdapter irAdapter(hubbo::kIrIntegrationId, irTransmitter);
 hubbo::AdapterSet adapters;
 hubbo::Engine::Store configStore;
 hubbo::Engine engine(configStore, adapters);
@@ -838,6 +846,7 @@ void printHelp() {
         "  ble pair <device_id>   open a pairing window for that Bluetooth device\n"
         "  ble cancel <device_id> close it (its old host, if any, stays)\n"
         "  ble forget <device_id> delete that device's bond\n"
+        "  ir ...                 send IR codes (`ir` lists the commands)\n"
         "  raw on|off             print raw radio payloads (distorts latency)\n"
         "  lat [reset]            latency summary, or clear it\n"
         "  mem                    memory and filesystem\n"
@@ -847,7 +856,107 @@ void printHelp() {
         "  reboot");
 }
 
+// `ir ...` (serial, or /debug/run on dev builds), always run on httpd so
+// its buffers have one owner. Codes go through the transmitter directly,
+// not the engine, converted exactly as the IR adapter converts them.
+// The test code is NEC address 0x04, command 0x02: an LG TV's volume up.
+constexpr char kIrTestCode[] =
+    "0000 006D 0022 0002 0156 00AB 0015 0015 0015 0015 0015 0040 0015 0015 0015 0015 0015 0015 0015 0015 0015 0015 "
+    "0015 0040 0015 0040 0015 0015 0015 0040 0015 0040 0015 0040 0015 0040 0015 0040 0015 0015 0015 0040 0015 0015 "
+    "0015 0015 0015 0015 0015 0015 0015 0015 0015 0015 0015 0040 0015 0015 0015 0040 0015 0040 0015 0040 0015 0040 "
+    "0015 0040 0015 0040 0015 05ED 0156 0055 0015 0E47";
+
+bool isIrCommand(std::string_view line) {
+    return line == "ir" || line.rfind("ir ", 0) == 0;
+}
+
+void irCommand(std::string_view args) {
+    // The durations must stay put until the send ends (PSRAM: allocated
+    // after extmem_enable(0)). Only httpd runs this.
+    static std::vector<uint32_t> durations;
+    static esp_timer_handle_t holdTimer = nullptr;  // ends `ir hold`
+    if (holdTimer == nullptr) {
+        esp_timer_create_args_t timer = {};
+        timer.callback = [](void *) { irTransmitter.stop(); };
+        timer.name = "ir_hold";
+        if (esp_timer_create(&timer, &holdTimer) != ESP_OK) {
+            con.println("ir: no timer");
+            holdTimer = nullptr;
+            return;
+        }
+    }
+    auto skipSpaces = [&] {
+        while (!args.empty() && args.front() == ' ') {
+            args.remove_prefix(1);
+        }
+    };
+    auto take = [&](std::string_view name) {
+        skipSpaces();
+        if (args.rfind(name, 0) == 0 && (args.size() == name.size() || args[name.size()] == ' ')) {
+            args.remove_prefix(name.size());
+            skipSpaces();
+            return true;
+        }
+        return false;
+    };
+    auto number = [&](unsigned long fallback) {
+        unsigned long n = 0;
+        size_t digits = 0;
+        while (digits < args.size() && args[digits] >= '0' && args[digits] <= '9') {
+            n = n * 10 + (args[digits++] - '0');
+        }
+        args.remove_prefix(digits);
+        skipSpaces();
+        return digits ? n : fallback;
+    };
+    auto send = [&](std::string_view pronto, uint16_t frames, bool hold) {
+        if (irTransmitter.busy()) {  // the durations may still be in use
+            con.println("ir: busy");
+            return false;
+        }
+        std::vector<uint16_t> words;
+        if (!hubbo::pronto::parse(pronto, &words)) {
+            con.println("ir: not a raw Pronto code (uppercase 4-digit hex words, single spaces, 0000 first)");
+            return false;
+        }
+        durations.clear();
+        const hubbo::integrations::IrCodeLayout code = hubbo::integrations::appendIrCode(words.data(), &durations);
+        const hubbo::integrations::IrSignal signal = hubbo::integrations::irSignal(code, durations, "console", "ir");
+        const bool sent = irTransmitter.send(signal, frames, hold);
+        con.printf("ir: %u frame(s)%s at %lu Hz: %s\n", frames, hold ? " then hold" : "",
+                   static_cast<unsigned long>(signal.carrierHz), sent ? "sending" : "refused");
+        return sent;
+    };
+    if (take("test")) {
+        send(kIrTestCode, static_cast<uint16_t>(number(1)), false);
+    } else if (take("hold")) {
+        const uint32_t ms = static_cast<uint32_t>(number(3000));
+        if (send(kIrTestCode, 1, true)) {
+            esp_timer_start_once(holdTimer, uint64_t{ms} * 1000);
+        }
+    } else if (take("send")) {
+        const uint16_t frames = static_cast<uint16_t>(number(1));
+        send(args, frames, false);
+    } else if (take("stop")) {
+        esp_timer_stop(holdTimer);  // so it can't end a later hold
+        irTransmitter.stop();
+    } else {
+        con.printf("ir: %s%s. ir test [frames] | hold [ms] | send <frames> <pronto> | stop\n",
+                   irTransmitter.ready() ? "ready" : "not ready", irTransmitter.busy() ? ", busy" : "");
+    }
+}
+
+void postIrCommand(std::string_view line) {
+    if (!httpServer.post([args = std::string(line.substr(2))] { irCommand(args); })) {
+        con.println("ir: busy, try again");
+    }
+}
+
 void runCommand(char *line) {
+    if (isIrCommand(line)) {  // takes the rest of the line (a Pronto code)
+        postIrCommand(line);
+        return;
+    }
     const uint32_t nowMs = millis();
     char *cmd = strtok(line, " \t");
     char *arg1 = strtok(nullptr, " \t");
@@ -958,6 +1067,11 @@ using hubbo::http::queryValue;  // form-decoded ('+' and %XX)
 
 std::string queueDevCommand(std::string_view query) {
     const std::string name = queryValue(query, "cmd");
+    if (isIrCommand(name)) {  // sends a code; takes the rest of the line
+        con.printf("> %s\n", name.c_str());
+        irCommand(std::string_view(name).substr(2));  // already on httpd
+        return "ran (read /debug/log)\n";
+    }
     for (const char *command : kDevCommands) {
         if (name == command) {
             const char *expected = nullptr;
@@ -1197,18 +1311,30 @@ void addDevEndpoints() {
 #endif
 
 void pollSerial() {
-    static char line[64];
+    // `ir send` takes a whole Pronto code: the line lives in PSRAM.
+    constexpr size_t kLineBytes = 512;
+    static char *line = static_cast<char *>(heap_caps_malloc(kLineBytes, MALLOC_CAP_SPIRAM));
     static size_t length = 0;
+    static bool tooLong = false;  // drop the whole line, never run a cut one
+    if (line == nullptr) {
+        return;
+    }
     while (Serial.available() > 0) {
         const int c = Serial.read();
         if (c == '\r' || c == '\n') {
-            if (length > 0) {
+            if (tooLong) {
+                con.printf("console: line too long (over %u characters); not run\n",
+                           static_cast<unsigned>(kLineBytes - 1));
+            } else if (length > 0) {
                 line[length] = '\0';
                 runCommand(line);
-                length = 0;
             }
-        } else if (length < sizeof(line) - 1) {
+            length = 0;
+            tooLong = false;
+        } else if (length < kLineBytes - 1) {
             line[length++] = static_cast<char>(c);
+        } else {
+            tooLong = true;
         }
     }
 }
@@ -1247,6 +1373,12 @@ void setup() {
     if (adapters.add(haAdapter) != hubbo::ErrorCode::Ok) {
         con.println("engine: Home Assistant adapter registration failed");
     }
+    if (adapters.add(irAdapter) != hubbo::ErrorCode::Ok) {
+        con.println("engine: IR adapter registration failed");
+    }
+    if (!irTransmitter.begin()) {  // IR commands then fail adapter_unavailable
+        con.println("ir: task failed to start; IR is unavailable");
+    }
     if (!engine.ready()) {
         con.println("engine: no config reader slot; remote input is inert");
     }
@@ -1278,6 +1410,7 @@ void setup() {
     runtime.setConfig(configService.get());
     runtime.setBleHosts(&bleHosts);
     runtime.setMqtt(&mqttBridge);
+    runtime.setIrTransmitter(&irTransmitter);
     ota::setRebootPending([] { return rebootReason.load(std::memory_order_acquire) != nullptr; });
     beginEthernetOnCore0();
     startApi();

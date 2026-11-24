@@ -753,3 +753,76 @@ Design: `docs/design/firmware-updates.md`. Spike code kept out of the tree.
 - Unverified: packet entries from real presses and their signal (no presses on .196; the lead
   reads the media room hub). /simplify done; skipped: a separate dev_build.py, stall coalescing in
   core, a firmware remote_log module, merging the two HID decorators.
+
+## IR (branch `ir`; design `docs/design/ir.md`; wired, built; spike measured on .196)
+
+- Hardware: Adafruit 5639 emitter, signal on GPIO 1 (`board::ir::kPin`, header pin 25), V+ on VSYS.
+  README "IR emitter" has the wiring.
+- `ir_transmitter.{h,cpp}`: `RmtIrTransmitter` implements core's `integrations::IrTransmitter`
+  (send(signal, frames, hold), stop(), busy(), ready()). main.cpp: `IrAdapter irAdapter("ir",
+  irTransmitter)` in the AdapterSet (3.2 KB internal .bss, like haAdapter); `irTransmitter.begin()`
+  right after the adapters are added; `runtime.setIrTransmitter()` → EngineRuntime reports
+  `irIntegrationState/Detail(ready())`. Device availability: "unknown" (as the sim).
+  - "ir" task, core 0, **prio 20** (above lwIP 18 / W5500 15: at prio 6, HTTP load delayed a
+    hold's next frame 15-23 ms), 4 KB PSRAM stack. It creates the channel, so the RMT ISR is on core 0.
+  - send() claims `busy_` with a compare-exchange (the console on httpd and the engine on the loop
+    can both call it), fills the mailbox, `xTaskNotifyGive`. Never blocks. Durations are read when
+    the task picks the job up (core's storage stays valid).
+  - TX channel: 1 MHz ticks, 192 symbols (all 4 TX blocks), queue depth 4, copy encoder,
+    `rmt_apply_carrier` (duty 0.33, active high, eot low) only when the carrier changes. Halves over
+    32,767 us are split; an odd half count splits the last gap. Symbols in PSRAM (the ISR isn't
+    IRAM-safe, so it never runs with the cache off). A one-section code (first == repeat) is built once.
+  - Frames: one transaction each; the next is queued 5 ms before the one in flight ends
+    (`kQueueLeadUs`), so frames run back to back and a stop() until then ends after the current
+    frame. A failed rmt_transmit ends the send after what's in flight (busy clears).
+- Console: `ir test [frames]` (`kIrTestCode`: NEC 0x04/0x02, LG volume up), `ir hold [ms]` (an
+  esp_timer one-shot calls stop(); `ir stop` cancels it so it can't end a later engine hold),
+  `ir send <frames> <pronto>` (URL limit ~90 words), `ir stop`, `ir`. Always runs on httpd (serial
+  posts it there), so its PSRAM buffers have one owner. Parses with core's `pronto::parse` /
+  `durationUs` / `carrierHz` (per-word rounding, strict spec text), the same as the adapter's
+  `toCode`. The serial line buffer (512 B) is in PSRAM. The spike's capture/ahead/stats are gone.
+- /simplify done: core's Pronto helpers instead of a console parser; the NEC code a constant;
+  `loop()` flattened (`more()`); build scratch local; queue depth 2; one console entry point.
+  Skipped: a core `toSignal()` helper shared with `toCode` (first/repeat rule is in two places:
+  a core change), a table-driven /debug/run (only `ir` needs arguments today).
+- `scripts/core_embeds.py` also puts `core/third_party/ArduinoJson` on the path: core's
+  `config/profile.h` now includes `config/json.h`, and the generated builtin_profiles.cpp is built
+  before the library finder adds core's flags.
+- After /simplify on .196: `ir test 3`, `ir hold 5000` (ends on time), `ir hold 0` + `ir stop` all
+  fine; lowercase Pronto refused (strict, like profiles). Loop 1,471 us, 0 over 5 ms; internal
+  67.5 KB free, min 65.8 KB; /status `ir` ready. Sizes: default RAM 94,832 B, flash 2,478,919 B;
+  `_ota` (OTA password) RAM 105,464 B, flash 2,528,911 B.
+- Spike measurements (.196, before the cleanup; same send path):
+  - Carrier 38,029 asked → 38,040 Hz (80 MHz / (693+1410)), captured 38,036.8 Hz, duty 32.9%. 16-bit
+    high/low counts of 80 MHz: ~0.61 kHz up to MHz (8,972 Hz exact; 518 kHz → 519.5 kHz).
+  - Durations: Pronto → us with a rounded running total (≤0.5 us, no drift); RMT exact to the tick.
+    Loop-back capture: mark+space pairs exact (the RX demodulator biases marks +5..24 us).
+  - Back-to-back frames within 13-14 us; first frame starts ~55 us after the call. rmt_transmit
+    33-55 us; build 40 us (NEC) to 0.65 ms (512 pairs). CPU: 0.10% of core 0 during a hold.
+  - ≤190 pairs fit in channel RAM; 250 and 512 pairs went out right with ping-pong refills (flash
+    stall during one untested).
+  - Holds 10-20 s: 0 gaps, also under 240 HTTP GETs (prio 20). Loop 1.5-3.0 ms max gap, 0 over
+    5 ms during holds. One 17 ms right after a reboot (not repeated).
+- Internal heap on the spike build: 59.8 KB idle (was ~72 KB); 5.6 KB console statics and the 4 KB
+  stack have since moved to PSRAM, irAdapter adds 3.2 KB. Sizes now: default RAM 95,328 B, flash
+  2,476,423 B; `_ota` RAM 103,544 B, flash 2,498,111 B (no OTA password in these builds).
+- On .196 (wired build, 2026-11-24): boot `ir: ready on GPIO 1`; /status lists `ir` ready. Idle
+  (HA, MQTT up, ~2 min): internal free 67.1 KB, min 65.2 KB, largest 31.7 KB; loop 1,442 us, 0 over
+  5 ms. During `ir hold 5000`: loop 1,501 us, 0 over 5 ms, no send errors. `_ota` with the OTA
+  password: RAM 106,000 B, flash 2,529,059 B. Pending: the user's look at the red LED, then the
+  board test (docs/design/ir.md).
+- Lead review (IR), done:
+  - `takeFailed()` (core's port): `failed_` is set at every failure after an accepted send (build:
+    zero/odd/over kMaxSymbols; carrier refused; rmt_transmit error), each logged; `fail()` drops
+    busy_ at once, an rmt_transmit failure after what's in flight. send() clears it. Not triggerable
+    from the console (core's parse refuses such codes); untested on the board.
+  - Console: core's `pronto::parse` → `appendIrCode` → `irSignal` (a static vector, PSRAM, kept until
+    the next send; httpd only). The first/repeat rule now lives only in core.
+  - stop() inside the last 5 ms of a frame still sends the queued one: kept; core's port documents it.
+  - A serial line over 511 chars is refused ("console: line too long"); README says so.
+- On .196 after the review fixes: ir test 3, hold 5000 (ends on time), hold 0 + stop fine; loop
+  2,599 us, 0 over 5 ms; internal 66.9 KB free, min 65.1 KB; /status `ir` ready. Sizes: default
+  RAM 95,584 B, flash 2,488,963 B; `_ota` (OTA password) RAM 106,264 B, flash 2,538,303 B.
+- Phase gate (fw) passed (2026-11-24): default (version gate) RAM 95,544 B, flash 2,480,643 B (37.9%);
+  `_ota` RAM 103,808 B, flash 2,508,587 B (38.3%). Board test passed on the media room hub (.94):
+  a Denon's power, volume, mute and inputs over IR (lead).

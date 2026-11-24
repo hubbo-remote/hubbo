@@ -52,4 +52,10 @@ constexpr int kCsn = 18;
 constexpr int kCe = 38;
 }  // namespace nrf24
 
+// IR emitter (docs/design/ir.md): an active-high signal into the emitter's
+// N-FET (e.g. Adafruit 5639), V+ on VSYS. Header pin 25. Driven by RMT TX.
+namespace ir {
+constexpr int kPin = 1;
+}  // namespace ir
+
 }  // namespace hubbo::fw::board

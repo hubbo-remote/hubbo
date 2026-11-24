@@ -27,6 +27,7 @@
 #include "hubbo/engine/engine.h"
 #include "hubbo/integrations/ble_hosts.h"
 #include "hubbo/integrations/ha_client.h"
+#include "hubbo/integrations/ir_transmitter.h"
 #include "hubbo/integrations/mqtt_bridge.h"
 #include "hubbo/remote/input.h"
 
@@ -65,6 +66,8 @@ public:
     void setBleHosts(const hubbo::integrations::BleHostPort *bleHosts) { bleHosts_ = bleHosts; }
     // Once at boot: the `mqtt_main` integration's state (any-task reads).
     void setMqtt(const hubbo::integrations::MqttBridge *mqtt) { mqtt_ = mqtt; }
+    // Once at boot: the `ir` integration's state (ready(): any task).
+    void setIrTransmitter(const hubbo::integrations::IrTransmitter *ir) { ir_ = ir; }
 
     // Engine task.
     void publish(const RuntimeStatus &status);
@@ -94,6 +97,7 @@ public:
 private:
     RuntimeStatus read() const;
     bool bleRadioReady() const { return bleHosts_ != nullptr && bleHosts_->radioReady(); }
+    bool irReady() const { return ir_ != nullptr && ir_->ready(); }
 
     hubbo::Engine &engine_;
     const hubbo::AdapterSet &adapters_;
@@ -101,6 +105,7 @@ private:
     const hubbo::config::ConfigService *config_ = nullptr;
     const hubbo::integrations::BleHostPort *bleHosts_ = nullptr;
     const hubbo::integrations::MqttBridge *mqtt_ = nullptr;
+    const hubbo::integrations::IrTransmitter *ir_ = nullptr;
     mutable portMUX_TYPE lock_ = portMUX_INITIALIZER_UNLOCKED;
     RuntimeStatus status_;
 };

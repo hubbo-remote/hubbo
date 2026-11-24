@@ -39,6 +39,7 @@ Pinned: `espressif32@8.0.0` (arduino-esp32 3.3.12), `nRF24/RF24@1.6.2`,
 | `src/restart.*` | `api::RestartPort` (POST /admin/restart): claims the update-owner flag, then the normal reboot path. |
 | `src/firmware_update.*` | `api::FirmwareUpdatePort` over esp_ota: firmware updates from the web admin (see "Web updates"). |
 | `src/image_marker.h`, `scripts/image_marker.py` | The `HUBBO-IMAGE/1 board=… layout=… version=<git describe>` marker every image carries; the build fails if the .bin doesn't hold exactly one. Its version is the API's `version`. |
+| `src/ir_transmitter.*` | `integrations::IrTransmitter` on RMT TX with a hardware carrier (GPIO 1); core's `IrAdapter` drives it. See "IR emitter". |
 | `src/main.cpp` | Wiring, boot, main loop, serial console. |
 | `scripts/drop_unused_idf_libs.py` | Link step: drops the precompiled esp_matter archive. Otherwise ordinary `std::string` calls resolve to Matter's copies and pull in Matter and the Wi-Fi stack (+24 KB RAM, +230 KB flash). |
 
@@ -59,6 +60,25 @@ socket adapter with its own 3.3 V regulator (AMS1117-3.3):
 The hub's radio power setting (low, medium, high or max, the default) applies live; `status`
 shows it.
 
+### IR emitter
+
+IR devices are sent through an emitter on GPIO 1. There's no setting for the pin. Use an
+active-high emitter module, one whose signal input switches its LEDs through a transistor, such as
+Adafruit's High Power IR LED Emitter (product 5639: two 940 nm LEDs behind an N-FET):
+
+- Signal to GPIO 1 (header pin 25).
+- V+ to VSYS (pin 39), shared with the radio's adapter. Each pulse draws about 400 mA, which is
+  why it isn't on 3V3.
+- GND to GND.
+
+A bare IR LED needs a transistor (and a resistor): a GPIO can't drive it. The module's red LED
+lights while it sends, which makes a quick check: `ir test` on the console.
+
+The RMT peripheral makes the carrier (from the code's Pronto frequency, 33% duty) and the
+marks and spaces, to the microsecond. Its task and interrupt are on core 0, so sending doesn't
+touch the radio loop. A hold's repeat frames go back to back until the release, and the frame in
+flight always finishes.
+
 Code ported from [Harmonizer](https://github.com/soaresbrun0/harmonizer) (AGPL-3.0) is marked
 at the top of each file.
 
@@ -71,6 +91,7 @@ at the top of each file.
 | `esp_timer` | 0 | framework (22) | `HttpServer::every()`: once a second, decides whether httpd housekeeping is due (an activity change, a pending active-activity write, or a config that is `storage_unavailable` and needs `ConfigService::refresh()`), and if so queues it onto httpd, at most one at a time. The work itself runs on httpd. |
 | NimBLE host | 0 | framework | BLE stack. Callbacks only set flags. |
 | `tcpip` (lwIP) | 0 | framework (above httpd) | Network. |
+| `ir` | 0 | 20 | IR: makes the RMT channel (so its interrupt is on core 0 too), builds each code's symbols and queues its frames. About 50 us per frame, so it sits above lwIP and W5500 RX, which otherwise held it off long enough to leave gaps between a hold's frames. 4 KB PSRAM stack. |
 | W5500 RX (`w5500_tsk`) | none (runs on 0) | 15 | Reads frames from the W5500. The driver gives it no core affinity, so with loopTask above it, it always runs on core 0. Ethernet is started from a short task pinned to core 0, so the W5500 GPIO and SPI interrupts are on core 0 too. |
 
 `EngineRuntime::run` returns only once the engine has finished the request. The request lives on
@@ -171,7 +192,7 @@ no serial attached. Plain-text GETs outside the API and its auth, read-only by d
 | URL | |
 |---|---|
 | `/debug/log` | The last 8 KB of console output. |
-| `/debug/run?cmd=status` | Queues one console command on the loop task; read the result in `/debug/log`. Allowed: `status`, `mem`, `lat`, `lat reset`, `tasks`, `help`. Nothing that changes state. |
+| `/debug/run?cmd=status` | Queues one console command on the loop task; read the result in `/debug/log`. Allowed: `status`, `mem`, `lat`, `lat reset`, `tasks`, `help`. Nothing that changes state. Also `ir ...` (below), which runs on httpd. |
 | `/debug/bench?iterations=N` | Times PBKDF2-HMAC-SHA256 on httpd at N iterations (default: a login's cost, 10,000; at most 20,000). |
 | `/debug/coredump` | The core dump the last panic left in flash (raw partition image). Decode it with esp-coredump against that build's `firmware.elf`. |
 
@@ -189,6 +210,10 @@ no serial attached. Plain-text GETs outside the API and its auth, read-only by d
 | `ble pair <device_id>` / `ble cancel <device_id>` | A pairing window for that Bluetooth device (120 s). Its old host stays until a new bond completes. |
 | `ble forget <device_id>` | Delete that device's bond. |
 | `raw on\|off` | Print raw payloads. |
+| `ir test [frames]` | Send a NEC code (address 0x04, command 0x02: an LG TV's volume up), 1 frame by default. |
+| `ir hold [ms]` | The same code, held: repeat frames for that long (default 3000). |
+| `ir send <frames> <pronto>` | Send a raw Pronto (`0000`) code as the profile spec writes it, converted as IR devices' codes are. Over HTTP the URL limits it to about 90 words; on serial a line holds 511 characters (about 100 words), and a longer one is refused as too long. |
+| `ir stop`, `ir` | End a hold / show whether the emitter is ready or busy. |
 | `lat`, `lat reset` | Latency summary / clear it. |
 | `fs format` | Erase the config filesystem: records the request and reboots; the format runs at boot, before anything uses the filesystem. |
 | `wdt` | Hang the loop; the task watchdog should reboot the board in ~5 s. |
