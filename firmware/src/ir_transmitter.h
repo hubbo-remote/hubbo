@@ -50,6 +50,18 @@ public:
     void stop() override;
     bool takeFailed() override { return failed_.exchange(false, std::memory_order_acq_rel); }
 
+    // Since boot, any task (GET /debug/stats). A late frame was queued after
+    // the one before it had ended, so a gap opened between them.
+    struct Counters {
+        uint32_t frames = 0;
+        uint32_t lateFrames = 0;
+        uint32_t failures = 0;
+    };
+    Counters counters() const {
+        return {frames_.load(std::memory_order_relaxed),
+                lateFrames_.load(std::memory_order_relaxed), failures_.load(std::memory_order_relaxed)};
+    }
+
 private:
     struct Section {
         uint16_t first = 0;  // index into symbols_
@@ -71,6 +83,9 @@ private:
     std::atomic<bool> ready_{false};
     std::atomic<bool> busy_{false};
     std::atomic<bool> failed_{false};  // the last send failed after it was accepted
+    std::atomic<uint32_t> frames_{0};  // Counters, written by the ir task
+    std::atomic<uint32_t> lateFrames_{0};
+    std::atomic<uint32_t> failures_{0};
 
     // Mailbox: written by whoever set busy_ (send()), read by the ir task
     // after hasPending_.

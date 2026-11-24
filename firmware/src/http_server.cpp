@@ -111,31 +111,14 @@ esp_err_t sendError(httpd_req_t *req, int status, std::string_view code, std::st
     return send(req, response);
 }
 
-// After each request: logs httpd's stack high-water mark (the least free
-// since boot, posted jobs included) whenever it reaches a new low. The scan
-// costs a few microseconds, on httpd.
-void noteStackLow() {
-    static UBaseType_t lowest = ~UBaseType_t{0};
-    const UBaseType_t freeBytes = uxTaskGetStackHighWaterMark(nullptr);
-    if (freeBytes < lowest) {
-        lowest = freeBytes;
-        con.printf("http: stack low %lu of %lu bytes free\n", static_cast<unsigned long>(freeBytes),
-                   static_cast<unsigned long>(HttpServer::kStackBytes));
-    }
-}
-
 }  // namespace
 
 struct HttpServerAccess {
     static esp_err_t onRequest(httpd_req_t *req) {
-        const esp_err_t result = static_cast<HttpServer *>(req->user_ctx)->serve(req);
-        noteStackLow();
-        return result;
+        return static_cast<HttpServer *>(req->user_ctx)->serve(req);
     }
     static esp_err_t onStatic(httpd_req_t *req) {
-        const esp_err_t result = static_cast<HttpServer *>(req->user_ctx)->serveStatic(req);
-        noteStackLow();
-        return result;
+        return static_cast<HttpServer *>(req->user_ctx)->serveStatic(req);
     }
 };
 
@@ -203,8 +186,8 @@ bool HttpServer::begin(const http::Router &router, http::RequestAuthenticator *a
     // dropped some mid-load. lwIP has 16 sockets: httpd adds 3 internally,
     // plus the HA WebSocket, OTA and mDNS.
     config.max_open_sockets = 7;
-    // The API (one per method), /llms.txt, the dev console and the web admin.
-    config.max_uri_handlers = 13;
+    // The API (one per method, 4), /llms.txt, the dev console (5) and the web admin.
+    config.max_uri_handlers = 11;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
@@ -252,7 +235,9 @@ bool HttpServer::addDebugGet(const char *uri, DebugGet handler) {
         const std::string_view full(req->uri);
         const size_t queryAt = full.find('?');
         const std::string_view query = queryAt == std::string_view::npos ? std::string_view() : full.substr(queryAt + 1);
-        const std::string body = (*static_cast<DebugGet *>(req->user_ctx))(query);
+        const DebugReply reply = (*static_cast<DebugGet *>(req->user_ctx))(query);
+        const std::string &body = reply.body;
+        httpd_resp_set_status(req, http::statusLine(reply.status));
         httpd_resp_set_type(req, "text/plain; charset=utf-8");
         httpd_resp_set_hdr(req, "Cache-Control", "no-store");
         return httpd_resp_send(req, body.data(), static_cast<ssize_t>(body.size()));

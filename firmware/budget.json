@@ -1,0 +1,37 @@
+{
+  "settle_ms": 120000,
+  "windows": {
+    "idle": 60,
+    "loaded": 60,
+    "flash": 15
+  },
+  "load": {
+    "clients": 4
+  },
+  "rules": [
+    {"name": "Loop max gap", "path": "loop.window.max_gap_us", "unit": "us", "max": {"idle": 4000, "loaded": 4000, "flash": 12000}},
+    {"name": "Loop iterations over 5 ms", "path": "loop.window.over_5ms", "max": {"idle": 0, "loaded": 0, "flash": 3}},
+    {"name": "read→HID p95", "path": "latency.read_to_hid.p95_us", "unit": "us", "max": {"loaded": 1999}, "needs": "latency.read_to_hid.count"},
+    {"name": "read→HID p99", "path": "latency.read_to_hid.p99_us", "unit": "us", "max": {"loaded": 4999}, "needs": "latency.read_to_hid.count"},
+    {"name": "Queue overflows", "path": "radio.queue_overflows", "max": {"end": 0}},
+    {"name": "IR late frames", "path": "integrations.ir.late_frames", "max": {"loaded": 0}},
+    {"name": "IR frames sent", "path": "integrations.ir.frames", "min": {"loaded": 1}},
+    {"name": "IR failures", "path": "integrations.ir.failures", "max": {"end": 0}},
+    {"name": "Internal heap free", "path": "heap.internal.free", "unit": "bytes", "min": {"end": 56320}},
+    {"name": "Internal heap min", "path": "heap.internal.min_free", "unit": "bytes", "min": {"end": 51200}},
+    {"name": "Internal heap largest block", "path": "heap.internal.largest", "unit": "bytes", "min": {"end": 24576}},
+    {"name": "PSRAM free", "path": "heap.psram.free", "unit": "bytes", "min": {"end": 5242880}},
+    {"name": "PSRAM largest block", "path": "heap.psram.largest", "unit": "bytes", "min": {"end": 4194304}},
+    {"name": "Image", "path": "image_bytes", "unit": "bytes", "max": {"end": 3040870}},
+    {"name": "Static internal RAM", "path": "static_ram_bytes", "unit": "bytes", "max": {"end": 114688}},
+    {"name": "Loop stack", "path": "tasks.loopTask.stack_free_min", "unit": "bytes", "min": {"end": 2048}},
+    {"name": "httpd stack", "path": "tasks.httpd.stack_free_min", "unit": "bytes", "min": {"end": 4096}},
+    {"name": "esp-mqtt stack", "path": "tasks.mqtt_task.stack_free_min", "unit": "bytes", "min": {"end": 1024}},
+    {"name": "ha stack", "path": "tasks.ha.stack_free_min", "unit": "bytes", "min": {"end": 2048}},
+    {"name": "mqtt stack", "path": "tasks.mqtt.stack_free_min", "unit": "bytes", "min": {"end": 2048}},
+    {"name": "update stack", "path": "tasks.update.stack_free_min", "unit": "bytes", "min": {"end": 2048}},
+    {"name": "ir stack", "path": "tasks.ir.stack_free_min", "unit": "bytes", "min": {"end": 1024}},
+    {"name": "IDLE0 share", "path": "tasks.IDLE0.cpu_pct_x100", "unit": "pct_x100", "report": ["idle", "loaded"]},
+    {"name": "BLE send failures", "path": "integrations.ble.send_failures", "report": ["end"]}
+  ]
+}

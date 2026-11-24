@@ -124,6 +124,10 @@ void RmtIrTransmitter::loop() {
             const Section &section = queued_ == 0 ? first_ : repeat_;
             const int64_t from = inFlight == 0 ? esp_timer_get_time() : inFlightEndUs_;
             if (queueFrame(section)) {
+                frames_.fetch_add(1, std::memory_order_relaxed);
+                if (queued_ > 0 && inFlight == 0) {
+                    lateFrames_.fetch_add(1, std::memory_order_relaxed);
+                }
                 inFlightEndUs_ = from + section.ticks;
                 queued_++;
                 if (framesLeft_ > 0) {
@@ -133,6 +137,7 @@ void RmtIrTransmitter::loop() {
                 framesLeft_ = 0;
                 holding_ = false;
                 failed_.store(true, std::memory_order_relaxed);  // published by busy_'s release below
+                failures_.fetch_add(1, std::memory_order_relaxed);
             }
         }
         if (!more() && queued_ == done) {
@@ -148,6 +153,7 @@ void RmtIrTransmitter::loop() {
 }
 
 void RmtIrTransmitter::fail() {
+    failures_.fetch_add(1, std::memory_order_relaxed);
     failed_.store(true, std::memory_order_relaxed);
     busy_.store(false, std::memory_order_release);
 }
