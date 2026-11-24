@@ -6,7 +6,7 @@
     "flash": 15
   },
   "load": {
-    "clients": 4
+    "clients": 1
   },
   "rules": [
     {"name": "Loop max gap", "path": "loop.window.max_gap_us", "unit": "us", "max": {"idle": 4000, "loaded": 4000, "flash": 12000}},
