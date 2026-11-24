@@ -5,6 +5,13 @@ Design: `docs/design/activity-runs.md` and `docs/design/state-checks.md`; the pr
 This file covers state, decisions and traps only.
 
 ## State
+- Radio power (branch radio-power, uncommitted), /simplify done: `config::RadioPower {Low, Medium,
+  High, Max}` in config/hub.h, `radioPowerName`/`parseRadioPower` ("low".."max"), StateStore key
+  `kRadioPowerKey` "radio_power" (absent/unreadable: Max). `HubSettings::radioPower()` is a relaxed
+  atomic load (no lock, the RF loop polls it each pass; no callback), `setRadioPower()` Ok or
+  StorageFailed; load() and forget() handle it like check_updates. Like the name and
+  check_updates, it's hub state, not config: never in a backup, restore doesn't touch it.
+  hub-sim needs nothing (its HubSettings stores it). Tests: HubSettings.*RadioPower*.
 - Firmware updates (branch firmware-updates, uncommitted; docs/design/firmware-updates.md), /simplify done:
   - `integrations/firmware_release.h` (`hubbo::release`): parseVersion (plain X.Y.Z only; else a
     dev build, never offered anything), compareVersions, parseManifest (strict per field, unknown
