@@ -6,7 +6,7 @@ numbers and traps. Design: `docs/design/phase5-appliance.md`.
 ## State
 
 - Phase 2 (7797413): the restore OOM fixed with extmem(0), `-O2`, loop priority 16, Ethernet on
-  core 0, `/debug/bench`.
+  core 0.
 - Phase 3 (merged, PR #2):
   - `ws_transport.*`: `EspWsTransport`, the core `WebSocketTransport` port on `esp_transport_ws`.
     - ws:// runs over TCP; wss:// runs over `esp_transport_ssl`.
@@ -52,16 +52,11 @@ numbers and traps. Design: `docs/design/phase5-appliance.md`.
     normal build straight after it.
   - The variable must be passed into the container: list it in `docker-compose.yml` beside
     `HUBBO_OTA_PASSWORD`.
-- Dev-only endpoints (`_ota` env): `/debug/log`, `/debug/run?cmd=...`, `/debug/bench`,
-  `/debug/coredump`, `/debug/ws-echo` and `/debug/dns`.
-  - `/debug/ws-echo?url=ws[s]://...` with `&mode=open`, `&hold=N` or `&async=1` (logs instead).
-    **Use async when you measure API latency**: a synchronous probe blocks httpd, faking a stall.
-  - `/debug/dns?host=...`: one lookup, on the HA task.
+- Dev-only endpoints (`_ota` env, dev_console.cpp): `/debug/log`, `/debug/run?cmd=...`,
+  `/debug/coredump`, `/debug/release`, `/debug/stats`. (`/debug/bench`, `/debug/ws-echo` and
+  `/debug/dns` were bring-up tools; removed 2026-11-24.)
   - Query values decode through core's `http::queryValue`, so both `+` and `%20` work.
     `Request.query` stays raw (the core contract); decode per parameter, never the whole query.
-  - The ws echo test server is `firmware/.pio/wstest/echo.py`. It isn't in git. Run it with
-    `bin/hubbo run python3 -u /work/firmware/.pio/wstest/echo.py 18765`; the host is 192.168.1.151.
-    For wss://, add `cert.pem key.pem` (same folder, self-signed). **Stop it when done.**
 - No background wait loops (CLAUDE.md): the lead messages when other agents' interfaces land.
 - The HA client has its own clock (`haNowMs`), and the service reads it after
   `transport.poll()`. A connect blocks up to 15 s, so a time taken before it made the auth
@@ -299,9 +294,8 @@ of remote lag during the write are accepted.
   buffers are always in PSRAM. Each bridge state change is logged once, e.g.
   `mqtt: connected: <detail>` or `mqtt: auth_failed: <detail>`.
 - Task: `IntegrationTask` (was `HaTask`; `start(name, service)`) runs "ha" and "mqtt": core 0, prio 4, an 8 KB PSRAM stack. The
-  service is `mqttTransport.poll(50)` plus `mqttBridge.poll(now)`. Every 10 s, the transport's
-  poll logs a new low in esp-mqtt's stack (`mqtt: esp-mqtt stack low N of 4096`), using the task
-  handle recorded from its first event.
+  service is `mqttTransport.poll(50)` plus `mqttBridge.poll(now)`. Stack lows: `/debug/stats`
+  (the board budget), not log lines.
 - The wire MAC, checked in ETH.cpp: `begin(..., spi_host, ...)` calls `beginSPI(mac=nullptr)`,
   which uses `esp_read_mac(ESP_MAC_ETH)`, adds `_eth_index` (0 for `ETH`), then applies
   `esp_derive_local_mac`. So `EthernetLink::mac()` is exact: BE:1F:3F:BC:7F:8D (locally
@@ -826,3 +820,74 @@ Design: `docs/design/firmware-updates.md`. Spike code kept out of the tree.
 - Phase gate (fw) passed (2026-11-24): default (version gate) RAM 95,544 B, flash 2,480,643 B (37.9%);
   `_ota` RAM 103,808 B, flash 2,508,587 B (38.3%). Board test passed on the media room hub (.94):
   a Denon's power, volume, mute and inputs over IR (lead).
+
+## Board budget (branch `board-budget`; on .196, not committed, no gate yet)
+
+- `GET /debug/stats` (dev builds): the budget's numbers as JSON. Only `?reset=1` (close the
+  window) carries the loop and read->hid fields. The table and the load profile are in
+  firmware/README.md "Board budget"; the lead's `bin/hubbo board-check` runs against it.
+- Window close (`diag::closeWindow(&out)`, httpd only): bumps `closeRequested` unless one is
+  still pending, waits 1 ms polls up to 200 ms for the loop's `closedSerial`; the loop copies the
+  window into `closed` and resets it in one pass, never waiting. A timeout answers 503 and the
+  close stays pending: the next reset returns that window, so none is lost. The window's
+  read->hid is its own LatencyStats (`windowHid`, PSRAM), recorded next to the since-boot one in
+  TimedHidTransport; a close never touches what `lat` and /api/v1/status report. No published
+  copy any more (publishStats deleted).
+- `diag::TaskShares`: one sampler per caller (`tasks`, /debug/stats), deltas by modular uint32
+  subtraction (the counters wrap at ~72 min). loopTask's share is unknown (`shareKnown` false,
+  `cpu_pct_x100` null, `-` in `tasks`): it never blocks, so its counter is stale. Task arrays are
+  on the heap (the loop has ~3 KB stack).
+- `image_bytes` is null if the image metadata read fails (a failure isn't cached); board-check
+  fails a null.
+- RmtIrTransmitter counters: frames, late_frames (a frame queued after the one before it had
+  already ended), failures. `bleSendFailures` is counted in TimedHidTransport.
+- `remote inject` was deleted (lead, 2026-11-24): it re-implemented the engine's dispatch and was
+  the only thing that let /debug/run act. Latency comes from real presses.
+- /debug/* handlers return `HttpServer::DebugReply` (body + status): 400 invalid, 409 busy, 503
+  the loop didn't answer a close.
+- ArduinoJson 7 keeps a `const char[N]` by pointer (as a literal): cast char arrays to
+  `const char *` so they're copied (task names came out as garbage otherwise).
+- Hub settings: `setCheckUpdates`/`setRadioPower` write the LittleFS record every time, even
+  unchanged; board-check's flash window saves `check_updates` with its current value.
+- Task-watchdog recorder: `esp_task_wdt_isr_user_handler` saves each core's running task to RTC
+  noinit; the next boot logs it only if the reset reason is the task watchdog, and clears it. It doesn't change the watchdog.
+- `firmware/budget.json` (mine) holds the limits `bin/hubbo board-check` (the lead's
+  bin/board_check.py) judges; the README table mirrors it. Keep both in step; limits change only
+  with the user's OK. The check never switches activities; the flash window is two hub saves.
+- Measured (settled): idle window max gap 1.5 ms, 0 over 5 ms; internal 66.0 KB free, min 63.7,
+  largest 31.7; stacks: loop 2.9 KB, httpd 13.1, ha 4.1, mqtt 6.1, update 3.3, ir 2.3 (after a
+  hold), mqtt_task 1.7. IR hold: 186 frames, 0 late. image 2,596,672 B; static RAM 106,800 B.
+- Gotchas:
+  - The loop never blocks, so its FreeRTOS run-time counter goes stale; its share isn't reported.
+  - `esp_ipc_call_blocking(1, ...)` from httpd deadlocks: IPC runs at the caller's priority (5),
+    below the loop. Never call it from a task below 16.
+  - The since-boot loop gap (`lat`) picks up one stall of about 17 ms in the first minutes after
+    boot. Judge the budget on windows after the settle.
+- **Open: W5500 starvation (next, own branch; the user decided).** 2–4 parallel HTTP clients
+  looping for under 60 s trip the task watchdog. The recorder showed core 0 in `w5500_tsk` and in
+  `tiT`. Earlier "other watchdog" resets had dumps with an invalid CRC. Not yet shown whether
+  main reproduces it. The loaded window in board-check keeps 4 clients and is expected to fail
+  until the fix lands.
+  Also on that branch: the last OTAs logged a loop max gap of about 30 s for the run being
+  replaced (945 ms on an earlier one). OTA seems to block the loop for the whole upload; check
+  whether that's by design.
+- Cleanup (2026-11-24, the user: "lean and PURPOSEFUL"): main.cpp is wiring, boot and the
+  loop; the serial console is commands.{h,cpp}; the dev console is dev_console.{h,cpp} plus
+  board_stats.{h,cpp}, one seam (`dev_console::begin/poll`, empty inlines without
+  HUBBO_DEV_CONSOLE). Removed: /debug/bench, /debug/ws-echo, /debug/dns, the http and esp-mqtt
+  stack-low log lines, RemoteRadio's oversize counter and default scan timeout (core's
+  `api::kRemoteScanTimeoutMs`), flash_fs's FormatRefusedMounted, the IR `sends` counter, and the
+  stats fields no rule reads (slot_bytes, loop age/window_ms/since_boot/over_2ms/over_10ms,
+  p50/max, task core/prio, radio payloads/bad/unknown, ir ready/busy, ha/mqtt state). The release
+  test feed (setTest, versionOverride_) is now dev-build only. max_uri_handlers 11.
+- Cleanup, round 2 (lead's decisions): RemoteRadio uses core's `api::RadioState`/`ScanState`
+  (no mirrors or mappers); the update owner flag is `update_lock.{h,cpp}` (ota.* is ArduinoOTA
+  only); `EspWsTransport::lastError_` deleted; budget rule `integrations.ir.frames` min 1
+  (loaded). Kept: BLE link-event log (the Fire TV late-encryption item is open).
+- Later (core, through the lead): `utf8Prefix` (hub_name.cpp) is duplicated inline in core's
+  ha/services.cpp; it could move to core and serve both.
+- State (2026-11-24, after review 2 A–F): board-check --clients 1 passed on .196. Loop max gap
+  3.32/3.37/3.32 ms (idle/loaded/flash), 0 over 5 ms; IR 557 frames, 0 late; internal heap
+  66.2 KB free, 63.0 min, 31.0 largest; image 2.47 MB, static RAM 102.8 KB; IDLE0 94.0% idle,
+  29.7% loaded. Gate fw passed (frozen): default RAM 94,464 B, flash 2,480,219 B; `_ota` RAM
+  102,792 B, flash 2,507,731 B. Not committed.
