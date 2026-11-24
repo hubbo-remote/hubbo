@@ -705,3 +705,23 @@ Design: `docs/design/firmware-updates.md`. Spike code kept out of the tree.
   - in `EspWsTransport`, reserve and append the reassembly buffer instead of regrowing it from zero
     for each message;
   - an atomic fast path for `RemoteRuntime::poll()`'s spinlock on the loop.
+
+## Radio power (branch `radio-power`; on .196, board test in progress)
+
+- Core's `HubSettings::radioPower()` (one relaxed atomic load) is polled every loop pass:
+  `radio.setPower(hubSettings.radioPower())` before `radio.loop()`. `begin(power)` applies the
+  saved level before listening. Map Low/Medium/High/Max → RF24_PA_MIN/LOW/HIGH/MAX, LNA on.
+- `setPower` is a no-op when unchanged. A change is RF24 `setPALevel` (RF_SETUP read + write, about
+  4 CSN toggles at 5 us `csDelay`, a few tens of us). W_REGISTER is standby-only per the datasheet,
+  so when listening it drops CE around the write (RF24 itself writes RX_ADDR_P0 with CE high, so
+  this is caution). The PA bits matter only on TX: the auto-acks and the scan's writes.
+- Logs `radio: power <level>` on a change; the boot `ready` line and `status` show the level.
+- README: the PA+LNA wiring (an AMS1117 socket adapter, VCC to VSYS pin 39).
+- .196 (plain module): Max at boot, idle loop 2,762 us max gap, 0 over 5 ms (60 s). PUT low
+  (the lead's): `radio: power low` logged live, `status` shows `power low`; loop 2,486 us, 0 over
+  5 ms (60 s). Presses: the user checked Low on the media room hub instead; .196 presses skipped.
+- Board PUTs: the lead's `scratchpad/hub196.py` (`put <path> '<json>'`, `get <path>`) reads
+  admin.json without printing it.
+- /simplify: comments trimmed. Skipped: a radio-only enum (firmware already uses core types) and
+  dropping `begin(power)` for the first poll (the brief says apply at start).
+- Build (`_ota`): RAM 102,136 B, flash 2,492,667 B (38.0%).

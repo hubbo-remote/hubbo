@@ -767,13 +767,15 @@ void printStatus() {
     const RadioEndpoint ep = radio.endpoint();
     con.printf("status: up %lu s\n", static_cast<unsigned long>(nowMs / 1000));
     if (radio.state() == RemoteRadio::State::Scanning) {
-        con.printf("  radio: scanning (channel %u)\n", radio.scanChannel());
+        con.printf("  radio: scanning (channel %u), power %s\n", radio.scanChannel(),
+                   hubbo::config::radioPowerName(radio.power()));
     } else {
         con.printf("  radio: %s", RemoteRadio::stateName(radio.state()));
         if (ep.isValid()) {
             con.printf(" channel %u address 0x%010llX", ep.channel, static_cast<unsigned long long>(ep.address));
         }
-        con.printf(", %lu payloads, last %lu ms ago, %lu bad checksums, %lu unknown codes\n",
+        con.printf(", power %s, %lu payloads, last %lu ms ago, %lu bad checksums, %lu unknown codes\n",
+                      hubbo::config::radioPowerName(radio.power()),
                       static_cast<unsigned long>(radio.payloadCount()),
                       static_cast<unsigned long>(radio.payloadCount() ? nowMs - radio.lastPayloadMs() : 0),
                       static_cast<unsigned long>(input.badChecksumCount()),
@@ -1208,7 +1210,7 @@ void setup() {
     factory_reset::wipeIfRequested();  // POST /admin/factory-reset before this restart, or a gate build
     mountFilesystem();
     loadHubName();
-    if (!radio.begin()) {
+    if (!radio.begin(hubSettings.radioPower())) {
         con.println("radio: failed; check wiring and the 10 uF capacitor. Continuing without it.");
     }
     if (ble.begin(hubSettings.identity().name.c_str())) {
@@ -1291,6 +1293,7 @@ void loop() {
     // but the engine keeps running: httpd may be waiting on it.
     const bool stopping = rebooting;
     if (!stopping) {
+        radio.setPower(hubSettings.radioPower());  // a change from PUT /admin/hub/settings
         radio.loop(millis());
     }
     const uint32_t nowMs = millis();

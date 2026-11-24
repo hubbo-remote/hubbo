@@ -15,6 +15,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "hubbo/config/hub.h"
+
 namespace hubbo::fw {
 
 struct RadioEndpoint {
@@ -58,9 +60,14 @@ public:
     // Does the NVS write itself; the runner's job calls this.
     static void persistEndpoint(const RadioEndpoint &endpoint, bool erase);
 
-    // Starts SPI and the radio, loads the saved endpoint and starts
-    // listening if there is one. False if the radio does not respond.
-    bool begin();
+    // Starts SPI and the radio at `power`, loads the saved endpoint and
+    // starts listening if there is one. False if the radio does not respond.
+    bool begin(config::RadioPower power);
+
+    // The transmit power (auto-acks and the scan's pairing writes); the LNA
+    // stays on. Call every pass with the saved setting: unchanged is a no-op.
+    void setPower(config::RadioPower power);
+    config::RadioPower power() const { return power_; }
 
     // Call every loop iteration: drains the RX FIFO, or runs one scan step.
     void loop(uint32_t nowMs);
@@ -101,11 +108,13 @@ private:
     void drain();
 
     void persist(const RadioEndpoint &endpoint, bool erase);
+    void applyPower(config::RadioPower power);
 
     PayloadSink &sink_;
     PersistRunner persist_ = nullptr;
     State state_ = State::NotReady;
     RadioEndpoint endpoint_;
+    config::RadioPower power_ = config::RadioPower::Max;  // RF24's reset default
     ScanResult lastScanResult_ = ScanResult::None;
 
     uint32_t scanStartedMs_ = 0;

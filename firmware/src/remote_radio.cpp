@@ -108,7 +108,7 @@ uint8_t RemoteRadio::scanChannel() const {
     return kHubChannels[channelIndex_];
 }
 
-bool RemoteRadio::begin() {
+bool RemoteRadio::begin(config::RadioPower power) {
     if (state_ != State::NotReady) {
         return true;
     }
@@ -121,8 +121,10 @@ bool RemoteRadio::begin() {
     radio.enableDynamicPayloads();
     radio.enableAckPayload();
     radio.setCRCLength(RF24_CRC_16);
+    applyPower(power);
     state_ = State::Idle;
-    con.printf("radio: nRF24L01+ ready (%s)\n", radio.isPVariant() ? "+ variant" : "non-+");
+    con.printf("radio: nRF24L01+ ready (%s, power %s)\n", radio.isPVariant() ? "+ variant" : "non-+",
+               config::radioPowerName(power));
 
     RadioEndpoint saved;
     if (loadEndpoint(&saved)) {
@@ -145,6 +147,28 @@ void RemoteRadio::loop(uint32_t nowMs) {
             drain();
             break;
     }
+}
+
+void RemoteRadio::applyPower(config::RadioPower power) {
+    static constexpr uint8_t kLevels[] = {RF24_PA_MIN, RF24_PA_LOW, RF24_PA_HIGH, RF24_PA_MAX};
+    radio.setPALevel(kLevels[static_cast<uint8_t>(power)], true);
+    power_ = power;
+}
+
+void RemoteRadio::setPower(config::RadioPower power) {
+    if (state_ == State::NotReady || power == power_) {
+        return;
+    }
+    // W_REGISTER is for standby only (datasheet): drop out of RX around it.
+    const bool listening = state_ == State::Listening;
+    if (listening) {
+        radio.ce(LOW);
+    }
+    applyPower(power);
+    if (listening) {
+        radio.ce(HIGH);
+    }
+    con.printf("radio: power %s\n", config::radioPowerName(power));
 }
 
 // --- Listening -----------------------------------------------------------
