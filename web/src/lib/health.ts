@@ -1,4 +1,4 @@
-import { Bluetooth, Cpu, Home, RadioTower, type LucideIcon } from 'lucide-react'
+import { Bluetooth, Cpu, Home, RadioTower, Rss, type LucideIcon } from 'lucide-react'
 import type { BluetoothStatus, IntegrationState, IntegrationType } from '@/api/types'
 
 export const HEALTH: Record<IntegrationState, [dotClass: string, label: string]> = {
@@ -11,6 +11,8 @@ export const HEALTH: Record<IntegrationState, [dotClass: string, label: string]>
   error: ['bg-destructive', 'Error'],
   disabled: ['bg-muted-foreground/40', 'Disabled'],
   not_configured: ['bg-muted-foreground/40', 'Not set up'],
+  ready: ['bg-success', 'Ready'],
+  not_ready: ['bg-destructive', 'Not working'],
 }
 
 /**
@@ -34,6 +36,7 @@ export const INTEGRATION_ICON: Record<IntegrationType, LucideIcon> = {
   ble_hid: Bluetooth,
   mqtt: RadioTower,
   system: Cpu,
+  ir: Rss,
 }
 
 /** What a device points at, if anything worth showing: an HA entity id. */

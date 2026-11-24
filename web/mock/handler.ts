@@ -18,6 +18,8 @@ import type {
   Capabilities,
   Device,
   DeviceDetail,
+  DeviceKind,
+  Profile,
   DeviceRegister,
   DeviceRegisterProfile,
   DeviceUpdate,
@@ -64,6 +66,7 @@ import { activityShape, bindingsShape, DEVICE_ID, macrosShape, smartButtonsShape
 import { emptySmartButtons, isSlot, SLOTS, validateSmartButtons } from '../src/lib/smartButtons.ts'
 import { failedSteps } from '../src/lib/runs.ts'
 import { noActions, slotActions } from './smartActions.ts'
+import { profileProblems, profileSha as documentSha } from './profileCheck.ts'
 
 export interface MockRequest {
   method: string
@@ -203,8 +206,8 @@ const PLATFORMS: [RegExp, string, Command[], Skipped[]][] = [
   [/kitchen/, 'cast', [], []],
 ]
 const INTEGRATION_SERVICES = new Map(PLATFORMS.flatMap(([, , services]) => services.map((cmd) => [cmd.command_id, cmd] as const)))
-/** POST /admin/restore x-hubbo-max-body (api/openapi.yaml). */
-const RESTORE_MAX_BODY = 640 * 1024
+/** Routes with their own x-hubbo-max-body (api/openapi.yaml): restore takes a whole config, an import a whole profile file. */
+const ROUTE_MAX_BODY: Record<string, number> = { '/admin/restore': 640 * 1024, '/admin/devices': 384 * 1024 }
 /** The saved config record format this "firmware" reads (core kConfigFileVersion). */
 const CONFIG_SCHEMA = 1
 /** The saved record a blocked mock hub holds: from newer firmware, so restoring it here is refused. */
@@ -215,8 +218,21 @@ const fixtureError = (status: number, file: string): MockResponse => ({ status, 
 
 const err = (status: number, code: ErrorCode, message: string, extra: Record<string, unknown> = {}): MockResponse => ({ status, body: { error: { code, message, ...extra } } })
 const invalid = (details: ValidationIssue[], message = details[0]?.message ?? 'Invalid request') => err(422, 'validation_failed', message, { details: details.slice(0, 32) })
+/** A `?ready=0|1` control (the Bluetooth radio, the IR emitter): applies it and answers `{ready}`. */
+function readyFlag(req: MockRequest, set: (ready: boolean) => void): MockResponse {
+  const v = req.query.get('ready')
+  if (v !== '0' && v !== '1') return invalid([{ path: '/ready', code: 'wrong_type', message: 'ready must be 0 or 1' }])
+  set(v === '1')
+  return ok({ ready: v === '1' })
+}
+
+/** An adapter's detail while it's down (the state it reports then, and the words). */
+const DOWN_DETAIL: Partial<Record<string, [IntegrationState, string]>> = { ble_hid: ['error', "Bluetooth isn't working"], ir: ['not_ready', "The IR emitter isn't working"] }
+
 const nameRequired = () => invalid([{ path: '/name', code: 'required', message: 'Name is required' }])
-const deviceLimit = () => err(409, 'limit_reached', 'At most 64 devices')
+/** The hub's 409 for a count or size cap. */
+const noRoom = (subject: string) => err(409, 'limit_reached', `There's no room on the hub for another ${subject}`)
+const deviceLimit = () => noRoom('device')
 /** Like core: a path under /api the API doesn't have is a 404 pointing at the agent guide. */
 export const unknownPath = (what: string) => err(404, 'not_found', `No route for ${what}`, { docs: GUIDE_PATH })
 const ok = (body?: unknown, status = 200): MockResponse => ({ status: body === undefined ? 204 : status, body })
@@ -250,6 +266,8 @@ export function createMock(opts: MockOptions = {}) {
   let broker: { reachable: boolean; auth: 'ok' | 'reject' }
   /** Bonded Bluetooth hosts by device id, and whether each is connected (like hub-sim's fake hosts). */
   let bleHosts = new Map<string, { connected: boolean }>()
+  /** Like hub-sim's /sim/ir?ready=0: the IR emitter isn't working (IR commands fail). */
+  let irDown = false
   /** Like hub-sim's /sim/ble/radio?ready=0: the radio is down (no host connects, pairing is refused). */
   let bleRadioDown = false
   /** The one pairing window (POST /admin/devices/{id}/pair). When it ends unbonded, the device keeps its old host, if any. */
@@ -344,6 +362,7 @@ export function createMock(opts: MockOptions = {}) {
     bleHosts = new Map(db.devices.filter((d) => d.provider.type === 'ble_hid').map((d) => [d.id, { connected: true }]))
     blePair = null
     bleRadioDown = false
+    irDown = false
     haNextConnect = 'ok'
     fw = { state: 'idle' }
     feed = { release: defaultRelease(), board: db.firmware.board, layout: HUB_LAYOUT, minVersion: '', published: true, fault: null, downloadFails: false }
@@ -463,6 +482,7 @@ export function createMock(opts: MockOptions = {}) {
     if (c.settings.type === 'home_assistant') return c.settings.has_access_token ? (haOverride ?? 'connected') : 'not_configured'
     // ble is the radio: working (connected) while enabled, `error` when it's down.
     if (c.settings.type === 'ble_hid') return bleRadioDown ? 'error' : 'connected'
+    if (c.settings.type === 'ir') return irDown ? 'not_ready' : 'ready'
     if (c.settings.type === 'mqtt') return !c.settings.host ? 'not_configured' : !broker.reachable ? 'unreachable' : broker.auth === 'reject' ? 'auth_failed' : 'connected'
     return 'connected'
   }
@@ -603,7 +623,10 @@ export function createMock(opts: MockOptions = {}) {
     return { state: !h ? 'not_paired' : h.connected && !bleRadioDown ? 'connected' : 'not_connected' }
   }
 
-  /** A device as the API shows it: Bluetooth devices carry their live status and availability. */
+  /** A profile device's adapter can't send: its Bluetooth host isn't connected, or the IR emitter is down. */
+  const adapterDown = (d: DeviceDetail) => (d.provider.type === 'ble_hid' ? bleStatus(d.id).state !== 'connected' : d.provider.type === 'ir' && irDown)
+
+  /** A device as the API shows it: Bluetooth devices carry their live status and availability (infrared can't tell: `unknown`). */
   function live(d: DeviceDetail): DeviceDetail {
     if (d.provider.type !== 'ble_hid') return d
     const bluetooth = bleStatus(d.id)
@@ -616,12 +639,14 @@ export function createMock(opts: MockOptions = {}) {
   }
 
   /**
-   * A Bluetooth device's capabilities, like the hub's: the seeded Bluetooth device's commands (all
-   * keys, custom codes, wait_connected) with the remote group's `command` choices from its profile.
+   * A profile device's capabilities, like the hub's: the seeded Bluetooth device's commands with the
+   * remote group's `command` choices from its profile. Bluetooth has them all (all keys, custom codes,
+   * wait_connected); infrared only the remote group.
    */
-  function bleCaps(d: DeviceDetail): Capabilities {
+  function profileCaps(d: DeviceDetail): Capabilities {
     const names = Object.keys(d.commands ?? {})
-    const commands = bleTemplate.map((c) =>
+    const template = d.provider.type === 'ble_hid' ? bleTemplate : bleTemplate.filter((c) => c.group === 'remote')
+    const commands = template.map((c) =>
       c.group === 'remote' ? { ...c, params: c.params.map((p) => (p.name === 'command' ? { ...p, options: names } : p)) } : c,
     )
     return { device_id: d.id, integration_id: d.integration_id, commands }
@@ -642,29 +667,45 @@ export function createMock(opts: MockOptions = {}) {
     if (extra.length) return invalid(unknownFields(extra))
     const p = db.profiles.find((x) => x.id === b.profile_id)
     if (!p) return invalid([{ path: '/profile_id', code: 'unknown_profile', message: `There's no profile ${b.profile_id}` }])
+    return addProfileDevice(p, profileSha(p.id), b)
+  }
+
+  /** POST /admin/devices {profile, name?, kind?}: an uploaded profile, checked like the hub (the parts the UI shows), then added the same way. */
+  function addFromFile(b: { profile?: unknown; name?: string; kind?: DeviceKind }): MockResponse {
+    const extra = Object.keys(b).filter((k) => !['profile', 'name', 'kind'].includes(k))
+    if (extra.length) return invalid(unknownFields(extra))
+    const problems = profileProblems(b.profile)
+    if (problems.length) return invalid(problems, 'The profile is invalid')
+    const p = b.profile as Profile
+    return addProfileDevice(p, documentSha(p), b)
+  }
+
+  /** A profile device: its integration follows the platform (Bluetooth `ble`, infrared `ir`); the profile's content is copied in. */
+  function addProfileDevice(p: Profile & { meta?: unknown }, sha256: string, b: { name?: string; kind?: DeviceKind }): MockResponse {
     if (b.name !== undefined && !b.name.trim()) return nameRequired()
     if (!kindKnown(b.kind)) return unknownKind()
     if (db.devices.length >= 64) return deviceLimit()
-    if (db.devices.filter((d) => d.provider.type === 'ble_hid').length >= BLE_MAX_DEVICES) return fixtureError(422, 'errors/too_many_bluetooth_devices.json')
-    const { schema_version: _v, id: profileId, revision: profileRevision, source: _s, manufacturer, model, kind, platform: _p, ...content } = p
+    const ble = p.platform === 'ble_hid'
+    if (ble && db.devices.filter((d) => d.provider.type === 'ble_hid').length >= BLE_MAX_DEVICES) return fixtureError(422, 'errors/too_many_bluetooth_devices.json')
+    const { schema_version: _v, id: profileId, revision: profileRevision, source: _s, manufacturer, model, kind, platform, meta: _m, ...content } = p
     const name = (b.name ?? model).trim()
     const d: DeviceDetail = {
       id: newDeviceId(name),
       name,
-      integration_id: 'ble',
+      integration_id: ble ? 'ble' : 'ir',
       kind: b.kind ?? kind,
-      provider: { type: 'ble_hid' },
-      platform: 'ble_hid',
+      provider: { type: platform },
+      platform,
       manufacturer,
       model,
-      profile: { id: profileId, revision: profileRevision, sha256: profileSha(profileId) },
-      availability: 'available',
+      profile: { id: profileId, revision: profileRevision, sha256 },
+      availability: ble ? 'available' : 'unknown',
       schema_version: 1,
       revision: commit(),
       ...content,
     }
     db.devices.push(d)
-    db.capabilities.set(d.id, bleCaps(d))
+    db.capabilities.set(d.id, profileCaps(d))
     return created(d)
   }
 
@@ -685,7 +726,7 @@ export function createMock(opts: MockOptions = {}) {
     return db.integrations.map((i) => {
       const c = db.configs.get(i.id)
       const state = integrationState(i.id)
-      const detail = state === 'not_configured' ? 'Not set up' : i.type === 'ble_hid' ? (state === 'error' ? "Bluetooth isn't working" : undefined) : i.type === 'mqtt' ? MQTT_DETAIL[state] : i.detail
+      const detail = state === 'not_configured' ? 'Not set up' : i.type in DOWN_DETAIL ? (state === DOWN_DETAIL[i.type]![0] ? DOWN_DETAIL[i.type]![1] : undefined) : i.type === 'mqtt' ? MQTT_DETAIL[state] : i.detail
       return { ...i, name: c?.name ?? i.name, enabled: c?.enabled ?? i.enabled, state, detail, device_count: db.devices.filter((d) => d.integration_id === i.id).length }
     })
   }
@@ -1015,9 +1056,10 @@ export function createMock(opts: MockOptions = {}) {
       const shape = activityShape({ name: 'x', startup: [a], shutdown: [], bindings: {}, macros: [] }, ['name', 'startup', 'shutdown', 'bindings', 'macros'])
       const v = shape.length ? shape : validateActivity({ name: 'x', startup: [a], shutdown: [], bindings: {}, macros: [] }, catalog()).errors
       if (v.length) return invalid(v.map((e) => ({ ...e, path: e.path.replace(/^\/startup\/0/, '') })))
-      if (integrationState(d.integration_id) !== 'connected') return err(503, 'integration_unavailable', `${d.integration_id} is not connected`)
-      // Like the hub: a key for a host that isn't connected is sent nowhere.
-      if (d.provider.type === 'ble_hid' && bleStatus(d.id).state !== 'connected') return ok({ status: 'failed', device_id: d.id, command_id: a.command_id, elapsed_ms: 0, message: 'adapter_unavailable' } satisfies ExecuteResult)
+      // IR's not_ready still takes commands: they fail per device below, like the hub's.
+      if (!['connected', 'ready', 'not_ready'].includes(integrationState(d.integration_id))) return err(503, 'integration_unavailable', `${d.integration_id} is not connected`)
+      // Like the hub: a profile device whose adapter can't send (a host that isn't connected, the emitter down) gets nothing sent.
+      if (adapterDown(d)) return ok({ status: 'failed', device_id: d.id, command_id: a.command_id, elapsed_ms: 0, message: 'adapter_unavailable' } satisfies ExecuteResult)
       // A stale device's entity is gone from HA: the call is made and fails (decided 2026-11-09, like hub-sim).
       if (d.availability === 'stale') return ok({ status: 'failed', device_id: d.id, command_id: a.command_id, elapsed_ms: 1, message: 'entity_not_found' } satisfies ExecuteResult)
       // Error cases come from the contract fixtures: that device + command gets that result.
@@ -1036,7 +1078,7 @@ export function createMock(opts: MockOptions = {}) {
     ['POST', /^\/activities$/, 'token', (req) => {
       const bad = checkActivity(req.body, ['name', 'startup', 'shutdown', 'bindings', 'macros'])
       if (bad) return bad
-      if (db.activities.length >= 16) return err(409, 'limit_reached', 'At most 16 activities')
+      if (db.activities.length >= 16) return noRoom('activity')
       const b = req.body as ActivityInput
       let id = `act_${slug(b.name)}`
       while (db.activities.some((a) => a.id === id)) id = `act_${slug(b.name).slice(0, 20)}_${rand36(3)}`
@@ -1207,6 +1249,9 @@ export function createMock(opts: MockOptions = {}) {
         if (s.password !== undefined) mut(next.settings).has_password = s.password !== null
       } else if (s?.type === 'ble_hid' && next.settings.type === 'ble_hid') {
         if (s.device_name !== undefined) next.settings.device_name = s.device_name
+      } else if (s?.type === 'ir' && next.settings.type === 'ir') {
+        const unknown = Object.keys(s).filter((k) => k !== 'type') // the emitter has nothing to set
+        if (unknown.length) return invalid(unknownFields(unknown, '/settings'))
       } else if (s) return invalid([{ path: '/settings/type', code: 'wrong_type', message: `Settings type must be ${next.settings.type}` }])
       next.revision = commit()
       db.configs.set(c.id, next)
@@ -1271,6 +1316,7 @@ export function createMock(opts: MockOptions = {}) {
 
     ['POST', /^\/admin\/devices$/, 'admin', (req) => {
       if (req.body && typeof req.body === 'object' && 'profile_id' in req.body) return addFromProfile(req.body as DeviceRegisterProfile)
+      if (req.body && typeof req.body === 'object' && 'profile' in req.body) return addFromFile(req.body as { profile?: unknown })
       const b = req.body as Extract<DeviceRegister, { provider: unknown }>
       // Like the hub: only DeviceRegister's fields (a client-sent `ha_capabilities` is refused).
       const extra = Object.keys(b ?? {}).filter((k) => !['name', 'integration_id', 'kind', 'provider'].includes(k))
@@ -1279,7 +1325,9 @@ export function createMock(opts: MockOptions = {}) {
       if (!kindKnown(b.kind)) return unknownKind()
       if (db.devices.length >= 64) return deviceLimit()
       const p = b.provider
-      // Only Home Assistant entities come this way; Bluetooth devices come from a profile.
+      // Only Home Assistant entities come this way; Bluetooth and IR devices come from a profile.
+      const t = (p as { type?: string } | undefined)?.type
+      if (t === 'ir' || t === 'ble_hid') return invalid([{ path: '/profile', code: 'required', message: 'A Bluetooth or IR device comes from a profile' }])
       if (p?.type !== 'home_assistant') return invalid([{ path: '/provider', code: 'integration_mismatch', message: 'Provider does not belong to that integration' }])
       if (integrationState('ha_main') === 'connected' && b.integration_id !== 'ha_main') return invalid([{ path: '/integration_id', code: 'integration_mismatch', message: 'Home Assistant entities belong to ha_main' }])
       const hc = haEntity(p.entity_id)
@@ -1387,7 +1435,7 @@ export function createMock(opts: MockOptions = {}) {
     ['POST', /^\/admin\/tokens$/, 'admin', (req) => {
       const name = (req.body as { name?: string })?.name?.trim()
       if (!name) return nameRequired()
-      if (db.tokens.length >= 16) return err(409, 'limit_reached', 'At most 16 tokens')
+      if (db.tokens.length >= 16) return err(409, 'limit_reached', 'Revoke a token first (16 at most)')
       const id = rand36(8)
       const secret = Array.from({ length: 43 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'[Math.floor(Math.random() * 64)]).join('')
       const t: TokenSummary = { id: `tok_${id}`, name, hint: `hbt_${id}_`, created_at: isoNow(), last_used_at: null }
@@ -1459,8 +1507,8 @@ export function createMock(opts: MockOptions = {}) {
         // Revisions in the backup may be missing or 0; stampAll() replaces them all.
         // A backup's StoredDevice carries ha_capabilities; a Device (what the API returns) never does.
         db.devices = b.devices.map(({ ha_capabilities: _, ...d }) => ({ ...d, platform: d.provider.type, availability: 'unknown' as const, revision: 0 }))
-        // A Bluetooth device's commands come from the profile content it carries.
-        for (const d of db.devices) if (d.provider.type === 'ble_hid') db.capabilities.set(d.id, bleCaps(d))
+        // A profile device's commands come from the profile content it carries.
+        for (const d of db.devices) if (d.profile) db.capabilities.set(d.id, profileCaps(d))
         pruneBonds() // a restored device keeps its bond on this hub; others are dropped
         db.activities = b.activities.map((a) => ({ ...withMacros(a), schema_version: 1 as const, revision: 0 }))
         db.globalBindings = { bindings: b.global_bindings?.bindings ?? {}, macros: b.global_bindings?.macros ?? [], revision: 0 }
@@ -1719,13 +1767,12 @@ export function createMock(opts: MockOptions = {}) {
       h.connected = up === '1'
       return ok({ up: h.connected })
     }],
-    ['POST', /^\/__mock\/ble\/radio$/, 'public', (req) => {
-      const v = req.query.get('ready')
-      if (v !== '0' && v !== '1') return invalid([{ path: '/ready', code: 'wrong_type', message: 'ready must be 0 or 1' }])
-      bleRadioDown = v === '0'
-      if (bleRadioDown) blePair = null
-      return ok({ ready: !bleRadioDown })
-    }],
+    ['POST', /^\/__mock\/ble\/radio$/, 'public', (req) =>
+      readyFlag(req, (ready) => {
+        bleRadioDown = !ready
+        if (bleRadioDown) blePair = null
+      })],
+    ['POST', /^\/__mock\/ir$/, 'public', (req) => readyFlag(req, (ready) => void (irDown = !ready))],
     // Like hub-sim's POST /sim/storage?health=…: the store goes down or comes back at runtime.
     ['POST', /^\/__mock\/storage$/, 'public', (req) => {
       const health = req.query.get('health')
@@ -1741,7 +1788,7 @@ export function createMock(opts: MockOptions = {}) {
     if (base > 0) await new Promise((r) => setTimeout(r, base * (0.5 + rand())))
     if ((firmwarePhase() === 'down' || restarting()) && !req.path.startsWith('/__mock/')) return { status: 0 }
     // Per-route limits (x-hubbo-max-body): restore takes a whole config; firmware images are streamed.
-    const limit = req.path.startsWith('/admin/restore') ? RESTORE_MAX_BODY : MAX_BODY
+    const limit = ROUTE_MAX_BODY[req.path] ?? MAX_BODY
     const firmware = req.path === '/admin/firmware/update' // the binary upload
     if (req.rawBody && req.rawBody.byteLength > limit && !firmware) {
       return err(413, 'payload_too_large', `Request bodies are limited to ${limit / 1024} KiB`)

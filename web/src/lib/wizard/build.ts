@@ -160,8 +160,11 @@ export function haDevice(d: Device, caps: Capabilities): WizardDevice {
   return { id: d.id, name: d.name, commands, power, inputs, inputDelayMs: 0, keyDelayMs: 0, wakeForInputMs: HA_WAKE_FOR_INPUT_MS }
 }
 
-/** A Bluetooth device, from its profile: `press` for each command (a button passes it through as press_down/press_up). */
-export function bleDevice(d: DeviceDetail): WizardDevice {
+/**
+ * A profile device (Bluetooth or infrared), from its profile: `press` for each command (a button
+ * passes it through as press_down/press_up). Only Bluetooth waits for its host to connect.
+ */
+export function profileDevice(d: DeviceDetail): WizardDevice {
   const action = actionOn(d)
   const steps = (list: ProfileStep[] = []): Action[] =>
     list.map((s) => ('delay_ms' in s ? wait(s.delay_ms) : action('press', s.hold_ms ? { command: s.command, hold_ms: s.hold_ms } : { command: s.command })))
@@ -177,7 +180,7 @@ export function bleDevice(d: DeviceDetail): WizardDevice {
   return {
     id: d.id,
     name: d.name,
-    connectFirst: action('wait_connected', { timeout_ms: WAIT_CONNECTED_MS }),
+    ...(d.provider.type === 'ble_hid' ? { connectFirst: action('wait_connected', { timeout_ms: WAIT_CONNECTED_MS }) } : {}),
     commands,
     buttons: d.buttons,
     power,
@@ -188,8 +191,8 @@ export function bleDevice(d: DeviceDetail): WizardDevice {
   }
 }
 
-/** Any device the wizard can use: Bluetooth from its detail (the profile), Home Assistant from its capabilities. */
+/** Any device the wizard can use: a profile device from its detail, Home Assistant from its capabilities. */
 export function wizardDevice(d: Device, detail: DeviceDetail | undefined, caps: Capabilities | undefined): WizardDevice | null {
-  if (d.provider.type === 'ble_hid') return detail ? bleDevice(detail) : null
+  if (d.profile) return detail ? profileDevice(detail) : null
   return caps ? haDevice(d, caps) : null
 }

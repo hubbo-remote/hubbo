@@ -873,6 +873,19 @@ export interface paths {
          *     starts `not_paired` (pair it with `POST /admin/devices/{id}/pair`).
          *     At most 4 Bluetooth devices: a fifth is `422` with
          *     `too_many_devices` at `/integration_id`.
+         *
+         *     From a profile file (`{profile, name?, kind?}`): `profile` is a
+         *     whole device profile document as the profile spec publishes it
+         *     (`meta` allowed, and dropped), for any platform the hub drives
+         *     (`ir` or `ble_hid`; a Bluetooth one then pairs as usual). The hub
+         *     validates it as a complete profile; each problem is a `422` detail
+         *     whose path points into it under `/profile` (e.g. `invalid_pronto`
+         *     at `/profile/commands/VolumeUp/pronto`, `required` at
+         *     `/profile/model`). The device's `profile.sha256` is the spec's hash
+         *     of the document as sent. An IR device's integration is `ir`. The
+         *     body is at most 256 KiB (`413` beyond; a real IR profile is under
+         *     40 KB). Any device past 64, or one that would make the saved
+         *     configuration too large (512 KB in all), is `409` `limit_reached`.
          */
         post: operations["registerDevice"];
         delete?: never;
@@ -1413,7 +1426,7 @@ export interface components {
          */
         IntegrationId: string;
         /** @enum {string} */
-        IntegrationType: "system" | "ble_hid" | "home_assistant" | "mqtt";
+        IntegrationType: "system" | "ble_hid" | "ir" | "home_assistant" | "mqtt";
         /**
          * @description Hubbo command identifier. HA commands are namespaced by entity domain
          *     (`media_player.volume_set`); BLE and system commands are bare (`key_tap`, `wait`).
@@ -1452,7 +1465,7 @@ export interface components {
              *     `weak_password`).
              * @enum {string}
              */
-            code: "required" | "unknown_field" | "wrong_type" | "too_long" | "pattern" | "forbidden_param" | "referenced" | "id_mismatch" | "weak_password" | "hold_not_allowed" | "unpaired_hold" | "integration_disabled" | "invalid_id" | "invalid_name" | "invalid_command_id" | "duplicate_id" | "unknown_integration" | "unknown_device" | "device_required" | "device_not_allowed" | "integration_mismatch" | "unknown_command" | "unknown_param" | "duplicate_param" | "missing_param" | "invalid_param_type" | "param_out_of_range" | "invalid_enum_value" | "too_many_params" | "invalid_trigger" | "duplicate_trigger" | "unknown_activity" | "misplaced_transition" | "too_many_actions" | "too_many_activities" | "too_many_devices" | "capacity_exceeded" | "unsupported_schema" | "unknown_profile" | "unknown_kind" | "sequence_only" | "too_deep" | "template_not_supported" | "macro_required" | "unbound_macro";
+            code: "required" | "unknown_field" | "wrong_type" | "too_long" | "pattern" | "forbidden_param" | "referenced" | "id_mismatch" | "weak_password" | "hold_not_allowed" | "unpaired_hold" | "integration_disabled" | "invalid_id" | "invalid_name" | "invalid_command_id" | "duplicate_id" | "unknown_integration" | "unknown_device" | "device_required" | "device_not_allowed" | "integration_mismatch" | "unknown_command" | "unknown_param" | "duplicate_param" | "missing_param" | "invalid_param_type" | "param_out_of_range" | "invalid_enum_value" | "too_many_params" | "invalid_trigger" | "duplicate_trigger" | "unknown_activity" | "misplaced_transition" | "too_many_actions" | "too_many_activities" | "too_many_devices" | "capacity_exceeded" | "unsupported_schema" | "unknown_profile" | "unknown_kind" | "sequence_only" | "too_deep" | "template_not_supported" | "macro_required" | "unbound_macro" | "invalid_pronto";
             message: string;
         };
         Error: {
@@ -1516,11 +1529,12 @@ export interface components {
          *     backoff, 1 s doubling to 60 s). BLE: `connected` / `disconnected`.
          *     MQTT: `not_configured` (no host), `connecting`, `connected`,
          *     `auth_failed` (the broker refused the username or password; it keeps
-         *     retrying) or `unreachable` (retrying). Any integration: `disabled`,
-         *     `error`.
+         *     retrying) or `unreachable` (retrying). IR: `ready` or `not_ready`
+         *     (the emitter isn't working; `detail` says so). Any integration:
+         *     `disabled`, `error`.
          * @enum {string}
          */
-        IntegrationState: "not_configured" | "disabled" | "connecting" | "authenticating" | "connected" | "auth_failed" | "unreachable" | "disconnected" | "error";
+        IntegrationState: "not_configured" | "disabled" | "connecting" | "authenticating" | "connected" | "auth_failed" | "unreachable" | "disconnected" | "ready" | "not_ready" | "error";
         Status: {
             hubbo: {
                 name: components["schemas"]["HubName"];
@@ -2156,11 +2170,18 @@ export interface components {
              */
             type: "ble_hid";
         };
-        Provider: components["schemas"]["HomeAssistantProvider"] | components["schemas"]["BleHidProvider"];
+        IrProvider: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "ir";
+        };
+        Provider: components["schemas"]["HomeAssistantProvider"] | components["schemas"]["BleHidProvider"] | components["schemas"]["IrProvider"];
         /**
-         * @description Shared by the device schemas (open; each closes it). A Bluetooth
-         *     device was added from a profile and carries `manufacturer`, `model`
-         *     and `profile`; a Home Assistant device has none of them.
+         * @description Shared by the device schemas (open; each closes it). A Bluetooth or
+         *     IR device was added from a profile and carries `manufacturer`,
+         *     `model` and `profile`; a Home Assistant device has none of them.
          */
         DeviceFields: {
             id: components["schemas"]["DeviceId"];
@@ -2187,11 +2208,12 @@ export interface components {
             channels?: components["schemas"]["ProfileChannels"];
         };
         /**
-         * @description A device's copy of its profile content (open). Bluetooth devices
-         *     carry the profile's `commands` (and whichever of the other fields it
-         *     has); Home Assistant devices carry none.
+         * @description A device's copy of its profile content (open). Bluetooth and IR
+         *     devices carry the profile's `commands` (and whichever of the other
+         *     fields it has), each in its platform's shape (`BleHidCommand`,
+         *     `IrCommand`); Home Assistant devices carry none.
          */
-        DeviceProfileContent: components["schemas"]["ProfileFields"];
+        DeviceProfileContent: components["schemas"]["ProfileFields"] & unknown & unknown;
         /**
          * @description A device as configured (backups); no runtime state and no
          *     `platform` (it's `provider.type`). Restore checks a Bluetooth
@@ -2318,7 +2340,7 @@ export interface components {
              * @description The device's platform, always `provider.type`.
              * @enum {string}
              */
-            platform: "home_assistant" | "ble_hid";
+            platform: "home_assistant" | "ble_hid" | "ir";
             revision: components["schemas"]["Revision"];
             /**
              * @description `available` / `unavailable`: the integration is connected or not.
@@ -2329,7 +2351,8 @@ export interface components {
              *     Home Assistant answers a call to a missing entity with success,
              *     so until a discovery runs (after every boot, too) a renamed or
              *     removed entity's commands are reported `accepted`. `unknown`:
-             *     the integration can't tell.
+             *     the integration can't tell (always for IR devices: nothing
+             *     tells whether a device saw a code).
              * @enum {string}
              */
             availability: "available" | "unavailable" | "stale" | "unknown";
@@ -2340,11 +2363,12 @@ export interface components {
             devices: components["schemas"]["Device"][];
         };
         /**
-         * @description Either a Home Assistant entity (`provider`) or a built-in profile
-         *     (`profile_id`). A profile device's integration, manufacturer, model
-         *     and commands come from the profile, never the client.
+         * @description A Home Assistant entity (`provider`), a built-in profile
+         *     (`profile_id`) or a profile file (`profile`). A profile device's
+         *     integration, manufacturer, model and commands come from the profile,
+         *     never the client.
          */
-        DeviceRegister: components["schemas"]["DeviceRegisterHomeAssistant"] | components["schemas"]["DeviceRegisterProfile"];
+        DeviceRegister: components["schemas"]["DeviceRegisterHomeAssistant"] | components["schemas"]["DeviceRegisterProfile"] | components["schemas"]["DeviceRegisterImport"];
         DeviceRegisterHomeAssistant: {
             name: components["schemas"]["Name"];
             integration_id: components["schemas"]["IntegrationId"];
@@ -2353,6 +2377,19 @@ export interface components {
         };
         DeviceRegisterProfile: {
             profile_id: components["schemas"]["ProfileId"];
+            /** @description Defaults to the profile's `model`. */
+            name?: components["schemas"]["Name"];
+            /** @description Defaults to the profile's `kind`. */
+            kind?: components["schemas"]["DeviceKind"];
+        };
+        DeviceRegisterImport: {
+            /**
+             * @description A whole device profile document, as the profile spec publishes
+             *     it (schema_version 1, `platform` `ir` or `ble_hid`; `meta`
+             *     allowed). The hub validates it and reports problems at paths
+             *     under `/profile`.
+             */
+            profile: Record<string, never>;
             /** @description Defaults to the profile's `model`. */
             name?: components["schemas"]["Name"];
             /** @description Defaults to the profile's `kind`. */
@@ -2379,7 +2416,7 @@ export interface components {
         ProfileCommandName: string;
         ProfileHoldMs: number;
         /** @enum {string} */
-        ProfilePlatform: "ble_hid";
+        ProfilePlatform: "ble_hid" | "ir";
         ProfileRevision: number;
         /** @description Of the profile's canonical JSON, meta included. */
         ProfileSha256: string;
@@ -2404,8 +2441,25 @@ export interface components {
             hold_ms?: components["schemas"]["ProfileHoldMs"];
             label?: string;
         };
+        /**
+         * @description An IR code in raw Pronto hex: `0000`, the frequency word (nonzero),
+         *     the once and repeat pair counts, then the durations (none zero),
+         *     as uppercase 4-digit words with single spaces. A tap sends the once
+         *     section, then repeat frames up to `timing.ir_repeats` frames; a hold
+         *     repeats until released. `pronto_toggle`: the alternate code for a
+         *     device with a toggle bit (the hub alternates the two per press).
+         *     `hold_ms` makes the press a hold that long.
+         */
+        IrCommand: {
+            pronto: components["schemas"]["ProntoCode"];
+            pronto_toggle?: components["schemas"]["ProntoCode"];
+            hold_ms?: components["schemas"]["ProfileHoldMs"];
+            label?: string;
+        };
+        /** @example 0000 006D 0002 0000 0156 00AB 0015 05F2 */
+        ProntoCode: string;
         ProfileCommands: {
-            [key: string]: components["schemas"]["BleHidCommand"];
+            [key: string]: components["schemas"]["BleHidCommand"] | components["schemas"]["IrCommand"];
         };
         /** @description Remote button to command name; `null` leaves the button unfilled. */
         ProfileButtons: {
@@ -2432,6 +2486,8 @@ export interface components {
         ProfileTiming: {
             key_delay_ms?: number;
             input_delay_ms?: number;
+            /** @description IR only. Frames a tap sends (0 and 1 are one frame). */
+            ir_repeats?: number;
         };
         ProfileInputs: {
             name: string;
@@ -2548,18 +2604,26 @@ export interface components {
              */
             type: "system";
         };
+        /** @description The IR emitter has no settings (its pin is fixed); `enabled` turns IR off. */
+        IrSettings: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "ir";
+        };
         IntegrationConfig: {
             id: components["schemas"]["IntegrationId"];
             type: components["schemas"]["IntegrationType"];
             name: components["schemas"]["Name"];
             enabled: boolean;
-            settings: components["schemas"]["HomeAssistantSettings"] | components["schemas"]["BleHidSettings"] | components["schemas"]["MqttSettings"] | components["schemas"]["SystemSettings"];
+            settings: components["schemas"]["HomeAssistantSettings"] | components["schemas"]["BleHidSettings"] | components["schemas"]["MqttSettings"] | components["schemas"]["SystemSettings"] | components["schemas"]["IrSettings"];
             revision: components["schemas"]["Revision"];
         };
         IntegrationConfigUpdate: {
             name?: components["schemas"]["Name"];
             enabled?: boolean;
-            settings?: components["schemas"]["HomeAssistantSettingsUpdate"] | components["schemas"]["BleHidSettingsUpdate"] | components["schemas"]["MqttSettingsUpdate"];
+            settings?: components["schemas"]["HomeAssistantSettingsUpdate"] | components["schemas"]["BleHidSettingsUpdate"] | components["schemas"]["MqttSettingsUpdate"] | components["schemas"]["IrSettings"];
             revision: components["schemas"]["Revision"];
         };
         HomeAssistantSettingsUpdate: {

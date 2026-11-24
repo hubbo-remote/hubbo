@@ -2,6 +2,45 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## IR devices (branch `ir`; docs/design/ir.md; feature specs green on both, not gated)
+
+- **Add device → Import a profile file** (`AddDeviceDialog`, always offered): a hidden file input; the file is
+  read and parsed client-side (`lib/profileFile.ts readProfileFile`: not JSON or no manufacturer/model → said
+  at once, nothing sent). Step 3 shows model, "manufacturer · <integration name>" (IR, Bluetooth), Name
+  (default the model) and Type (the profile's kind if known, else other). POST /admin/devices
+  `{profile, name, kind}` (`DeviceRegisterImport`, body cap 256 KiB). A Bluetooth import goes on to pairing
+  (`onPair`); IR stays in the dialog ("Added X"). Refusals: `profileFileError` lists the `/profile/...`
+  details in words (invalid_pronto → "The code for “VolumeUp” isn’t valid."; else "<where>: <hub message>").
+  "Turn on an integration first." is gone (import is always there).
+- IR device: platform/provider `ir`, integration `ir`, availability always `unknown`, no `bluetooth`. Device
+  list icon `Rss`, always lit, labelled just the integration name ("IR"). No pairing card. Capabilities are
+  the remote group only, so pickers show the profile's commands.
+- A profile device is one with `profile` (the spec's rule; Bluetooth or IR): the catalog and the wizard load
+  their detail, the mock's restore rebuilds their capabilities. Builder
+  `profileDevice` (was bleDevice); `connectFirst` (wait_connected) only for Bluetooth.
+- `ir` integration: IntegrationState adds `ready` / `not_ready` (HEALTH: Ready / Not working); the
+  Integrations card shows its detail like Bluetooth's. No Status tile (Overview tiles are fixed per type;
+  not added: open item if wanted).
+- Mock: seeded `dev_bedroom_tv` (IR) from the fixtures, `ir` config fixture; `addProfileDevice` shared by
+  `{profile_id}` and `{profile}`; `mock/profileCheck.ts` checks an upload (object, platform, manufacturer/model,
+  commands, well-formed Pronto → invalid_pronto at /profile/commands/X/pronto); `profileCaps` (Bluetooth: all,
+  IR: remote group); `/__mock/ir?ready=0|1` like /sim/ir (not_ready, IR executes fail adapter_unavailable).
+  Contract parity (`api/contract.sh mock mock-auth` green): every detail says "Not a raw Pronto code" under
+  top message "The profile is invalid" (= errors/invalid_pronto.json); required header fields (id, revision,
+  source, manufacturer, model, kind, platform, commands); `profile.sha256` is the spec's hash (`profileSha`:
+  SHA-256 of sorted-key compact JSON of the file as sent, meta included; node:crypto); /admin/devices body
+  cap 384 KiB, a profile over 256 KiB minified without meta is `too_long` at /profile; `isPronto` is core's
+  pronto::parse (uppercase, single spaces, ≤512 pairs a section); a bad platform is `wrong_type`; an `ir` provider without a profile is `required` at /profile; limit_reached says "There's no
+  room on the hub for another device" (`noRoom(subject)`, activities too); a Bluetooth or IR provider without
+  a profile is `required` at /profile; PUT /admin/integrations/ir takes settings `{type: ir}` only.
+- `/simplify` done: `d.profile` instead of platform checks; mock `adapterDown`, `DOWN_DETAIL`, `readyFlag`,
+  `ROUTE_MAX_BODY`; `isPronto` boolean. Skipped: one Pick shape for profile/file/HA in AddDeviceDialog (a
+  bigger rewrite), connectFirst from capabilities, `useDeviceDetails` fetching only uncached ids.
+- e2e `ir.spec.ts` (mock + hub-sim): import sim/fixtures/ir/nec-tv.json via the file chooser, bind Volume up,
+  startup Power on, activate; hub-sim checks GET /sim/ir for PowerOn, then a volume_up tap sends VolumeUp; the
+  mock checks the run. A bad code and a non-JSON file show their errors. Unit: profileFile.test, mock
+  "infrared devices", build.test IR wizard device.
+
 ## Radio transmit power (branch `radio-power`; reviewed, gated, committed)
 
 - Hub setting `radio_power` (low | medium | high | max, default max) on `GET/PUT /admin/hub`.

@@ -115,10 +115,10 @@ function stepGlyph(step: RunStep): Glyph {
   return { icon: Check, className: 'text-success/70' }
 }
 
-/** A device's kind at a glance, from where it lives: its HA entity's domain, or Bluetooth. */
+/** A device's kind at a glance, from where it lives: its HA entity's domain, or its platform (Bluetooth, infrared). */
 const DOMAIN_ICON: Record<string, LucideIcon> = { media_player: MonitorPlay, remote: Radio, light: Lightbulb, switch: ToggleRight }
 function deviceIcon(d: Device | undefined): LucideIcon {
-  if (d?.provider.type === 'ble_hid') return INTEGRATION_ICON.ble_hid
+  if (d && d.provider.type !== 'home_assistant') return INTEGRATION_ICON[d.platform]
   return DOMAIN_ICON[domainOf(d) ?? ''] ?? Box
 }
 

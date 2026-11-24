@@ -40,11 +40,11 @@ export default function ActivityWizard() {
   const lock = useConfigLock()
   const set = (patch: Partial<WizardAnswers>) => setAnswers((a) => ({ ...a, ...patch }))
 
-  // Bluetooth devices need the detail form (their profile's commands, power and inputs); they load
-  // once when the wizard opens, alongside the capabilities. Ticking a device never fetches.
-  const bleIds = [...catalog.devices.values()].filter((d) => d.provider.type === 'ble_hid').map((d) => d.id).sort()
-  const details = useDeviceDetails(bleIds)
-  const waiting = loading || (bleIds.length > 0 && !details.data)
+  // Profile devices (Bluetooth, infrared) need the detail form (their profile's commands, power and
+  // inputs); they load once when the wizard opens, alongside the capabilities. Ticking a device never fetches.
+  const profileIds = [...catalog.devices.values()].filter((d) => d.profile).map((d) => d.id).sort()
+  const details = useDeviceDetails(profileIds)
+  const waiting = loading || (profileIds.length > 0 && !details.data)
   const usable = useMemo(
     () => new Map([...catalog.devices.values()].map((d) => [d.id, wizardDevice(d, details.data?.get(d.id), catalog.capabilities.get(d.id))])),
     [details.data, catalog],

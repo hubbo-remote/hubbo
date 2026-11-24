@@ -44,8 +44,8 @@ const order = (i: Integration) => ORDER[i.type] ?? 2
  */
 function stateLine(i: Integration) {
   if (!i.enabled || i.state === 'disabled' || !i.detail) return healthLabel(i.state, i.type)
-  if (i.type === 'ble_hid') return i.detail
   if (i.type === 'mqtt') return healthLabel(i.state, i.type) // its detail only says the state again
+  if (i.type !== 'home_assistant') return i.detail // an adapter's (Bluetooth, IR) detail says it all
   return (
     <>
       {healthLabel(i.state, i.type)} <span>· {i.detail}</span>

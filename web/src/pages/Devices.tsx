@@ -78,12 +78,13 @@ function todo(d: Device): string | null {
   return d.availability === 'stale' ? STALE : null
 }
 
-/** The device's platform, lit while it's live: a connected host, or an available entity. */
+/** The device's platform, lit while it's live: a connected host, or an available entity. Infrared can't tell, so it's always lit. */
 function PlatformIcon({ device: d, source }: { device: Device; source: string }) {
   const Icon = INTEGRATION_ICON[d.platform]
-  const live = d.bluetooth ? d.bluetooth.state === 'connected' : d.availability === 'available'
+  const ir = d.platform === 'ir'
+  const live = ir || (d.bluetooth ? d.bluetooth.state === 'connected' : d.availability === 'available')
   const state = d.bluetooth ? bluetoothLabel(d.bluetooth) : d.availability === 'stale' ? STALE : d.availability
-  const label = `${source}, ${state.toLowerCase()}`
+  const label = ir ? source : `${source}, ${state.toLowerCase()}`
   return (
     <span role="img" aria-label={label} title={label} className={cn('shrink-0', live ? 'text-primary' : 'text-muted-foreground/50')}>
       <Icon className="size-5" aria-hidden />
