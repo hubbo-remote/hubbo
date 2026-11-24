@@ -69,7 +69,8 @@ Instrument RF receive-to-dispatch and adapter handoff independently from remote-
 Use `/api/v1`, strict JSON schemas, bounded payload sizes, meaningful validation errors, revision/optimistic concurrency for edits, atomic activity replacement, and OpenAPI as source of truth. Generate TypeScript client/types and mock fixtures. A command execution endpoint accepts **hub device ID + allowed command ID + typed params**, never raw HA entity IDs/service calls.
 
 Proposed groups:
-- `GET /status` and `/remote/status`, `/remote/buttons`.
+- `GET /status` and `/remote/status`, `/remote/buttons`, and `/remote/log` (dev builds only: the
+  last 5 minutes of packets, presses and their results; `docs/design/remote-log.md`).
 - `POST /auth/login`, `/auth/logout`, `GET /auth/session`.
 - `GET /devices`, `/devices/{id}`, `/devices/{id}/capabilities`.
 - `POST /devices/{id}/commands/{command}/execute` for registered commands.
@@ -83,7 +84,7 @@ All paths above are under `/api/v1`; final paths and response models must be spe
 ## Security
 One admin, with a username and password chosen at setup, and browser sessions kept only in RAM (a reboot logs everyone out). Secrets (the password hash, the HA token, API token hashes) stay in NVS and never appear in responses, logs or backups. HTTPS, secure boot and flash encryption are out of scope for this one-home LAN device; no public internet port forwarding. Details, including what was trimmed in Phase 5: `docs/security.md`.
 
-API tokens: created/revoked by admin, displayed once, stored hashed, supplied as Bearer tokens. They may list registered devices/capabilities, create/edit/delete activities and mappings, test registered commands and activate activities. They **cannot** register/edit/remove devices, configure integrations, pair remotes, manage tokens/credentials, restore backups or update firmware. Tokens may still control sensitive **registered** devices, so protect them. Every config/action API must enforce this, including nested action validation; only trusted RF path bypasses HTTP auth, using prevalidated compiled actions.
+API tokens: created/revoked by admin, displayed once, stored hashed, supplied as Bearer tokens. They may read status and the remote log (dev builds), list registered devices/capabilities, create/edit/delete activities and mappings, test registered commands and activate activities. They **cannot** register/edit/remove devices, configure integrations, pair remotes, manage tokens/credentials, restore backups or update firmware. Tokens may still control sensitive **registered** devices, so protect them. Every config/action API must enforce this, including nested action validation; only trusted RF path bypasses HTTP auth, using prevalidated compiled actions.
 
 For test execution, return accepted/failed/timeout and avoid claiming physical device response. No secrets in diagnostics, browser storage or backup by default.
 
