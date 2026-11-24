@@ -295,6 +295,15 @@ it.
   (`requires`). While the config is blocked, the backup is the saved config record's raw bytes
   (`X-Hubbo-Backup: blocked-raw`); that record holds no secrets either.
 
+## Imported profiles
+
+Adding a device from a profile file (`POST /admin/devices` with `{profile}`) is admin-only. The
+body is at most 384 KiB (`413`; the profile itself at most 256 KiB minified without `meta`), and the hub validates the file as a complete profile before
+anything is saved: unknown fields, ranges, command names and every IR code (raw Pronto, checked
+word by word) are refused with the path that's wrong. A profile is data only: its codes drive the
+IR emitter or the Bluetooth keyboard and nothing else, and its `meta` is dropped. The config's
+512 KB cap bounds how many large profiles the hub keeps.
+
 ## Firmware updates
 
 `POST /admin/firmware/update` is admin-only (a token gets `403`). The body is the whole app

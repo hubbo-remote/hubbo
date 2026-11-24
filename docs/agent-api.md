@@ -98,6 +98,17 @@ as the profile says; a profile command with its own `hold_ms` (Apple TV's `Contr
 Bluetooth commands work only while the device is `bluetooth.state: connected`; otherwise they
 fail and nothing is sent.
 
+**IR devices** (`integration_id: "ir"`, `platform: "ir"`: TVs, receivers and anything else with
+an infrared remote) were also added from a profile, so their detail has the same `commands`,
+`buttons`, `power`, `timing` and `inputs`; each command is an IR code (`pronto`). They have only
+the `remote` group: `press {command, hold_ms?}`, `press_down` and `press_up`. A press sends the
+code (`timing.ir_repeats` frames); `press_down` repeats it until `press_up`. Nothing tells the hub
+whether the device saw a code, so `availability` is always `unknown` and `accepted` means sent.
+A command fails with `adapter_unavailable` when the hub's IR emitter isn't working (the `ir`
+integration in `GET /integrations` is `not_ready`; nothing is sent), `adapter_failed` when a
+send the emitter had accepted failed, or `queue_full` when too many IR commands wait their turn
+(the hub sends one code at a time).
+
 **Hubbo's own commands** come from the `system` integration (`GET /integrations`, its
 `commands`), with `"device_id": null`: `wait {duration_ms}`, `activate {activity_id}` and
 `off {}`.
@@ -218,7 +229,7 @@ there are no empty lists.
 **How to write a button.** Think of each button as a **Press** and, optionally, a **Long
 press**. Write them the way the web admin does, so the admin sees them as you meant:
 
-1. **Press, with no Long press:** the button passes straight through. A Bluetooth command goes
+1. **Press, with no Long press:** the button passes straight through. A Bluetooth or IR command goes
    on `down` as its hold form and on `up` as its release, with the same params, so holding the
    remote's button holds the key (the d-pad scrolls, fast-forward keeps going):
 
@@ -274,7 +285,7 @@ press**. Write them the way the web admin does, so the admin sees them as you me
 
 **Holding never repeats.** Each trigger fires once per press: holding Volume up sends one HA
 `volume_up`, not a stream. Only a Bluetooth `*_down`/`*_up` pair is held as a key for as long as
-the button is.
+the button is, and an IR `press_down`/`press_up` pair repeats its code for as long.
 
 **Long press on an HA device.** HA devices have no `buttons` map: pick commands from their
 capabilities. E.g. Mute on a receiver, press to mute and long-press to unmute:
@@ -501,6 +512,7 @@ lists recent errors.
 
 ## Limits
 
-16 activities; 64 devices, at most 4 of them Bluetooth; 32 actions per sequence or trigger;
+16 activities; 64 devices, at most 4 of them Bluetooth (IR devices are limited only by the
+config's size); 32 actions per sequence or trigger;
 4 params per action; names up to 64 characters; enum strings up to 64; `wait` up to 60 s;
 16 Home Assistant actions (`call`), each with at most 1024 bytes of `data`.

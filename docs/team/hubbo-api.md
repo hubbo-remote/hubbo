@@ -1,6 +1,6 @@
 # hubbo-api: working notes
 
-Current as of the firmware-updates branch. Not a log: rewrite sections as they change.
+Current as of the ir branch. Not a log: rewrite sections as they change.
 
 ## State
 
@@ -10,7 +10,8 @@ Current as of the firmware-updates branch. Not a log: rewrite sections as they c
   start a gate myself: the lead starts the gates once per phase, when the code is frozen. A change
   after the gates gets a targeted test, not another gate, unless the lead calls it broad.
 - Routes in `core/src/api/`, one file per area:
-  - `registry_routes.cpp`: devices and registration (HA, or `{profile_id, name?, kind?}`);
+  - `registry_routes.cpp`: devices and registration (HA, `{profile_id, name?, kind?}` or
+    `{profile, name?, kind?}`);
   - `profile_routes.cpp`: GET /profiles, /profiles/{profile_id} (percent-decoded; the published
     file minus `meta`) and /kinds, all admin, over `config::builtinProfiles()`;
   - `integration_routes.cpp`: HA and MQTT settings, discovery, entity details,
@@ -359,6 +360,49 @@ Current as of the firmware-updates branch. Not a log: rewrite sections as they c
   end-of-phase instruction (CLAUDE.md), and only your own files, staged by path.
 
 ## Open items
+
+- **IR (branch ir, uncommitted; docs/design/ir.md). Built and /simplify'd; `bin/hubbo gate api`
+  passed in all four modes (2026-11-24); waiting on the lead's commit call.**
+  - Import: `POST /admin/devices {profile, name?, kind?}` (`deviceFromImport` in
+    registry_routes.cpp), any platform. Parsed once: core's `parseProfile(JsonVariantConst)` and
+    `profileSha256(JsonVariantConst)` read the body's own profile object, issues go out as
+    `report.rerooted("", "/profile")` (keeps `dropped()`), and `deviceFromProfile(ProfileDocument&&)`
+    moves it. A fractional number (meta) is `wrong_type` at /profile.
+  - Body limit: registerDevice's row is `kMaxProfileImportBodyBytes` = 384 KiB (policy.cpp): the
+    spec's 256 KiB counts the profile minified without `meta`, and a file carries both, so the body
+    has headroom. Core's `parseProfile` (both overloads) refuses a profile over 256 KiB minified
+    without meta: `too_long` at "" -> /profile (ApiTest and contract `import a profile over 256 KiB`,
+    built from many 1000-byte strings: ArduinoJson caps one string near 64 KB).
+    `maxRequestBody()` (unknown routes) is still restore's 640 KiB.
+  - A Bluetooth or IR provider without a profile (`hasProfile`): 422 `required` at /profile (was
+    /profile_id for Bluetooth).
+  - `LimitReached` (a count cap or the 512 KB config cap) is 409 `limit_reached` "There's no room on
+    the hub for another <subject>" in `sendCoreError` (one rule for every create route).
+  - `decodeSettings` accepts every type but system (the type comes from the stored integration).
+  - `ir` integration: listed and in /status from config (core built-in); state `ready`/`not_ready`
+    (added to IntegrationState). Settings are `{type: ir}` only (IrSettings, also the PUT form);
+    name and enabled are editable.
+  - Spec: IrProvider, IrCommand + ProntoCode (`^0000 [0-9A-F]{4}( [0-9A-F]{4})+$`; the hub checks
+    the rest), ProfileCommands max 512 with oneOf Ble/IR, DeviceProfileContent picks the command
+    shape by provider type, `ir_repeats` in ProfileTiming (refused on ble by the schema's else),
+    DeviceRegisterImport (profile is a loose object: the hub validates), `invalid_pronto` in the
+    detail enum ("Not a raw Pronto code" in issueMessage). IR availability is always `unknown`.
+    Execute `message` for IR: `adapter_unavailable` (no emitter, nothing sent), `adapter_failed`
+    (a send accepted then failed; core's ticket), `queue_full`.
+  - Fixtures: seeded `dev_bedroom_tv` (sim/fixtures/ir/nec-tv.json; gen_fixtures `ir_device`,
+    `ir_commands`, `profile_sha256` = Python's canonical hash, matches core), `ir` in the
+    integrations list and backup, `admin/register_ir.{request,}.json` (sony-receiver.json),
+    `devices/execute.ir_press.request.json`, `integrations/ir.config.json`,
+    `errors/invalid_pronto.json`.
+  - Contract `ir_flow` (all modes; /sim/ir sends and `ir?ready=0|1` sim only): fixture device,
+    press, emitter not ready -> not_ready + adapter_unavailable, import equals the fixture (id and
+    revision aside) then delete, bad Pronto path, partial profile, 413 one byte over 384 KiB. The
+    profile-device checks accept ir; "IR device without a profile" in ble_pairing_flow's list.
+  - gen_fixtures: `device_from_profile` + `PLATFORMS` build both platforms' devices,
+    `remote_commands(profile)` is the shared remote group; contract `integration(c, id, label)`.
+  - ApiTest.ImportsAProfileFile.
+  - Core added the JsonVariantConst overloads, the moving deviceFromProfile and
+    `ValidationReport::rerooted` on request; the route uses them.
 
 - **remote log (branch radio-power, committed, gates passed):** `GET /remote/log` (op
   `getRemoteLog`, role token, next to /remote/status: validate.py keeps /admin admin-only). No
