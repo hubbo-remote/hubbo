@@ -2,13 +2,13 @@
 Version 0.1 • 2026-11-04 • Implementation handoff
 
 ## Product and hard requirements
-Build a standalone Harmony Companion RF hub replacement on the Waveshare ESP32-S3-ETH. The ESP32 owns activities, button mappings, device registry and execution. Home Assistant is an outbound device-control integration, not the brain of the remote. The system must operate locally without Home Assistant for Bluetooth and, eventually, IR.
+Build a standalone Harmony Companion RF hub replacement on the Waveshare ESP32-S3-ETH. The ESP32 owns activities, button mappings, device registry and execution. Home Assistant is an outbound device-control integration, not the brain of the remote. The system must operate locally without Home Assistant for Bluetooth and IR.
 
 Non-negotiable: low RF-to-command latency; minimal external state; registered-device-only actions; one action abstraction for all triggers/sequences; API-first web/LLM access; one admin account plus restricted API tokens; responsive React/TypeScript web UI; OTA; backup/restore; release binaries and USB web flashing.
 
 **MVP activity semantics:** Switching from A to B runs only B's startup sequence, never A's shutdown. Off runs only the active activity's shutdown sequence. The hub remembers the active activity but does not maintain guessed power/input states or a session-wide list of previously used devices. Xbox can remain powered after switching to Apple TV and self-sleep. Favor explicit power on/off and direct input commands over toggles.
 
-**MVP scope:** one Harmony Companion remote; one Waveshare ESP32-S3-ETH board; Ethernet; RF; BLE HID Apple TV; Home Assistant outbound integration; registered devices; activities; web UI; security; OTA; backups; release automation. **Later:** IR database/import/transmitter, other boards, other remotes, gesture recognition beyond down/up, inbound Home Assistant integration.
+**MVP scope:** one Harmony Companion remote; one Waveshare ESP32-S3-ETH board; Ethernet; RF; BLE HID Apple TV; Home Assistant outbound integration; registered devices; activities; web UI; security; OTA; backups; release automation. **Since added:** IR sending from imported device profiles (`docs/design/ir.md`). **Later:** searching the hosted catalog from the web admin, IR learning, other boards, other remotes, gesture recognition beyond down/up, inbound Home Assistant integration.
 
 ## Hardware and build
 Primary board: Waveshare ESP32-S3-ETH with W5500 SPI Ethernet and optional PoE. Planning specifications: ESP32-S3 dual core, 512 KB SRAM, 8 MB PSRAM, 16 MB flash; verify exact installed variant and flash partition scheme before implementation. ESP32-S3 supports BLE but not Bluetooth Classic. Verify experimental Apple TV HID implementation uses BLE. nRF24 and W5500 may share SPI resources: inspect actual wiring, chip selects, IRQs, bus locking, signal integrity, and radio power.
@@ -18,11 +18,11 @@ Base repository: https://github.com/soaresbrun0/harmonizer . Its `platformio.ini
 Use PlatformIO + Arduino framework initially for compatibility, with ESP-IDF components where version-compatible. Prefer Espressif's `esp_http_server` rather than Arduino WebServer, but verify against pinned Arduino-ESP32/ESP-IDF versions and test memory/task interactions before committing. Board-specific code belongs behind HAL and a board profile. Do not build other boards during MVP.
 
 ## Components and boundaries
-1. **HAL/board profile:** W5500, SPI, nRF24, GPIO, BLE adapter, storage, timers, crypto/random, future IR.
+1. **HAL/board profile:** W5500, SPI, nRF24, GPIO, BLE adapter, storage, timers, crypto/random, the IR emitter (RMT on GPIO 1).
 2. **RF receiver:** emits `RemoteEvent(button_id, event_kind, timestamp)`; down/up required; future long/double/triple presses are trigger concerns, not integration concerns.
 3. **Activity engine:** active activity ID, startup/shutdown sequences, precompiled trigger lookup tables and transition coordinator.
 4. **Action executor:** normalized typed commands, ordered sequence scheduler, bounded per-integration queues.
-5. **Integration adapters:** BLE HID, Home Assistant, built-in system actions; future IR.
+5. **Integration adapters:** BLE HID, Home Assistant, IR, built-in system actions.
 6. **Device registry:** curated list of registered targets with stable hub IDs, provider references and display names. It is not a duplicate Home Assistant database and does not track device power state.
 7. **Configuration service:** JSON schemas, versioning, validation, atomic persistence, compilation and hot swap.
 8. **HTTP/API/auth:** serves compiled React assets and versioned API; lower priority than RF.
@@ -31,7 +31,7 @@ Use PlatformIO + Arduino framework initially for compatibility, with ESP-IDF com
 ## Data model
 **Integration instance:** stable `integration_id`, type, enabled state, protected connection settings, discovery and capability interface. Each integration manages its own pairing/discovery/storage requirements.
 
-**Device:** `id`, `name`, `integration_id`, internal provider target, metadata, schema version. Example: `dev_72`, `Family Room Denon`, `ha_main`, internally linked to `media_player.denon`. HA references should record stable registry identifiers where available; entity IDs may change. Bluetooth stores pairing reference. IR will store downloaded code-set reference. Only admin may register/edit/remove devices.
+**Device:** `id`, `name`, `integration_id`, internal provider target, metadata, schema version. Example: `dev_72`, `Family Room Denon`, `ha_main`, internally linked to `media_player.denon`. HA references should record stable registry identifiers where available; entity IDs may change. Bluetooth stores pairing reference. IR devices, like Bluetooth ones, are profiles that have been added: they keep the profile's Pronto codes. Only admin may register/edit/remove devices.
 
 **Action instance:** `{integration_id, device_id, command_id, params}`. For built-in `system.wait`, device_id is null and params include bounded `duration_ms`. The integration must match the device's owner. Commands and parameter schemas are discovered from registered device capabilities; arbitrary HA service payloads, target overrides, URLs and scripts are prohibited. Human names are not execution identifiers.
 
@@ -61,7 +61,7 @@ Instrument RF receive-to-dispatch and adapter handoff independently from remote-
 
 **Home Assistant outbound:** Admin configures URL and token. Discovery can browse all entities, but only explicitly registered entities become hub devices. Normalize capabilities from HA entity metadata, supported features, service definitions and parameter selectors; not every service applies to every entity. Example `volume_set` takes a normalized 0–1 value; `select_source` may offer available source options. Permit a curated set of entity-specific actions; disallow area/all-entity targets, arbitrary service payloads, nested target overrides and indirect broad operations. Device registry restriction is application security, **not** a HA token sandbox. A stolen HA credential may still grant broad access.
 
-**IR (post-MVP):** admin selects a model from externally hosted legacy code database; download only that model's IR codes to local flash; then run offline. Device commands become ordinary actions. Later support learning. Do not ship entire ~300 MB corpus to ESP32.
+**IR:** a device's codes come from its profile (Pronto, `~/src/hubbo-profiles` spec), imported as a file today and later fetched from the hosted catalog; only that device's codes are stored, and they work offline. Commands are ordinary actions (`press`, `press_down`, `press_up`). One emitter, one code at a time. Send only; learning is later. Design: `docs/design/ir.md`.
 
 **System:** `wait(duration_ms)` first; future conditional/repeat actions require explicit design and bounded execution.
 
@@ -136,7 +136,7 @@ Hubbo is a hobbyist's device: one board in one home, on a trusted home LAN, with
 ## Native desktop simulator — required architecture (amendment)
 The **actual C++ domain and application code** must build and run on a developer computer without ESP32 hardware. Separate `core` (activity engine, action models, compilation, registry, configuration validation, authorization policy, action scheduling) from `platform` adapters (RF, BLE, W5500, LittleFS, NVS, ESP-IDF HTTP). Core must not include Arduino headers or depend on FreeRTOS primitives directly; inject clocks, storage, task scheduling, transport, and integration interfaces.
 
-Build a native executable `hub-sim` with deterministic simulated RF events, BLE HID, Home Assistant service calls, IR placeholders, and time advancement. Prefer the same HTTP **route handlers and business logic** as firmware, behind a host HTTP adapter; the host listener may differ from ESP-IDF's HTTP server. This is a real-core simulator, not just a TypeScript mock. The TypeScript mock API remains useful for fast frontend fixture work, but **must not be the primary source of behavioral truth**.
+Build a native executable `hub-sim` with deterministic simulated RF events, BLE HID, Home Assistant service calls, a fake IR emitter (`/sim/ir`), and time advancement. Prefer the same HTTP **route handlers and business logic** as firmware, behind a host HTTP adapter; the host listener may differ from ESP-IDF's HTTP server. This is a real-core simulator, not just a TypeScript mock. The TypeScript mock API remains useful for fast frontend fixture work, but **must not be the primary source of behavioral truth**.
 
 Provide a command to launch the simulator and Vite frontend together, seed fixtures, reset state, run automated scenario scripts, and capture logs. Run C++ unit tests, API contract tests, integration/transition tests, and web end-to-end tests against the simulator in CI. Test token/admin boundaries, corrupted JSON, action cancellation, held-key releases, and config swaps. CI must also cross-compile the ESP32 firmware to catch platform divergence.
 
