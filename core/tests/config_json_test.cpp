@@ -279,6 +279,7 @@ TEST(ConfigJson, MqttSettings) {
 TEST(ConfigJson, IntegrationsCapCountsTheBuiltins) {
     ConfigSpec c = sim::fixtureConfig();
     ensureBuiltinIntegrations(&c);
+    for (IntegrationSpec &i : c.integrations) i.revision = 1;  // the added built-ins (ir), as a load stamps them
     c.integrations.erase(c.integrations.begin() + indexOfId(c.integrations, kMqttIntegrationId));
     for (int n = 2; c.integrations.size() < limits::kMaxIntegrations - 1; n++) {
         IntegrationSpec extra = c.integrations[static_cast<size_t>(indexOfId(c.integrations, "ha_main"))];

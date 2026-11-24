@@ -1,9 +1,9 @@
-import { Loader2, type LucideIcon } from 'lucide-react'
+import { FileUp, Loader2, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'wouter'
 import { api, errorMessage, toApiError } from '@/api/client'
 import { invalidate } from '@/api/hooks'
-import type { Device, DeviceKind, HomeAssistantProvider, ProfileSummary } from '@/api/types'
+import type { Device, DeviceKind, DeviceRegisterImport, HomeAssistantProvider, ProfileSummary } from '@/api/types'
 import { EntityPreview, HaCandidates } from '@/components/admin/HaCandidates'
 import { EntityId } from '@/components/common'
 import { haDeviceError, loadEntityDetails, type EntityDetails } from '@/lib/ha'
@@ -14,17 +14,19 @@ import { Field, Input, Select } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { useDevices, useIntegrations, useKinds, useProfiles } from '@/hooks/data'
 import { INTEGRATION_ICON } from '@/lib/health'
+import { profileFileError, readProfileFile, type ProfileFile } from '@/lib/profileFile'
 
-/** What's being added: a built-in profile, or a Home Assistant entity (with its details, which registering needs). */
+/** What's being added: a built-in profile, an imported profile file, or a Home Assistant entity (with its details, which registering needs). */
 type Pick =
   | { profile: ProfileSummary }
+  | { file: ProfileFile }
   | { provider: HomeAssistantProvider; label: string; details?: { state: 'loading' } | { state: 'done'; d: EntityDetails } | { state: 'failed'; error: string } }
 
 const matches = (p: ProfileSummary, q: string) => `${p.manufacturer} ${p.model}`.toLowerCase().includes(q.trim().toLowerCase())
 
 /**
- * One list: the built-in profiles (search by manufacturer and model) and "From Home Assistant".
- * A profile → its name; Home Assistant → an entity → its name. It stays open to add the next one;
+ * One list: the built-in profiles (search by manufacturer and model), "Import a profile file" and
+ * "From Home Assistant". A profile or a file → its name; Home Assistant → an entity → its name. It stays open to add the next one;
  * a Bluetooth device goes to its page instead (`onPair`), where it pairs.
  */
 export function AddDeviceDialog({ open, onClose, onPair }: { open: boolean; onClose: () => void; onPair?: (d: Device) => void }) {
@@ -47,6 +49,8 @@ export function AddDeviceDialog({ open, onClose, onPair }: { open: boolean; onCl
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [added, setAdded] = useState<string | null>(null) // the last one added, while the dialog stays open
+  const [fileError, setFileError] = useState<string | null>(null) // a picked file that isn't a profile
+  const fileInput = useRef<HTMLInputElement>(null)
   const [haQuery, setHaQuery] = useState('') // the entity search, kept while one is picked and added
   // Bumped per details load, so a load for an entity the user moved on from is dropped.
   const loadId = useRef(0)
@@ -75,9 +79,22 @@ export function AddDeviceDialog({ open, onClose, onPair }: { open: boolean; onCl
       setHaQuery('')
       setName('')
       setError(null)
+      setFileError(null)
       setAdded(null)
     }
   }, [open])
+
+  /** A picked file: a profile goes on to its name; anything else says why, and nothing is sent. */
+  const chooseFile = async (f: File | undefined) => {
+    if (!f) return
+    const read = readProfileFile(f.name, await f.text())
+    if ('error' in read) return setFileError(read.error)
+    setFileError(null)
+    setError(null)
+    setPick({ file: read })
+    setName(read.model.slice(0, 64))
+    setKind(kinds.find((k) => k.id === read.kind)?.id ?? 'other')
+  }
 
   const chooseProfile = (p: ProfileSummary) => {
     setPick({ profile: p })
@@ -89,7 +106,13 @@ export function AddDeviceDialog({ open, onClose, onPair }: { open: boolean; onCl
     setBusy(true)
     setError(null)
     try {
-      const d = await api.registerDevice('profile' in pick ? { profile_id: pick.profile.id, name: name.trim(), kind } : { integration_id: integration!, provider: pick.provider, name: name.trim(), kind })
+      const d = await api.registerDevice(
+        'profile' in pick
+          ? { profile_id: pick.profile.id, name: name.trim(), kind }
+          : 'file' in pick
+            ? { profile: pick.file.profile as DeviceRegisterImport['profile'], name: name.trim(), kind }
+            : { integration_id: integration!, provider: pick.provider, name: name.trim(), kind },
+      )
       invalidate('devices', 'discover', 'caps-all', 'integrations')
       if (d.provider.type === 'ble_hid' && onPair) {
         onPair(d)
@@ -101,7 +124,7 @@ export function AddDeviceDialog({ open, onClose, onPair }: { open: boolean; onCl
     } catch (e) {
       // Already a device (e.g. the entity was renamed in HA): reload the details, which name it.
       if ('provider' in pick && toApiError(e).details.some((d) => d.code === 'duplicate_id')) return void loadDetails(pick.provider.entity_id)
-      setError('provider' in pick ? await haDeviceError(e) : errorMessage(e, { details: true }))
+      setError('provider' in pick ? await haDeviceError(e) : 'file' in pick ? profileFileError(e) : errorMessage(e, { details: true }))
     } finally {
       setBusy(false)
     }
@@ -154,10 +177,22 @@ export function AddDeviceDialog({ open, onClose, onPair }: { open: boolean; onCl
             <Choice key={p.id} icon={INTEGRATION_ICON[p.platform]} title={p.model} subtitle={[p.manufacturer !== 'Other' && p.manufacturer, enabled(p.platform)[0]?.name].filter(Boolean).join(' · ')} onClick={() => chooseProfile(p)} />
           ))}
           {query && offered.length > 0 && shown.length === 0 && <p className="px-1 text-sm text-muted-foreground">No matches.</p>}
+          <Choice icon={FileUp} title="Import a profile file" subtitle="A device’s profile, saved as a .json file" onClick={() => fileInput.current?.click()} />
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".json,application/json"
+            aria-label="Profile file"
+            className="hidden"
+            onChange={(e) => {
+              void chooseFile(e.target.files?.[0])
+              e.target.value = '' // the same file again still counts as a pick
+            }}
+          />
+          {fileError && <Alert variant="error">{fileError}</Alert>}
           {ha.map((i) => (
             <Choice key={i.id} icon={INTEGRATION_ICON.home_assistant} title={ha.length > 1 ? `From ${i.name}` : 'From Home Assistant'} subtitle="Media players, lights, covers, scenes and more" onClick={() => setIntegration(i.id)} />
           ))}
-          {integrations.data && profiles.data && offered.length === 0 && ha.length === 0 && <p className="text-sm text-muted-foreground">Turn on an integration first.</p>}
         </div>
       )}
       {step === 2 && (
@@ -179,6 +214,11 @@ export function AddDeviceDialog({ open, onClose, onPair }: { open: boolean; onCl
               <>
                 <p className="font-medium">{pick.profile.model}</p>
                 <p className="text-xs text-muted-foreground">{pick.profile.manufacturer}</p>
+              </>
+            ) : 'file' in pick ? (
+              <>
+                <p className="font-medium">{pick.file.model}</p>
+                <p className="text-xs text-muted-foreground">{[pick.file.manufacturer, integrations.data?.find((i) => i.type === pick.file.platform)?.name].filter(Boolean).join(' · ')}</p>
               </>
             ) : (
               <>

@@ -87,6 +87,7 @@ export function loadSeed(): Seed {
     configs: new Map<string, IntegrationConfig>([
       ['ha_main', fixture<IntegrationConfig>('integrations/ha_main.config.json')],
       ['ble', fixture<IntegrationConfig>('integrations/ble.config.json')],
+      ['ir', fixture<IntegrationConfig>('integrations/ir.config.json')],
       ['mqtt_main', fixture<IntegrationConfig>('integrations/mqtt_main.config.json')],
       ['system', { id: 'system', type: 'system', name: 'System', enabled: true, settings: { type: 'system' }, revision: 1 }],
     ]),

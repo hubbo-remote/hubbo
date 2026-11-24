@@ -36,6 +36,7 @@ SimHub::SimHub(storage::Storage *storage, storage::StateStore *state, bool realH
     engine_.setRemoteLog(remoteLog_.get());
     input_.setLog(remoteLog_.get());
     ha_.server.clock = [this] { return static_cast<uint64_t>(nowMs_); };  // slow answers wait in hub time
+    fakes_.irTransmitter.clock = [this] { return nowMs_; };  // frames take hub time
     service_.setListener(&configListeners_);
     resetBle();
     if (bonds != nullptr) {
@@ -105,6 +106,8 @@ ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
     ha_.server.reset();
     ha_.client.reconnect();  // at once, not after the backoff; stale entities forgotten
     resetBle();
+    fakes_.ir.reset();
+    fakes_.irTransmitter.reset();
     firmware_ = api::SimulatedFirmwareUpdate();
     releases_.reset();
     factoryReset_ = freshFactoryResetPort();
@@ -123,6 +126,8 @@ ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
 void SimHub::wipe(auth::Credentials *credentials) {
     stopEverything();
     fakes_.bleHosts.reset();  // no bonds
+    fakes_.ir.reset();
+    fakes_.irTransmitter.reset();
     // The board formats the filesystem; here the config record's slots
     // (SlotRecordStore's "<name>.a"/".b") go, whatever the medium's trust.
     for (const char slot : {'a', 'b'}) {

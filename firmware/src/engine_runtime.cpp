@@ -5,6 +5,7 @@
 
 #include "hubbo/domain/config.h"
 #include "hubbo/integrations/ha_adapter.h"
+#include "hubbo/integrations/ir.h"
 #include "console.h"
 
 namespace hubbo::fw {
@@ -21,6 +22,10 @@ bool isHomeAssistant(std::string_view integrationId) {
 
 bool isMqtt(std::string_view integrationId) {
     return integrationId == hubbo::kMqttIntegrationId;
+}
+
+bool isIr(std::string_view integrationId) {
+    return integrationId == hubbo::kIrIntegrationId;
 }
 
 }  // namespace
@@ -101,12 +106,18 @@ const char *EngineRuntime::integrationState(std::string_view integrationId) cons
     if (isMqtt(integrationId) && mqtt_ != nullptr) {
         return mqtt_->state();
     }
+    if (isIr(integrationId)) {
+        return hubbo::integrations::irIntegrationState(*integration, irReady());
+    }
     return "not_configured";
 }
 
 std::string EngineRuntime::integrationDetail(std::string_view integrationId) const {
     if (isMqtt(integrationId)) {
         return mqtt_ != nullptr ? mqtt_->detail() : std::string();
+    }
+    if (isIr(integrationId)) {
+        return hubbo::integrations::irIntegrationDetail(irReady());
     }
     if (!isBle(integrationId)) {
         return {};

@@ -2,7 +2,7 @@ import { ChevronRight, Plus, Tv2 } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useLocation } from 'wouter'
 import { AddDeviceDialog } from '@/components/admin/AddDeviceDialog'
-import { EmptyState, EntityId, ErrorState, PageHeader } from '@/components/common'
+import { DeviceWhat, EmptyState, ErrorState, PageHeader } from '@/components/common'
 import type { Device } from '@/api/types'
 import { bluetoothLabel, INTEGRATION_ICON } from '@/lib/health'
 import { Button } from '@/components/ui/button'
@@ -49,7 +49,7 @@ export default function Devices() {
                 <PlatformIcon device={d} source={source.get(d.integration_id) ?? d.integration_id} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{d.name}</p>
-                  <EntityId provider={d.provider} />
+                  <DeviceWhat device={d} />
                   {action && <p className={cn('text-xs', d.availability === 'stale' ? 'text-destructive' : 'text-muted-foreground')}>{action}</p>}
                 </div>
                 <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
@@ -78,12 +78,13 @@ function todo(d: Device): string | null {
   return d.availability === 'stale' ? STALE : null
 }
 
-/** The device's platform, lit while it's live: a connected host, or an available entity. */
+/** The device's platform, lit while it's live: a connected host, or an available entity. Infrared can't tell, so it's always lit. */
 function PlatformIcon({ device: d, source }: { device: Device; source: string }) {
   const Icon = INTEGRATION_ICON[d.platform]
-  const live = d.bluetooth ? d.bluetooth.state === 'connected' : d.availability === 'available'
+  const ir = d.platform === 'ir'
+  const live = ir || (d.bluetooth ? d.bluetooth.state === 'connected' : d.availability === 'available')
   const state = d.bluetooth ? bluetoothLabel(d.bluetooth) : d.availability === 'stale' ? STALE : d.availability
-  const label = `${source}, ${state.toLowerCase()}`
+  const label = ir ? source : `${source}, ${state.toLowerCase()}`
   return (
     <span role="img" aria-label={label} title={label} className={cn('shrink-0', live ? 'text-primary' : 'text-muted-foreground/50')}>
       <Icon className="size-5" aria-hidden />

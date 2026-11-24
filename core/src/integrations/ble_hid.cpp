@@ -5,6 +5,7 @@
 
 #include "hubbo/domain/config.h"
 #include "hubbo/domain/time.h"
+#include "remote_group.h"
 
 namespace hubbo::integrations {
 
@@ -163,7 +164,6 @@ constexpr ParamSpec kWaitParams[] = {
         .shownDefault(),
 };
 
-constexpr const char *kRemote = "remote";
 constexpr const char *kKeysGroup = "keys";
 constexpr const char *kCustom = "custom";
 constexpr uint32_t kPressTimeoutMs = limits::kMaxHoldMs + 1000;
@@ -189,27 +189,20 @@ bool sameCommands(const std::vector<ProfileCommand> &a, const std::vector<Profil
 // enum), and the same keys, usages and wait as every Bluetooth device.
 struct BleHidAdapter::DeviceCatalog {
     std::vector<ProfileCommand> commands;
-    std::vector<const char *> names;  // into commands[i].name
-    ParamSpec pressParams[2];
-    ParamSpec heldParams[1];
+    detail::RemoteGroup remote;  // names into commands[i].name
     CommandSpec specs[static_cast<size_t>(BleHidCommand::WaitConnected) + 1];
 
     explicit DeviceCatalog(const std::vector<ProfileCommand> &profileCommands) : commands(profileCommands) {
-        for (const ProfileCommand &c : commands) names.push_back(c.name.c_str());
-        const auto count = static_cast<uint16_t>(names.size());
-        heldParams[0] = ParamSpec::enumeration("command", names.data(), count).described("Remote command");
-        pressParams[0] = heldParams[0];
-        pressParams[1] = ParamSpec::integer("hold_ms", 1, static_cast<int32_t>(limits::kMaxHoldMs), false)
-                             .described(nullptr, "ms");
+        for (const ProfileCommand &c : commands) remote.names.push_back(c.name.c_str());
+        static_assert(static_cast<size_t>(BleHidCommand::Press) == 0 && static_cast<size_t>(BleHidCommand::PressUp) == 2,
+                      "the remote group leads the catalog");
+        remote.fill(specs, this, kPressTimeoutMs);
         const auto spec = [&](BleHidCommand index, const char *id, const ParamSpec *params, uint8_t n,
                               CommandEffect effect, const char *releasedBy, const char *group, uint32_t timeout) {
             specs[static_cast<size_t>(index)] = {id, params, n, effect, releasedBy, group, this, timeout};
         };
         using E = CommandEffect;
         using C = BleHidCommand;
-        spec(C::Press, "press", pressParams, 2, E::Momentary, nullptr, kRemote, kPressTimeoutMs);
-        spec(C::PressDown, "press_down", heldParams, 1, E::Hold, "press_up", kRemote, 0);
-        spec(C::PressUp, "press_up", heldParams, 1, E::Momentary, nullptr, kRemote, 0);
         spec(C::KeyTap, "key_tap", kKeyParams, 1, E::Momentary, nullptr, kKeysGroup, 0);
         spec(C::KeyDown, "key_down", kKeyParams, 1, E::Hold, "key_up", kKeysGroup, 0);
         spec(C::KeyUp, "key_up", kKeyParams, 1, E::Momentary, nullptr, kKeysGroup, 0);

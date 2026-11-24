@@ -11,9 +11,10 @@
 namespace hubbo::config::detail {
 
 // Reads the fields through `f` (so the caller's unknown-field check covers
-// them). `out` keeps its id, revision and sha256.
-bool decodeProfileFields(Fields &f, DeviceProfile *out, ValidationReport *report);
-void encodeProfileFields(const DeviceProfile &profile, JsonObject out, bool withCommands = true);
+// them), with the platform's command shape (ir: Pronto codes, else
+// Bluetooth's page and usage). `out` keeps its id, revision and sha256.
+bool decodeProfileFields(Fields &f, bool ir, DeviceProfile *out, ValidationReport *report);
+void encodeProfileFields(const DeviceProfile &profile, bool ir, JsonObject out, bool withCommands = true);
 
 // `profile: {id, revision, sha256}` on a stored device.
 bool decodeProfileRef(JsonVariantConst json, DeviceProfile *out, ValidationReport *report, const std::string &path);

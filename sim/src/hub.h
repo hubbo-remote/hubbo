@@ -166,6 +166,10 @@ public:
     // steps). advance() runs it every ms.
     void serviceIntegrations();
     integrations::BleHidAdapter &ble() { return fakes_.ble; }
+    // The IR emitter (/sim/ir) and the adapter that drives it; frames take
+    // hub time. A reset or wipe gives a ready emitter with nothing sent.
+    FakeIrTransmitter &irTransmitter() { return fakes_.irTransmitter; }
+    integrations::IrAdapter &ir() { return fakes_.ir; }
     remote::RemoteInput &input() { return input_; }
     // The remote log (remote/log.h; the API's GET /remote/log), filled from
     // the simulated presses. Cleared by a reset or wipe, as a restart would.

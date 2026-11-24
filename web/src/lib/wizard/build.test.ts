@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Capabilities, Device, DeviceDetail } from '../../api/types.ts'
-import { bleDevice, buildStarter, haDevice, type ButtonRule, type WizardAnswers, type WizardDevice } from './build.ts'
+import { profileDevice, buildStarter, haDevice, type ButtonRule, type WizardAnswers, type WizardDevice } from './build.ts'
 
 const rule = (button: ButtonRule['button'], role: ButtonRule['role'], ...candidates: string[]): ButtonRule => ({ button, role, candidates })
 const RULES: ButtonRule[] = [
@@ -47,7 +47,7 @@ const streamer: DeviceDetail = {
   power: { type: 'discrete', on: [{ command: 'Home' }], off: [{ command: 'Home', hold_ms: 2000 }, { delay_ms: 800 }, { command: 'DirectionDown' }, { delay_ms: 200 }, { command: 'Select' }], on_delay_ms: 6000 },
   timing: { key_delay_ms: 100 },
 }
-const devices = [haDevice(tvD, tvC), bleDevice(streamer)]
+const devices = [haDevice(tvD, tvC), profileDevice(streamer)]
 const answers = (a: Partial<WizardAnswers> = {}): WizardAnswers => ({ name: ' Watch ', devices: ['streamer', 'tv'], watch: 'streamer', volume: 'tv', inputs: {}, power: {}, ...a })
 const press = (command_id: string, command: string, extra = {}) => ({ integration_id: 'ble', device_id: 'streamer', command_id, params: { command, ...extra } })
 const tv = (command_id: string, params = {}) => ({ integration_id: 'ha_main', device_id: 'tv', command_id, params })
@@ -80,13 +80,13 @@ describe('buildStarter', () => {
   })
 
   it('a profile command with its own timed hold is bound as one tap (only a press times it)', () => {
-    const d = bleDevice({ ...streamer, commands: { Home: { ...u, hold_ms: 1000 } } })
+    const d = profileDevice({ ...streamer, commands: { Home: { ...u, hold_ms: 1000 } } })
     const { activity } = buildStarter([d], answers({ devices: ['streamer'], volume: null }), RULES)
     expect(activity.bindings).toEqual({ 'menu:tap': [press('press', 'Home')] })
   })
 
   it('a profile override of null leaves the button empty, and matching ignores case', () => {
-    const d = bleDevice({ ...streamer, commands: { select: u, Home: u }, buttons: { menu: null } })
+    const d = profileDevice({ ...streamer, commands: { select: u, Home: u }, buttons: { menu: null } })
     const { activity } = buildStarter([d], answers({ devices: ['streamer'], volume: null }), RULES)
     expect(Object.keys(activity.bindings)).toEqual(['select:down', 'select:up'])
   })
@@ -113,7 +113,7 @@ describe('buildStarter', () => {
 
   it('a Bluetooth device waits to connect before its first step, whatever it is, and only once', () => {
     const connect = { integration_id: 'ble', device_id: 'streamer', command_id: 'wait_connected', params: { timeout_ms: 15000 } }
-    const withInput = bleDevice({ ...streamer, inputs: [{ name: 'Plex', steps: [{ command: 'Home' }] }] })
+    const withInput = profileDevice({ ...streamer, inputs: [{ name: 'Plex', steps: [{ command: 'Home' }] }] })
     // Power on off, an input still switched: the wait comes before the input.
     const off = buildStarter([withInput], answers({ devices: ['streamer'], power: { streamer: { on: false, off: false } }, inputs: { streamer: 'Plex' } }), RULES)
     expect(off.activity.startup).toEqual([connect, wait(100), press('press', 'Home')])
@@ -122,8 +122,30 @@ describe('buildStarter', () => {
     expect(both.activity.startup.filter((a) => a.command_id === 'wait_connected')).toHaveLength(1)
     expect(both.activity.startup[0]).toEqual(connect)
     // No power steps (like the Apple TV profile) and no input: no steps, so no wait.
-    const none = buildStarter([bleDevice({ ...streamer, power: { type: 'none' } })], answers({ devices: ['streamer'] }), RULES).activity
+    const none = buildStarter([profileDevice({ ...streamer, power: { type: 'none' } })], answers({ devices: ['streamer'] }), RULES).activity
     expect([none.startup, none.shutdown]).toEqual([[], []])
+  })
+
+  it('an infrared device: power and inputs from its profile, with no wait to connect', () => {
+    const ir = (s: Record<string, string>) => ({ integration_id: 'ir', device_id: 'ir_tv', command_id: 'press', params: s })
+    const tvIr = profileDevice({
+      ...streamer,
+      id: 'ir_tv',
+      integration_id: 'ir',
+      provider: { type: 'ir' },
+      platform: 'ir',
+      availability: 'unknown',
+      commands: { PowerOn: { pronto: '0000' }, PowerOff: { pronto: '0000' }, VolumeUp: { pronto: '0000' }, InputHdmi1: { pronto: '0000' } },
+      buttons: undefined,
+      power: { type: 'discrete', on: [{ command: 'PowerOn' }], off: [{ command: 'PowerOff' }] },
+      inputs: [{ name: 'HDMI 1', steps: [{ command: 'InputHdmi1' }] }],
+      timing: {},
+    })
+    expect(tvIr.connectFirst).toBeUndefined()
+    const { activity } = buildStarter([tvIr], answers({ devices: ['ir_tv'], watch: null, volume: 'ir_tv', inputs: { ir_tv: 'HDMI 1' } }), RULES)
+    expect(activity.startup).toEqual([ir({ command: 'PowerOn' }), ir({ command: 'InputHdmi1' })])
+    expect(activity.shutdown).toEqual([ir({ command: 'PowerOff' })])
+    expect(activity.bindings['volume_up:down']).toEqual([{ ...ir({ command: 'VolumeUp' }), command_id: 'press_down' }])
   })
 
   it('toggle-only power gets no step', () => {

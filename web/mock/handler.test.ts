@@ -3,11 +3,12 @@
 // against the spec.
 import { gunzipSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
-import type { Action, Activity, ActivityRuns, ApiErrorBody, Capabilities, DiscoverStatus, ExecuteResult, EntityDetailsStatus, FirmwareStatus, Session, SmartButtons, SmartButtonsInput, Status, TransitionResult } from '../src/api/types.ts'
+import type { Action, Activity, ActivityRuns, ApiErrorBody, Capabilities, DeviceDetail, DiscoverStatus, ExecuteResult, EntityDetailsStatus, FirmwareStatus, Session, SmartButtons, SmartButtonsInput, Status, TransitionResult } from '../src/api/types.ts'
 import { fixture, fixtureBytes } from './fixtures.ts'
 import { GUIDE_PATH } from './docs.ts'
 import { buildFirmwareImage } from './firmware.ts'
 import { createMock, type MockRequest, type MockResponse } from './handler.ts'
+import { isPronto } from './profileCheck.ts'
 import { activityBody, inOurWords } from '../src/lib/activity.ts'
 
 /** Load an entity's details (POST, then GET: discoverDelayMs is 0 in these tests). */
@@ -45,6 +46,7 @@ const ROUTES: Record<string, [string, string]> = {
 // Requests whose operation needs another target than ROUTES gives.
 const FILE_ROUTES: Record<string, [string, string]> = {
   'devices/execute.press.request.json': ['POST', '/devices/dev_apple_tv/commands/press/execute'],
+  'devices/execute.ir_press.request.json': ['POST', '/devices/dev_bedroom_tv/commands/press/execute'],
   'integrations/mqtt_main.configure.request.json': ['PUT', '/admin/integrations/mqtt_main'],
 }
 
@@ -905,6 +907,65 @@ describe('device profiles', () => {
     const wait = { integration_id: 'ble', device_id: 'dev_apple_tv', command_id: 'wait_connected', params: {} }
     const bad = await m.handle(req('POST', '/activities', { name: 'W', startup: [wait], shutdown: [], bindings: { 'up:tap': [wait] }, macros: [] }))
     expect(errorOf(bad).details!.map((d) => [d.path, d.code])).toEqual([['/bindings/up:tap/0/command_id', 'sequence_only']])
+  })
+})
+
+describe('infrared devices', () => {
+  const file = () => structuredClone(fixture<{ profile: { commands: Record<string, { pronto: string }> } }>('admin/register_ir.request.json'))
+
+  it('imports a profile file: an IR device with the remote group only, and no pairing', async () => {
+    const m = createMock()
+    const r = await m.handle(req('POST', '/admin/devices', file()))
+    expect(r.status).toBe(201)
+    const d = r.body as DeviceDetail
+    expect({ ...d, revision: 0 }).toEqual({ ...fixture<DeviceDetail>('admin/register_ir.json'), revision: 0 }) // meta dropped; the hash is of the file as sent
+    expect(d).not.toHaveProperty('bluetooth')
+    const caps = (await m.handle(req('GET', `/devices/${d.id}/capabilities`))).body as Capabilities
+    expect(caps.commands.map((c) => c.command_id)).toEqual(['press', 'press_down', 'press_up'])
+    expect((await m.handle(req('GET', `/admin/devices/${d.id}/pair`))).status).toBe(404)
+    // The emitter down: its commands fail, like the hub's.
+    await m.handle(req('POST', '/__mock/ir?ready=0'))
+    const x = (await m.handle(req('POST', `/devices/${d.id}/commands/press/execute`, { params: { command: 'PowerOn' } }))).body as ExecuteResult
+    expect(x).toMatchObject({ status: 'failed', message: 'adapter_unavailable' })
+    expect(((await m.handle(req('GET', '/integrations'))).body as { integrations: { id: string; state: string; detail?: string }[] }).integrations.find((i) => i.id === 'ir')).toMatchObject({ state: 'not_ready', detail: "The IR emitter isn't working" })
+  })
+
+  it('refuses a bad code or a document that isn’t a profile, at its place in the file', async () => {
+    const m = createMock()
+    const bad = file()
+    bad.profile.commands.VolumeUp = { pronto: '0000 006D 0001 0000 0000 0010' }
+    const r = await m.handle(req('POST', '/admin/devices', bad))
+    expect([r.status, r.body]).toEqual([422, fixture('errors/invalid_pronto.json')])
+    expect(errorOf(await m.handle(req('POST', '/admin/devices', { profile: { schema_version: 1 } }))).details).toContainEqual(expect.objectContaining({ path: '/profile/id', code: 'required' }))
+    const ir = { name: 'Den TV', integration_id: 'ir', kind: 'tv', provider: { type: 'ir' } }
+    expect(errorOf(await m.handle(req('POST', '/admin/devices', ir))).details![0]).toMatchObject({ path: '/profile', code: 'required' })
+    expect(errorOf(await m.handle(req('POST', '/admin/devices', { profile: [1] }))).details![0]).toMatchObject({ path: '/profile', code: 'wrong_type' })
+    const platform = file()
+    Object.assign(platform.profile, { platform: 'rf' })
+    expect(errorOf(await m.handle(req('POST', '/admin/devices', platform))).details![0]).toMatchObject({ path: '/profile/platform', code: 'wrong_type' })
+    const huge = file()
+    Object.assign(huge.profile, { manufacturer: 'x'.repeat(256 * 1024) })
+    expect(errorOf(await m.handle(req('POST', '/admin/devices', huge))).details).toContainEqual(expect.objectContaining({ path: '/profile', code: 'too_long' }))
+  })
+
+  it('takes a Pronto code only as the hub parses it', () => {
+    const ok = '0000 006D 0001 0000 0010 0020'
+    expect(isPronto(ok)).toBe(true)
+    expect(isPronto('0000 006D 0000 0001 0010 0020')).toBe(true) // a repeat section only
+    for (const bad of [
+      ok.toLowerCase().replace('006d', '006d'), // lowercase hex
+      ok.replace('006D', '006d'),
+      ok.replace(' ', '  '), // two spaces
+      ` ${ok}`, // leading space
+      `${ok} `, // trailing space
+      ok.replace('0000 006D', '0100 006D'), // not a raw code
+      ok.replace('006D', '0000'), // no frequency
+      '0000 006D 0000 0000 0010 0020', // no pairs
+      '0000 006D 0002 0000 0010 0020', // length doesn't match the header
+      ok.replace('0010', '0000'), // a zero duration
+      `0000 006D 0201 0000 ${Array(513 * 2).fill('0010').join(' ')}`, // 513 pairs
+    ])
+      expect(isPronto(bad), bad.slice(0, 40)).toBe(false)
   })
 })
 

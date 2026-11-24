@@ -1369,11 +1369,13 @@ TEST_F(ApiTest, ProfilesAndKinds) {
         {R"({"profile_id":"hubbo:fire-tv","integration_id":"ble"})", "/integration_id", "unknown_field"},
         {R"({"profile":{"id":"user:x"},"name":"X","integration_id":"ha_main",
              "provider":{"type":"home_assistant","entity_id":"switch.x"}})",
-         "/profile", "unknown_field"},
+         "/integration_id", "unknown_field"},  // an import takes only {profile, name?, kind?}
+        {R"({"profile_id":"hubbo:fire-tv","profile":{}})", "/profile", "unknown_field"},
+        {R"({"name":"X","integration_id":"ir","kind":"tv","provider":{"type":"ir"}})", "/profile", "required"},
         {R"({"name":"X","integration_id":"ha_main","model":"X",
              "provider":{"type":"home_assistant","entity_id":"switch.x"}})",
          "/model", "unknown_field"},
-        {R"({"name":"X","integration_id":"ble","kind":"streamer","provider":{"type":"ble_hid"}})", "/profile_id",
+        {R"({"name":"X","integration_id":"ble","kind":"streamer","provider":{"type":"ble_hid"}})", "/profile",
          "required"},
     };
     for (const Bad &b : bad) {
@@ -1382,6 +1384,114 @@ TEST_F(ApiTest, ProfilesAndKinds) {
         EXPECT_EQ(r.json["error"]["details"][0]["path"], b.path) << dump(r);
         EXPECT_EQ(r.json["error"]["details"][0]["code"], b.code) << dump(r);
     }
+}
+
+// Adding a device from a profile file (docs/design/ir.md): any platform,
+// issues under /profile, sha256 the spec's hash, then commands go out the
+// IR emitter.
+TEST_F(ApiTest, ImportsAProfileFile) {
+    const std::string text = sim::irProfileText("nec-tv.json");
+    std::string sha;
+    ASSERT_TRUE(config::profileSha256(text, &sha));
+    Reply r = call(http::Method::Post, "/api/v1/admin/devices", R"({"name":"Den TV","profile":)" + text + "}");
+    ASSERT_EQ(r.status, 201) << dump(r);
+    const std::string id = r.json["id"];
+    EXPECT_EQ(r.json["platform"], "ir");
+    EXPECT_EQ(r.json["integration_id"], "ir");
+    EXPECT_EQ(r.json["provider"]["type"], "ir");
+    EXPECT_EQ(r.json["name"], "Den TV");
+    EXPECT_EQ(r.json["kind"], "tv");
+    EXPECT_EQ(r.json["profile"]["id"], "user:test-nec-tv");
+    EXPECT_EQ(r.json["profile"]["sha256"], sha);
+    EXPECT_EQ(r.json["availability"], "unknown");
+    EXPECT_FALSE(r.json["bluetooth"].is<JsonObject>());
+    EXPECT_EQ(r.json["timing"]["ir_repeats"], 1);
+    EXPECT_TRUE(r.json["meta"].isNull());
+    {
+        JsonDocument file;
+        ASSERT_EQ(deserializeJson(file, text), DeserializationError::Ok);
+        EXPECT_EQ(r.json["commands"]["VolumeUp"]["pronto"], file["commands"]["VolumeUp"]["pronto"]);
+    }
+
+    r = call(http::Method::Get, "/api/v1/devices/" + id + "/capabilities");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    ASSERT_EQ(r.json["commands"].size(), 3u);
+    EXPECT_EQ(r.json["commands"][0]["command_id"], "press");
+    EXPECT_EQ(r.json["commands"][0]["group"], "remote");
+
+    // A press goes out the emitter; with none, the integration is unavailable.
+    r = call(http::Method::Post, "/api/v1/devices/" + id + "/commands/press/execute",
+             R"({"params":{"command":"VolumeUp"}})");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["status"], "accepted") << dump(r);
+    hub.advance(500);
+    ASSERT_FALSE(hub.irTransmitter().sends().empty());
+    EXPECT_EQ(hub.irTransmitter().sends().back().deviceId, id);
+    EXPECT_EQ(hub.irTransmitter().sends().back().command, "VolumeUp");
+    hub.irTransmitter().setReady(false);
+    r = call(http::Method::Post, "/api/v1/devices/" + id + "/commands/press/execute",
+             R"({"params":{"command":"Mute"}})");
+    EXPECT_EQ(r.json["status"], "failed") << dump(r);
+    EXPECT_EQ(r.json["message"], "adapter_unavailable");
+    hub.irTransmitter().setReady(true);
+
+    // The ir integration: listed, its settings only its type.
+    r = call(http::Method::Get, "/api/v1/admin/integrations/ir");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["type"], "ir");
+    EXPECT_EQ(r.json["settings"]["type"], "ir");
+    const std::string rev = std::to_string(r.json["revision"].as<uint32_t>());
+    r = call(http::Method::Put, "/api/v1/admin/integrations/ir",
+             R"({"settings":{"type":"ir","pin":4},"revision":)" + rev + "}");
+    EXPECT_EQ(r.status, 422);
+    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/settings/pin");
+    r = call(http::Method::Put, "/api/v1/admin/integrations/ir",
+             R"({"name":"Infrared","settings":{"type":"ir"},"revision":)" + rev + "}");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["name"], "Infrared");
+
+    // A Bluetooth profile file pairs as a built-in one does.
+    std::string ble(config::builtinProfiles().find("hubbo:fire-tv")->json);
+    r = call(http::Method::Post, "/api/v1/admin/devices", R"({"profile":)" + ble + "}");
+    ASSERT_EQ(r.status, 201) << dump(r);
+    EXPECT_EQ(r.json["platform"], "ble_hid");
+    EXPECT_EQ(r.json["bluetooth"]["state"], "not_paired");
+
+    // Problems point into the file.
+    std::string bad = text;
+    const size_t at = bad.find("0000 006D");
+    ASSERT_NE(at, std::string::npos);
+    bad.replace(at, 4, "0100");  // not raw Pronto
+    struct Bad {
+        std::string body;
+        int status;
+        const char *path, *code;
+    } cases[] = {
+        {R"({"profile":)" + bad + "}", 422, "/profile/commands/PowerOn/pronto", "invalid_pronto"},
+        {R"({"profile":{"schema_version":1}})", 422, "/profile/id", "required"},
+        {R"({"profile":[]})", 422, "/profile", "wrong_type"},
+        {R"({"profile":)" + text + R"(,"kind":"toaster"})", 422, "/kind", "unknown_kind"},
+        {R"({"profile":)" + text + R"(,"integration_id":"ir"})", 422, "/integration_id", "unknown_field"},
+    };
+    for (const Bad &b : cases) {
+        r = call(http::Method::Post, "/api/v1/admin/devices", b.body);
+        EXPECT_EQ(r.status, b.status) << b.body.substr(0, 80);
+        EXPECT_EQ(r.json["error"]["details"][0]["path"], b.path) << dump(r);
+        EXPECT_EQ(r.json["error"]["details"][0]["code"], b.code) << dump(r);
+    }
+    EXPECT_EQ(router.bodyLimit(http::Method::Post, "/api/v1/admin/devices"), 384u * 1024);
+
+    // The profile spec's 256 KiB (minified, without meta) is core's limit, inside
+    // the body's 384 KiB. Many strings: ArduinoJson caps a single one at 64 KB.
+    std::string big = text.substr(0, text.rfind('}')) + R"(,"padding":[)";
+    for (int i = 0; i < 300; i++) big += (i ? ",\"" : "\"") + std::string(1000, 'x') + "\"";
+    big += "]}";
+    ASSERT_LT(big.size(), 384u * 1024);
+    r = call(http::Method::Post, "/api/v1/admin/devices", R"({"profile":)" + big + "}");
+    EXPECT_EQ(r.status, 422) << dump(r);
+    ASSERT_EQ(r.json["error"]["details"].size(), 1u) << dump(r);
+    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/profile");
+    EXPECT_EQ(r.json["error"]["details"][0]["code"], "too_long");
 }
 
 TEST_F(ApiTest, BluetoothPairing) {

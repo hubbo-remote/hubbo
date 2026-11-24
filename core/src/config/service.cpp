@@ -35,18 +35,6 @@ const T *findIn(const std::vector<T> &items, std::string_view id) {
     return i < 0 ? nullptr : &items[static_cast<size_t>(i)];
 }
 
-// Issues whose path starts with `from` are re-rooted at `to` (the request
-// body). Others keep their config-rooted path.
-ValidationReport reroot(const ValidationReport &report, const std::string &from, const std::string &to) {
-    ValidationReport out;
-    for (const auto &issue : report.issues()) {
-        const bool inside = !from.empty() && issue.path.compare(0, from.size(), from) == 0 &&
-                            (issue.path.size() == from.size() || issue.path[from.size()] == '/');
-        out.add(issue.code, inside ? to + issue.path.substr(from.size()) : issue.path);
-    }
-    return out;
-}
-
 Outcome failure(ErrorCode code) {
     Outcome o;
     o.code = code;
@@ -117,7 +105,7 @@ std::vector<Referrer> referrersOf(const ConfigSpec &config, Match match) {
 // they must not live in the running config either).
 void dropInapplicableFields(ConfigSpec *config) {
     for (auto &d : config->devices) {
-        if (d.provider.type == kBleHidType) {
+        if (hasProfile(d.provider.type)) {
             d.provider.entityId.clear();
             d.provider.uniqueId.clear();
         }
@@ -350,7 +338,7 @@ Outcome ConfigService::commit(ConfigSpec &&next, Outcome &&outcome, const std::s
     std::unique_ptr<CompiledConfig> compiled = compileConfig(parsed, adapters_, &issues);
     if (!compiled || !issues.ok()) {
         outcome.code = ErrorCode::ValidationFailed;
-        outcome.issues = reroot(issues, issuePrefix, "");
+        outcome.issues = issues.rerooted(issuePrefix, "");
         return outcome;
     }
 
@@ -499,7 +487,7 @@ Outcome ConfigService::replaceGlobalBindings(std::vector<BindingSpec> bindings, 
     next.globalBindings = std::move(bindings);
     next.globalBindingsRevision = 0;  // commit stamps it
     Outcome result = commit(std::move(next), std::move(outcome), "");
-    result.issues = reroot(result.issues, "/global_bindings", "/bindings");
+    result.issues = result.issues.rerooted("/global_bindings", "/bindings");
     return result;
 }
 
@@ -510,7 +498,7 @@ Outcome ConfigService::replaceSmartButtons(SmartButtonsSpec &&spec, uint32_t bas
     next.smartButtons = std::move(spec);
     next.smartButtons.revision = 0;  // commit stamps it
     Outcome result = commit(std::move(next), Outcome{}, "");
-    result.issues = reroot(result.issues, "/smart_buttons", "");
+    result.issues = result.issues.rerooted("/smart_buttons", "");
     return result;
 }
 
@@ -523,9 +511,9 @@ namespace {
 Outcome checkDevice(const DeviceSpec &device, bool kindChanged) {
     Outcome outcome = failure(ErrorCode::ValidationFailed);
     if (kindChanged && !builtinProfiles().hasKind(device.kind)) outcome.issues.add(ErrorCode::UnknownKind, "/kind");
-    const bool bluetooth = device.provider.type == kBleHidType;
-    if (bluetooth && !device.profile) outcome.issues.add(ErrorCode::Required, "/profile");
-    if (!bluetooth && device.profile) outcome.issues.add(ErrorCode::UnknownField, "/profile");
+    const bool profiled = hasProfile(device.provider.type);
+    if (profiled && !device.profile) outcome.issues.add(ErrorCode::Required, "/profile");
+    if (!profiled && device.profile) outcome.issues.add(ErrorCode::UnknownField, "/profile");
     if (outcome.issues.ok()) outcome.code = ErrorCode::Ok;
     return outcome;
 }

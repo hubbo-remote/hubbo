@@ -1,10 +1,83 @@
 # hubbo-core: working notes
 
-Current as of the activity-runs branch (smart buttons and everything before are committed).
-Design: `docs/design/activity-runs.md` and `docs/design/state-checks.md`; the profile spec is `~/src/hubbo-devices/docs/spec.md`.
+Current as of the ir branch (radio-power and everything before are committed).
+Design: `docs/design/ir.md`; the profile spec is `~/src/hubbo-profiles/docs/spec.md`.
 This file covers state, decisions and traps only.
 
 ## State
+- IR (branch ir, uncommitted; docs/design/ir.md). /simplify and the lead's review fixes done (2026-11-24).
+  - `domain/pronto.h`: parse (raw 0000 only, uppercase 4-digit words, single spaces, any F > 0
+    (the catalog has 9 kHz codes; no carrier range, spec agent's call), length matches the header,
+    1+ pairs, <= `pronto::kMaxPairs` 512 per section, no zero durations), format (exact round trip),
+    carrierHz, durationUs (count x F x 0.241246 µs, rounded).
+  - Domain: `kIrType` "ir", built-in `kIrIntegrationId` "ir" ("IR", enabled; third in the
+    built-ins, after ble). `kProfilePlatforms` (domain/config.h) pairs each profile platform with
+    its built-in integration: `profileIntegrationId(type)`, `hasProfile(type)` (decode, parseProfile,
+    checkDevice, dropInapplicableFields, providerRef = device id, deviceFromProfile). `ProfileCommand::pronto/prontoToggle` are
+    `ProntoRef {offset, count}` into `DeviceProfile::irWords`, a `shared_ptr<const vector<uint16_t>>`
+    of every code's words: one allocation per device (PSRAM on the board; thousands of small
+    strings would fill internal RAM) and config copies share it. `ProfileTiming::irRepeats`.
+    `kMaxProfileCommands` 512 (spec's; was 128), `kMaxIrRepeats` 20. Size: parseProfile (both
+    overloads) refuses a profile over 256 KiB minified without meta: `too_long` at "" (api
+    reroots to /profile); text is parsed up to 512 KiB first (pretty, meta).
+    `ErrorCode::InvalidPronto` "invalid_pronto" at .../commands/<name>/pronto(_toggle).
+  - profile.cpp: `decodeProfileFields(f, ir, ...)` picks the command shape (ir: pronto required,
+    pronto_toggle optional; page/usage unknown_field; ir_repeats only on ir). parseProfile takes
+    ir (network is wrong_type); `encodeProfileFields(profile, ir, ...)` takes the shape explicitly.
+    Overloads over an already-parsed doc: `parseProfile(JsonVariantConst, ...)`,
+    `profileSha256(JsonVariantConst, ...)`. `deviceFromProfile(ProfileDocument&&, name, kind)` (a
+    const& one copies). `ValidationReport::rerooted(from, to)` (engine/compiler.h) replaced
+    service.cpp's reroot: keeps the dropped count; empty `from` prefixes every path.
+    `profileSha256(json, &hex)`: the spec's canonical hash (sorted keys, compact, Python's
+    ensure_ascii=False escapes), streamed into auth::Sha256; false on floats or bad JSON. The API
+    sets an import's profile.sha256 with it (lead, 2026-11-24).
+  - Port `integrations/ir_transmitter.h` (relayed to firmware): `IrSignal {carrierHz, first,
+    firstCount, repeat, repeatCount, deviceId, command}` (µs, mark first, even counts),
+    `ready()`, `busy()`, `send(signal, frames, hold)`, `stop()`, `takeFailed()` (after busy drops:
+    the accepted send failed; clears). stop() ends after the frame in flight, or the next one if
+    the board already queued it (~5 ms ahead). Shared helper (adapter and firmware console):
+    `appendIrCode(words, &durations)` -> `IrCodeLayout`, `irSignal(layout, durations, dev, cmd)`
+    (ir.h). Durations stay valid until busy() drops (the running job holds the catalog).
+  - `integrations/ir.h` IrAdapter: catalog per distinct profile (codes, holds, ir_repeats,
+    key_delay; µs in one vector; no profile copy: a new device matches by what it would send,
+    words converted and compared; freed when unused, see Catalog lifetime) with the remote group, built by `detail::RemoteGroup`
+    (src/integrations/remote_group.h), shared with BleHidAdapter. Engine task: a ring of `kQueueSize` 8 jobs (QueueFull past it), one running.
+    Tap/timed hold: Pending until sent (direct execute: Accepted, detached); press_down/up
+    Accepted. A running hold stops when released, its hold_ms passes, or anything is queued
+    (any device: same device too, else it'd wait for the release); a hold released before its
+    turn is sent as a tap. Toggle: per device; a command with pronto_toggle sends the toggled
+    code when the bit is 0 (first press sends pronto_toggle) and flips it only on an accepted
+    send; a send that later fails (takeFailed) flips it back and fails its ticket with
+    `adapter_failed`; a refused send fails with `adapter_unavailable`.
+    Key delay: per device from the poll that saw the emitter idle; the queue's head waits (FIFO).
+    releaseAll ends binding holds (running and queued still held; a queued one already released
+    stays, as a tap), not timed ones; cancel drops queued work or stops a running timed hold,
+    never completes it. Device state: kMaxDevices slots, LRU. `reset()` clears queue, running job
+    and every device's state (hub-sim factoryReset/wipe call it).
+  - Catalog lifetime: `CommandCatalog::owner` (shared_ptr<const void>; null for adapters that
+    never free: BLE, HA, system). The compiler copies it into `CompiledDevice::catalog` and
+    `CompiledAction::catalog`; executor nodes/PendingAction, OpenHold and IR jobs keep their copy.
+    IrAdapter keeps weak_ptrs (swept on commandsFor). The last owner may drop on the engine task
+    (a heap free, not a wait). Executor PendingAction slots keep theirs until reused.
+    `irIntegrationState` ready/not_ready/disabled, `irIntegrationDetail`.
+  - hub-sim: `FakeIrTransmitter` (fakes.h; FakeIr placeholder gone) on hub time (`clock`),
+    frames = sums of the µs, a hold's frame in flight finishes; keeps the last 32 sends with their
+    timing and works out frames/ended when read (no state mutated in const calls). Models the
+    board's queue-ahead (`kQueuedAheadUs` 5 ms: a stop then sends one more frame) and
+    `failNextSend()` (takeFailed after it ends).
+    FakeAdapters registers the real IrAdapter. `GET /sim/ir` {ready, busy, sends: [{at_ms,
+    device_id, command, carrier_hz, frames, hold, stopped_at_ms, ended_at_ms}]}, `POST
+    /sim/ir?ready=0|1`; reset/wipe give a fresh emitter. SimRuntime: ir state/detail.
+    Fixtures: sim/fixtures/ir/{nec-tv,rc5-tv,sony-receiver,harmony-apple-tv}.json (from hubbo-spec;
+    the last is the catalog's Apple TV IR), `sim::irProfileText(file)`, `sim::irDevice(id, name,
+    file)`.
+  - Tests: core/tests/ir_test.cpp (Pronto.*, IrProfile.*, IrDevice.*, IrAdapterTest.*,
+    IrSignal.*, FakeIrTransmitter.*, IrOnTheHub.*), SimApi.TheIrEmitterIsDrivenFromSimRoutes.
+  - /simplify skipped: Job holdMs+startedMs as one deadline (holdMs is set before start), a shared
+    digest-to-hex helper (the other copy is in firmware_release; auth/ is api's), a shared
+    adapter-test util (sink, option lookup), sharing the catalog find-or-add cache with BLE.
+  - Open: firmware implements `takeFailed()` and moves its console to appendIrCode/irSignal;
+    api tests the size limit (too_long at "", rerooted) and adapter_failed on IR.
 - Remote log (branch radio-power, uncommitted; docs/design/remote-log.md):
   - `remote/log.h` + `src/remote/log.cpp`. Only under `HUBBO_REMOTE_LOG` (dev builds; the top-level
     CMakeLists sets it for every host build). Off: RemoteLog is a memberless stub whose
@@ -451,7 +524,7 @@ This file covers state, decisions and traps only.
   only when set (wait_connected's timeout_ms sets it).
 - Device profiles (device-profiles, committed: 60c0e59, 19ca417, 69ba133):
   - `config/profile.h`: `parseProfile` (spec schema_version 1, strict: unknown fields are errors,
-    `meta` dropped, `ir` is UnsupportedSchema at /platform), `ProfileLibrary` (index.json order,
+    `meta` dropped; ir since the IR phase), `ProfileLibrary` (index.json order,
     kinds.json, buttons.json kept raw; any issue leaves it empty + ValidationFailed),
     `builtinProfiles()` / `builtinProfilesStatus()`, `deviceFromProfile(profile, name, kind)`.
   - Built-ins are embedded from the repo's `profiles/` (synced by the lead's `bin/hubbo profiles
@@ -663,6 +736,8 @@ This file covers state, decisions and traps only.
   configs hold pointers into it. A changed snapshot gets new storage, keyed by device id, entity_id
   and the snapshot.
   This is a small, bounded leak per edit, accepted at hobby scale.
+  Except IR: its catalogs are big (a profile's codes) and freed when unused, through
+  `CommandCatalog::owner`. An adapter can opt in the same way.
 - **Discovery parses in steps** of kParseStepEntities (25) per poll, with a yield hook between steps.
   `hasWork()` tells the loop not to sleep. Big texts are freed between phases. Registry entries are
   allowlisted by domain (list_for_display has no disabled ones); states are prefiltered by id. Candidates

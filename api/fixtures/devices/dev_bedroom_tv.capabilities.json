@@ -1,0 +1,84 @@
+{
+  "device_id": "dev_bedroom_tv",
+  "integration_id": "ir",
+  "commands": [
+    {
+      "command_id": "press",
+      "label": "Press",
+      "effect": "momentary",
+      "params": [
+        {
+          "name": "command",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "PowerOn",
+            "PowerOff",
+            "VolumeUp",
+            "VolumeDown",
+            "Mute",
+            "InputHdmi1",
+            "InputHdmi2"
+          ],
+          "label": "Remote command"
+        },
+        {
+          "name": "hold_ms",
+          "type": "int",
+          "required": false,
+          "minimum": 1,
+          "maximum": 10000,
+          "step": 1,
+          "unit": "ms"
+        }
+      ],
+      "group": "remote"
+    },
+    {
+      "command_id": "press_down",
+      "label": "Press down",
+      "effect": "hold",
+      "params": [
+        {
+          "name": "command",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "PowerOn",
+            "PowerOff",
+            "VolumeUp",
+            "VolumeDown",
+            "Mute",
+            "InputHdmi1",
+            "InputHdmi2"
+          ],
+          "label": "Remote command"
+        }
+      ],
+      "group": "remote"
+    },
+    {
+      "command_id": "press_up",
+      "label": "Press up",
+      "effect": "momentary",
+      "params": [
+        {
+          "name": "command",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "PowerOn",
+            "PowerOff",
+            "VolumeUp",
+            "VolumeDown",
+            "Mute",
+            "InputHdmi1",
+            "InputHdmi2"
+          ],
+          "label": "Remote command"
+        }
+      ],
+      "group": "remote"
+    }
+  ]
+}

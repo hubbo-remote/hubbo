@@ -70,6 +70,7 @@ const char *issueMessage(ErrorCode code) {
         case ErrorCode::MacroRequired: return "More than one command makes this a macro: list it in macros";
         case ErrorCode::UnboundMacro: return "This macro has no commands";
         case ErrorCode::UnknownKind: return "Not a device kind (see GET /kinds)";
+        case ErrorCode::InvalidPronto: return "Not a raw Pronto code";
         default: return errorCodeName(code);
     }
 }
@@ -117,7 +118,8 @@ void sendCoreError(http::Response &out, ErrorCode code, std::string_view what) {
                 return {409, "revision_conflict", "The " + subject + " changed; GET it again and reapply"};
             case ErrorCode::DeviceInUse: return {409, "device_in_use", "The device is still referenced"};
             case ErrorCode::Referenced: return {409, "activity_in_use", "The activity is still referenced"};
-            case ErrorCode::LimitReached:
+            case ErrorCode::LimitReached:  // a count cap, or the config's size cap
+                return {409, "limit_reached", "There's no room on the hub for another " + subject};
             case ErrorCode::TooManyActivities:
             case ErrorCode::TooManyDevices:
             case ErrorCode::CapacityExceeded: return {409, "limit_reached", "Too many of these already"};

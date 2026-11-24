@@ -238,7 +238,7 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
         // A command that stays Pending longer (a timed press, a wait for a
         // connection) says so; the adapter finishes it first.
         const uint32_t timeoutMs = action.command->timeoutMs != 0 ? action.command->timeoutMs : actionTimeoutMs_;
-        const PendingAction pending{adapter, action.command, node.target, nowMs};
+        const PendingAction pending{adapter, action.command, action.catalog, node.target, nowMs};
         if (last) {
             if (InFlight *f = freeInFlight()) {
                 f->used = true;
@@ -419,6 +419,7 @@ uint16_t Executor::takeNode() {
 
 void Executor::freeNode(uint16_t index) {
     pool_[index].action.call.reset();  // a free node keeps nothing alive
+    pool_[index].action.catalog.reset();
     pool_[index].next = freeHead_;
     freeHead_ = index;
     freeCount_++;

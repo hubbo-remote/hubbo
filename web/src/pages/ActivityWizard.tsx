@@ -5,7 +5,7 @@ import { api, errorMessage } from '@/api/client'
 import { invalidate, setQueryData } from '@/api/hooks'
 import type { Action } from '@/api/types'
 import { commandLabel, deviceName, paramSummary } from '@/components/actions/describe'
-import { ErrorState, PageHeader } from '@/components/common'
+import { DeviceModel, ErrorState, PageHeader } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Select } from '@/components/ui/input'
@@ -40,11 +40,11 @@ export default function ActivityWizard() {
   const lock = useConfigLock()
   const set = (patch: Partial<WizardAnswers>) => setAnswers((a) => ({ ...a, ...patch }))
 
-  // Bluetooth devices need the detail form (their profile's commands, power and inputs); they load
-  // once when the wizard opens, alongside the capabilities. Ticking a device never fetches.
-  const bleIds = [...catalog.devices.values()].filter((d) => d.provider.type === 'ble_hid').map((d) => d.id).sort()
-  const details = useDeviceDetails(bleIds)
-  const waiting = loading || (bleIds.length > 0 && !details.data)
+  // Profile devices (Bluetooth, infrared) need the detail form (their profile's commands, power and
+  // inputs); they load once when the wizard opens, alongside the capabilities. Ticking a device never fetches.
+  const profileIds = [...catalog.devices.values()].filter((d) => d.profile).map((d) => d.id).sort()
+  const details = useDeviceDetails(profileIds)
+  const waiting = loading || (profileIds.length > 0 && !details.data)
   const usable = useMemo(
     () => new Map([...catalog.devices.values()].map((d) => [d.id, wizardDevice(d, details.data?.get(d.id), catalog.capabilities.get(d.id))])),
     [details.data, catalog],
@@ -165,7 +165,10 @@ function StartStep({ answers, set, catalog }: { answers: WizardAnswers; set: (p:
         {all.map((d) => (
           <label key={d.id} className={OPTION_ROW}>
             <input type="checkbox" className="size-4 accent-[var(--color-primary)]" checked={answers.devices.includes(d.id)} onChange={() => toggle(d.id)} />
-            <span className="font-medium">{d.name}</span>
+            <span className="min-w-0">
+              <span className="block font-medium">{d.name}</span>
+              <DeviceModel device={d} /> {/* not an HA entity id: noise here */}
+            </span>
           </label>
         ))}
       </div>

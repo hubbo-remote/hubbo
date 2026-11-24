@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "The profile is invalid",
+    "details": [
+      {
+        "path": "/profile/commands/VolumeUp/pronto",
+        "code": "invalid_pronto",
+        "message": "Not a raw Pronto code"
+      }
+    ]
+  }
+}

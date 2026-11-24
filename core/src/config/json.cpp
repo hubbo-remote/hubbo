@@ -20,7 +20,7 @@ namespace {
 
 constexpr const char *kFormat = "hubbo-config";
 constexpr const char *kBackupFormat = "hubbo-backup";
-constexpr const char *kIntegrationTypes[] = {kSystemType, kBleHidType, kHomeAssistantType, kMqttType};
+constexpr const char *kIntegrationTypes[] = {kSystemType, kBleHidType, kIrType, kHomeAssistantType, kMqttType};
 constexpr size_t kMaxBindings = remote::kButtonCount * remote::kEventKindCount;
 constexpr size_t kMaxTimestampLength = 40;
 
@@ -149,7 +149,7 @@ bool decodeProvider(JsonVariantConst json, ProviderSpec *out, ValidationReport *
         if (out->type == kHomeAssistantType) {
             f.string("entity_id", &out->entityId, true);
             f.string("unique_id", &out->uniqueId, false, limits::kMaxUniqueIdLength);
-        } else if (out->type != kBleHidType) {  // ble_hid: only its type
+        } else if (!hasProfile(out->type)) {  // a profile device's provider is only its type
             f.failAt(ErrorCode::WrongType, "type");
         }
     }
@@ -585,14 +585,14 @@ bool decodeDevice(JsonVariantConst json, DeviceShape shape, DeviceSpec *out, Val
     f.nested("provider", true, [&](JsonVariantConst v, const std::string &p) {
         return decodeProvider(v, &out->provider, report, p);
     });
-    // A Bluetooth device is the profile it was added from; nothing else has
-    // one (its fields are then unknown).
-    if (out->provider.type == kBleHidType) {
+    // A Bluetooth or IR device is the profile it was added from; nothing
+    // else has one (its fields are then unknown).
+    if (hasProfile(out->provider.type)) {
         out->profile.emplace();
         f.nested("profile", true, [&](JsonVariantConst v, const std::string &p) {
             return decodeProfileRef(v, &*out->profile, report, p);
         });
-        decodeProfileFields(f, &*out->profile, report);
+        decodeProfileFields(f, out->provider.type == kIrType, &*out->profile, report);
     }
     // The hub reads capabilities from HA: only the stored shapes carry them
     // (a client sending one gets unknown_field).
@@ -615,7 +615,7 @@ void encodeDevice(const DeviceSpec &device, JsonObject out, DeviceDetail detail)
     encodeProvider(device.provider, out["provider"].to<JsonObject>());
     if (device.profile) {
         encodeProfileRef(*device.profile, out["profile"].to<JsonObject>());
-        encodeProfileFields(*device.profile, out, detail != DeviceDetail::Summary);
+        encodeProfileFields(*device.profile, device.provider.type == kIrType, out, detail != DeviceDetail::Summary);
     }
     if (detail == DeviceDetail::Stored && device.haCapabilities) {
         ha::encodeSnapshot(*device.haCapabilities, out["ha_capabilities"].to<JsonObject>());
