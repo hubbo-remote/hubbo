@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "hubbo/api/remote_port.h"
 #include "hubbo/config/hub.h"
 #include "hubbo/remote/packet.h"
 
@@ -43,15 +44,6 @@ public:
 
 class RemoteRadio {
 public:
-    enum class State : uint8_t {
-        NotReady,   // radio not started or not responding
-        Idle,       // no Hub endpoint known
-        Scanning,   // looking for a Hub in pairing mode
-        Listening,  // receiving the remote
-    };
-
-    enum class ScanResult : uint8_t { None, Found, TimedOut, Stopped };
-
     explicit RemoteRadio(PayloadSink &sink) : sink_(sink) {}
 
     // Where saving/erasing the endpoint in NVS runs. NVS can block on its
@@ -79,7 +71,7 @@ public:
     // Scan for a Hub (press its pair button). Interrupts listening; on
     // success the endpoint is saved and listening resumes on it, otherwise
     // listening resumes on the previous endpoint, if any.
-    bool startScan(uint32_t nowMs, uint32_t timeoutMs = kDefaultScanTimeoutMs);
+    bool startScan(uint32_t nowMs, uint32_t timeoutMs);
     void stopScan();
 
     // Stops listening and erases the saved endpoint.
@@ -91,24 +83,21 @@ public:
     // radio isn't ready or the endpoint is invalid.
     bool setEndpoint(const RadioEndpoint &endpoint);
 
-    State state() const { return state_; }
-    static const char *stateName(State state);
+    api::RadioState state() const { return state_; }
     RadioEndpoint endpoint() const { return endpoint_; }
-    ScanResult lastScanResult() const { return lastScanResult_; }
+    api::ScanState lastScanResult() const { return lastScanResult_; }
     uint8_t scanChannel() const;
     uint32_t scanRemainingMs(uint32_t nowMs) const;  // 0 unless scanning
 
     uint32_t payloadCount() const { return payloadCount_; }
     uint32_t lastPayloadMs() const { return lastPayloadMs_; }
-    uint32_t oversizeCount() const { return oversizeCount_; }
 
-    static constexpr uint32_t kDefaultScanTimeoutMs = 120000;
 
 private:
     void listen(const RadioEndpoint &endpoint);
     void stopListening();
     void scanStep(uint32_t nowMs);
-    void finishScan(ScanResult result);
+    void finishScan(api::ScanState result);
     void drain();
     remote::Signal readSignal() const;
 
@@ -117,11 +106,11 @@ private:
 
     PayloadSink &sink_;
     PersistRunner persist_ = nullptr;
-    State state_ = State::NotReady;
+    api::RadioState state_ = api::RadioState::NotReady;
     RadioEndpoint endpoint_;
     config::RadioPower power_ = config::RadioPower::Max;  // RF24's reset default
     bool hasRpd_ = false;  // an nRF24L01+ (RPD needs the + variant)
-    ScanResult lastScanResult_ = ScanResult::None;
+    api::ScanState lastScanResult_ = api::ScanState::None;  // never Scanning
 
     uint32_t scanStartedMs_ = 0;
     uint32_t scanTimeoutMs_ = 0;
@@ -132,7 +121,6 @@ private:
 
     uint32_t payloadCount_ = 0;
     uint32_t lastPayloadMs_ = 0;
-    uint32_t oversizeCount_ = 0;
 };
 
 }  // namespace hubbo::fw

@@ -8,14 +8,6 @@
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <esp_timer.h>
-#ifdef HUBBO_DEV_CONSOLE
-#include <esp_core_dump.h>
-#include <lwip/netdb.h>
-#include <esp_partition.h>
-
-#include "hubbo/auth/password.h"
-#endif
-
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -28,7 +20,9 @@
 
 #include "console.h"
 #include "ble_hid.h"
+#include "commands.h"
 #include "board.h"
+#include "dev_console.h"
 #include "diagnostics.h"
 #include "engine_runtime.h"
 #include "esp_clock.h"
@@ -56,7 +50,6 @@
 #include "hubbo/domain/adapter.h"
 #include "hubbo/domain/config.h"
 #include "hubbo/domain/error.h"
-#include "hubbo/domain/pronto.h"
 #include "hubbo/engine/active_persister.h"
 #include "hubbo/engine/engine.h"
 #include "hubbo/http/route.h"
@@ -74,6 +67,7 @@
 #include "mqtt_transport.h"
 #include "nvs_secret_store.h"
 #include "ota.h"
+#include "update_lock.h"
 #include "remote_radio.h"
 #include "restart.h"
 #include "ble_host_runtime.h"
@@ -278,10 +272,6 @@ hubbo::http::Router router;
 HttpServer httpServer;
 IntegrationTask haTask;
 IntegrationTask mqttTask;  // the MQTT bridge (below)
-
-#ifdef HUBBO_DEV_CONSOLE
-void addDevEndpoints();  // below, with the console commands
-#endif
 
 // Loop task priority (Arduino's default is 1). Above every task without a
 // core affinity (the W5500 driver's RX task runs at 15, and at 1 it took
@@ -491,19 +481,11 @@ const char *resetReasonName(esp_reset_reason_t reason) {
     }
 }
 
-void printStorage() {
-    con.printf("fs: %s, %lu of %lu KB used\n",
-                  flash_fs::mounted() ? "mounted" : "NOT MOUNTED (storage unavailable; `fs format` to fix)",
-                  static_cast<unsigned long>(flash_fs::usedBytes() >> 10),
-                  static_cast<unsigned long>(flash_fs::totalBytes() >> 10));
-}
-
 void mountFilesystem() {
     switch (flash_fs::mount()) {
         case flash_fs::MountResult::Mounted: break;
         case flash_fs::MountResult::FormattedBlank: con.println("fs: blank partition, formatted"); break;
         case flash_fs::MountResult::FormattedOnRequest: con.println("fs: formatted as requested"); break;
-        case flash_fs::MountResult::FormatRefusedMounted:
         case flash_fs::MountResult::FormatRefused:
             con.println("fs: !!! FORMAT REQUESTED BUT NOT DONE: the request flag in NVS couldn't be cleared, so"
                            " formatting would repeat every boot. Storage left as it was. Check NVS.");
@@ -512,7 +494,7 @@ void mountFilesystem() {
             con.println("fs: MOUNT FAILED; not blank, so not formatted (`fs format` to erase)");
             break;
     }
-    printStorage();
+    commands::printStorage();
 }
 
 // The saved name (or the default) for Bluetooth, mDNS, DHCP and OTA, and
@@ -558,6 +540,15 @@ void printCredentialState() {
             con.println(" (SECRETS UNREADABLE: login and setup refused)");
             break;
     }
+}
+
+// For `status`: config and credentials as found at boot (live state: GET
+// /api/v1/status).
+void printBootState() {
+    con.print("  at boot ");
+    printConfigState(bootConfig);
+    con.print("  at boot ");
+    printCredentialState();
 }
 
 // The one boot path (core's bootHub): config, then credentials, then the
@@ -686,9 +677,7 @@ void startApi() {
         }
     });
     ble.setOffload([](std::function<void()> job) { return httpServer.post(std::move(job)); });
-#ifdef HUBBO_DEV_CONSOLE
-    addDevEndpoints();
-#endif
+    dev_console::begin({httpServer, runtime, irTransmitter, releases, firmwareUpdate});
     if (!httpServer.serveWebAdmin()) {  // last: /api and /debug match first
         con.println("http: web admin handler failed to register");
     }
@@ -773,572 +762,6 @@ void publishRuntime() {
     bleHosts.publish(nowMs);
 }
 
-// --- Serial console ------------------------------------------------------------
-
-// Under this, lwIP and the W5500 can't allocate big sends: frames over about
-// 190 B stop going out (seen at 9.9 KB free, with a 3.5 KB largest block).
-constexpr size_t kLowInternalHeapBytes = 20 * 1024;
-
-void printMemory(const char *label = "") {
-    const size_t internalFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    con.printf("%smem: heap free %lu min %lu largest %lu | internal free %lu min %lu | psram free %lu"
-                  " | loop stack left %lu\n",
-                  label, static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()),
-                  static_cast<unsigned long>(ESP.getMaxAllocHeap()), static_cast<unsigned long>(internalFree),
-                  static_cast<unsigned long>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)),
-                  static_cast<unsigned long>(ESP.getFreePsram()),
-                  static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
-    if (internalFree < kLowInternalHeapBytes) {
-        con.println("mem: WARNING internal RAM low; large network sends will stall");
-    }
-}
-
-void printStatus() {
-    const uint32_t nowMs = millis();
-    const RadioEndpoint ep = radio.endpoint();
-    con.printf("status: up %lu s\n", static_cast<unsigned long>(nowMs / 1000));
-    if (radio.state() == RemoteRadio::State::Scanning) {
-        con.printf("  radio: scanning (channel %u), power %s\n", radio.scanChannel(),
-                   hubbo::config::radioPowerName(radio.power()));
-    } else {
-        con.printf("  radio: %s", RemoteRadio::stateName(radio.state()));
-        if (ep.isValid()) {
-            con.printf(" channel %u address 0x%010llX", ep.channel, static_cast<unsigned long long>(ep.address));
-        }
-        con.printf(", power %s, %lu payloads, last %lu ms ago, %lu bad checksums, %lu unknown codes\n",
-                      hubbo::config::radioPowerName(radio.power()),
-                      static_cast<unsigned long>(radio.payloadCount()),
-                      static_cast<unsigned long>(radio.payloadCount() ? nowMs - radio.lastPayloadMs() : 0),
-                      static_cast<unsigned long>(input.badChecksumCount()),
-                      static_cast<unsigned long>(input.unknownCodeCount()));
-    }
-    const auto &es = engine.stats();
-    const auto &xs = engine.executor().stats();
-    con.printf("  engine: %s, slot %s, %lu events, %lu unbound, %lu dispatched, %lu transitions;"
-                  " sequences %lu ok %lu with errors %lu rejected %lu timeouts\n",
-                  engine.hasActiveActivity() ? engine.activeActivityId() : "(off)",
-                  hubbo::smartSlotName(engine.selectedSlotShared()),
-                  static_cast<unsigned long>(es.events), static_cast<unsigned long>(es.unbound),
-                  static_cast<unsigned long>(es.dispatched), static_cast<unsigned long>(es.transitions),
-                  static_cast<unsigned long>(xs.completed), static_cast<unsigned long>(xs.withErrors),
-                  static_cast<unsigned long>(xs.rejected), static_cast<unsigned long>(xs.timeouts));
-    con.printf("  eth: %s %s, http %s (%lu requests), ota %s\n", EthernetLink::stateName(ethernet.state()),
-                  ethernet.ipText(), httpServer.running() ? "up" : "down",
-                  static_cast<unsigned long>(httpServer.requestCount()), ota::enabled() ? "enabled" : "disabled");
-    ble.printStatus(nowMs);
-    con.print("  at boot ");  // live state: GET /api/v1/status
-    printConfigState(bootConfig);
-    con.print("  at boot ");
-    printCredentialState();
-    con.print("  ");
-    printMemory();
-    diag::printLatency();
-}
-
-void printHelp() {
-    con.println(
-        "commands (activities and devices are driven through the API):\n"
-        "  status                 radio / engine / eth / ble / memory / latency\n"
-        "  scan [seconds]         learn a Harmony Hub (press its pair button)\n"
-        "  scan stop              stop scanning\n"
-        "  radio set <ch> <addr>  use a known Hub endpoint instead of scanning (ch 0-124, hex addr)\n"
-        "  radio forget           erase the saved Hub endpoint\n"
-        "  ble pair <device_id>   open a pairing window for that Bluetooth device\n"
-        "  ble cancel <device_id> close it (its old host, if any, stays)\n"
-        "  ble forget <device_id> delete that device's bond\n"
-        "  ir ...                 send IR codes (`ir` lists the commands)\n"
-        "  raw on|off             print raw radio payloads (distorts latency)\n"
-        "  lat [reset]            latency summary, or clear it\n"
-        "  mem                    memory and filesystem\n"
-        "  tasks                  CPU share per task since the last `tasks` (core, priority)\n"
-        "  fs format              ERASE the config filesystem (reboots, formats at boot)\n"
-        "  wdt                    hang the loop to test the watchdog (reboots)\n"
-        "  reboot");
-}
-
-// `ir ...` (serial, or /debug/run on dev builds), always run on httpd so
-// its buffers have one owner. Codes go through the transmitter directly,
-// not the engine, converted exactly as the IR adapter converts them.
-// The test code is NEC address 0x04, command 0x02: an LG TV's volume up.
-constexpr char kIrTestCode[] =
-    "0000 006D 0022 0002 0156 00AB 0015 0015 0015 0015 0015 0040 0015 0015 0015 0015 0015 0015 0015 0015 0015 0015 "
-    "0015 0040 0015 0040 0015 0015 0015 0040 0015 0040 0015 0040 0015 0040 0015 0040 0015 0015 0015 0040 0015 0015 "
-    "0015 0015 0015 0015 0015 0015 0015 0015 0015 0015 0015 0040 0015 0015 0015 0040 0015 0040 0015 0040 0015 0040 "
-    "0015 0040 0015 0040 0015 05ED 0156 0055 0015 0E47";
-
-bool isIrCommand(std::string_view line) {
-    return line == "ir" || line.rfind("ir ", 0) == 0;
-}
-
-void irCommand(std::string_view args) {
-    // The durations must stay put until the send ends (PSRAM: allocated
-    // after extmem_enable(0)). Only httpd runs this.
-    static std::vector<uint32_t> durations;
-    static esp_timer_handle_t holdTimer = nullptr;  // ends `ir hold`
-    if (holdTimer == nullptr) {
-        esp_timer_create_args_t timer = {};
-        timer.callback = [](void *) { irTransmitter.stop(); };
-        timer.name = "ir_hold";
-        if (esp_timer_create(&timer, &holdTimer) != ESP_OK) {
-            con.println("ir: no timer");
-            holdTimer = nullptr;
-            return;
-        }
-    }
-    auto skipSpaces = [&] {
-        while (!args.empty() && args.front() == ' ') {
-            args.remove_prefix(1);
-        }
-    };
-    auto take = [&](std::string_view name) {
-        skipSpaces();
-        if (args.rfind(name, 0) == 0 && (args.size() == name.size() || args[name.size()] == ' ')) {
-            args.remove_prefix(name.size());
-            skipSpaces();
-            return true;
-        }
-        return false;
-    };
-    auto number = [&](unsigned long fallback) {
-        unsigned long n = 0;
-        size_t digits = 0;
-        while (digits < args.size() && args[digits] >= '0' && args[digits] <= '9') {
-            n = n * 10 + (args[digits++] - '0');
-        }
-        args.remove_prefix(digits);
-        skipSpaces();
-        return digits ? n : fallback;
-    };
-    auto send = [&](std::string_view pronto, uint16_t frames, bool hold) {
-        if (irTransmitter.busy()) {  // the durations may still be in use
-            con.println("ir: busy");
-            return false;
-        }
-        std::vector<uint16_t> words;
-        if (!hubbo::pronto::parse(pronto, &words)) {
-            con.println("ir: not a raw Pronto code (uppercase 4-digit hex words, single spaces, 0000 first)");
-            return false;
-        }
-        durations.clear();
-        const hubbo::integrations::IrCodeLayout code = hubbo::integrations::appendIrCode(words.data(), &durations);
-        const hubbo::integrations::IrSignal signal = hubbo::integrations::irSignal(code, durations, "console", "ir");
-        const bool sent = irTransmitter.send(signal, frames, hold);
-        con.printf("ir: %u frame(s)%s at %lu Hz: %s\n", frames, hold ? " then hold" : "",
-                   static_cast<unsigned long>(signal.carrierHz), sent ? "sending" : "refused");
-        return sent;
-    };
-    if (take("test")) {
-        send(kIrTestCode, static_cast<uint16_t>(number(1)), false);
-    } else if (take("hold")) {
-        const uint32_t ms = static_cast<uint32_t>(number(3000));
-        if (send(kIrTestCode, 1, true)) {
-            esp_timer_start_once(holdTimer, uint64_t{ms} * 1000);
-        }
-    } else if (take("send")) {
-        const uint16_t frames = static_cast<uint16_t>(number(1));
-        send(args, frames, false);
-    } else if (take("stop")) {
-        esp_timer_stop(holdTimer);  // so it can't end a later hold
-        irTransmitter.stop();
-    } else {
-        con.printf("ir: %s%s. ir test [frames] | hold [ms] | send <frames> <pronto> | stop\n",
-                   irTransmitter.ready() ? "ready" : "not ready", irTransmitter.busy() ? ", busy" : "");
-    }
-}
-
-void postIrCommand(std::string_view line) {
-    if (!httpServer.post([args = std::string(line.substr(2))] { irCommand(args); })) {
-        con.println("ir: busy, try again");
-    }
-}
-
-void runCommand(char *line) {
-    if (isIrCommand(line)) {  // takes the rest of the line (a Pronto code)
-        postIrCommand(line);
-        return;
-    }
-    const uint32_t nowMs = millis();
-    char *cmd = strtok(line, " \t");
-    char *arg1 = strtok(nullptr, " \t");
-    char *arg2 = strtok(nullptr, " \t");
-    char *arg3 = strtok(nullptr, " \t");
-    if (cmd == nullptr) {
-        return;
-    }
-    auto is = [](const char *a, const char *b) { return a != nullptr && strcmp(a, b) == 0; };
-    auto seconds = [&](uint32_t fallbackMs) {
-        const uint32_t s = arg1 ? strtoul(arg1, nullptr, 10) : 0;
-        return s ? s * 1000 : fallbackMs;
-    };
-
-    if (is(cmd, "help") || is(cmd, "?")) {
-        printHelp();
-    } else if (is(cmd, "status")) {
-        printStatus();
-    } else if (is(cmd, "scan") && is(arg1, "stop")) {
-        radio.stopScan();
-    } else if (is(cmd, "scan")) {
-        if (!radio.startScan(nowMs, seconds(RemoteRadio::kDefaultScanTimeoutMs))) {
-            con.println("radio: can't scan now (not ready or already scanning)");
-        }
-    } else if (is(cmd, "radio") && is(arg1, "set")) {
-        // radio set <channel 0-124, decimal> <40-bit address, hex, 0x optional>
-        char *end = nullptr;
-        RadioEndpoint endpoint;
-        const unsigned long channel = arg2 ? strtoul(arg2, &end, 10) : 0;
-        // Parse only; the rule is RadioEndpoint::isValid (the API's) in setEndpoint().
-        const bool channelOk = arg2 != nullptr && *end == '\0' && channel <= hubbo::api::kMaxRemoteChannel;
-        uint64_t address = 0;
-        const bool addressOk = arg3 != nullptr && hubbo::api::parseRemoteAddress(arg3, &address);
-        endpoint.channel = static_cast<uint8_t>(channel);
-        endpoint.address = address;
-        if (!channelOk || !addressOk || !radio.setEndpoint(endpoint)) {
-            con.println("radio: usage `radio set <channel 0-124> <40-bit hex address>`; invalid endpoint or radio not ready");
-        }  // listen() logs the endpoint
-    } else if (is(cmd, "radio") && is(arg1, "forget")) {
-        radio.forgetEndpoint();
-    } else if (is(cmd, "ble") && is(arg1, "pair") && arg2 != nullptr) {
-        if (!ble.startPairing(arg2, nowMs, hubbo::integrations::kBlePairingDefaultWindowMs)) {
-            con.println("ble: not started, or a pairing window is already open");
-        }
-    } else if (is(cmd, "ble") && is(arg1, "cancel") && arg2 != nullptr) {
-        ble.cancelPairing(arg2);
-    } else if (is(cmd, "ble") && is(arg1, "forget") && arg2 != nullptr) {
-        ble.forget(arg2);
-    } else if (is(cmd, "raw")) {
-        diag::setRawLog(is(arg1, "on"));
-        con.printf("raw %s\n", diag::rawLog() ? "on" : "off");
-    } else if (is(cmd, "lat") && is(arg1, "reset")) {
-        diag::resetLatency();
-        con.println("latency reset");
-    } else if (is(cmd, "lat")) {
-        diag::printLatency();
-    } else if (is(cmd, "tasks")) {
-        diag::printTasks();
-    } else if (is(cmd, "mem")) {
-        printMemory();
-        // Filesystem usage walks flash: httpd prints it.
-        if (!httpServer.post(&printStorage)) {
-            con.println("fs: busy, try again");
-        }
-    } else if (is(cmd, "fs") && is(arg1, "format")) {
-        // Never live: a config save may be running on httpd. The request is
-        // an NVS write, so httpd records it; the format runs at next boot.
-        const bool posted = httpServer.post([] {
-            if (flash_fs::requestFormatAtBoot()) {
-                requestReboot("fs format: the format runs at boot");
-            } else {
-                con.println("fs: couldn't record the format request; not rebooting");
-            }
-        });
-        if (!posted) {
-            con.println("fs: busy, try again");
-        }
-    } else if (is(cmd, "wdt")) {
-        con.println("hanging the loop; the task watchdog should reboot in ~5 s");
-        flushSerial();
-        for (;;) {
-        }
-    } else if (is(cmd, "reboot")) {
-        requestReboot("console");
-    } else {
-        con.printf("unknown command: %s (try `help`)\n", cmd);
-    }
-}
-
-#ifdef HUBBO_DEV_CONSOLE
-// One read-only console command queued by GET /debug/run, run here on the
-// loop task like a typed one (its output lands in /debug/log). Nothing that
-// changes state, pairs, erases or reboots.
-constexpr const char *kDevCommands[] = {"status", "mem", "lat", "lat reset", "tasks", "help"};
-std::atomic<const char *> devCommand{nullptr};
-
-void pollDevCommand() {
-    if (devCommand.load(std::memory_order_relaxed) == nullptr) {
-        return;
-    }
-    char line[32];
-    snprintf(line, sizeof(line), "%s", devCommand.exchange(nullptr, std::memory_order_acq_rel));
-    con.printf("> %s\n", line);
-    runCommand(line);
-}
-
-using hubbo::http::queryValue;  // form-decoded ('+' and %XX)
-
-std::string queueDevCommand(std::string_view query) {
-    const std::string name = queryValue(query, "cmd");
-    if (isIrCommand(name)) {  // sends a code; takes the rest of the line
-        con.printf("> %s\n", name.c_str());
-        irCommand(std::string_view(name).substr(2));  // already on httpd
-        return "ran (read /debug/log)\n";
-    }
-    for (const char *command : kDevCommands) {
-        if (name == command) {
-            const char *expected = nullptr;
-            if (!devCommand.compare_exchange_strong(expected, command)) {
-                return "busy: a command is already queued\n";
-            }
-            return std::string("queued: ") + command + " (read /debug/log)\n";
-        }
-    }
-    std::string allowed = "allowed:";
-    for (const char *command : kDevCommands) {
-        allowed += std::string(" ") + command + ",";
-    }
-    allowed.back() = '\n';
-    return allowed;
-}
-
-// PBKDF2-HMAC-SHA256 on httpd, as a login runs it. Default: a login's cost.
-// Capped well below what would hold httpd long enough to trip the core-0
-// watchdog.
-std::string benchHash(std::string_view query) {
-    const std::string requested = queryValue(query, "iterations");
-    constexpr uint32_t kMaxBenchIterations = 20000;
-    const uint32_t iterations = requested.empty() ? hubbo::auth::kDefaultPasswordIterations
-                                                  : strtoul(requested.c_str(), nullptr, 10);
-    if (iterations == 0 || iterations > kMaxBenchIterations) {
-        return "refused: iterations must be 1-20000\n";
-    }
-    static const uint8_t kPassword[] = "benchmark-password";
-    static const uint8_t kSalt[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-    uint8_t out[hubbo::auth::kSha256Size];
-    const uint32_t start = micros();
-    hash.pbkdf2Sha256(kPassword, sizeof(kPassword) - 1, kSalt, sizeof(kSalt), iterations, out, sizeof(out));
-    char text[80];
-    snprintf(text, sizeof(text), "pbkdf2-sha256 %lu iterations: %lu ms\n", static_cast<unsigned long>(iterations),
-             static_cast<unsigned long>((micros() - start) / 1000));
-    con.print(text);
-    return text;
-}
-
-// The core dump the last panic left in flash (raw partition image: header,
-// ELF, checksum). Decode with esp-coredump against that build's firmware.elf.
-std::string coreDump(std::string_view) {
-    size_t address = 0;
-    size_t size = 0;
-    if (esp_core_dump_image_get(&address, &size) != ESP_OK) {
-        return "no core dump stored\n";
-    }
-    const esp_partition_t *partition =
-        esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, nullptr);
-    if (partition == nullptr || address < partition->address || size > partition->size) {
-        return "core dump partition not found\n";
-    }
-    std::string image(size, '\0');
-    if (esp_partition_read(partition, address - partition->address, image.data(), size) != ESP_OK) {
-        return "core dump read failed\n";
-    }
-    return image;
-}
-
-// WebSocket transport smoke test on the HA task, against a test echo server
-// (never Home Assistant): connect, echo a short text, then a 200 KB message
-// the server sends in 16 KB fragments, then a server-initiated close.
-// Runs `job` on the HA task (which may block on the network) and waits for
-// its report on httpd.
-// waitMs 0: don't wait (httpd stays free); the report goes to the log.
-std::string onHaTask(std::function<std::string()> job, uint32_t waitMs) {
-    if (waitMs == 0) {
-        return haTask.post([job = std::move(job)] { con.print(job().c_str()); }) ? "queued (read /debug/log)\n"
-                                                                                  : "ha task busy\n";
-    }
-    struct Shared {
-        SemaphoreHandle_t done = xSemaphoreCreateBinary();
-        std::string report;
-        ~Shared() { vSemaphoreDelete(done); }
-    };
-    auto shared = std::make_shared<Shared>();
-    const bool posted = haTask.post([shared, job = std::move(job)] {
-        shared->report = job();
-        xSemaphoreGive(shared->done);
-    });
-    if (!posted || xSemaphoreTake(shared->done, pdMS_TO_TICKS(waitMs)) != pdTRUE) {
-        return "ha task busy or the test didn't finish\n";
-    }
-    con.print(shared->report.c_str());
-    return shared->report;
-}
-
-std::string internalFree() {
-    return std::to_string(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) + " internal, " +
-           std::to_string(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)) + " psram free";
-}
-
-// ?host=<name>: a one-off DNS lookup (DHCP DNS, or mDNS for .local).
-std::string dnsLookup(std::string_view query) {
-    const std::string host = queryValue(query, "host");
-    return onHaTask(
-        [host] {
-            const uint32_t start = millis();
-            addrinfo hints{};
-            hints.ai_family = AF_INET;
-            addrinfo *result = nullptr;
-            const int rc = getaddrinfo(host.c_str(), nullptr, &hints, &result);
-            std::string r = "dns " + host + ": ";
-            if (rc != 0 || result == nullptr) {
-                r += "failed (" + std::to_string(rc) + ")";
-            } else {
-                char ip[16];
-                inet_ntoa_r(reinterpret_cast<sockaddr_in *>(result->ai_addr)->sin_addr, ip, sizeof(ip));
-                r += ip;
-                freeaddrinfo(result);
-            }
-            return r + " in " + std::to_string(millis() - start) + " ms\n";
-        },
-        15000);
-}
-
-// ?url=ws[s]://...[&mode=open][&hold=s][&verify=0][&async=1]. The default runs the echo test server's
-// script; mode=open only opens the connection (TLS + upgrade), reports its
-// time and memory, and closes it without sending anything.
-std::string wsEcho(std::string_view query) {
-    struct Run : hubbo::integrations::WebSocketTransport::Listener {
-        EspWsTransport transport;
-        int connected = 0, closed = 0;
-        std::string last;
-        size_t texts = 0;
-        void onConnected() override { connected++; }
-        void onText(std::string text) override {
-            texts++;
-            last.assign(text, 0, 40);
-            last += " (" + std::to_string(text.size()) + " bytes)";
-        }
-        void onClosed() override { closed++; }
-    };
-    const std::string url = queryValue(query, "url");
-    const bool openOnly = queryValue(query, "mode") == "open";
-    const bool verify = queryValue(query, "verify") != "0";  // wss://: &verify=0 skips the checks
-    const uint32_t holdMs = static_cast<uint32_t>(strtoul(queryValue(query, "hold").c_str(), nullptr, 10)) * 1000;
-    return onHaTask(
-        [url, openOnly, holdMs, verify] {
-            Run run;
-            run.transport.setListener(&run);
-            std::string r = "before: " + internalFree() + "\n";
-            auto step = [&](const char *what, auto until, uint32_t ms) {
-                const uint32_t start = millis();
-                while (!until() && millis() - start < ms) {
-                    run.transport.poll(20);
-                }
-                r += std::string(what) + ": " + (until() ? "ok" : "TIMEOUT") + " in " +
-                     std::to_string(millis() - start) + " ms; " + run.last + "\n";
-            };
-            if (!run.transport.connect(url, {verify})) {
-                return std::string("connect refused (bad url?)\n");
-            }
-            step("connect", [&] { return run.connected > 0 || run.closed > 0; }, 20000);
-            if (!run.transport.lastError().empty()) {
-                r += "  " + run.transport.lastError() + "\n";
-            }
-            r += "open: " + internalFree() + ", internal min ever " +
-                 std::to_string(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) + "\n";
-            if (run.connected > 0 && openOnly) {
-                step("hold", [&] { return run.closed > 0; }, holdMs);  // idle: poll(20) like the HA task
-                r += "held: " + internalFree() + "\n";
-                run.transport.close();
-                step("close", [&] { return run.closed > 0; }, 3000);
-            } else if (run.connected > 0) {
-                run.transport.send("hello from hubbo");
-                step("echo", [&] { return run.texts >= 1; }, 3000);
-                run.transport.send("big:200000");
-                step("200 KB fragmented", [&] { return run.texts >= 2; }, 5000);
-                run.transport.send("close");
-                step("server close", [&] { return run.closed > 0; }, 3000);
-            }
-            r += "after: " + internalFree() + "\n";
-            r += "callbacks: connected " + std::to_string(run.connected) + ", texts " + std::to_string(run.texts) +
-                 ", closed " + std::to_string(run.closed) + "\n";
-            return r;
-        },
-        queryValue(query, "async") == "1" ? 0 : 30000);
-}
-
-// Online updates against a local test feed (the API's routes need a login):
-// ?op=test&base=<url>&running=<X.Y.Z> sets the feed and the version checks
-// compare against (signatures still need the release key, or this build's
-// test key: release_key.h); op=check and op=install&version=X call the
-// API's port; op=crash restarts at once (no flush), as a crash would, to try
-// the trial's rollback. Every answer ends with the status.
-std::string releaseDebug(std::string_view query) {
-    const std::string op = queryValue(query, "op");
-    std::string r;
-    if (op == "test") {
-        r = releases.setTest(queryValue(query, "base"), queryValue(query, "running"))
-                ? "test feed queued\n"
-                : "update task busy\n";
-    } else if (op == "check") {
-        r = releases.requestCheck() == hubbo::api::ReleaseCheckResult::Accepted ? "check started\n" : "busy\n";
-    } else if (op == "install") {
-        const hubbo::api::ReleaseInstallResult result = releases.install(queryValue(query, "version"));
-        r = result == hubbo::api::ReleaseInstallResult::Accepted       ? "install started\n"
-            : result == hubbo::api::ReleaseInstallResult::NotAvailable ? "not available\n"
-                                                                        : "busy\n";
-    } else if (op == "crash") {
-        httpServer.post([] {
-            vTaskDelay(pdMS_TO_TICKS(200));
-            esp_restart();
-        });
-        return "restarting with no flush\n";
-    }
-    const hubbo::api::FirmwareReleaseStatus status = releases.releaseStatus();
-    const hubbo::api::FirmwareUpdateStatus update = firmwareUpdate.status();
-    const char *error = hubbo::release::checkErrorName(status.check.error);
-    char line[256];
-    snprintf(line, sizeof(line),
-             "running %s; checking %d, checked %d (%lu ms ago), error %s, available %s, rolled_back_from %s; "
-             "update %s %u%% %s, trial %d\n",
-             image::version(), status.check.checking, status.check.checked,
-             static_cast<unsigned long>(status.checkedAgoMs), error != nullptr ? error : "null",
-             status.check.available ? status.check.available->version.c_str() : "null",
-             status.check.rolledBackFrom.empty() ? "null" : status.check.rolledBackFrom.c_str(),
-             hubbo::api::firmwareUpdateStateName(update.state), static_cast<unsigned>(update.progress),
-             update.error.c_str(), firmwareUpdate.trial());
-    return r + line;
-}
-
-void addDevEndpoints() {
-    httpServer.addDebugGet("/debug/log", [](std::string_view) { return con.recent(); });
-    httpServer.addDebugGet("/debug/run", queueDevCommand);
-    httpServer.addDebugGet("/debug/bench", benchHash);
-    httpServer.addDebugGet("/debug/coredump", coreDump);
-    httpServer.addDebugGet("/debug/ws-echo", wsEcho);  // ?url=ws[s]://<test server>
-    httpServer.addDebugGet("/debug/dns", dnsLookup);   // ?host=<name>
-    httpServer.addDebugGet("/debug/release", releaseDebug);  // online updates against a test feed
-    con.println("debug: dev console on /debug/log, /debug/run, /debug/bench, /debug/coredump, /debug/ws-echo,"
-                " /debug/dns, /debug/release"
-                " (dev build)");
-}
-#endif
-
-void pollSerial() {
-    // `ir send` takes a whole Pronto code: the line lives in PSRAM.
-    constexpr size_t kLineBytes = 512;
-    static char *line = static_cast<char *>(heap_caps_malloc(kLineBytes, MALLOC_CAP_SPIRAM));
-    static size_t length = 0;
-    static bool tooLong = false;  // drop the whole line, never run a cut one
-    if (line == nullptr) {
-        return;
-    }
-    while (Serial.available() > 0) {
-        const int c = Serial.read();
-        if (c == '\r' || c == '\n') {
-            if (tooLong) {
-                con.printf("console: line too long (over %u characters); not run\n",
-                           static_cast<unsigned>(kLineBytes - 1));
-            } else if (length > 0) {
-                line[length] = '\0';
-                runCommand(line);
-            }
-            length = 0;
-            tooLong = false;
-        } else if (length < kLineBytes - 1) {
-            line[length++] = static_cast<char>(c);
-        } else {
-            tooLong = true;
-        }
-    }
-}
-
 }  // namespace
 
 void setup() {
@@ -1356,6 +779,8 @@ void setup() {
                   static_cast<unsigned long>(ESP.getPsramSize() >> 10));
     con.printf("sdk %s\n", ESP.getSdkVersion());
 
+    commands::begin({radio, input, engine, ble, ethernet, httpServer, irTransmitter, &printBootState, &requestReboot,
+                     &flushSerial});
     factory_reset::wipeIfRequested();  // POST /admin/factory-reset before this restart, or a gate build
     mountFilesystem();
     loadHubName();
@@ -1402,16 +827,16 @@ void setup() {
 #endif
     // The config lives for the whole uptime: parse it into PSRAM, keeping
     // internal RAM for lwIP and the drivers started below (prebuilt rule).
-    printMemory("boot: before config ");
+    commands::printMemory("boot: before config ");
     heap_caps_malloc_extmem_enable(0);
     bootState();
     heap_caps_malloc_extmem_enable(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL);
-    printMemory("boot: after config ");
+    commands::printMemory("boot: after config ");
     runtime.setConfig(configService.get());
     runtime.setBleHosts(&bleHosts);
     runtime.setMqtt(&mqttBridge);
     runtime.setIrTransmitter(&irTransmitter);
-    ota::setRebootPending([] { return rebootReason.load(std::memory_order_acquire) != nullptr; });
+    update_lock::setRebootPending([] { return rebootReason.load(std::memory_order_acquire) != nullptr; });
     beginEthernetOnCore0();
     startApi();
     tls::useExternalMemory();  // mbedTLS from PSRAM first (tls_memory.h)
@@ -1443,7 +868,7 @@ void setup() {
         con.println("update: task failed to start; no update checks");
     }
 
-    printMemory();
+    commands::printMemory();
     enableLoopWDT();
     vTaskPrioritySet(nullptr, kLoopPriority);
     con.println("ready; type `help`");
@@ -1487,14 +912,12 @@ void loop() {
     }
 
     diag::printLogs();
-    pollSerial();
-#ifdef HUBBO_DEV_CONSOLE
-    pollDevCommand();
-#endif
+    commands::poll();
+    dev_console::poll();
 
     static uint32_t lastStatusMs = 0;
     if (nowMs - lastStatusMs >= kStatusIntervalMs) {
         lastStatusMs = nowMs;
-        printStatus();
+        commands::printStatus();
     }
 }

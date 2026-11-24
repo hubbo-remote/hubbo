@@ -3,9 +3,8 @@
 // Board profile: Waveshare ESP32-S3-ETH (ESP32-S3, 16 MB flash, 8 MB OPI
 // PSRAM, onboard W5500, optional PoE module) with an nRF24L01+ on jumpers.
 //
-// The only board Hubbo supports for the MVP. Pins were verified on the
-// Harmonizer spike boards (see Harmonizer/HANDOFF.md). The W5500 and the
-// nRF24 sit on separate SPI hosts, so they never share a bus or a lock.
+// The only board Hubbo supports. The W5500 and the nRF24 sit on separate SPI
+// hosts, so they never share a bus or a lock.
 //
 // Hardware notes that firmware cannot fix:
 //   - The nRF24 needs a 10 uF capacitor across VCC/GND. Without it, on PoE

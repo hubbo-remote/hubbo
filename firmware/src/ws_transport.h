@@ -41,9 +41,6 @@ public:
     void close() override;
     void poll(uint32_t timeoutMs) override;
 
-    // HA task: why the last connect failed ("" after a good one). Codes only.
-    const std::string &lastError() const { return lastError_; }
-
 private:
     enum class State : uint8_t { Idle, ConnectPending, Open, ClosePending };
 
@@ -63,7 +60,6 @@ private:
     void *ws_ = nullptr;
     std::string message_;     // a text message being reassembled
     std::string sendBuffer_;  // send(): a writable copy for in-place masking
-    std::string lastError_;
     bool inMessage_ = false;
 };
 

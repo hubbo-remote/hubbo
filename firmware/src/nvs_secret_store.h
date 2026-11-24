@@ -1,7 +1,7 @@
 #pragma once
 
 // auth::SecretStore on NVS, namespace "hubbo-secret" (admin record, API token
-// hashes; later integration credentials). NVS writes one entry atomically
+// hashes, the HA token and the MQTT password). NVS writes one entry atomically
 // (CRC'd; a power cut keeps the old value), which is the per-record contract.
 //
 // "Can't read" is never "doesn't exist": only ESP_ERR_NVS_NOT_FOUND (a
@@ -10,7 +10,7 @@
 // can never look like "no admin yet".
 //
 // Not encrypted: both NVS encryption schemes need eFuse burning or flash
-// encryption, which this MVP doesn't do (README "Storage").
+// encryption, which Hubbo doesn't do (README "Storage").
 //
 // Called from the HTTP task only (and once at boot before it starts).
 

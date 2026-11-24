@@ -66,6 +66,8 @@ compaction. Nobody needs to ask for it or explain it.
   - The dev board is 192.168.1.196. Update it only through `bin/hubbo ota`.
   - Any other board on the network is in daily use. Never change or update it unless I ask.
   - Never weaken the watchdog.
+  - Every board test runs `bin/hubbo board-check` against the dev board. Its limits live in
+    `firmware/budget.json` (the README's "Board budget" mirrors them) and change only with my OK.
   - Physical actions are mine.
 - Hobby scale: one home, a trusted LAN, one admin. Keep things simple and don't harden for scale.
 - When fixing review findings, look for a shared root cause, and consider a better design rather

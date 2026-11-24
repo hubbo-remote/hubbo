@@ -14,6 +14,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
+
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>  // TaskShares
 
 #ifdef HUBBO_REMOTE_LOG
 #include <Arduino.h>  // micros()
@@ -57,9 +61,64 @@ void keepLoopStatsAcrossRestart(const char *why);
 void printPreviousRun();  // boot, once
 // CPU share per task (core affinity, priority) since the previous call.
 void printTasks();
+
+// One task's numbers, as TaskShares::sample() reports them.
+struct TaskShare {
+    char name[configMAX_TASK_NAME_LEN];
+    int8_t core;  // 0, 1, or -1: no affinity
+    uint8_t prio;
+    uint32_t stackFreeMin;  // bytes, since the task started
+    uint32_t per10k;        // share of one core since the baseline, x10000
+    bool shareKnown;        // false for loopTask (below): per10k means nothing
+};
+// Each task's CPU share since a baseline (the first: since boot), from
+// FreeRTOS's run-time counters. Owned by one caller, which keeps its own
+// baseline. A task's counter advances only when it's switched out, and
+// loopTask never blocks, so its count is stale: its share is left unknown.
+class TaskShares {
+public:
+    // Every task; empty if out of memory. `rebase`: the next sample counts
+    // from now.
+    std::vector<TaskShare> sample(bool rebase);
+
+private:
+    struct Seen {  // matched on handle and name: a deleted task's TCB can be reused
+        TaskHandle_t handle;
+        char name[configMAX_TASK_NAME_LEN];
+        uint32_t runTime;
+    };
+    std::vector<Seen> base_;
+    uint32_t baseTotal_ = 0;
+};
+
+// Starts a new measuring window: read->hid latency and the window's loop
+// counters (`lat reset`). The since-boot loop counters keep going.
 void resetLatency();
 // read->hid summary; sorts only when there are new samples.
 LatencyStats::Summary hidSummary();
+
+// --- Board budget stats (GET /debug/stats; README "Board budget")
+// The loop's gaps between iterations.
+struct GapCounters {
+    uint32_t maxUs = 0;
+    uint32_t over5ms = 0;
+    void add(uint32_t gapUs) {
+        maxUs = gapUs > maxUs ? gapUs : maxUs;
+        over5ms += gapUs > 5000;
+    }
+};
+// A closed /debug/stats window. Its read->hid is the window's own recorder:
+// closing it leaves the since-boot one (`lat`, /api/v1/status) alone.
+struct LoopStats {
+    GapCounters window;
+    LatencyStats::Summary hid;     // read->hid
+    uint32_t bleSendFailures = 0;  // since boot
+};
+// httpd only: the loop closes the window at its next pass and starts the
+// next. True with the closed window in `out`. False if the loop didn't
+// answer within 200 ms; that close stays pending, and the next call returns
+// it, so no window is lost.
+bool closeWindow(LoopStats *out);
 
 // HidTransport decorator that records read->hid for reports caused by a
 // radio payload (not by poll-driven events such as timed-out releases).

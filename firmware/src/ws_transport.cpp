@@ -9,7 +9,6 @@
 #include <esp_transport_ws.h>
 #include <esp_crt_bundle.h>
 #include <mbedtls/ssl.h>
-#include <mbedtls/x509.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -143,7 +142,6 @@ void EspWsTransport::poll(uint32_t timeoutMs) {
 }
 
 bool EspWsTransport::openNow() {
-    lastError_.clear();
     esp_transport_handle_t tcp = tls_ ? esp_transport_ssl_init() : esp_transport_tcp_init();
     if (tcp != nullptr && tls_) {
         // Verifying: the bundle checks the chain, and esp-tls the hostname
@@ -171,23 +169,6 @@ bool EspWsTransport::openNow() {
     if (connected >= 0 && upgrade == 101) {
         return true;
     }
-    // Which stage failed, for diagnostics (no secrets: codes only).
-    char text[96];
-    int tlsCode = 0, verifyFlags = 0;
-    const esp_err_t error =
-        esp_tls_get_and_clear_last_error(esp_transport_get_error_handle(ws), &tlsCode, &verifyFlags);
-    // esp-tls keeps the mbedTLS code negated (positive); the bundle's
-    // rejection is MBEDTLS_ERR_X509_CERT_VERIFY_FAILED, without flags.
-    const int mbedtlsCode = tlsCode > 0 ? -tlsCode : tlsCode;
-    if (upgrade > 0) {
-        snprintf(text, sizeof(text), "upgrade refused: HTTP %d", upgrade);
-    } else if (verifyFlags != 0 || mbedtlsCode == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
-        snprintf(text, sizeof(text), "certificate rejected (mbedTLS -0x%x, verify flags 0x%x)", -mbedtlsCode,
-                 verifyFlags);
-    } else {
-        snprintf(text, sizeof(text), "connect failed (%s, mbedTLS -0x%x)", esp_err_to_name(error), -mbedtlsCode);
-    }
-    lastError_ = text;
     return false;
 }
 

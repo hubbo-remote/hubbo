@@ -19,10 +19,9 @@ namespace hubbo::fw {
 class EspRandomSource : public hubbo::auth::RandomSource {
 public:
     void setEntropyReady(bool ready) { ready_.store(ready, std::memory_order_release); }
-    bool entropyReady() const { return ready_.load(std::memory_order_acquire); }
 
     bool fill(uint8_t *out, size_t length) override {
-        if (!entropyReady()) {
+        if (!ready_.load(std::memory_order_acquire)) {
             return false;
         }
         esp_fill_random(out, length);

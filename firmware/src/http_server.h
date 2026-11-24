@@ -63,7 +63,13 @@ public:
 #ifdef HUBBO_DEV_CONSOLE
     // A plain-text GET outside the API router and its auth. Runs on httpd.
     // For read-only diagnostics only. `query` is raw (not decoded).
-    using DebugGet = std::function<std::string(std::string_view query)>;
+    // A plain-text answer; a refused or invalid request answers 4xx.
+    struct DebugReply {
+        DebugReply(std::string text, int code = 200) : body(std::move(text)), status(code) {}
+        std::string body;
+        int status;
+    };
+    using DebugGet = std::function<DebugReply(std::string_view query)>;
     bool addDebugGet(const char *uri, DebugGet handler);
 #endif
 

@@ -13,7 +13,7 @@
 
 #include "board.h"
 #include "console.h"
-#include "ota.h"
+#include "update_lock.h"
 
 namespace hubbo::fw {
 
@@ -54,7 +54,7 @@ bool FirmwareUpdate::claimForUpdate() {
     // On trial, the running image isn't confirmed yet (esp_ota_begin refuses).
     // Ours running: it holds the claim. Then the owner flag: ArduinoOTA
     // writing, or a reboot pending.
-    return !trial() && !hubbo::api::firmwareUpdateRunning(state_.load()) && ota::claim(ota::Owner::Web);
+    return !trial() && !hubbo::api::firmwareUpdateRunning(state_.load()) && update_lock::claim(update_lock::Owner::Web);
 }
 
 FirmwareInstallResult FirmwareUpdate::check(std::string_view image, const esp_partition_t **slot,
@@ -63,12 +63,9 @@ FirmwareInstallResult FirmwareUpdate::check(std::string_view image, const esp_pa
     if (*slot == nullptr) {
         return FirmwareInstallResult::Unavailable;
     }
-    const uint32_t startUs = micros();
     const FirmwareInstallResult valid = hubbo::api::validateFirmwareImage(image, targetFor(**slot), hash_, version);
-    con.printf("update: %s %s, %u bytes (result %u, checked in %lu ms)\n",
-               valid == FirmwareInstallResult::Accepted ? "accepted" : "refused", version->c_str(),
-               static_cast<unsigned>(image.size()), static_cast<unsigned>(valid),
-               static_cast<unsigned long>((micros() - startUs) / 1000));
+    con.printf("update: %s %s, %u bytes (result %u)\n", valid == FirmwareInstallResult::Accepted ? "accepted" : "refused",
+               version->c_str(), static_cast<unsigned>(image.size()), static_cast<unsigned>(valid));
     return valid;
 }
 
@@ -77,7 +74,7 @@ FirmwareInstallResult FirmwareUpdate::install(std::string_view image) {
         return FirmwareInstallResult::Busy;
     }
     auto refuse = [](FirmwareInstallResult result) {
-        ota::release(ota::Owner::Web);
+        update_lock::release(update_lock::Owner::Web);
         return result;
     };
     const esp_partition_t *slot = nullptr;
@@ -212,9 +209,7 @@ void FirmwareUpdate::write() {
         fail("boot_select_failed");
         return;
     }
-    con.printf("update: written in %lu ms, stack %lu bytes unused; rebooting\n",
-               static_cast<unsigned long>(millis() - startMs),
-               static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
+    con.printf("update: written in %lu ms; rebooting\n", static_cast<unsigned long>(millis() - startMs));
     state_.store(FirmwareUpdateState::Rebooting, std::memory_order_release);
     if (written_) {
         written_(version_);  // the trial's record, before the reboot
@@ -229,7 +224,7 @@ void FirmwareUpdate::fail(const char *error) {
     error_.store(error, std::memory_order_relaxed);
     // Release before Failed shows: claimForUpdate() checks the state first, so
     // until then a new update is Busy and never shares this claim.
-    ota::release(ota::Owner::Web);
+    update_lock::release(update_lock::Owner::Web);
     state_.store(FirmwareUpdateState::Failed, std::memory_order_release);
 }
 

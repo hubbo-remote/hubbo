@@ -30,17 +30,20 @@ Pinned: `espressif32@8.0.0` (arduino-esp32 3.3.12), `nRF24/RF24@1.6.2`,
 | `src/nvs_secret_store.*` | `auth::SecretStore` on NVS. |
 | `src/esp_hash.h` | `auth::Hash` with SHA-256 on the hardware accelerator (mbedTLS); HMAC and PBKDF2 stay portable. |
 | `src/esp_clock.h`, `src/esp_random_source.h` | `api::Clock` and `auth::RandomSource` ports. The RNG fails closed until BLE (the RF entropy source) is up. |
-| `src/diagnostics.*` | Serial log ring, raw payload log, latency probe (`TimedHidTransport`, loop gap). |
+| `src/diagnostics.*` | Serial log ring, raw payload log, latency probe (`TimedHidTransport`, loop gap and its window), task CPU shares, the task-watchdog record. |
 | `src/console.*` | `con`: every text output. USB serial is non-blocking (4 KB TX buffer, 0 ms timeout: a slow or absent host never stalls the loop; overflow is dropped). Dev builds keep the last 8 KB for `/debug/log`. |
 | `src/latency.*` | Fixed-size latency recorder (p50/p95/p99/max). |
-| `src/ota.*` | ArduinoOTA, compiled in only with `HUBBO_OTA_PASSWORD`, and the update owner flag it shares with the web update. |
+| `src/ota.*` | ArduinoOTA, compiled in only with `HUBBO_OTA_PASSWORD`. |
+| `src/update_lock.*` | The one-update-at-a-time owner flag that ArduinoOTA, web updates, factory reset and restart claim. |
 | `src/factory_reset.*` | `api::FactoryResetPort`: records the request (one NVS flag) and reboots; the wipe (all of NVS, then the fs format) runs early in the next boot. The gate's `HUBBO_WIPE_ON_BOOT` uses the same wipe. |
 | `src/hub_name.*` | The hub's name (core's `HubSettings`, a StateStore record): the BLE name, the mDNS instance and hostname, live on a rename (mDNS on httpd, BLE through a mailbox to the loop); DHCP and OTA take the boot hostname. |
 | `src/restart.*` | `api::RestartPort` (POST /admin/restart): claims the update-owner flag, then the normal reboot path. |
 | `src/firmware_update.*` | `api::FirmwareUpdatePort` over esp_ota: firmware updates from the web admin (see "Web updates"). |
 | `src/image_marker.h`, `scripts/image_marker.py` | The `HUBBO-IMAGE/1 board=… layout=… version=<git describe>` marker every image carries; the build fails if the .bin doesn't hold exactly one. Its version is the API's `version`. |
 | `src/ir_transmitter.*` | `integrations::IrTransmitter` on RMT TX with a hardware carrier (GPIO 1); core's `IrAdapter` drives it. See "IR emitter". |
-| `src/main.cpp` | Wiring, boot, main loop, serial console. |
+| `src/main.cpp` | Wiring, boot and the main loop only. |
+| `src/commands.*` | The serial console's commands (all builds): line reading, `status`, `ir ...` (on httpd), the rest of "Serial console". |
+| `src/dev_console.*`, `src/board_stats.*` | Dev builds (`HUBBO_DEV_CONSOLE`): the `/debug/*` endpoints and `/debug/stats`. Release builds get empty inlines, so main.cpp has one seam: `dev_console::begin()` and `poll()`. |
 | `scripts/drop_unused_idf_libs.py` | Link step: drops the precompiled esp_matter archive. Otherwise ordinary `std::string` calls resolve to Matter's copies and pull in Matter and the Wi-Fi stack (+24 KB RAM, +230 KB flash). |
 
 The W5500 is on SPI3 (ESP-IDF driver); the nRF24 is on the Arduino `SPI` (FSPI/SPI2) with
@@ -184,6 +187,58 @@ any deliberate restart, the loop line (`loop: max gap ...`) is printed and kept 
 the next boot logs it as `previous run (restart: <why>): ...`, so a stall before a reboot (a
 firmware update's write) can still be read from `/debug/log`.
 
+## Board budget
+
+What the dev board must hold to, as `GET /debug/stats` reports it. The limits live in
+`firmware/budget.json`, the single source that `bin/hubbo board-check` reads in every board test;
+this table mirrors it. A limit changes only with the user's OK, in both places. "Now" is
+2026-11-24 on .196 (`_ota` build).
+
+The check settles until 2 minutes after boot, then runs three windows (`?reset=1` ends each):
+
+- **Idle:** 60 s with nothing going on.
+- **Loaded:** 60 s with an IR hold for the window and 4 HTTP clients cycling `/api/v1/status`, `/`
+  and `/api/v1/openapi.json`. read->hid latency rules need samples, which come only from real
+  presses of a bound button; without them they're skipped.
+- **Flash:** two hub-settings saves of `check_updates` with its current value (each a real
+  LittleFS record write, no state change), then 15 s.
+
+In budget.json each rule's `max`/`min` maps a window to its limit, tasks are addressed by name
+(`tasks.loopTask.stack_free_min`), and `report` lists windows printed without judging. "End"
+rows read the last window's document: sizes, stacks, heap minimums, since-boot counters.
+The window's loop and read->hid numbers are its own: closing one leaves the since-boot ones
+(`lat`, `/api/v1/status`) alone. If the loop doesn't answer a close within 200 ms, `?reset=1`
+answers 503, a failure in itself, and the next `?reset=1` returns that window. An unreadable
+image size is `null` and fails. loopTask's `cpu_pct_x100` is `null` (it never blocks, so its
+run-time counter is stale); IDLE0's is reported.
+
+| Metric | Field | Windows | Budget (fail) | Now |
+|---|---|---|---|---|
+| Loop max gap | `loop.window.max_gap_us` | idle, loaded | ≤ 4 ms | 1.5 ms idle, 3.0 ms loaded |
+| Loop iterations over 5 ms | `loop.window.over_5ms` | idle, loaded | 0 | 0 |
+| Loop max gap / over 5 ms, flash | `loop.window` | flash | ≤ 12 ms / ≤ 3 | |
+| read→HID p95 / p99 | `latency.read_to_hid` | loaded, when it has samples | < 2 ms / < 5 ms | |
+| Queue overflows | `radio.queue_overflows` | end | 0 | 0 |
+| IR late frames | `integrations.ir.late_frames` | loaded | 0 | 0 (186 frames) |
+| IR frames sent (sanity: a hold ran) | `integrations.ir.frames` | loaded | ≥ 1 | 186 |
+| IR failures | `integrations.ir.failures` | end | 0 | 0 |
+| Internal heap free | `heap.internal.free` | end | ≥ 55 KB | 66.0 KB |
+| Internal heap min | `heap.internal.min_free` | end | ≥ 50 KB | 63.7 KB |
+| Internal heap largest block | `heap.internal.largest` | end | ≥ 24 KB | 31.7 KB |
+| PSRAM free / largest | `heap.psram` | end | ≥ 5 MB / ≥ 4 MB | 7.33 MB / 7.21 MB |
+| Image | `image_bytes` | end | ≤ 2.9 MB | 2,596,672 B |
+| Static internal RAM | `static_ram_bytes` | end | ≤ 112 KB | 102,832 B |
+| Loop stack (`loopTask`) | `tasks[].stack_free_min` | end | ≥ 2 KB | 2.9 KB |
+| httpd stack | | end | ≥ 4 KB | 13.1 KB |
+| esp-mqtt stack (`mqtt_task`) | | end | ≥ 1 KB | 1.7 KB |
+| `ha` / `mqtt` / `update` stacks | | end | ≥ 2 KB | 4.1 / 6.1 / 3.3 KB |
+| `ir` stack | | end | ≥ 1 KB | 2.3 KB (after a hold) |
+| IDLE0 share | `tasks[].cpu_pct_x100` | idle, loaded | report only | 92% idle |
+| BLE send failures | `integrations.ble.send_failures` | end | report only | 0 |
+
+The 4-client loaded window fails today: sustained parallel HTTP starves core 0's idle task in the
+W5500 RX / lwIP path and the task watchdog resets the board (being fixed separately).
+
 ## Dev console over HTTP (dev builds)
 
 The `waveshare_esp32_s3_eth_ota` env adds `HUBBO_DEV_CONSOLE`, because the dev board runs on PoE with
@@ -192,9 +247,10 @@ no serial attached. Plain-text GETs outside the API and its auth, read-only by d
 | URL | |
 |---|---|
 | `/debug/log` | The last 8 KB of console output. |
-| `/debug/run?cmd=status` | Queues one console command on the loop task; read the result in `/debug/log`. Allowed: `status`, `mem`, `lat`, `lat reset`, `tasks`, `help`. Nothing that changes state. Also `ir ...` (below), which runs on httpd. |
-| `/debug/bench?iterations=N` | Times PBKDF2-HMAC-SHA256 on httpd at N iterations (default: a login's cost, 10,000; at most 20,000). |
-| `/debug/coredump` | The core dump the last panic left in flash (raw partition image). Decode it with esp-coredump against that build's `firmware.elf`. |
+| `/debug/run?cmd=status` | Queues one console command on the loop task; read the result in `/debug/log`. Allowed: `status`, `mem`, `lat`, `lat reset`, `tasks`, `help`, none of which change state. Also `ir ...`, which sends test IR. An invalid command answers 400, and 409 if a command is already queued. |
+| `/debug/stats` | The board budget's numbers as one JSON object (above). `?reset=1` closes the window at one loop pass and answers for all of it, then starts the next. |
+| `/debug/coredump` | The core dump the last panic left in flash (raw partition image). Decode it with esp-coredump against that build's `firmware.elf`. When the task watchdog fires, the next boot also logs which task each core was running (`previous run: task watchdog fired with core 0 running ...`), kept in RTC memory, since the dump itself is often unreadable then. |
+| `/debug/release?op=...` | Online updates against a local test feed: `op=test&base=<url>&running=<X.Y.Z>`, `op=check`, `op=install&version=X`, `op=crash` (restart with no flush, to try the trial's rollback). Every answer ends with the update status. |
 
 ## Serial console
 

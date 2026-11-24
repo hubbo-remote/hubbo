@@ -1,12 +1,12 @@
 #include "restart.h"
 
 #include "console.h"
-#include "ota.h"
+#include "update_lock.h"
 
 namespace hubbo::fw {
 
 bool Restart::requestRestart() {
-    if (!ota::claim(ota::Owner::Reboot)) {
+    if (!update_lock::claim(update_lock::Owner::Reboot)) {
         return false;  // an update is writing, or another reboot is pending
     }
     con.println("restart: requested");

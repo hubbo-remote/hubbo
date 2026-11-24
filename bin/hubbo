@@ -22,6 +22,8 @@
 #   bin/hubbo profiles sync [dir]  copy the built-in profiles from hubbo-profiles (default ../hubbo-profiles)
 #   bin/hubbo gate <core|api|web|fw|all>  an area's full phase-end gate, as one command
 #   bin/hubbo gate web --failed  rerun only the e2e spec files the last web gate saw fail
+#   bin/hubbo board-check [ip] [--clients N]  check the dev board against
+#                             firmware/budget.json (every board test; runs about 4 minutes)
 set -euo pipefail
 
 self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
@@ -307,6 +309,13 @@ case "$cmd" in
             all) gate_core && gate_api && gate_web && gate_fw ;;
             *) echo "usage: bin/hubbo gate <core|api|web|fw|all>" >&2; exit 2 ;;
         esac
+        ;;
+    board-check)
+        # In the toolchain (host networking reaches the board). The admin login goes in on
+        # stdin, so it's never in argv, the environment or a mount.
+        cred="${HUBBO_ADMIN_FILE:-$HOME/.config/hubbo/admin.json}"
+        [ -r "$cred" ] || { echo "board-check: no admin login at $cred" >&2; exit 1; }
+        run_in toolchain python3 -I -B bin/board_check.py "$@" <"$cred"
         ;;
     *)
         sed -n '/^set -euo/q; s/^#   //p' "$0"

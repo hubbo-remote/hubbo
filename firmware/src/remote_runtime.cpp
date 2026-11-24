@@ -6,30 +6,6 @@ using hubbo::api::RadioState;
 using hubbo::api::RemoteResult;
 using hubbo::api::ScanState;
 
-namespace {
-
-RadioState radioState(RemoteRadio::State state) {
-    switch (state) {
-        case RemoteRadio::State::NotReady: return RadioState::NotReady;
-        case RemoteRadio::State::Idle: return RadioState::Idle;
-        case RemoteRadio::State::Scanning: return RadioState::Scanning;
-        case RemoteRadio::State::Listening: return RadioState::Listening;
-    }
-    return RadioState::NotReady;
-}
-
-ScanState scanState(RemoteRadio::ScanResult result) {
-    switch (result) {
-        case RemoteRadio::ScanResult::None: return ScanState::None;
-        case RemoteRadio::ScanResult::Found: return ScanState::Found;
-        case RemoteRadio::ScanResult::TimedOut: return ScanState::TimedOut;
-        case RemoteRadio::ScanResult::Stopped: return ScanState::Stopped;
-    }
-    return ScanState::None;
-}
-
-}  // namespace
-
 hubbo::api::RemoteRadioStatus RemoteRuntime::status() const {
     portENTER_CRITICAL(&lock_);
     hubbo::api::RemoteRadioStatus copy = status_;
@@ -98,7 +74,7 @@ void RemoteRuntime::poll(uint32_t nowMs) {
 
 void RemoteRuntime::publish(uint32_t nowMs) {
     hubbo::api::RemoteRadioStatus s;
-    s.radio = radioState(radio_.state());
+    s.radio = radio_.state();
     const RadioEndpoint endpoint = radio_.endpoint();
     s.hasEndpoint = endpoint.isValid();
     if (s.hasEndpoint) {
@@ -110,7 +86,7 @@ void RemoteRuntime::publish(uint32_t nowMs) {
         s.scanRemainingMs = radio_.scanRemainingMs(nowMs);
         s.scanChannel = radio_.scanChannel();
     } else {
-        s.scan = scanState(radio_.lastScanResult());
+        s.scan = radio_.lastScanResult();
     }
     portENTER_CRITICAL(&lock_);
     status_ = s;

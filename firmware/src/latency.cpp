@@ -14,7 +14,7 @@ void LatencyStats::record(uint32_t us) {
 }
 
 LatencyStats::Summary LatencyStats::summarize() const {
-    static uint32_t sorted[kCapacity];  // console only; keeps 2 KB off the stack
+    static uint32_t sorted[kCapacity];  // loop task only; keeps 2 KB off the stack
     Summary summary;
     summary.count = count_;
     summary.max = max_;

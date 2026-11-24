@@ -67,10 +67,12 @@ public:
     hubbo::api::ReleaseCheckResult requestCheck() override;
     hubbo::api::ReleaseInstallResult install(std::string_view version) override;
 
-    // Dev builds (/debug/release): a local feed, and the version checks
+#ifdef HUBBO_DEV_CONSOLE
+    // The dev console's /debug/release: a local feed, and the version checks
     // compare against (a dev build is never offered anything). On the update
     // task, so no fetch is running.
     bool setTest(std::string baseUrl, std::string runningVersion);
+#endif
 
 private:
     void onWritten(const std::string &version);  // the writer task (FirmwareUpdate::setOnWritten)
@@ -92,7 +94,9 @@ private:
     // The update task's own.
     EspReleaseFeed feed_;
     hubbo::auth::Hash &hash_;
-    std::string versionOverride_;
+#ifdef HUBBO_DEV_CONSOLE
+    std::string versionOverride_;  // setTest()
+#endif
     uint32_t nextCheckMs_ = kFirstCheckMs;
     uint32_t nextHealthMs_ = 0;
     bool configLoaded_ = false;

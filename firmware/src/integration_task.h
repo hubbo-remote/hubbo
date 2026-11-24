@@ -4,9 +4,9 @@
 // (below httpd at 5: a TLS handshake is seconds of CPU and must not stall
 // the API; W5500 RX is at 15 and lwIP at 18), with an 8 KB
 // stack in PSRAM (it never touches flash: secrets reach it from httpd/boot).
-// Two run on it: "ha" owns the Home Assistant WebSocket connection, and
-// "mqtt" the MQTT bridge (mqtt_transport.h). The RF loop on core 1 never
-// waits on either.
+// Three run on it: "ha" owns the Home Assistant WebSocket connection,
+// "mqtt" the MQTT bridge (mqtt_transport.h) and "update" the online update
+// checks (firmware_releases.h). The RF loop on core 1 never waits on them.
 //
 // Each pass: run posted jobs, then the service callback (transport.poll(),
 // client.poll(), adapter.service()). The service's socket wait is the pass's
