@@ -18,8 +18,10 @@ REPO = os.path.normpath(os.path.join(PROJECT, ".."))
 BUILD = env.subst("$BUILD_DIR")  # noqa: F821
 TOOLS = os.path.join(REPO, "core", "tools")
 
-# Built here, before the library finder adds core's headers for our sources.
-env.Append(CPPPATH=[os.path.join(REPO, "core", "include")])  # noqa: F821
+# Built here, before the library finder adds core's headers (and its vendored
+# ArduinoJson, which core/library.json adds for core only) for our sources.
+env.Append(CPPPATH=[os.path.join(REPO, "core", "include"),  # noqa: F821
+                    os.path.join(REPO, "core", "third_party", "ArduinoJson")])
 
 
 def embed(name, tool, inputs, output):
