@@ -1,13 +1,29 @@
 // Named queries. Keys are prefixes for invalidate().
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { api } from '@/api/client'
 import { setQueryData, useQuery } from '@/api/hooks'
-import type { Capabilities, DeviceDetail, SmartSlotActions } from '@/api/types'
+import type { Capabilities, DeviceDetail, HubUpdate, SmartSlotActions } from '@/api/types'
+import { toastError } from '@/components/ui/toast'
 import type { Catalog } from '@/lib/activity'
 
 export const useSession = () => useQuery('session', () => api.session())
 /** `enabled: false` skips the request (the hub's settings need the admin's session). */
 export const useHub = (enabled = true) => useQuery(enabled ? 'hub' : null, () => api.hub())
+/** Saves hub settings as they change (a switch, a select): `saving` while it's in flight, a toast if it fails. */
+export function useSaveHub() {
+  const [saving, setSaving] = useState(false)
+  const save = async (patch: HubUpdate) => {
+    setSaving(true)
+    try {
+      setQueryData('hub', await api.updateHub(patch))
+    } catch (e) {
+      toastError('Couldn’t save the setting', e)
+    } finally {
+      setSaving(false)
+    }
+  }
+  return { save, saving }
+}
 /** `enabled: false` skips the request (e.g. before there's a session to make it with). */
 export const useStatus = (pollMs = 3000, enabled = true) => useQuery(enabled ? 'status' : null, () => api.status(), { pollMs })
 export const useDevices = (enabled = true) => useQuery(enabled ? 'devices' : null, () => api.devices())

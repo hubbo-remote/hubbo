@@ -1356,10 +1356,13 @@ export interface paths {
         get: operations["getHub"];
         /**
          * Rename the hub, or change its settings
-         * @description Send `name`, `check_updates` or both. Spaces at either end of the
-         *     name are dropped, then the rest must be a `HubName`; otherwise `422
-         *     validation_failed` at `/name` (`required`, `too_long` or
-         *     `invalid_name`). `hostname` follows the name (see `Hub`).
+         * @description Send any of `name`, `check_updates` and `radio_power`. Spaces at
+         *     either end of the name are dropped, then the rest must be a
+         *     `HubName`; otherwise `422 validation_failed` at `/name`
+         *     (`required`, `too_long` or `invalid_name`). A `radio_power` that
+         *     isn't one of `RadioPower` is `422 validation_failed` at
+         *     `/radio_power` (`invalid_enum_value`), and nothing is saved.
+         *     `hostname` follows the name (see `Hub`).
          */
         put: operations["updateHub"];
         post?: never;
@@ -2817,6 +2820,7 @@ export interface components {
         HubName: string;
         Hub: {
             name: components["schemas"]["HubName"];
+            radio_power: components["schemas"]["RadioPower"];
             /**
              * @description Check for firmware releases at boot and every 24 hours (on by
              *     default). Off, only `POST /admin/firmware/check` checks. Nothing
@@ -2846,7 +2850,16 @@ export interface components {
             /** @example Living Room */
             name?: string;
             check_updates?: boolean;
+            radio_power?: components["schemas"]["RadioPower"];
         };
+        /**
+         * @description How strongly the hub's remote radio transmits (`max` by default).
+         *     Leave it at `max` unless the radio module has its own amplifier and
+         *     an external antenna: those can work worse at full power, and a
+         *     lower setting suits them better.
+         * @enum {string}
+         */
+        RadioPower: "low" | "medium" | "high" | "max";
         FirmwareInstall: {
             version: components["schemas"]["ReleaseVersion"];
         };

@@ -8,6 +8,7 @@ import { FactoryReset } from '@/components/admin/FactoryReset'
 import { HubSettings } from '@/components/admin/HubSettings'
 import { NetworkInfo } from '@/components/admin/NetworkInfo'
 import { PairRemote } from '@/components/admin/PairRemote'
+import { RadioPowerSetting } from '@/components/admin/RadioPowerSetting'
 import { RemoteEndpoint } from '@/components/admin/RemoteEndpoint'
 import { ErrorState, PageHeader, Section, TypedWordField } from '@/components/common'
 import { RemoteSvg } from '@/components/remote/RemoteSvg'
@@ -221,6 +222,9 @@ function RemoteTab() {
         </Section>
         <Section title="Channel and address">
           <RemoteEndpoint />
+        </Section>
+        <Section title="Radio transmit power" description="Lower this if your radio module has an amplifier and an external antenna.">
+          <RadioPowerSetting />
         </Section>
       </div>
       <div className="hidden lg:block">
