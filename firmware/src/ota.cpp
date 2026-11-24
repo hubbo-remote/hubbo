@@ -1,5 +1,6 @@
 #include "ota.h"
 #include "console.h"
+#include "update_lock.h"
 
 #include <Arduino.h>
 #include <ArduinoOTA.h>
@@ -18,8 +19,6 @@
 namespace hubbo::fw::ota {
 
 namespace {
-std::atomic<Owner> currentOwner{Owner::Idle};
-bool (*rebootPending)() = nullptr;
 bool started = false;
 void (*startHook)() = nullptr;
 void (*writtenHook)() = nullptr;
@@ -46,7 +45,7 @@ constexpr uint32_t kWatcherStackBytes = 2560;
 std::atomic<bool> packetWaiting{false};
 TaskHandle_t watcher = nullptr;
 int otaSocket = -1;
-bool pollAlways = false;   // no socket found: poll every loop, as before
+bool pollAlways = false;   // no socket found: poll every loop
 bool active = false;        // a packet came in the last kActiveMs
 uint32_t lastPacketMs = 0;
 
@@ -69,22 +68,13 @@ int findOtaSocket() {
     return -1;
 }
 
-// claim()'s rule, also the watcher's: may `who` take (or keep) the flag?
-bool claimable(Owner who) {
-    const Owner holder = currentOwner.load();
-    if (holder == who) {
-        return true;
-    }
-    return holder == Owner::Idle && !(rebootPending != nullptr && rebootPending());
-}
-
 void watch(void *) {
     for (;;) {
         fd_set readable;
         FD_ZERO(&readable);
         FD_SET(otaSocket, &readable);
         if (select(otaSocket + 1, &readable, nullptr, nullptr, nullptr) > 0) {
-            if (!claimable(Owner::Arduino)) {
+            if (!update_lock::claimable(update_lock::Owner::Arduino)) {
                 uint8_t drop[16];  // another holder or a reboot: no answer to espota
                 recv(otaSocket, drop, sizeof(drop), MSG_DONTWAIT);
                 continue;
@@ -101,34 +91,14 @@ void watch(void *) {
 // flag across the call covers it. Between calls (waiting for the auth reply)
 // it's free.
 void handleIfOwner() {
-    if (!claim(Owner::Arduino)) {
+    if (!update_lock::claim(update_lock::Owner::Arduino)) {
         return;  // someone else holds it, or a reboot is pending
     }
     ArduinoOTA.handle();
-    release(Owner::Arduino);  // after a written image, the pending reboot refuses new claims
+    update_lock::release(update_lock::Owner::Arduino);  // after a written image, the pending reboot refuses new claims
 }
 }  // namespace
 
-bool claim(Owner who) {
-    if (!claimable(who)) {
-        return false;
-    }
-    Owner expected = Owner::Idle;
-    return currentOwner.compare_exchange_strong(expected, who) || expected == who;
-}
-
-bool holds(Owner who) {
-    return currentOwner.load() == who;
-}
-
-void release(Owner who) {
-    Owner expected = who;
-    currentOwner.compare_exchange_strong(expected, Owner::Idle);
-}
-
-void setRebootPending(bool (*pending)()) {
-    rebootPending = pending;
-}
 
 bool enabled() {
     return sizeof(HUBBO_OTA_PASSWORD_SHA256) > 1;
@@ -142,7 +112,7 @@ void begin(const char *hostname, void (*onStart)(), void (*onWritten)()) {
     writtenHook = onWritten;
     ArduinoOTA.setHostname(hostname);
     ArduinoOTA.setPort(kPort);
-    ArduinoOTA.setMdnsEnabled(false);      // main runs mDNS for the whole hub
+    ArduinoOTA.setMdnsEnabled(false);      // HubName runs mDNS for the whole hub
     ArduinoOTA.setRebootOnSuccess(false);  // onWritten -> the caller's reboot path
     ArduinoOTA.setPasswordHash(HUBBO_OTA_PASSWORD_SHA256);
     ArduinoOTA.setTimeout(kReceiveTimeoutMs);

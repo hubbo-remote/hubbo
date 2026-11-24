@@ -5,7 +5,7 @@
 
 #include "console.h"
 #include "flash_fs.h"
-#include "ota.h"
+#include "update_lock.h"
 
 namespace hubbo::fw {
 
@@ -51,8 +51,8 @@ bool FactoryReset::requestFactoryReset() {
     // request, or one after a restart was accepted, finds it held already;
     // a failed save then leaves it held (only httpd claims Reboot, so the
     // check and the claim can't race).
-    const bool alreadyHeld = ota::holds(ota::Owner::Reboot);
-    if (!ota::claim(ota::Owner::Reboot)) {
+    const bool alreadyHeld = update_lock::holds(update_lock::Owner::Reboot);
+    if (!update_lock::claim(update_lock::Owner::Reboot)) {
         return false;  // an update is writing, or another reboot is pending
     }
     Preferences prefs;
@@ -60,7 +60,7 @@ bool FactoryReset::requestFactoryReset() {
     prefs.end();
     if (!saved) {
         if (!alreadyHeld) {
-            ota::release(ota::Owner::Reboot);
+            update_lock::release(update_lock::Owner::Reboot);
         }
         con.println("factory reset: couldn't save the request");
         return false;

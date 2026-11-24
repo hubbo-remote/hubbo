@@ -23,28 +23,12 @@
 // Idle, the loop doesn't touch the OTA socket (lwIP's lock stalls it under
 // load): a core-0 watcher task select()s on it and flags the loop.
 //
-// One update at a time: ArduinoOTA, a web update (firmware_update.h), a
-// factory reset (factory_reset.h) and a restart (restart.h) each claim the
-// owner flag below first.
+// It claims update_lock's owner flag (update_lock.h) for each handle().
 // While anyone else holds it, or a reboot is pending, the loop never runs
 // handle() (an espota upload just gets no answer) and the watcher drops OTA
 // packets.
 
 namespace hubbo::fw::ota {
-
-// Reboot: a restart or factory reset, held until the restart. Either one
-// asking while the other is pending is accepted, and both happen at once.
-enum class Owner : uint8_t { Idle, Web, Arduino, Reboot };
-
-// Any task. True if `who` now holds the flag, or already did (a holder's
-// repeat claim succeeds even with a reboot pending). Otherwise false once a
-// reboot is pending (setRebootPending), so nothing starts writing the slot
-// after an update has finished.
-bool claim(Owner who);
-void release(Owner who);  // no-op unless `who` holds it
-bool holds(Owner who);
-// Once at boot, before anything claims.
-void setRebootPending(bool (*pending)());
 
 bool enabled();
 

@@ -86,18 +86,8 @@ void RemoteRadio::persist(const RadioEndpoint &endpoint, bool erase) {
     }
 }
 
-const char *RemoteRadio::stateName(State state) {
-    switch (state) {
-        case State::NotReady: return "not_ready";
-        case State::Idle: return "idle";
-        case State::Scanning: return "scanning";
-        case State::Listening: return "listening";
-    }
-    return "not_ready";
-}
-
 uint32_t RemoteRadio::scanRemainingMs(uint32_t nowMs) const {
-    if (state_ != State::Scanning) {
+    if (state_ != api::RadioState::Scanning) {
         return 0;
     }
     const uint32_t elapsed = nowMs - scanStartedMs_;
@@ -109,7 +99,7 @@ uint8_t RemoteRadio::scanChannel() const {
 }
 
 bool RemoteRadio::begin(config::RadioPower power) {
-    if (state_ != State::NotReady) {
+    if (state_ != api::RadioState::NotReady) {
         return true;
     }
     SPI.begin(board::nrf24::kSck, board::nrf24::kMiso, board::nrf24::kMosi, board::nrf24::kCsn);
@@ -123,7 +113,7 @@ bool RemoteRadio::begin(config::RadioPower power) {
     radio.setCRCLength(RF24_CRC_16);
     applyPower(power);
     hasRpd_ = radio.isPVariant();
-    state_ = State::Idle;
+    state_ = api::RadioState::Idle;
     con.printf("radio: nRF24L01+ ready (%s, power %s)\n", hasRpd_ ? "+ variant" : "non-+",
                config::radioPowerName(power));
 
@@ -138,13 +128,13 @@ bool RemoteRadio::begin(config::RadioPower power) {
 
 void RemoteRadio::loop(uint32_t nowMs) {
     switch (state_) {
-        case State::NotReady:
-        case State::Idle:
+        case api::RadioState::NotReady:
+        case api::RadioState::Idle:
             break;
-        case State::Scanning:
+        case api::RadioState::Scanning:
             scanStep(nowMs);
             break;
-        case State::Listening:
+        case api::RadioState::Listening:
             drain();
             break;
     }
@@ -157,11 +147,11 @@ void RemoteRadio::applyPower(config::RadioPower power) {
 }
 
 void RemoteRadio::setPower(config::RadioPower power) {
-    if (state_ == State::NotReady || power == power_) {
+    if (state_ == api::RadioState::NotReady || power == power_) {
         return;
     }
     // W_REGISTER is for standby only (datasheet): drop out of RX around it.
-    const bool listening = state_ == State::Listening;
+    const bool listening = state_ == api::RadioState::Listening;
     if (listening) {
         radio.ce(LOW);
     }
@@ -181,7 +171,7 @@ void RemoteRadio::listen(const RadioEndpoint &endpoint) {
     radio.openReadingPipe(2, endpoint.address & 0xFFFFFFFFFFULL);
     radio.startListening();
     endpoint_ = endpoint;
-    state_ = State::Listening;
+    state_ = api::RadioState::Listening;
     con.printf("radio: listening on channel %u, address 0x%010llX\n",
                   static_cast<unsigned>(endpoint.channel),
                   static_cast<unsigned long long>(endpoint.address));
@@ -190,7 +180,7 @@ void RemoteRadio::listen(const RadioEndpoint &endpoint) {
 void RemoteRadio::stopListening() {
     radio.stopListening();
     radio.flush_rx();
-    state_ = State::Idle;
+    state_ = api::RadioState::Idle;
     sink_.onListeningStopped();
 }
 
@@ -213,9 +203,7 @@ void RemoteRadio::drain() {
         uint8_t bytes[32];
         const uint8_t length = radio.getDynamicPayloadSize();
         if (length == 0 || length > sizeof(bytes)) {
-            // RF24 already flushed a corrupt payload.
-            oversizeCount_++;
-            continue;
+            continue;  // RF24 already flushed a corrupt payload
         }
         radio.read(bytes, length);
         const uint32_t readUs = micros();
@@ -230,27 +218,27 @@ void RemoteRadio::drain() {
 }
 
 void RemoteRadio::forgetEndpoint() {
-    if (state_ == State::Scanning) {
+    if (state_ == api::RadioState::Scanning) {
         stopScan();
     }
-    if (state_ == State::Listening) {
+    if (state_ == api::RadioState::Listening) {
         stopListening();
     }
     endpoint_ = {};
-    if (state_ != State::NotReady) {
+    if (state_ != api::RadioState::NotReady) {
         persist(endpoint_, true);
     }
     con.println("radio: Hub endpoint forgotten");
 }
 
 bool RemoteRadio::setEndpoint(const RadioEndpoint &endpoint) {
-    if (state_ == State::NotReady || !endpoint.isValid()) {
+    if (state_ == api::RadioState::NotReady || !endpoint.isValid()) {
         return false;
     }
-    if (state_ == State::Scanning) {
+    if (state_ == api::RadioState::Scanning) {
         stopScan();
     }
-    if (state_ == State::Listening) {
+    if (state_ == api::RadioState::Listening) {
         stopListening();  // releases held buttons (PayloadSink::onListeningStopped)
     }
     persist(endpoint, false);
@@ -261,10 +249,10 @@ bool RemoteRadio::setEndpoint(const RadioEndpoint &endpoint) {
 // --- Scanning --------------------------------------------------------------
 
 bool RemoteRadio::startScan(uint32_t nowMs, uint32_t timeoutMs) {
-    if (state_ == State::NotReady || state_ == State::Scanning) {
+    if (state_ == api::RadioState::NotReady || state_ == api::RadioState::Scanning) {
         return false;
     }
-    if (state_ == State::Listening) {
+    if (state_ == api::RadioState::Listening) {
         stopListening();  // leaves the radio in TX mode, as begin() does
     }
     radio.flush_tx();
@@ -275,23 +263,23 @@ bool RemoteRadio::startScan(uint32_t nowMs, uint32_t timeoutMs) {
     scanStartedMs_ = nowMs;
     scanTimeoutMs_ = timeoutMs;
     lastScanStepMs_ = nowMs - kScanStepMs;
-    state_ = State::Scanning;
+    state_ = api::RadioState::Scanning;
     con.println("radio: scanning for a Harmony Hub; press its pair button");
     return true;
 }
 
 void RemoteRadio::stopScan() {
-    if (state_ == State::Scanning) {
-        finishScan(ScanResult::Stopped);
+    if (state_ == api::RadioState::Scanning) {
+        finishScan(api::ScanState::Stopped);
     }
 }
 
-void RemoteRadio::finishScan(ScanResult result) {
+void RemoteRadio::finishScan(api::ScanState result) {
     lastScanResult_ = result;
-    state_ = State::Idle;
+    state_ = api::RadioState::Idle;
     switch (result) {
-        case ScanResult::TimedOut: con.println("radio: scan timed out, no Hub found"); break;
-        case ScanResult::Stopped: con.println("radio: scan stopped"); break;
+        case api::ScanState::TimedOut: con.println("radio: scan timed out, no Hub found"); break;
+        case api::ScanState::Stopped: con.println("radio: scan stopped"); break;
         default: break;
     }
     if (endpoint_.isValid()) {
@@ -327,7 +315,7 @@ void RemoteRadio::scanStep(uint32_t nowMs) {
                 con.println("radio: found Harmony Hub");
                 endpoint_ = found;
                 persist(found, false);
-                finishScan(ScanResult::Found);
+                finishScan(api::ScanState::Found);
                 return;
             }
             con.println("radio: Hub reply had an invalid address, still scanning");
@@ -335,7 +323,7 @@ void RemoteRadio::scanStep(uint32_t nowMs) {
     }
 
     if (nowMs - scanStartedMs_ >= scanTimeoutMs_) {
-        finishScan(ScanResult::TimedOut);
+        finishScan(api::ScanState::TimedOut);
         return;
     }
 
