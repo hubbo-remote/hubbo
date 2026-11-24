@@ -53,6 +53,11 @@ void printLoopLine(const char *prefix, uint32_t maxGapUs, uint32_t slow, const c
                static_cast<unsigned long>(slow), suffix);
 }
 uint32_t lastLoopUs = 0;
+#ifdef HUBBO_REMOTE_LOG
+hubbo::remote::RemoteLog *remoteLog = nullptr;
+uint32_t lastStallMs = 0;  // the last RF stall logged
+uint32_t lastStallGapUs = 0;
+#endif
 bool inPayload = false;
 uint32_t payloadReadUs = 0;
 
@@ -142,6 +147,26 @@ bool TimedHidTransport::timed(bool sent) {
     return sent;
 }
 
+#ifdef HUBBO_REMOTE_LOG
+void setRemoteLog(hubbo::remote::RemoteLog *log) {
+    remoteLog = log;
+}
+
+bool LoggedHidTransport::logged(std::string_view deviceId, uint32_t startUs, bool sent) {
+    if (!sent && remoteLog != nullptr) {
+        hubbo::remote::LogEntry entry;
+        entry.atMs = millis();
+        entry.type = hubbo::remote::LogType::Action;
+        entry.result = hubbo::ExecResult::failed(hubbo::ErrorCode::AdapterFailed);
+        entry.durationMs = (micros() - startUs) / 1000;
+        entry.integrationId.assign(hubbo::kBleIntegrationId);
+        entry.deviceId.assign(deviceId);
+        remoteLog->append(entry);
+    }
+    return sent;
+}
+#endif
+
 void loopTick() {
     const uint32_t nowUs = micros();
     const uint32_t gap = nowUs - lastLoopUs;
@@ -151,6 +176,16 @@ void loopTick() {
     }
     if (gap > 5000) {
         slowLoops++;
+#ifdef HUBBO_REMOTE_LOG
+        // One entry per burst (a flash write stalls every few ms): the first,
+        // then within a second only a longer stall.
+        const uint32_t nowMs = millis();
+        if (nowMs - lastStallMs >= 1000 || gap > lastStallGapUs) {
+            lastStallMs = nowMs;
+            lastStallGapUs = gap;
+            hubbo::remote::logAnomaly(remoteLog, nowMs, hubbo::remote::Anomaly::RfStall, gap / 1000);
+        }
+#endif
     }
 }
 

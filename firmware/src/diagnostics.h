@@ -15,8 +15,13 @@
 #include <cstddef>
 #include <cstdint>
 
+#ifdef HUBBO_REMOTE_LOG
+#include <Arduino.h>  // micros()
+#endif
+
 #include "hubbo/integrations/ble_hid.h"
 #include "hubbo/remote/input.h"
+#include "hubbo/remote/log.h"
 #include "latency.h"
 
 namespace hubbo::fw::diag {
@@ -35,7 +40,13 @@ void beginPayload(uint32_t readUs);
 void endPayload();
 // A remote event reached the engine.
 void eventEmitted(hubbo::remote::EventKind kind);
-// Call once per loop iteration.
+#ifdef HUBBO_REMOTE_LOG
+// The remote log for the loop's RF stalls and the Bluetooth send failures
+// below (dev builds). Set once in setup().
+void setRemoteLog(hubbo::remote::RemoteLog *log);
+#endif
+// Call once per loop iteration. A gap over 5 ms is an RF stall in the remote
+// log (dev builds).
 void loopTick();
 void printLatency();
 // Before a deliberate restart (any task): prints the loop line ("loop: max
@@ -67,5 +78,28 @@ private:
     static bool timed(bool sent);
     hubbo::integrations::HidTransport &inner_;
 };
+
+#ifdef HUBBO_REMOTE_LOG
+// HidTransport decorator that puts a failed send, and how long it took, in
+// the remote log (dev builds). Successes aren't logged: the engine logs the
+// steps.
+class LoggedHidTransport : public hubbo::integrations::HidTransport {
+public:
+    explicit LoggedHidTransport(hubbo::integrations::HidTransport &inner) : inner_(inner) {}
+    bool connected(std::string_view deviceId) const override { return inner_.connected(deviceId); }
+    bool sendKeyboard(std::string_view deviceId, const uint8_t report[8]) override {
+        const uint32_t startUs = micros();
+        return logged(deviceId, startUs, inner_.sendKeyboard(deviceId, report));
+    }
+    bool sendConsumer(std::string_view deviceId, uint16_t usage) override {
+        const uint32_t startUs = micros();
+        return logged(deviceId, startUs, inner_.sendConsumer(deviceId, usage));
+    }
+
+private:
+    static bool logged(std::string_view deviceId, uint32_t startUs, bool sent);
+    hubbo::integrations::HidTransport &inner_;
+};
+#endif
 
 }  // namespace hubbo::fw::diag

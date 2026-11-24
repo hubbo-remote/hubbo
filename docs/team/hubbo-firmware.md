@@ -725,3 +725,31 @@ Design: `docs/design/firmware-updates.md`. Spike code kept out of the tree.
 - /simplify: comments trimmed. Skipped: a radio-only enum (firmware already uses core types) and
   dropping `begin(power)` for the first poll (the brief says apply at start).
 - Build (`_ota`): RAM 102,136 B, flash 2,492,667 B (38.0%).
+
+## Remote log (branch `radio-power`; design `docs/design/remote-log.md`; on .196)
+
+- Dev builds only: `scripts/image_marker.py` appends `HUBBO_REMOTE_LOG=1` to the global CPPDEFINES
+  when HUBBO_FW_VERSION is unset (core, a lib, gets it too). `gate fw` builds the plain env with
+  HUBBO_FW_VERSION=gate (flag-off, like a release) and _ota flag-on.
+- main.cpp (flag only): `PortMuxLogLock` (core's `LogLock`), `RemoteLog` placement-new in PSRAM
+  (800 KB) after RunHistory, given to `input.setLog`, `engine.setRemoteLog`, `diag::setRemoteLog`,
+  `context.remoteLog`. `bleAdapter` sits on `hid` = `LoggedHidTransport` (flag) or `timedHid`.
+- Signal: `RemoteRadio::readSignal()` = `testRPD()` (one register read), once per `drain()` pass
+  (RPD latches on the newest packet, so queued payloads share it); Unknown on a non-+ radio and in
+  release builds (no read at all).
+- RF stall: `diag::loopTick` logs `rf_stall` (ms) for a gap over 5 ms: the first, then within 1 s
+  only a longer one (a flash write burst gives ~1 a second).
+- BLE: `LoggedHidTransport` logs only a failed send (Action, AdapterFailed, ble, device, ms). A
+  failure inside an executed step is also the engine's step entry (two entries, rare); releases
+  and poll sends are only ours.
+- Flag-off image: no log symbols of ours (nm). Core/api's `sendRemoteLog` route code (1.6 KB) is in
+  it though. Release-style 0.0.0: RAM 91,512 B, flash 2,449,827 B. Dev _ota: RAM 102,232 B,
+  flash 2,510,207 B.
+- .196, idle: loop 2,052 us, 0 over 5 ms. Internal free ~72.4 KB (unchanged). PSRAM free 7.34 MB
+  with the log, largest block 7.2 MB (the 2.5 MB download fits).
+- Full log (temp console fill, removed): 8,292 appends, 102 dropped. GET /remote/log 680 KB, ~3.3 s
+  each, 3 in a row: PSRAM min 6.15 MB (peak ~1.2 MB), internal min 69.1 KB (was 70.8), loop 2,511 us,
+  0 over 5 ms. The fill itself (one loop pass) stalled 33 ms, logged as rf_stall.
+- Unverified: packet entries from real presses and their signal (no presses on .196; the lead
+  reads the media room hub). /simplify done; skipped: a separate dev_build.py, stall coalescing in
+  core, a firmware remote_log module, merging the two HID decorators.

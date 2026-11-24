@@ -16,6 +16,7 @@
 #include <cstdint>
 
 #include "hubbo/config/hub.h"
+#include "hubbo/remote/packet.h"
 
 namespace hubbo::fw {
 
@@ -30,8 +31,11 @@ class PayloadSink {
 public:
     virtual ~PayloadSink() = default;
     // `readUs` is micros() right after the payload left the radio's FIFO.
+    // `signal`: Strong/Weak from the RPD (-64 dBm), Unknown without one (a
+    // non-+ radio, a release build). It latches on the latest packet, so
+    // payloads queued in the FIFO together share it.
     virtual void onRadioPayload(const uint8_t *bytes, uint8_t length, uint8_t pipe,
-                                uint32_t readUs) = 0;
+                                uint32_t readUs, remote::Signal signal) = 0;
     // Listening stopped (scan, forget): no release packet will arrive for
     // anything held, so release it now.
     virtual void onListeningStopped() = 0;
@@ -106,6 +110,7 @@ private:
     void scanStep(uint32_t nowMs);
     void finishScan(ScanResult result);
     void drain();
+    remote::Signal readSignal() const;
 
     void persist(const RadioEndpoint &endpoint, bool erase);
     void applyPower(config::RadioPower power);
@@ -115,6 +120,7 @@ private:
     State state_ = State::NotReady;
     RadioEndpoint endpoint_;
     config::RadioPower power_ = config::RadioPower::Max;  // RF24's reset default
+    bool hasRpd_ = false;  // an nRF24L01+ (RPD needs the + variant)
     ScanResult lastScanResult_ = ScanResult::None;
 
     uint32_t scanStartedMs_ = 0;

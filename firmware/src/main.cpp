@@ -62,6 +62,7 @@
 #include "hubbo/integrations/mqtt_bridge.h"
 #include "hubbo/remote/button.h"
 #include "hubbo/remote/input.h"
+#include "hubbo/remote/log.h"
 #include "hubbo/storage/record_store.h"
 #include "hubbo/storage/state_store.h"
 #include "littlefs_storage.h"
@@ -90,7 +91,25 @@ HubName hubName;  // Bluetooth and mDNS names, live; DHCP and OTA at boot
 
 BleHid ble;
 diag::TimedHidTransport timedHid(ble);
-hubbo::integrations::BleHidAdapter bleAdapter(hubbo::kBleIntegrationId, timedHid);
+#ifdef HUBBO_REMOTE_LOG
+// The remote log (dev builds, docs/design/remote-log.md): allocated in PSRAM
+// in setup(); null if that fails.
+class PortMuxLogLock : public hubbo::remote::LogLock {
+public:
+    void lock() override { portENTER_CRITICAL(&mux_); }
+    void unlock() override { portEXIT_CRITICAL(&mux_); }
+
+private:
+    portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
+};
+PortMuxLogLock remoteLogLock;
+hubbo::remote::RemoteLog *remoteLog = nullptr;
+diag::LoggedHidTransport loggedHid(timedHid);
+hubbo::integrations::HidTransport &hid = loggedHid;
+#else
+hubbo::integrations::HidTransport &hid = timedHid;
+#endif
+hubbo::integrations::BleHidAdapter bleAdapter(hubbo::kBleIntegrationId, hid);
 // Home Assistant: the transport and client live on the HA task; the adapter
 // bridges the engine task (execute/poll) and the HA task (service).
 EspWsTransport haTransport;
@@ -192,12 +211,13 @@ hubbo::remote::RemoteInput input(eventTap);
 
 class InputFeeder : public PayloadSink {
 public:
-    void onRadioPayload(const uint8_t *bytes, uint8_t length, uint8_t pipe, uint32_t readUs) override {
+    void onRadioPayload(const uint8_t *bytes, uint8_t length, uint8_t pipe, uint32_t readUs,
+                        hubbo::remote::Signal signal) override {
         if (diag::rawLog()) {
             diag::logPayload(bytes, length, pipe);
         }
         diag::beginPayload(readUs);
-        input.onPayload(bytes, length, millis());
+        input.onPayload(bytes, length, millis(), signal);
         diag::endPayload();
     }
     void onListeningStopped() override { input.releaseAll(millis()); }
@@ -638,6 +658,9 @@ void startApi() {
     context.releases = &releases;
     context.factoryReset = &factoryReset;
     context.hub = &hubSettings;
+#ifdef HUBBO_REMOTE_LOG
+    context.remoteLog = remoteLog;
+#endif
     context.restart = &restart;
     context.mqtt = &mqttBridge;
     context.homeAssistant = &haClient;
@@ -1234,6 +1257,17 @@ void setup() {
     } else {
         con.println("engine: no PSRAM for the run history; runs aren't recorded");
     }
+#ifdef HUBBO_REMOTE_LOG
+    if (void *mem = heap_caps_malloc(sizeof(hubbo::remote::RemoteLog), MALLOC_CAP_SPIRAM)) {
+        remoteLog = new (mem) hubbo::remote::RemoteLog(remoteLogLock);
+        input.setLog(remoteLog);
+        engine.setRemoteLog(remoteLog);
+        diag::setRemoteLog(remoteLog);
+        con.printf("remote log: on, %u KB in PSRAM\n", static_cast<unsigned>(sizeof(hubbo::remote::RemoteLog) >> 10));
+    } else {
+        con.println("remote log: no PSRAM; off");
+    }
+#endif
     // The config lives for the whole uptime: parse it into PSRAM, keeping
     // internal RAM for lwIP and the drivers started below (prebuilt rule).
     printMemory("boot: before config ");

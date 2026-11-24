@@ -122,8 +122,9 @@ bool RemoteRadio::begin(config::RadioPower power) {
     radio.enableAckPayload();
     radio.setCRCLength(RF24_CRC_16);
     applyPower(power);
+    hasRpd_ = radio.isPVariant();
     state_ = State::Idle;
-    con.printf("radio: nRF24L01+ ready (%s, power %s)\n", radio.isPVariant() ? "+ variant" : "non-+",
+    con.printf("radio: nRF24L01+ ready (%s, power %s)\n", hasRpd_ ? "+ variant" : "non-+",
                config::radioPowerName(power));
 
     RadioEndpoint saved;
@@ -193,8 +194,21 @@ void RemoteRadio::stopListening() {
     sink_.onListeningStopped();
 }
 
+remote::Signal RemoteRadio::readSignal() const {
+#ifdef HUBBO_REMOTE_LOG
+    if (!hasRpd_) {
+        return remote::Signal::Unknown;
+    }
+    return radio.testRPD() ? remote::Signal::Strong : remote::Signal::Weak;  // one register read
+#else
+    return remote::Signal::Unknown;  // only the remote log uses it
+#endif
+}
+
 void RemoteRadio::drain() {
     uint8_t pipe = 0;
+    bool signalRead = false;  // RPD latches on the newest packet: one read per pass serves them all
+    remote::Signal signal = remote::Signal::Unknown;
     while (radio.available(&pipe)) {
         uint8_t bytes[32];
         const uint8_t length = radio.getDynamicPayloadSize();
@@ -205,9 +219,13 @@ void RemoteRadio::drain() {
         }
         radio.read(bytes, length);
         const uint32_t readUs = micros();
+        if (!signalRead) {
+            signal = readSignal();
+            signalRead = true;
+        }
         payloadCount_++;
         lastPayloadMs_ = millis();
-        sink_.onRadioPayload(bytes, length, pipe, readUs);
+        sink_.onRadioPayload(bytes, length, pipe, readUs, signal);
     }
 }
 
