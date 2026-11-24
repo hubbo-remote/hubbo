@@ -1885,6 +1885,29 @@ def remote_flow(c):
            expect=200, label="endpoint back")
 
 
+def remote_log_flow(c):
+    """The remote log: a hub-sim press and release show up as packets and
+    events in order (oldest first), with the press's signal."""
+    if MOCK:
+        return skip("the remote log", "the mock has no radio")
+    c.control("remote/info/press?signal=weak")
+    c.control("advance?ms=100")
+    c.control("remote/info/release?signal=strong")  # the signal sticks: back to the default
+    c.control("advance?ms=100")
+    log = c.call("getRemoteLog", "GET", "/remote/log", expect=200, label="the remote log after a press")[1] or {}
+    expect(0 <= log.get("span_ms", -1) <= 300000, f"remote log span: {log.get('span_ms')}")
+    entries = log.get("entries", [])
+    ages = [e["age_ms"] for e in entries]
+    expect(ages == sorted(ages, reverse=True), f"remote log not oldest first: {ages}")
+    info = [e for e in entries if e.get("button") == "info"]
+    downs = [i for i, e in enumerate(info) if (e["type"], e["kind"]) == ("packet", "down")]
+    press = info[downs[-1]:] if downs else []  # from this press's down packet on
+    seen = [(e["type"], e["kind"]) for e in press]
+    want = [("packet", "down"), ("event", "down"), ("packet", "up"), ("event", "up")]
+    expect([x for x in seen if x in want] == want, f"the press in the remote log: {seen}")
+    expect([e["signal"] for e in press if e["type"] == "packet"][:1] == ["weak"], f"the press's signal: {press}")
+
+
 def ble_pairing_flow(c):
     """Bluetooth hosts, one per device: pairing a device's own host (the
     `ble/bond` control bonds one in the open window), one window at a time,
@@ -2012,6 +2035,7 @@ def noauth(c, checker):
     activity_flow(c)
     smart_buttons_flow(c)
     remote_flow(c)
+    remote_log_flow(c)
     ble_pairing_flow(c)
     candidate = ha_flow(c)
     admin_flow(c, checker, candidate)
@@ -2063,6 +2087,8 @@ def token_role_matrix(c, checker, token):
         execute_flow(c)
         activity_flow(c)
         c.call("listActivityRuns", "GET", "/activity-runs", expect=200, label="token reads activity runs")
+        if not MOCK:
+            c.call("getRemoteLog", "GET", "/remote/log", expect=200, label="token reads the remote log")
         c.call("runMacro", "POST", "/macros/run", {"actions": [], "trigger": "guide:tap", "activity_id": None},
                expect=422, label="token tries a macro")
         _, s, _ = c.call("getSession", "GET", "/auth/session", expect=200, label="token session")
@@ -2108,6 +2134,7 @@ def auth_mode(c, checker):
         activity_flow(c)
         smart_buttons_flow(c)
         remote_flow(c)
+        remote_log_flow(c)
         ble_pairing_flow(c)
         ha_flow(c)
         ha_unlink_flow(c)

@@ -30,6 +30,7 @@ constexpr OperationInfo kOperations[] = {
     {Operation::ListActivityRuns, "listActivityRuns", Method::Get, Requirement::TokenOrAdmin, 0},
     {Operation::GetRemoteStatus, "getRemoteStatus", Method::Get, Requirement::TokenOrAdmin, 0},
     {Operation::ListRemoteButtons, "listRemoteButtons", Method::Get, Requirement::TokenOrAdmin, 0},
+    {Operation::GetRemoteLog, "getRemoteLog", Method::Get, Requirement::TokenOrAdmin, 0},
     {Operation::SetupAdmin, "setupAdmin", Method::Post, Requirement::Public, 1024},
     {Operation::Login, "login", Method::Post, Requirement::Public, 1024},
     {Operation::Logout, "logout", Method::Post, Requirement::Public, 0},

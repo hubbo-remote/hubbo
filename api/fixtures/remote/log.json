@@ -1,0 +1,92 @@
+{
+  "span_ms": 300000,
+  "dropped": 0,
+  "entries": [
+    {
+      "type": "packet",
+      "age_ms": 4210,
+      "button": "volume_up",
+      "kind": "down",
+      "signal": "strong"
+    },
+    {
+      "type": "event",
+      "age_ms": 4209,
+      "button": "volume_up",
+      "kind": "down",
+      "timed_out": false
+    },
+    {
+      "type": "action",
+      "age_ms": 4209,
+      "trigger": "volume_up:down",
+      "binding": "command",
+      "integration_id": "ble",
+      "device_id": "dev_apple_tv",
+      "command_id": "press",
+      "result": "ok",
+      "error": null,
+      "duration_ms": 12
+    },
+    {
+      "type": "packet",
+      "age_ms": 4100,
+      "button": "volume_up",
+      "kind": "up",
+      "signal": "weak"
+    },
+    {
+      "type": "event",
+      "age_ms": 4100,
+      "button": "volume_up",
+      "kind": "up",
+      "timed_out": false
+    },
+    {
+      "type": "anomaly",
+      "age_ms": 2050,
+      "anomaly": "rf_stall",
+      "stall_ms": 9
+    },
+    {
+      "type": "packet",
+      "age_ms": 1500,
+      "button": "guide",
+      "kind": "down",
+      "signal": "strong"
+    },
+    {
+      "type": "event",
+      "age_ms": 1500,
+      "button": "guide",
+      "kind": "down",
+      "timed_out": false
+    },
+    {
+      "type": "event",
+      "age_ms": 1000,
+      "button": "guide",
+      "kind": "up",
+      "timed_out": true
+    },
+    {
+      "type": "event",
+      "age_ms": 1000,
+      "button": "guide",
+      "kind": "tap",
+      "timed_out": false
+    },
+    {
+      "type": "action",
+      "age_ms": 1000,
+      "trigger": "guide:tap",
+      "binding": "macro",
+      "integration_id": "system",
+      "device_id": null,
+      "command_id": "wait",
+      "result": "ok",
+      "error": null,
+      "duration_ms": 300
+    }
+  ]
+}

@@ -45,6 +45,7 @@ enum class Operation : uint8_t {
     ListActivityRuns,
     GetRemoteStatus,
     ListRemoteButtons,
+    GetRemoteLog,
     SetupAdmin,
     Login,
     Logout,

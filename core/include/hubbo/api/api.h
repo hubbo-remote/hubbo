@@ -34,6 +34,9 @@
 namespace hubbo::config {
 class ConfigService;
 }
+namespace hubbo::remote {
+class RemoteLog;
+}  // namespace hubbo::remote
 namespace hubbo::integrations {
 class HomeAssistantClient;
 class MqttBridge;
@@ -169,6 +172,9 @@ struct ApiContext {
     // /admin/firmware/check and /install); null: the fields read as never
     // checked, and check/install answer 503.
     FirmwareReleasePort *releases = nullptr;
+    // The remote log (GET /remote/log); null on a release build, where the
+    // route isn't registered at all (a plain 404, as for any unknown path).
+    remote::RemoteLog *remoteLog = nullptr;
 };
 
 // SecretStore key of the "ha_main" access token. Never in config, backups,

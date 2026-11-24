@@ -6,6 +6,7 @@
 #include "hubbo/engine/run_history.h"
 #include "hubbo/remote/button.h"
 #include "hubbo/remote/input.h"
+#include "hubbo/remote/log.h"
 #include "routes.h"
 #include "support.h"
 
@@ -40,8 +41,69 @@ void putRemote(JsonObject r, const RuntimeSnapshot::Remote &remote) {
     counters["unknown_code"] = remote.unknownCodes;
 }
 
+// A step's `result` and `error` (null when Ok): an activity run's and a
+// logged action's.
+void putStepOutcome(JsonObject out, StepOutcome outcome) {
+    out["result"] = stepResultName(outcome.result);
+    out["error"] = outcome.error == ErrorCode::Ok ? nullptr : errorCodeName(outcome.error);
+}
+
+void putLogEntry(JsonObject e, const remote::LogEntry &entry, uint32_t ageMs) {
+    e["type"] = remote::logTypeName(entry.type);
+    e["age_ms"] = ageMs;
+    // A null const char * serializes as null: Button::Count is no button.
+    const char *button = entry.button == remote::Button::Count ? nullptr : remote::buttonName(entry.button);
+    switch (entry.type) {
+        case remote::LogType::Packet:
+            e["button"] = button;
+            e["kind"] = remote::packetKindName(entry.packet);
+            e["signal"] = remote::signalName(entry.signal);
+            break;
+        case remote::LogType::Event:
+            e["button"] = button;
+            e["kind"] = remote::eventKindName(entry.event);
+            e["timed_out"] = entry.timedOut;
+            break;
+        case remote::LogType::Action:
+            if (entry.hasTrigger) {
+                e["trigger"] = formatTrigger(entry.trigger);
+            } else {
+                e["trigger"] = nullptr;
+            }
+            e["binding"] = remote::bindingKindName(entry.binding);
+            putNullableId(e, "integration_id", entry.integrationId.view());
+            putNullableId(e, "device_id", entry.deviceId.view());
+            putNullableId(e, "command_id", entry.commandId);
+            putStepOutcome(e, stepOutcome(entry.result));
+            e["duration_ms"] = entry.durationMs;
+            break;
+        case remote::LogType::Anomaly:
+            e["anomaly"] = remote::anomalyName(entry.anomaly);
+            if (entry.anomaly == remote::Anomaly::RfStall) e["stall_ms"] = entry.stallMs;
+            break;
+    }
+}
+
+// Up to kRemoteLogCapacity entries: each is serialized straight into the
+// body, never one document holding them all.
+void sendRemoteLog(http::Response &out, const remote::RemoteLog &log, uint32_t nowMs) {
+    std::string body = "{\"entries\":[";
+    std::string piece;  // serializeJson() replaces a string's contents
+    JsonDocument doc;
+    const remote::RemoteLogInfo info = log.read(nowMs, [&](const remote::LogEntry &entry, uint32_t ageMs) {
+        doc.clear();
+        putLogEntry(doc.to<JsonObject>(), entry, ageMs);
+        serializeJson(doc, piece);
+        if (body.back() != '[') body += ',';
+        body += piece;
+    });
+    body += "],\"span_ms\":" + std::to_string(info.spanMs) + ",\"dropped\":" + std::to_string(info.dropped) + "}";
+    out.json(200, std::move(body));
+}
+
 // The runs, heap-allocated (about 14 KB on the board: never on the httpd stack). A
 // runtime without a history has none.
+
 std::unique_ptr<ActivityRuns> readRuns(const ApiContext &ctx) {
     auto runs = std::make_unique<ActivityRuns>();
     if (!ctx.runtime.activityRuns(runs.get())) runs->count = 0;
@@ -84,8 +146,7 @@ void putRun(JsonObject out, const ActivityRun &run, uint32_t nowMs) {
         s["index"] = i;
         putNullableId(s, "device_id", step.deviceId.view());
         s["command_id"] = step.commandId;
-        s["result"] = stepResultName(step.result);
-        s["error"] = step.error == ErrorCode::Ok ? nullptr : errorCodeName(step.error);
+        putStepOutcome(s, {step.result, step.error});
         putNullableMs(s, "duration_ms", step.hasDuration(), step.durationMs);
     }
 }
@@ -129,6 +190,12 @@ void addStatusRoutes(RouteSink &sink, ApiContext &ctx) {
         putRemote(doc.to<JsonObject>(), ctx.runtime.snapshot().remote);
         sendJson(out, 200, doc);
     });
+
+    if (ctx.remoteLog != nullptr) {  // null: a release build has no log (and no route)
+        sink.add("/api/v1/remote/log", auth::Operation::GetRemoteLog, [&ctx](auto &, auto &, auto &out) {
+            sendRemoteLog(out, *ctx.remoteLog, static_cast<uint32_t>(ctx.clock.monotonicMs()));
+        });
+    }
 
     sink.add("/api/v1/activity-runs", auth::Operation::ListActivityRuns, [&ctx](auto &, auto &, auto &out) {
         const auto runs = readRuns(ctx);

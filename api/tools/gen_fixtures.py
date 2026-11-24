@@ -795,6 +795,21 @@ fx("status.simulator.json", "getStatus", "200",
         network=dict(STATUS["network"], hostname="hubbo-534d")))
 fx("activity_runs/list.json", "listActivityRuns", "200", {"runs": ACTIVITY_RUNS})
 fx("remote/status.json", "getRemoteStatus", "200", REMOTE_STATUS)
+fx("remote/log.json", "getRemoteLog", "200", {"span_ms": 300000, "dropped": 0, "entries": [
+    {"type": "packet", "age_ms": 4210, "button": "volume_up", "kind": "down", "signal": "strong"},
+    {"type": "event", "age_ms": 4209, "button": "volume_up", "kind": "down", "timed_out": False},
+    {"type": "action", "age_ms": 4209, "trigger": "volume_up:down", "binding": "command", "integration_id": "ble",
+     "device_id": "dev_apple_tv", "command_id": "press", "result": "ok", "error": None, "duration_ms": 12},
+    {"type": "packet", "age_ms": 4100, "button": "volume_up", "kind": "up", "signal": "weak"},
+    {"type": "event", "age_ms": 4100, "button": "volume_up", "kind": "up", "timed_out": False},
+    {"type": "anomaly", "age_ms": 2050, "anomaly": "rf_stall", "stall_ms": 9},
+    {"type": "packet", "age_ms": 1500, "button": "guide", "kind": "down", "signal": "strong"},
+    {"type": "event", "age_ms": 1500, "button": "guide", "kind": "down", "timed_out": False},
+    {"type": "event", "age_ms": 1000, "button": "guide", "kind": "up", "timed_out": True},
+    {"type": "event", "age_ms": 1000, "button": "guide", "kind": "tap", "timed_out": False},
+    {"type": "action", "age_ms": 1000, "trigger": "guide:tap", "binding": "macro", "integration_id": "system",
+     "device_id": None, "command_id": "wait", "result": "ok", "error": None, "duration_ms": 300},
+]})
 fx("remote/buttons.json", "listRemoteButtons", "200", {
     "buttons": [{"name": n, "group": g, "label": l} for n, g, l in BUTTONS],
     "event_kinds": ["down", "up", "tap", "hold"], "hold_ms": 800})

@@ -32,6 +32,11 @@
       "kind": "200"
     },
     {
+      "file": "remote/log.json",
+      "operation": "getRemoteLog",
+      "kind": "200"
+    },
+    {
       "file": "remote/buttons.json",
       "operation": "listRemoteButtons",
       "kind": "200"
