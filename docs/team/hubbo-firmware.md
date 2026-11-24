@@ -863,14 +863,34 @@ Design: `docs/design/firmware-updates.md`. Spike code kept out of the tree.
     below the loop. Never call it from a task below 16.
   - The since-boot loop gap (`lat`) picks up one stall of about 17 ms in the first minutes after
     boot. Judge the budget on windows after the settle.
-- **Open: W5500 starvation (next, own branch; the user decided).** 2–4 parallel HTTP clients
-  looping for under 60 s trip the task watchdog. The recorder showed core 0 in `w5500_tsk` and in
-  `tiT`. Earlier "other watchdog" resets had dumps with an invalid CRC. Not yet shown whether
-  main reproduces it. The loaded window in board-check keeps 4 clients and is expected to fail
-  until the fix lands.
-  Also on that branch: the last OTAs logged a loop max gap of about 30 s for the run being
-  replaced (945 ms on an earlier one). OTA seems to block the loop for the whole upload; check
-  whether that's by design.
+- **Parked: overload reset (the user, 2026-11-24).** Nonstop HTTP from 2 or more clients saturates
+  core 0 and the task watchdog fires (core 0 in tiT), on main's firmware. board-check's
+  `load.clients` is 1 (~36 req/s, far above real use). The firmware stays as main.
+  - Tried and reverted: the W5500 register I/O through an Arduino `SPIClass(HSPI)` passed to
+    `ETH.begin`. It halved the per-frame cost, but under 2 clients the board reset ("other
+    watchdog"): the core dump's crashed task spun in `spiWriteNL` (esp32-hal-spi.c:1577, the
+    busy-wait for a transfer), and the dump ended in erased flash, so the panic handler stalled
+    writing it and the RTC watchdog reset the board (likely what the earlier invalid-CRC dumps
+    were too).
+  - Measured (one client, a new connection per GET of a 102 B reply; core-0 share per task):
+    IDF SPI: 36 req/s, IDLE0 ~10%, httpd/w5500_tsk/tiT ~28% each (~29 ms CPU per request).
+    Arduino SPI: 45 req/s, IDLE0 ~21%, httpd 33%, w5500_tsk 16%, tiT 26%. Keep-alive: 18 req/s
+    at IDLE0 ~80% (latency-bound, not CPU). Ping flood 100/s: w5500_tsk 15.9% -> 7.3%, tiT
+    14.1% -> 8.1% (~1.5 ms CPU per ping now); RTT ~4-5 ms either way.
+  - A 1 kHz core-0 PC sampler (tick hook reading pxTopOfStack's XT_STK_PC; removed) put the IDF
+    SPI path's per-transaction setup (spi_new_trans, DMA priv buffers, hal/ll setup, polling
+    start/end) on top, ~12 transactions per frame.
+  - Parked (the user: stop the deep dive): 0x400559e0 (ROM, 11–14% of samples) is most likely
+    a sampler artifact: it's the resume PC of nearly every blocked task in a core dump, so
+    those samples read a stale saved frame. httpd's ~7 ms CPU per new connection; ping
+    RTT 4-5 ms. Core 1's cache pressure on core 0 (shared I/D cache; a sleeping loop cut ping
+    cost ~40%) is the price of the never-blocking loop, which is by design.
+  - Sampler gotchas: build the dump in small pages (internal RAM only; a ~32 KB std::string
+    aborts), and don't call pcTaskGetName on sampled handles (it panicked).
+  - Side items, noted only: the flash window's max gap varies (12 / 0.4 / 3.3 ms over runs; the
+    budget is 12 ms); OTA logs a loop max gap of ~30 s for the run being replaced (945 ms once),
+    so OTA seems to block the loop for the upload, unchecked whether by design; esp-mqtt stack
+    1.6–1.7 KB free against its 1 KB budget (passes).
 - Cleanup (2026-11-24, the user: "lean and PURPOSEFUL"): main.cpp is wiring, boot and the
   loop; the serial console is commands.{h,cpp}; the dev console is dev_console.{h,cpp} plus
   board_stats.{h,cpp}, one seam (`dev_console::begin/poll`, empty inlines without

@@ -197,7 +197,7 @@ this table mirrors it. A limit changes only with the user's OK, in both places. 
 The check settles until 2 minutes after boot, then runs three windows (`?reset=1` ends each):
 
 - **Idle:** 60 s with nothing going on.
-- **Loaded:** 60 s with an IR hold for the window and 4 HTTP clients cycling `/api/v1/status`, `/`
+- **Loaded:** 60 s with an IR hold for the window and 1 nonstop HTTP client cycling `/api/v1/status`, `/`
   and `/api/v1/openapi.json`. read->hid latency rules need samples, which come only from real
   presses of a bound button; without them they're skipped.
 - **Flash:** two hub-settings saves of `check_updates` with its current value (each a real
@@ -236,8 +236,9 @@ run-time counter is stale); IDLE0's is reported.
 | IDLE0 share | `tasks[].cpu_pct_x100` | idle, loaded | report only | 92% idle |
 | BLE send failures | `integrations.ble.send_failures` | end | report only | 0 |
 
-The 4-client loaded window fails today: sustained parallel HTTP starves core 0's idle task in the
-W5500 RX / lwIP path and the task watchdog resets the board (being fixed separately).
+One nonstop client is about 36 requests a second, far above real use. Sustained parallel HTTP
+(2 or more nonstop clients) saturates core 0, whose Ethernet path costs about 1–2 ms of CPU per
+frame, and the task watchdog resets the board: a known limit, parked.
 
 ## Dev console over HTTP (dev builds)
 

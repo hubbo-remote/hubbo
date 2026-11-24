@@ -289,6 +289,7 @@ running (remote, Bluetooth) but never came back on the network.
   without a cable.
 
 ## Post-MVP backlog
+- **Overload resets (parked 2026-11-24):** 2+ nonstop HTTP clients saturate core 0 (W5500 SPI cost per frame) and the task watchdog resets the board, instead of slowing down. Real use is ~1 request/s, so it's parked; findings in `docs/team/hubbo-firmware.md`.
 - **Parallel e2e:** one hub per Playwright worker (a mock per worker, or a hub-sim port per worker), so e2e can run with several workers or shards. Today it's `workers: 1` against one shared hub.
 - **Discover an unknown remote's address without a Hub:** nRF24 promiscuous sniffing (research).
 - **HA `text` selector params:** a bounded string parameter type, so HA services with free-text fields can be bound. These services are skipped in Phase 3.
