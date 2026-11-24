@@ -54,7 +54,8 @@ api::ApiContext context(auth::Credentials &credentials, auth::SessionStore &sess
                            &hub.hubSettings(),
                            &hub.restartPort(),
                            &hub.mqtt(),
-                           &hub.releases()};
+                           &hub.releases(),
+                           hub.remoteLog()};
 }
 
 // Whether the query has `key` (even empty, "key=" or "key"): queryValue()
@@ -392,11 +393,22 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
         out.json(200, std::string("{\"ready\":") + (ready == "1" ? "true" : "false") + "}");
     });
 
-    host(Method::Post, "/sim/remote/{button}/{action}", [this](auto &, auto &p, auto &out) {
+    // ?signal=strong|weak|unknown: the signal flag this and later packets
+    // carry in the remote log (until /sim/reset: strong).
+    host(Method::Post, "/sim/remote/{button}/{action}", [this](auto &r, auto &p, auto &out) {
         const std::string action(p[1]);
         if (action != "press" && action != "release" && action != "tap") {
             http::jsonError(out, 400, "bad_request", "action must be press, release or tap");
             return;
+        }
+        const std::string signal = http::queryValue(r.query, "signal");
+        if (!signal.empty()) {
+            remote::Signal parsed;
+            if (!remote::signalFromName(signal, &parsed)) {
+                http::jsonError(out, 400, "bad_request", "signal must be strong, weak or unknown");
+                return;
+            }
+            runner_.hub().setSignal(parsed);
         }
         if (!runner_.runLine(action + " " + std::string(p[0]))) {
             http::jsonError(out, 400, "bad_request", runner_.error());

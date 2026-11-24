@@ -1396,3 +1396,67 @@ TEST(SimApi, MqttRestartButton) {
     hub.advance(api::SimulatedRestart::kRestartMs);
     EXPECT_EQ(hub.restartPort().restarts(), 1);
 }
+
+// The remote log (remote/log.h) from simulated presses: packets, events and
+// every step's result, HA's included (a Pending call once it answers), with
+// its trigger and binding kind.
+TEST(SimRemoteLog, LogsPressesAndWhatTheyDid) {
+    ScenarioRunner runner;
+    for (const char *line : {"ha real", "ha state media_player.denon on", "ha attr media_player.denon source TV Audio",
+                             "ha slow media_player.denon 5000", "activate act_play_xbox", "advance 3200"}) {
+        ASSERT_TRUE(runner.runLine(line)) << line << ": " << runner.error();
+    }
+    remote::RemoteLog *log = runner.hub().remoteLog();
+    ASSERT_NE(log, nullptr);
+    auto readAll = [&] {
+        std::vector<remote::LogEntry> all;
+        runner.hub().remoteLog()->read(runner.hub().nowMs(), [&](const remote::LogEntry &e, uint32_t) { all.push_back(e); });
+        return all;
+    };
+    std::vector<remote::LogEntry> entries = readAll();
+    auto find = [&](const char *device, const char *command) -> const remote::LogEntry * {
+        for (const auto &e : entries) {
+            if (e.type == remote::LogType::Action && e.deviceId.view() == device && std::string(e.commandId) == command) {
+                return &e;
+            }
+        }
+        return nullptr;
+    };
+    const remote::LogEntry *skipped = find("dev_denon", "media_player.turn_on");
+    ASSERT_NE(skipped, nullptr);
+    EXPECT_EQ(skipped->binding, remote::BindingKind::Activity);
+    EXPECT_FALSE(skipped->hasTrigger);  // activated from the API, not a press
+    EXPECT_EQ(skipped->integrationId.view(), "ha_main");
+    EXPECT_EQ(skipped->result.status, ExecStatus::Skipped);
+    const remote::LogEntry *late = find("dev_denon", "media_player.select_source");
+    ASSERT_NE(late, nullptr);
+    EXPECT_EQ(late->result.status, ExecStatus::NoReply);
+    EXPECT_GE(late->durationMs, 1000u);  // the reply limit (and the integration task's tick)
+    EXPECT_LE(late->durationMs, 1010u);
+
+    // A press: its packets carry the signal flag, then its events, then the
+    // binding's steps with their trigger.
+    runner.hub().setSignal(remote::Signal::Weak);
+    ASSERT_TRUE(runner.runLine("tap off"));
+    ASSERT_TRUE(runner.runLine("advance 100"));
+    entries = readAll();
+    size_t packet = entries.size(), event = entries.size(), action = entries.size();
+    for (size_t i = 0; i < entries.size(); ++i) {
+        const auto &e = entries[i];
+        if (e.button == remote::Button::Off && e.type == remote::LogType::Packet && packet == entries.size()) packet = i;
+        if (e.type == remote::LogType::Event && e.event == remote::EventKind::Tap && event == entries.size()) event = i;
+        if (e.type == remote::LogType::Action && e.hasTrigger && action == entries.size()) action = i;
+    }
+    ASSERT_LT(packet, event);
+    ASSERT_LT(event, action);
+    EXPECT_EQ(entries[packet].signal, remote::Signal::Weak);
+    EXPECT_EQ(entries[packet].packet, remote::PacketKind::Down);
+    EXPECT_EQ(entries[event].button, remote::Button::Off);
+    EXPECT_EQ(entries[action].trigger, (Trigger{remote::Button::Off, remote::EventKind::Tap}));
+    EXPECT_EQ(entries[action].binding, remote::BindingKind::Command);
+    EXPECT_EQ(entries[action].result.status, ExecStatus::Accepted);
+
+    // A reset clears it, as a restart would.
+    ASSERT_TRUE(runner.runLine("reset"));
+    EXPECT_TRUE(readAll().empty());
+}

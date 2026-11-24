@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -43,6 +44,7 @@
 #include "hubbo/integrations/ha_client.h"
 #include "hubbo/integrations/mqtt_bridge.h"
 #include "hubbo/remote/input.h"
+#include "hubbo/remote/log.h"
 
 namespace hubbo::sim {
 
@@ -165,6 +167,12 @@ public:
     void serviceIntegrations();
     integrations::BleHidAdapter &ble() { return fakes_.ble; }
     remote::RemoteInput &input() { return input_; }
+    // The remote log (remote/log.h; the API's GET /remote/log), filled from
+    // the simulated presses. Cleared by a reset or wipe, as a restart would.
+    remote::RemoteLog *remoteLog() { return remoteLog_.get(); }
+    // The signal flag every simulated packet carries (strong until set;
+    // /sim/remote's ?signal=). A reset sets it back to strong.
+    void setSignal(remote::Signal signal) { signal_ = signal; }
     // What the radio saw, as the board reports it in /remote/status: when
     // the last payload arrived (-1: never) and the last remote event.
     int64_t lastPacketAgeMs() const { return anyPacket_ ? static_cast<int64_t>(nowMs_ - lastPacketMs_) : -1; }
@@ -216,6 +224,9 @@ private:
     integrations::BleHostReconciler bleReconciler_{fakes_.bleHosts};  // hosts follow the saved config
     Engine::Store store_;
     RunHistory runs_;  // the board's lives in PSRAM; here a member will do
+    remote::MutexLogLock logLock_;
+    std::unique_ptr<remote::RemoteLog> remoteLog_ = std::make_unique<remote::RemoteLog>(logLock_);  // ~900 KB
+    remote::Signal signal_ = remote::Signal::Strong;
     Engine engine_{store_, fakes_.set};
     remote::RemoteInput input_{*this};  // events go through onRemoteEvent() to the engine
     storage::MemoryStorage memory_;

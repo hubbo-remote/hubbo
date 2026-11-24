@@ -14,6 +14,7 @@
 #include "hubbo/engine/snapshot.h"
 #include "hubbo/engine/spsc.h"
 #include "hubbo/remote/input.h"
+#include "hubbo/remote/log.h"
 
 // The activity engine: the remote's brain. Owns the active activity, turns
 // remote events into queued sequences, and runs activity transitions.
@@ -231,6 +232,10 @@ public:
     // Where startup and shutdown runs are recorded (run_history.h); set
     // once, before the engine runs. Null (the default): not recorded.
     void setRunHistory(RunHistory *history) { history_ = history; }
+    // The remote log's action results (remote/log.h); set once, before the
+    // engine runs. Null (the default, and always without HUBBO_REMOTE_LOG):
+    // none.
+    void setRemoteLog(remote::RemoteLog *log) { log_ = log; }
     // Any task: the recorded runs, newest first. False without a history.
     bool runsShared(ActivityRuns *out) const {
         if (history_ == nullptr) return false;
@@ -324,6 +329,7 @@ private:
     Executor executor_;
     EngineObserver *observer_ = nullptr;
     RunHistory *history_ = nullptr;
+    remote::RemoteLog *log_ = nullptr;
 
     int activeIndex_ = -1;
     IdString activeId_;

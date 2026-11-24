@@ -5,6 +5,31 @@ Design: `docs/design/activity-runs.md` and `docs/design/state-checks.md`; the pr
 This file covers state, decisions and traps only.
 
 ## State
+- Remote log (branch radio-power, uncommitted; docs/design/remote-log.md):
+  - `remote/log.h` + `src/remote/log.cpp`. Only under `HUBBO_REMOTE_LOG` (dev builds; the top-level
+    CMakeLists sets it for every host build). Off: RemoteLog is a memberless stub whose
+    append/read/info/clear are no-ops (so readers need no #if), the hooks are empty inlines, and
+    holders keep a null `RemoteLog *` (ApiContext::remoteLog null = no route).
+  - Ring of `kRemoteLogCapacity` 8192 `LogEntry`s (~110 B: ~900 KB, PSRAM on the board; heap
+    always, never a stack), read window `kRemoteLogWindowMs` 5 min (aging is at read, no
+    eviction). `dropped` counts only entries pushed out while still in the window; `spanMs` =
+    min(window, since clear/boot, since the newest dropped). Appends: one entry under `LogLock`
+    (MutexLogLock on host; firmware portMUX). `read(nowMs, fn)` copies 8 per lock, fn outside it;
+    an entry stamped after the reader's now reads age 0. Never scan the ring under the lock (on
+    the board it's a critical section: thousands of PSRAM reads would stall the RF loop): at most
+    kReadChunk copies per lock, and the age filter runs outside it. /simplify done; skipped: a compact packet/event layout or split action ring (~900 KB
+    -> ~130 KB; PSRAM is 8 MB, and the interface had shipped), integrationId as const char*
+    (-270 KB), storing SequenceOrigin instead of hasTrigger/BindingKind.
+  - Hooks: `RemoteInput::setLog` + `onPayload(..., Signal)`: `logPayload(before)` before the payload's
+    events (packet kinds: Down new press, Up a release or all-clear, Repeat same set re-sent, Hold
+    the keepalive; bad checksum = anomaly only; unknown codes = packet + anomaly), `logEvent` in
+    emit(). `Engine::setRemoteLog`: one action entry per step at its final result (dispatch unless
+    Pending, else completion; `CompletionRecord::startedMs` / `PendingAction::startedMs` give the
+    duration). HA results come through the engine's completion: no adapter hook (it would log each
+    call twice). Binding kind from SequenceOrigin (Startup/Shutdown = activity, Macro = macro).
+  - hub-sim: SimHub owns the log (`remoteLog()`), signal Strong by default, `setSignal`,
+    `/sim/remote/{button}/{action}?signal=`; reset/wipe clear it and the signal.
+  - Tests: RemoteLogTest.*, InputHooks.*, RemoteLogHooks.*, SimRemoteLog.* (sim_test).
 - Radio power (branch radio-power, uncommitted), /simplify done: `config::RadioPower {Low, Medium,
   High, Max}` in config/hub.h, `radioPowerName`/`parseRadioPower` ("low".."max"), StateStore key
   `kRadioPowerKey` "radio_power" (absent/unreadable: Max). `HubSettings::radioPower()` is a relaxed
