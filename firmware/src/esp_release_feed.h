@@ -40,11 +40,12 @@ public:
     // fetchImage's progress, percent of the image, on this task as it changes.
     void setOnProgress(std::function<void(uint8_t percent)> onProgress) { onProgress_ = std::move(onProgress); }
 
-    // Dev builds only (the dev console's /debug/release): another feed, to
-    // test against a local one; "" is GitHub's. Signatures still need the
-    // built-in key (or a dev build's test key, release_key.h). Set it only
-    // while no fetch runs.
+#ifdef HUBBO_DEV_CONSOLE
+    // The dev console's /debug/release: another feed, to test against a
+    // local one; "" is GitHub's. Signatures still need the built-in key (or a
+    // dev build's test key, release_key.h). Set it only while no fetch runs.
     void setTestFeed(std::string baseUrl) { baseUrl_ = std::move(baseUrl); }
+#endif
 
 private:
     std::string base() const { return baseUrl_.empty() ? std::string(kReleasesUrl) : baseUrl_; }

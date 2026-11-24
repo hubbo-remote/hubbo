@@ -53,7 +53,8 @@ bool EngineRuntime::run(hubbo::EngineRequest &request) {
         vTaskDelay(1);
         if (!reported && millis() - startedMs >= kSlowRequestMs) {
             reported = true;
-            con.println("runtime: engine request still running after 2 s");
+            con.printf("runtime: engine request still running after %lu ms\n",
+                       static_cast<unsigned long>(kSlowRequestMs));
         }
     }
     return true;

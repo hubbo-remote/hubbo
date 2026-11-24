@@ -11,7 +11,6 @@ namespace hubbo::fw {
 
 namespace {
 constexpr UBaseType_t kQueueDepth = 16;
-constexpr uint32_t kStackCheckMs = 10000;
 
 esp_mqtt_client_handle_t handle(void *client) {
     return static_cast<esp_mqtt_client_handle_t>(client);
@@ -110,7 +109,6 @@ void EspMqttTransport::disconnect() {
     esp_mqtt_client_stop(handle(client_));  // DISCONNECT if connected, then its task ends
     esp_mqtt_client_destroy(handle(client_));
     client_ = nullptr;
-    task_.store(nullptr, std::memory_order_release);
     connected_ = false;
     drain();
 }
@@ -126,7 +124,6 @@ void EspMqttTransport::poll(uint32_t timeoutMs) {
             deliverMessage(message);
         }
     }
-    noteStackLow(static_cast<uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS));
 }
 
 void EspMqttTransport::deliverLink() {
@@ -162,26 +159,10 @@ void EspMqttTransport::deliverMessage(Message *message) {
     delete message;
 }
 
-// Every kStackCheckMs: a new low in the esp-mqtt task's stack is logged.
-void EspMqttTransport::noteStackLow(uint32_t nowMs) {
-    auto task = static_cast<TaskHandle_t>(task_.load(std::memory_order_acquire));
-    if (task == nullptr || static_cast<int32_t>(nowMs - stackCheckDueMs_) < 0) {
-        return;
-    }
-    stackCheckDueMs_ = nowMs + kStackCheckMs;
-    const uint32_t free = uxTaskGetStackHighWaterMark(task);  // bytes on ESP-IDF
-    if (free < stackLowest_) {
-        stackLowest_ = free;
-        con.printf("mqtt: esp-mqtt stack low %lu of %d bytes free\n", static_cast<unsigned long>(free),
-                   kTaskStackBytes);
-    }
-}
-
 // The esp-mqtt task. Records or copies only; never calls the listener.
 void EspMqttTransport::onEvent(void *arg, const char *, int32_t id, void *data) {
     auto *self = static_cast<EspMqttTransport *>(arg);
     auto *source = static_cast<esp_mqtt_event_handle_t>(data);
-    self->task_.store(xTaskGetCurrentTaskHandle(), std::memory_order_release);
     switch (static_cast<esp_mqtt_event_id_t>(id)) {
         case MQTT_EVENT_CONNECTED:
             self->authRefused_.store(false, std::memory_order_release);

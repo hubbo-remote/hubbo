@@ -104,7 +104,7 @@ MountResult mount() {
         // A destructive action needs its trigger cleared first: if the flag
         // can't be durably cleared, formatting now would repeat on every boot.
         if (!setFormatRequested(false) || readFormatRequested() != Flag::Clear) {
-            return mountedNow ? MountResult::FormatRefusedMounted : MountResult::FormatRefused;
+            return MountResult::FormatRefused;
         }
         return formatAndMount() ? MountResult::FormattedOnRequest : MountResult::Failed;
     }

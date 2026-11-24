@@ -24,9 +24,9 @@ enum class MountResult {
     FormattedBlank,      // the partition was erased flash
     FormattedOnRequest,  // `fs format`
     // `fs format` was requested, but the request flag couldn't be durably
-    // cleared, so formatting would repeat every boot: not formatted.
-    FormatRefusedMounted,  // ... and the filesystem mounted as it was
-    FormatRefused,         // ... and it didn't mount
+    // cleared, so formatting would repeat every boot: not formatted (the
+    // filesystem is left as it was, mounted or not).
+    FormatRefused,
     Failed,              // not mounted; nothing erased
 };
 

@@ -129,6 +129,7 @@ ReleaseInstallResult FirmwareReleases::install(std::string_view version) {
     return ReleaseInstallResult::Accepted;
 }
 
+#ifdef HUBBO_DEV_CONSOLE
 bool FirmwareReleases::setTest(std::string baseUrl, std::string runningVersion) {
     return task_.post([this, baseUrl = std::move(baseUrl), runningVersion = std::move(runningVersion)]() mutable {
         feed_.setTestFeed(std::move(baseUrl));
@@ -136,6 +137,7 @@ bool FirmwareReleases::setTest(std::string baseUrl, std::string runningVersion) 
         con.println("update: test feed set");
     });
 }
+#endif
 
 bool FirmwareReleases::service() {
     const uint32_t now = millis();
@@ -261,7 +263,12 @@ bool FirmwareReleases::webAnswers(const char **why) const {
 
 hubbo::release::RunningFirmware FirmwareReleases::running() const {
     hubbo::release::RunningFirmware r;
-    r.version = versionOverride_.empty() ? std::string(image::version()) : versionOverride_;
+    r.version = image::version();
+#ifdef HUBBO_DEV_CONSOLE
+    if (!versionOverride_.empty()) {
+        r.version = versionOverride_;
+    }
+#endif
     r.board = board::kName;
     r.layout = board::kLayout;
     const esp_partition_t *slot = esp_ota_get_next_update_partition(nullptr);

@@ -51,7 +51,6 @@ private:
     void deliverMessage(Message *message);  // and frees it
     void wake();
     void drain();  // frees queued messages without delivering them
-    void noteStackLow(uint32_t nowMs);
 
     Listener *listener_ = nullptr;
     void *client_ = nullptr;  // esp_mqtt_client_handle_t
@@ -65,9 +64,6 @@ private:
     uint32_t seenConnects_ = 0;  // poll()'s: what was delivered
     uint32_t seenDrops_ = 0;
     bool connected_ = false;  // as delivered: between onConnected() and onDropped()
-    std::atomic<void *> task_{nullptr};  // the esp-mqtt task (TaskHandle_t), from its first event
-    uint32_t stackLowest_ = UINT32_MAX;
-    uint32_t stackCheckDueMs_ = 0;
 };
 
 }  // namespace hubbo::fw
