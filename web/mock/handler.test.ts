@@ -222,13 +222,22 @@ describe('hub name, like core', () => {
     const setup = await m.handle(req('POST', '/auth/setup', fixture('auth/setup.request.json'), {})) // an admin, to read it
     const as = { cookie: setup.headers!['set-cookie']!.split(';')[0]! }
     const hub = async () => (await m.handle(req('GET', '/admin/hub', undefined, as))).body
-    expect(await hub()).toEqual({ name: 'Hubbo 534D', hostname: 'hubbo-534d', hostname_conflict: false, check_updates: true })
+    expect(await hub()).toMatchObject({ name: 'Hubbo 534D', hostname: 'hubbo-534d', hostname_conflict: false, check_updates: true })
     await m.handle(req('POST', '/__mock/hub?conflict=1'))
-    expect(await hub()).toEqual({ name: 'Hubbo 534D', hostname: 'hubbo-534d-2', hostname_conflict: true, check_updates: true })
+    expect(await hub()).toMatchObject({ name: 'Hubbo 534D', hostname: 'hubbo-534d-2', hostname_conflict: true, check_updates: true })
     expect(((await m.handle(req('GET', '/status', undefined, as))).body as Status).network.hostname).toBe('hubbo-534d-2')
-    expect((await m.handle(req('PUT', '/admin/hub', { name: 'Den' }, as))).body).toEqual({ name: 'Den', hostname: 'den', hostname_conflict: false, check_updates: true })
+    expect((await m.handle(req('PUT', '/admin/hub', { name: 'Den' }, as))).body).toMatchObject({ name: 'Den', hostname: 'den', hostname_conflict: false, check_updates: true })
     expect(errorOf(await m.handle(req('PUT', '/admin/hub', {}, as))).details?.[0]).toMatchObject({ path: '', code: 'required' }) // like core: name or check_updates
     expect((await m.handle(req('PUT', '/admin/hub', { check_updates: false }, as))).body).toMatchObject({ name: 'Den', check_updates: false })
+  })
+
+  it('keeps the radio power; a level it doesn’t know is refused and changes nothing', async () => {
+    const m = createMock()
+    const before = (await put(m, { radio_power: 'low' })).body
+    expect(before).toMatchObject({ radio_power: 'low' })
+    expect(errorOf(await put(m, { radio_power: 'loud', name: 'Den' })).details?.[0]).toEqual({ path: '/radio_power', code: 'invalid_enum_value', message: 'Radio power must be low, medium, high or max' })
+    expect(errorOf(await put(m, { radio_power: 5 })).details?.[0]).toMatchObject({ path: '/radio_power', code: 'wrong_type' })
+    expect((await m.handle(req('GET', '/admin/hub'))).body).toEqual(before)
   })
 })
 

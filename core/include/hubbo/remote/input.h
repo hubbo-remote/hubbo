@@ -24,6 +24,8 @@
 // held button is released with `timedOut` set, so nothing stays stuck.
 namespace hubbo::remote {
 
+class RemoteLog;  // log.h
+
 enum class EventKind : uint8_t { Down, Up, Tap, Hold, Count };
 
 constexpr size_t kEventKindCount = static_cast<size_t>(EventKind::Count);
@@ -55,7 +57,11 @@ public:
 
     // Feed every received payload, button or not. Due Hold/timeout events
     // are emitted first, so event order is deterministic for any call order.
-    void onPayload(const uint8_t *bytes, size_t length, uint32_t nowMs);
+    // `signal`: the radio's, for the remote log.
+    void onPayload(const uint8_t *bytes, size_t length, uint32_t nowMs, Signal signal = Signal::Unknown);
+
+    // The remote log (log.h): set once, before payloads arrive. Null: none.
+    void setLog(RemoteLog *log) { log_ = log; }
 
     // Call often (every loop iteration) to fire Hold and release timeouts.
     void poll(uint32_t nowMs);
@@ -77,6 +83,7 @@ private:
 
     EventSink &sink_;
     InputConfig config_;
+    RemoteLog *log_ = nullptr;
     ButtonSet held_ = 0;
     ButtonSet holdFired_ = 0;
     uint32_t downAtMs_[kButtonCount] = {};

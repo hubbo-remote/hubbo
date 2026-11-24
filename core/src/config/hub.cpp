@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <iterator>
 #include <utility>
 
 namespace hubbo::config {
@@ -103,6 +104,24 @@ std::string defaultHubName(const uint8_t mac[6]) {
     return name;
 }
 
+namespace {
+constexpr const char *kRadioPowerNames[] = {"low", "medium", "high", "max"};  // by RadioPower
+static_assert(std::size(kRadioPowerNames) == static_cast<size_t>(RadioPower::Max) + 1,
+              "one name per RadioPower");
+}  // namespace
+
+const char *radioPowerName(RadioPower power) { return kRadioPowerNames[static_cast<size_t>(power)]; }
+
+bool parseRadioPower(std::string_view name, RadioPower *out) {
+    for (size_t i = 0; i < std::size(kRadioPowerNames); ++i) {
+        if (name == kRadioPowerNames[i]) {
+            *out = static_cast<RadioPower>(i);
+            return true;
+        }
+    }
+    return false;
+}
+
 HubSettings::HubSettings(storage::StateStore &store, std::string defaultName)
     : store_(store), defaultName_(std::move(defaultName)), identity_(identityFor(defaultName_)) {}
 
@@ -113,6 +132,10 @@ ErrorCode HubSettings::load() {
         std::lock_guard<std::mutex> lock(mutex_);
         checkUpdates_ = !off;
     }
+    std::string power;
+    RadioPower radioPower = RadioPower::Max;
+    if (store_.get(kRadioPowerKey, &power) == ErrorCode::Ok) parseRadioPower(power, &radioPower);
+    radioPower_.store(radioPower, std::memory_order_relaxed);
     std::string saved;
     ErrorCode read = store_.get(kHubNameKey, &saved);
     if (read == ErrorCode::Ok && checkHubName(saved) != ErrorCode::Ok) read = ErrorCode::Corrupt;
@@ -158,8 +181,10 @@ ErrorCode HubSettings::rename(std::string_view requested, HubIdentity *out) {
 
 ErrorCode HubSettings::forget() {
     std::lock_guard<std::mutex> renaming(saveMutex_);
-    const bool nameRemoved = store_.remove(kHubNameKey);
-    const bool removed = store_.remove(kCheckUpdatesKey) && nameRemoved;
+    bool removed = store_.remove(kHubNameKey);  // every remove runs
+    removed &= store_.remove(kCheckUpdatesKey);
+    removed &= store_.remove(kRadioPowerKey);
+    radioPower_.store(RadioPower::Max, std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(mutex_);
     identity_ = identityFor(defaultName_);
     checkUpdates_ = true;
@@ -182,6 +207,13 @@ ErrorCode HubSettings::setCheckUpdates(bool on) {
     if (!store_.set(kCheckUpdatesKey, on ? "1" : "0")) return ErrorCode::StorageFailed;
     std::lock_guard<std::mutex> lock(mutex_);
     checkUpdates_ = on;
+    return ErrorCode::Ok;
+}
+
+ErrorCode HubSettings::setRadioPower(RadioPower power) {
+    std::lock_guard<std::mutex> saving(saveMutex_);
+    if (!store_.set(kRadioPowerKey, radioPowerName(power))) return ErrorCode::StorageFailed;
+    radioPower_.store(power, std::memory_order_relaxed);
     return ErrorCode::Ok;
 }
 

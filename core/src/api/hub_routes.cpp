@@ -1,4 +1,4 @@
-// GET/PUT /admin/hub (the hub's name and check_updates, over
+// GET/PUT /admin/hub (the hub's name, check_updates and radio_power, over
 // config::HubSettings) and
 // POST /admin/restart (over RestartPort).
 
@@ -17,6 +17,7 @@ void sendHub(http::Response &out, const config::HubSettings &hub, const config::
     doc["hostname"] = identity.shownHostname();
     doc["hostname_conflict"] = identity.hostnameConflict();
     doc["check_updates"] = hub.checkUpdates();
+    doc["radio_power"] = config::radioPowerName(hub.radioPower());
     sendJson(out, 200, doc);
 }
 
@@ -42,12 +43,22 @@ void addHubRoutes(RouteSink &sink, ApiContext &ctx) {
         if (!readJson(request, out, doc)) return;
         ValidationReport report;
         const JsonVariantConst body = doc.as<JsonVariantConst>();
-        if (!checkObject(body, {{"name", Field::Kind::String, false}, {"check_updates", Field::Kind::Bool, false}},
+        if (!checkObject(body,
+                         {{"name", Field::Kind::String, false},
+                          {"check_updates", Field::Kind::Bool, false},
+                          {"radio_power", Field::Kind::String, false}},
                          &report)) {
             return sendIssues(out, report, "The hub settings are invalid");
         }
         if (body.as<JsonObjectConst>().size() == 0) {
-            return sendDetail(out, "", "required", "Send a name or check_updates");
+            return sendDetail(out, "", "required", "Send a name, check_updates or radio_power");
+        }
+        // Checked before anything saves, so a bad level changes nothing.
+        config::RadioPower power = ctx.hub->radioPower();
+        const bool hasPower = body["radio_power"].is<const char *>();
+        if (hasPower && !config::parseRadioPower(body["radio_power"].as<std::string_view>(), &power)) {
+            return sendDetail(out, "/radio_power", "invalid_enum_value",
+                              "Radio power must be low, medium, high or max");
         }
         config::HubIdentity identity = ctx.hub->identity();
         if (body["name"].is<const char *>()) {
@@ -57,6 +68,10 @@ void addHubRoutes(RouteSink &sink, ApiContext &ctx) {
         }
         if (body["check_updates"].is<bool>()) {
             const ErrorCode result = ctx.hub->setCheckUpdates(body["check_updates"].as<bool>());
+            if (result != ErrorCode::Ok) return sendCoreError(out, result, "hub settings");
+        }
+        if (hasPower) {
+            const ErrorCode result = ctx.hub->setRadioPower(power);
             if (result != ErrorCode::Ok) return sendCoreError(out, result, "hub settings");
         }
         sendHub(out, *ctx.hub, identity);

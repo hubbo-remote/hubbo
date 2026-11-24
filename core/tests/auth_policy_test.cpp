@@ -47,7 +47,7 @@ TEST(AuthPolicy, TableIsConsistent) {
 // widens access fails here.
 TEST(AuthPolicy, RoleMatrix) {
     const char *tokenAllowed[] = {
-        "getStatus", "listActivityRuns", "getRemoteStatus", "listRemoteButtons", "listDevices", "getDevice",
+        "getStatus", "listActivityRuns", "getRemoteStatus", "listRemoteButtons", "getRemoteLog", "listDevices", "getDevice",
         "getDeviceCapabilities", "executeCommand", "listActivities", "createActivity",
         "validateActivity", "activitiesOff", "getActivity", "replaceActivity", "deleteActivity",
         "activateActivity", "getGlobalBindings", "replaceGlobalBindings", "runMacro", "getSmartButtons",

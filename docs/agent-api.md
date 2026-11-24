@@ -464,9 +464,19 @@ always waits.
 
 After the admin restores or resets, every `revision` you hold is stale: GET again.
 
+When a press seems to go missing, `GET /remote/log` shows the last 5 minutes, oldest first: each
+`packet` the radio received (with its `signal`), the `event` the hub made of it, the `action` it
+ran (with its `result`, `error` and `duration_ms`, as in an activity run), and any `anomaly`.
+Each entry has `age_ms`, since the hub has no clock. It's in memory only and reading it changes
+nothing. Dev builds only: a release build answers `404`.
+
 Firmware updates are the admin's: checking for a release and installing it are admin-only
 (`/admin/firmware/check`, `/admin/firmware/install`), and nothing installs by itself. An update
 ends in a reboot, and a token works again once the hub is back.
+
+The hub's own settings are the admin's too: `GET /admin/hub` shows its name, `check_updates` and
+`radio_power` (how strongly the remote radio transmits: `low`, `medium`, `high` or `max`, the
+default), and `PUT /admin/hub` changes any of them.
 
 ## Errors
 

@@ -33,6 +33,15 @@ enum class StepResult : uint8_t { Pending, Ok, Failed, TimedOut, Cancelled, Skip
 // "pending", "ok", "failed", "timed_out", "cancelled", "skipped", "no_reply"
 const char *stepResultName(StepResult result);
 
+struct StepOutcome {
+    StepResult result = StepResult::Pending;
+    ErrorCode error = ErrorCode::Ok;
+};
+// An adapter's result as a run step's: Pending stays Pending, the error is
+// failureCode() for Failed/Timeout and result.error otherwise (Skipped:
+// already_set). setResult() uses it.
+StepOutcome stepOutcome(const ExecResult &result);
+
 enum class RunOutcome : uint8_t { Running, Completed, CompletedWithErrors, Cancelled, Rejected };
 // "running", "completed", "completed_with_errors", "cancelled", "rejected"
 const char *runOutcomeName(RunOutcome outcome);

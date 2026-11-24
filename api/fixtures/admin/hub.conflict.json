@@ -2,5 +2,6 @@
   "name": "Living Room",
   "hostname": "living-room-2",
   "hostname_conflict": true,
-  "check_updates": true
+  "check_updates": true,
+  "radio_power": "max"
 }

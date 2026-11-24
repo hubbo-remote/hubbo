@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -10,9 +11,10 @@
 #include "hubbo/domain/error.h"
 #include "hubbo/storage/state_store.h"
 
-// The hub's own name (GET/PUT /admin/hub, /status hubbo.name). It is not
-// part of the activity config, so config saves, resets and backups never
-// touch it: it lives in the StateStore under kHubNameKey (the board and
+// The hub's own name (GET/PUT /admin/hub, /status hubbo.name) and its
+// hub-level settings (check_updates, radio_power). They are not part of the
+// activity config, so config saves, resets and backups never touch them:
+// they live in the StateStore under their keys (the board and
 // hub-sim: a RecordStateStore record next to the config's, on LittleFS or
 // the sim's storage).
 //
@@ -29,6 +31,9 @@ constexpr const char *kHubNameKey = "hub_name";  // StateStore key
 // "Check for updates" (docs/design/firmware-updates.md): "1" or "0"; absent
 // means on.
 constexpr const char *kCheckUpdatesKey = "check_updates";
+// The nRF24's transmit power: "low", "medium", "high" or "max"; absent or
+// unreadable means max. A module with an amplifier (PA+LNA) may want less.
+constexpr const char *kRadioPowerKey = "radio_power";
 constexpr size_t kHubNameMaxChars = 32;    // Unicode code points
 constexpr size_t kHubNameMaxBytes = 128;   // their UTF-8 upper bound (4 bytes each)
 constexpr size_t kHostnameMaxLength = 63;  // one DNS label
@@ -53,6 +58,13 @@ std::string hostnameFor(std::string_view name);
 // don't clash on the LAN (docs/design/hub-name.md).
 std::string defaultHubName(const uint8_t mac[6]);
 
+enum class RadioPower : uint8_t { Low, Medium, High, Max };
+
+// "low", "medium", "high", "max" (stored and in the API).
+const char *radioPowerName(RadioPower power);
+// The inverse; false (and `*out` untouched) for anything else.
+bool parseRadioPower(std::string_view name, RadioPower *out);
+
 struct HubIdentity {
     std::string name = kDefaultHubName;
     std::string hostname = kDefaultHostname;  // hostnameFor(name): what the hub asks mDNS and DHCP for
@@ -67,7 +79,8 @@ struct HubIdentity {
     bool hostnameConflict() const { return !advertisedHostname.empty() && advertisedHostname != hostname; }
 };
 
-// Owns the name: loads it at boot, renames it, and tells the platform.
+// Owns the name and the hub-level settings: loads them at boot, renames the
+// hub and tells the platform, and saves the settings.
 // Any task may call it (a mutex guards the name); never the RF/engine task,
 // since rename() writes flash.
 class HubSettings {
@@ -84,7 +97,8 @@ public:
     // NotFound (none saved: the default, known), or StorageFailed / Corrupt
     // (unreadable: the default for now, and nothing is written over what's
     // saved). A saved value that fails checkHubName() is Corrupt. Also loads
-    // checkUpdates() (absent or unreadable: on).
+    // checkUpdates() (absent or unreadable: on) and radioPower() (absent or
+    // unreadable: Max).
     ErrorCode load();
 
     HubIdentity identity() const;
@@ -98,7 +112,7 @@ public:
 
     // A reset's or wipe's (hub-sim): removes the saved name and goes back
     // to the default, without calling `changed`. Also turns checkUpdates()
-    // back on. Ok or StorageFailed.
+    // back on and radioPower() back to Max. Ok or StorageFailed.
     ErrorCode forget();
 
     // "Check for updates": on, the firmware checks at boot and every 24 h;
@@ -106,6 +120,12 @@ public:
     bool checkUpdates() const;
     // Saves it: Ok, or StorageFailed (nothing changes).
     ErrorCode setCheckUpdates(bool on);
+
+    // The nRF24's transmit power. Any task, the RF loop included: one atomic
+    // load, no lock, so the radio can poll it every pass and apply a change.
+    RadioPower radioPower() const { return radioPower_.load(std::memory_order_relaxed); }
+    // Saves it: Ok, or StorageFailed (nothing changes).
+    ErrorCode setRadioPower(RadioPower power);
 
     // Any task (the board's mDNS events, after probing and after a later
     // conflict): the hostname mDNS advertises; "" clears it. Runtime only,
@@ -126,6 +146,7 @@ private:
     mutable std::mutex mutex_;    // identity_
     HubIdentity identity_;
     bool checkUpdates_ = true;
+    std::atomic<RadioPower> radioPower_{RadioPower::Max};
     bool matchesStore_ = false;  // identity_ is what's saved (or none is): a same-name rename can skip the save
     Changed changed_;
 };

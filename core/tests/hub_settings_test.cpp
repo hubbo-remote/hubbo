@@ -1,3 +1,4 @@
+#include <utility>
 #include <gtest/gtest.h>
 
 #include <string>
@@ -225,6 +226,59 @@ TEST(HubSettings, CheckForUpdatesIsOnUnlessTurnedOff) {
     store.failWrites = true;
     EXPECT_EQ(reloaded.setCheckUpdates(false), ErrorCode::StorageFailed);
     EXPECT_TRUE(reloaded.checkUpdates());
+}
+
+TEST(HubSettings, RadioPowerNamesRoundTrip) {
+    const std::pair<RadioPower, const char *> levels[] = {
+        {RadioPower::Low, "low"}, {RadioPower::Medium, "medium"}, {RadioPower::High, "high"}, {RadioPower::Max, "max"}};
+    for (const auto &[power, name] : levels) {
+        EXPECT_STREQ(radioPowerName(power), name);
+        RadioPower parsed{};
+        ASSERT_TRUE(parseRadioPower(name, &parsed)) << name;
+        EXPECT_EQ(parsed, power);
+    }
+    RadioPower untouched = RadioPower::High;
+    for (const char *bad : {"", "MAX", "loud", "max "}) {
+        EXPECT_FALSE(parseRadioPower(bad, &untouched)) << bad;
+    }
+    EXPECT_EQ(untouched, RadioPower::High);
+}
+
+TEST(HubSettings, RadioPowerIsMaxUntilSet) {
+    storage::MemoryStateStore store;
+    HubSettings hub(store, kDefault);
+    EXPECT_EQ(hub.radioPower(), RadioPower::Max);  // before load
+    hub.load();
+    EXPECT_EQ(hub.radioPower(), RadioPower::Max);  // nothing saved
+    ASSERT_EQ(hub.setRadioPower(RadioPower::Low), ErrorCode::Ok);
+    EXPECT_EQ(hub.radioPower(), RadioPower::Low);
+    std::string saved;
+    ASSERT_EQ(store.get(kRadioPowerKey, &saved), ErrorCode::Ok);
+    EXPECT_EQ(saved, "low");
+    HubSettings reloaded(store, kDefault);
+    reloaded.load();
+    EXPECT_EQ(reloaded.radioPower(), RadioPower::Low);
+    // A reset goes back to max and removes what's saved.
+    EXPECT_EQ(reloaded.forget(), ErrorCode::Ok);
+    EXPECT_EQ(reloaded.radioPower(), RadioPower::Max);
+    EXPECT_EQ(store.get(kRadioPowerKey, &saved), ErrorCode::NotFound);
+    // A failed save changes nothing.
+    store.failWrites = true;
+    EXPECT_EQ(reloaded.setRadioPower(RadioPower::Medium), ErrorCode::StorageFailed);
+    EXPECT_EQ(reloaded.radioPower(), RadioPower::Max);
+}
+
+TEST(HubSettings, UnreadableRadioPowerIsMax) {
+    storage::MemoryStateStore store;
+    HubSettings hub(store, kDefault);
+    ASSERT_EQ(hub.setRadioPower(RadioPower::High), ErrorCode::Ok);
+    ASSERT_TRUE(store.set(kRadioPowerKey, "loud"));
+    hub.load();
+    EXPECT_EQ(hub.radioPower(), RadioPower::Max);
+    ASSERT_EQ(hub.setRadioPower(RadioPower::High), ErrorCode::Ok);
+    store.failReads = true;
+    hub.load();
+    EXPECT_EQ(hub.radioPower(), RadioPower::Max);
 }
 
 }  // namespace

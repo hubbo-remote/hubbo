@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "hubbo/remote/log.h"
+
 namespace hubbo::remote {
 
 namespace {
@@ -41,12 +43,14 @@ bool eventKindFromName(const char *name, EventKind *out) {
 
 RemoteInput::RemoteInput(EventSink &sink, InputConfig config) : sink_(sink), config_(config) {}
 
-void RemoteInput::onPayload(const uint8_t *bytes, size_t length, uint32_t nowMs) {
+void RemoteInput::onPayload(const uint8_t *bytes, size_t length, uint32_t nowMs, Signal signal) {
     poll(nowMs);
     lastPacketMs_ = nowMs;
 
     DecodedPacket packet;
-    switch (decodePacket(bytes, length, &packet)) {
+    const DecodeResult decoded = decodePacket(bytes, length, &packet);
+    logPayload(log_, nowMs, decoded, packet, held_, signal);
+    switch (decoded) {
         case DecodeResult::Buttons:
             unknownCodes_ += packet.unknownCodes;
             applyGroup(packet.group, packet.held, nowMs);
@@ -120,6 +124,7 @@ void RemoteInput::release(Button button, uint32_t nowMs, bool timedOut) {
 
 void RemoteInput::emit(Button button, EventKind kind, uint32_t atMs, bool timedOut) {
     RemoteEvent event{button, kind, atMs, timedOut};
+    logEvent(log_, event);
     sink_.onRemoteEvent(event);
 }
 

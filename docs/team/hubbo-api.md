@@ -194,7 +194,7 @@ Current as of the firmware-updates branch. Not a log: rewrite sections as they c
   reads as never checked and check/install answer 503. A failed check keeps `available` from the
   last good check (core's rule). Release builds report plain `X.Y.Z`; a dev build's git describe
   is never offered one. `check_updates` lives in `HubSettings` (GET/PUT /admin/hub; PUT takes
-  name and/or check_updates, `{}` is 422). `Api::setFirmwareVersion()` is hub-sim only (the
+  any of name, check_updates and radio_power, `{}` is 422). `Api::setFirmwareVersion()` is hub-sim only (the
   installed version after its reboot). Contract: `firmware_release_flow` over `/sim/release`
   (`running=` first: the sim defaults to dev build `0.0.0-sim`); check 500 ms, download 1000 ms.
 - **Factory reset** (§3 end): `POST /admin/factory-reset` (op `factoryReset`) over
@@ -359,6 +359,29 @@ Current as of the firmware-updates branch. Not a log: rewrite sections as they c
   end-of-phase instruction (CLAUDE.md), and only your own files, staged by path.
 
 ## Open items
+
+- **remote log (branch radio-power, committed, gates passed):** `GET /remote/log` (op
+  `getRemoteLog`, role token, next to /remote/status: validate.py keeps /admin admin-only). No
+  read-only tokens and no scopes: a normal token reads it, and the token matrix still asserts 403
+  on every admin op. `ApiContext::remoteLog` (last field, core's `remote::RemoteLog`): null on a
+  release build, and then the route isn't registered at all (the router's own 404). No #ifdef in
+  the route (core's stub compiles). Route in status_routes.cpp: `sendRemoteLog` serializes each
+  entry into the body string (never one document for up to 8192 entries; `serializeJson` into a
+  std::string replaces it, so use a scratch string). Shape `{entries, span_ms, dropped}`, entries
+  oldest first, oneOf on `type`; button/trigger/ids nullable. An action's `result` + `error`
+  match an activity run's step: core's `stepOutcome()` and the shared `putStepOutcome()`. The
+  body is a std::string in PSRAM on the board (`extmem_enable(0)` after boot); a full log is about
+  1 MB, so no cap and no chunking. Contract:
+  `remote_log_flow` (hub-sim `?signal=` sticks, so the release resets it to strong; skipped on
+  the mock) plus the token read; ApiTest.RemoteLog; AuthPolicy.RoleMatrix row.
+- **radio-power (branch radio-power, committed, gates passed):** `radio_power` on GET/PUT
+  /admin/hub (`RadioPower` enum low|medium|high|max, default max) over core's
+  `HubSettings::radioPower()/setRadioPower()`. Parsed before anything saves: a bad value is 422
+  `invalid_enum_value` at `/radio_power` and a name in the same body isn't saved. Like the name
+  and check_updates it's hub state: never in a backup, restore leaves it, reset sets max.
+  Contract: hub_flow (each level, refusals); persistence_flow sets `medium` before a process
+  restart, and `snapshot()` now carries the whole GET /admin/hub. The web mock returns
+  radio_power. ApiTest.HubNameAndRestart covers it.
 
 - **Known, accepted (hobby scale):** PUT /admin/hub with both `name` and `check_updates` saves
   the name first; if saving check_updates then fails (StorageFailed, 503), the rename stays.

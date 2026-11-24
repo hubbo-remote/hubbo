@@ -23,6 +23,7 @@
 #include "hubbo/config/service.h"
 #include "hubbo/integrations/ha_client.h"
 #include "hubbo/integrations/mqtt_bridge.h"
+#include "hubbo/remote/log.h"
 
 using namespace hubbo;
 
@@ -241,7 +242,7 @@ protected:
                                    [] { return integrations::MqttDeviceInfo{}; }, [](const std::string &) {}, [] {}}};
     api::Api api{api::ApiContext{creds, sessions, clock, hub.configService(), runtime, {}, &remote,
                                  &haClient, &secrets, nullptr, &ble, &firmware, &factoryReset, &hubSettings,
-                                 &restart, &mqtt, &releases}};
+                                 &restart, &mqtt, &releases, hub.remoteLog()}};
     http::Router router;
 
     bool noAuth = true;  // simulated admin unless a test logs in
@@ -949,6 +950,98 @@ TEST_F(ApiTest, FirmwareReleasesNeedAPort) {
     EXPECT_EQ(install.status, 503);
 }
 
+TEST_F(ApiTest, RemoteLog) {
+    clock.mono = 10000;
+    remote::RemoteLog &log = *hub.remoteLog();
+    log.clear(0);
+    remote::LogEntry packet;
+    packet.atMs = 9000;
+    packet.button = remote::Button::Info;
+    packet.packet = remote::PacketKind::Down;
+    packet.signal = remote::Signal::Weak;
+    log.append(packet);
+    remote::LogEntry keepalive = packet;  // nothing held: no button
+    keepalive.atMs = 9100;
+    keepalive.button = remote::Button::Count;
+    keepalive.packet = remote::PacketKind::Hold;
+    log.append(keepalive);
+    remote::LogEntry event;
+    event.atMs = 9200;
+    event.type = remote::LogType::Event;
+    event.button = remote::Button::Info;
+    event.event = remote::EventKind::Up;
+    event.timedOut = true;
+    log.append(event);
+    remote::LogEntry action;
+    action.atMs = 9300;
+    action.type = remote::LogType::Action;
+    action.hasTrigger = true;
+    ASSERT_TRUE(parseTrigger("info:tap", &action.trigger));
+    action.result = ExecResult::timeout();
+    action.durationMs = 1000;
+    action.integrationId.assign("ha_main");
+    action.deviceId.assign("dev_lg_tv");
+    action.commandId = "media_player.turn_on";
+    log.append(action);
+    remote::LogEntry apiRun = action;  // not a press, nothing to name
+    apiRun.atMs = 9400;
+    apiRun.hasTrigger = false;
+    apiRun.binding = remote::BindingKind::Macro;
+    apiRun.result = ExecResult::noReply();
+    apiRun.integrationId.assign("");
+    apiRun.deviceId.assign("");
+    apiRun.commandId = "";
+    log.append(apiRun);
+    remote::LogEntry stall;
+    stall.atMs = 9500;
+    stall.type = remote::LogType::Anomaly;
+    stall.anomaly = remote::Anomaly::RfStall;
+    stall.stallMs = 9;
+    log.append(stall);
+
+    Reply r = call(http::Method::Get, "/api/v1/remote/log");
+    ASSERT_EQ(r.status, 200) << r.body;
+    EXPECT_EQ(r.json["span_ms"], 10000);
+    EXPECT_EQ(r.json["dropped"], 0);
+    JsonArrayConst entries = r.json["entries"].as<JsonArrayConst>();
+    ASSERT_EQ(entries.size(), 6u) << r.body;
+    EXPECT_EQ(entries[0]["type"], "packet");
+    EXPECT_EQ(entries[0]["age_ms"], 1000);
+    EXPECT_EQ(entries[0]["button"], "info");
+    EXPECT_EQ(entries[0]["kind"], "down");
+    EXPECT_EQ(entries[0]["signal"], "weak");
+    EXPECT_TRUE(entries[1]["button"].isNull());
+    EXPECT_EQ(entries[1]["kind"], "hold");
+    EXPECT_EQ(entries[2]["type"], "event");
+    EXPECT_EQ(entries[2]["kind"], "up");
+    EXPECT_EQ(entries[2]["timed_out"], true);
+    EXPECT_EQ(entries[3]["trigger"], "info:tap");
+    EXPECT_EQ(entries[3]["binding"], "command");
+    EXPECT_EQ(entries[3]["integration_id"], "ha_main");
+    EXPECT_EQ(entries[3]["command_id"], "media_player.turn_on");
+    EXPECT_EQ(entries[3]["result"], "timed_out");
+    EXPECT_EQ(entries[3]["error"], "adapter_timeout");
+    EXPECT_EQ(entries[3]["duration_ms"], 1000);
+    EXPECT_TRUE(entries[4]["trigger"].isNull());
+    EXPECT_TRUE(entries[4]["device_id"].isNull());
+    EXPECT_TRUE(entries[4]["command_id"].isNull());
+    EXPECT_EQ(entries[4]["result"], "no_reply");
+    EXPECT_TRUE(entries[4]["error"].isNull());
+    EXPECT_EQ(entries[5]["anomaly"], "rf_stall");
+    EXPECT_EQ(entries[5]["stall_ms"], 9);
+    EXPECT_EQ(entries[5]["age_ms"], 500);
+
+    // A release build has no log: no route at all.
+    api::Api bare{api::ApiContext{creds, sessions, clock, hub.configService(), runtime, {}, nullptr, nullptr, nullptr, nullptr}};
+    http::Router bareRouter;
+    bare.registerRoutes(bareRouter);
+    std::swap(router, bareRouter);
+    r = call(http::Method::Get, "/api/v1/remote/log");
+    std::swap(router, bareRouter);
+    EXPECT_EQ(r.status, 404);
+    EXPECT_EQ(r.code(), "not_found");
+}
+
 TEST_F(ApiTest, HubNameAndRestart) {
     Reply r = call(http::Method::Get, "/api/v1/admin/hub");
     ASSERT_EQ(r.status, 200) << dump(r);
@@ -973,6 +1066,21 @@ TEST_F(ApiTest, HubNameAndRestart) {
     EXPECT_EQ(call(http::Method::Put, "/api/v1/admin/hub", "{}").status, 422);
     EXPECT_EQ(call(http::Method::Put, "/api/v1/admin/hub", R"({"check_updates":"no"})").status, 422);
     ASSERT_EQ(call(http::Method::Put, "/api/v1/admin/hub", R"({"check_updates":true})").status, 200);
+
+    // The remote radio's power: max by default, saved, and a bad level
+    // refused before the name in the same body is saved.
+    EXPECT_EQ(call(http::Method::Get, "/api/v1/admin/hub").json["radio_power"], "max");
+    r = call(http::Method::Put, "/api/v1/admin/hub", R"({"radio_power":"low"})");
+    ASSERT_EQ(r.status, 200) << dump(r);
+    EXPECT_EQ(r.json["radio_power"], "low");
+    EXPECT_EQ(hubSettings.radioPower(), config::RadioPower::Low);
+    r = call(http::Method::Put, "/api/v1/admin/hub", R"({"name":"Den","radio_power":"loud"})");
+    ASSERT_EQ(r.status, 422) << dump(r);
+    EXPECT_EQ(r.json["error"]["details"][0]["path"], "/radio_power");
+    EXPECT_EQ(r.json["error"]["details"][0]["code"], "invalid_enum_value");
+    EXPECT_EQ(hubSettings.identity().name, "Hubbo 534D") << "nothing saved";
+    EXPECT_EQ(hubSettings.radioPower(), config::RadioPower::Low);
+    ASSERT_EQ(call(http::Method::Put, "/api/v1/admin/hub", R"({"radio_power":"max"})").status, 200);
 
     std::vector<config::HubIdentity> applied;
     hubSettings.onChanged([&](const config::HubIdentity &identity) { applied.push_back(identity); });

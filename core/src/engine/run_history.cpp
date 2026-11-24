@@ -150,19 +150,29 @@ ActivityRun *RunHistory::current(const SequenceInfo &info) {
 namespace {
 
 void setResult(RunStep &step, const ExecResult &result, uint32_t atMs) {
-    switch (result.status) {
-        case ExecStatus::Pending: return;
-        case ExecStatus::Accepted: step.result = StepResult::Ok; break;
-        case ExecStatus::Failed: step.result = StepResult::Failed; break;
-        case ExecStatus::Timeout: step.result = StepResult::TimedOut; break;
-        case ExecStatus::Skipped: step.result = StepResult::Skipped; break;
-        case ExecStatus::NoReply: step.result = StepResult::NoReply; break;
-    }
-    step.error = succeeded(result.status) ? result.error : failureCode(result);
+    if (result.status == ExecStatus::Pending) return;
+    const StepOutcome outcome = stepOutcome(result);
+    step.result = outcome.result;
+    step.error = outcome.error;
     step.durationMs = atMs - step.startedMs;
 }
 
 }  // namespace
+
+StepOutcome stepOutcome(const ExecResult &result) {
+    StepOutcome out;
+    switch (result.status) {
+        case ExecStatus::Pending: out.result = StepResult::Pending; break;
+        case ExecStatus::Accepted: out.result = StepResult::Ok; break;
+        case ExecStatus::Failed: out.result = StepResult::Failed; break;
+        case ExecStatus::Timeout: out.result = StepResult::TimedOut; break;
+        case ExecStatus::Skipped: out.result = StepResult::Skipped; break;
+        case ExecStatus::NoReply: out.result = StepResult::NoReply; break;
+    }
+    const bool failed = result.status == ExecStatus::Failed || result.status == ExecStatus::Timeout;
+    out.error = failed ? failureCode(result) : result.error;
+    return out;
+}
 
 void RunHistory::onDispatched(const DispatchRecord &record) {
     ActivityRun *run = current(record.sequence);

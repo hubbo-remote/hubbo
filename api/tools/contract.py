@@ -933,8 +933,8 @@ def get_hub(c, label):
 def rename_hub(c, name, hostname, label, sent=None):
     """PUT `sent` (default: `name`) and expect the hub to be called `name`."""
     _, hub, _ = c.call("updateHub", "PUT", "/admin/hub", {"name": sent or name}, expect=200, label=label)
-    expect(hub == {"name": name, "hostname": hostname, "hostname_conflict": False, "check_updates": True},
-           f"{label}: {hub}")
+    expect(hub == {"name": name, "hostname": hostname, "hostname_conflict": False, "check_updates": True,
+                   "radio_power": "max"}, f"{label}: {hub}")
 
 
 def hub_flow(c):
@@ -979,6 +979,20 @@ def hub_flow(c):
     _, hub, _ = c.call("updateHub", "PUT", "/admin/hub", {"name": "Living Room", "check_updates": True}, expect=200,
                        label="a name and check_updates together")
     expect(hub and hub["check_updates"] is True, f"check_updates back on: {hub}")
+    # The remote radio's power: max by default, each level alone (the rest
+    # stays), a bad one refused with nothing saved. persistence_flow restarts.
+    expect(hub and hub["radio_power"] == "max", f"radio_power is max by default: {hub}")
+    for level in ["low", "medium", "high", "max"]:
+        _, hub, _ = c.call("updateHub", "PUT", "/admin/hub", {"radio_power": level}, expect=200,
+                           label=f"radio_power {level}")
+        expect(hub and hub["radio_power"] == level and hub["name"] == "Living Room" and hub["check_updates"] is True,
+               f"radio_power {level}: {hub}")
+    _, e, _ = c.call("updateHub", "PUT", "/admin/hub", {"name": "Den", "radio_power": "loud"}, expect=422,
+                     label="radio_power: an unknown level")
+    got = [(d["code"], d["path"]) for d in error_details(e)]
+    expect(("invalid_enum_value", "/radio_power") in got, f"radio_power loud: expected invalid_enum_value, got {got}")
+    hub = get_hub(c, "hub after refused radio_power")
+    expect(hub.get("name") == "Living Room" and hub.get("radio_power") == "max", f"a refused radio_power saved: {hub}")
 
     _, body, _ = c.call("restartHub", "POST", "/admin/restart", expect=202)
     expect(body == {}, f"restart: {body}")
@@ -1871,6 +1885,29 @@ def remote_flow(c):
            expect=200, label="endpoint back")
 
 
+def remote_log_flow(c):
+    """The remote log: a hub-sim press and release show up as packets and
+    events in order (oldest first), with the press's signal."""
+    if MOCK:
+        return skip("the remote log", "the mock has no radio")
+    c.control("remote/info/press?signal=weak")
+    c.control("advance?ms=100")
+    c.control("remote/info/release?signal=strong")  # the signal sticks: back to the default
+    c.control("advance?ms=100")
+    log = c.call("getRemoteLog", "GET", "/remote/log", expect=200, label="the remote log after a press")[1] or {}
+    expect(0 <= log.get("span_ms", -1) <= 300000, f"remote log span: {log.get('span_ms')}")
+    entries = log.get("entries", [])
+    ages = [e["age_ms"] for e in entries]
+    expect(ages == sorted(ages, reverse=True), f"remote log not oldest first: {ages}")
+    info = [e for e in entries if e.get("button") == "info"]
+    downs = [i for i, e in enumerate(info) if (e["type"], e["kind"]) == ("packet", "down")]
+    press = info[downs[-1]:] if downs else []  # from this press's down packet on
+    seen = [(e["type"], e["kind"]) for e in press]
+    want = [("packet", "down"), ("event", "down"), ("packet", "up"), ("event", "up")]
+    expect([x for x in seen if x in want] == want, f"the press in the remote log: {seen}")
+    expect([e["signal"] for e in press if e["type"] == "packet"][:1] == ["weak"], f"the press's signal: {press}")
+
+
 def ble_pairing_flow(c):
     """Bluetooth hosts, one per device: pairing a device's own host (the
     `ble/bond` control bonds one in the open window), one window at a time,
@@ -1998,6 +2035,7 @@ def noauth(c, checker):
     activity_flow(c)
     smart_buttons_flow(c)
     remote_flow(c)
+    remote_log_flow(c)
     ble_pairing_flow(c)
     candidate = ha_flow(c)
     admin_flow(c, checker, candidate)
@@ -2049,6 +2087,8 @@ def token_role_matrix(c, checker, token):
         execute_flow(c)
         activity_flow(c)
         c.call("listActivityRuns", "GET", "/activity-runs", expect=200, label="token reads activity runs")
+        if not MOCK:
+            c.call("getRemoteLog", "GET", "/remote/log", expect=200, label="token reads the remote log")
         c.call("runMacro", "POST", "/macros/run", {"actions": [], "trigger": "guide:tap", "activity_id": None},
                expect=422, label="token tries a macro")
         _, s, _ = c.call("getSession", "GET", "/auth/session", expect=200, label="token session")
@@ -2094,6 +2134,7 @@ def auth_mode(c, checker):
         activity_flow(c)
         smart_buttons_flow(c)
         remote_flow(c)
+        remote_log_flow(c)
         ble_pairing_flow(c)
         ha_flow(c)
         ha_unlink_flow(c)
@@ -2196,7 +2237,7 @@ def snapshot(c):
                                                   f"/devices/{d['id']}/capabilities", expect=200)[1]
     status = c.call("getStatus", "GET", "/status", expect=200)[1] or {}
     state["active_activity_id"] = status.get("active_activity_id")
-    state["hub_name"] = status.get("hubbo", {}).get("name")
+    state["hub"] = get_hub(c, "snapshot")
     backup = dict(c.call("downloadBackup", "GET", "/admin/backup", expect=200)[1] or {})
     backup.pop("created_at", None)
     state["backup"] = backup
@@ -2304,6 +2345,7 @@ def persistence_flow(c, hub, relogin=None):
 
     # Each kind of edit, then a restart.
     rename_hub(c, "Den", "den", "persist the hub's name")
+    c.call("updateHub", "PUT", "/admin/hub", {"radio_power": "medium"}, expect=200, label="persist radio_power")
     _, created, _ = c.call("createActivity", "POST", "/activities", fixture("activities/create.request.json"),
                            expect=201, label="persist create")
     if not created:

@@ -2,6 +2,21 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## Radio transmit power (branch `radio-power`; reviewed, gated, committed)
+
+- Hub setting `radio_power` (low | medium | high | max, default max) on `GET/PUT /admin/hub`.
+- UI: Settings → Remote, its own Section "Radio transmit power" under "Channel and address", help
+  "Lower this if your radio module has an amplifier and an external antenna."
+  (`components/admin/RadioPowerSetting.tsx`): a Select (aria-label "Radio transmit power"), saves on change
+  through `useSaveHub` (hooks/data; the check-for-updates switch uses it too; `api.updateHub(patch)` replaced the per-field setters).
+  Not on the Remote page (`pages/Remote.tsx` is the button editor; the radio and pairing settings live
+  in Settings → Remote).
+- `RADIO_POWERS` in `api/constants.ts` (the mock validates against it: 422 `invalid_enum_value` at
+  `/radio_power`, nothing saved). Tests: handler.test (keeps it; bad level refused), `e2e/radio-power.spec.ts`
+  (kept after reload; at 390 px the chevron is inside the box).
+- Gotcha: `Select`'s wrapper div holds the chevron and is full width in a block parent, so a fixed-width
+  select (`w-40`) needs a flex parent (as ParamForm's rows have), or the chevron lands at the card's edge.
+
 ## Firmware updates (branch `firmware-updates`; docs/design/firmware-updates.md; UI first pass, iterating)
 
 - Status → Firmware (`components/admin/FirmwareUpdate.tsx`), as the user shaped it (no notes or size,

@@ -15,7 +15,7 @@ export function hubNameProblem(name: string): string | null {
 
 /** Renames the hub (trimmed) and updates what shows it. */
 export async function saveHubName(name: string) {
-  const hub = await api.renameHub(trimHubName(name))
+  const hub = await api.updateHub({ name: trimHubName(name) })
   setQueryData('hub', hub)
   invalidate('status')
   return hub

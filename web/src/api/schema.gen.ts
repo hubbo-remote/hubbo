@@ -148,6 +148,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/remote/log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What happened to the remote's presses in the last 5 minutes
+         * @description A rolling log of the last 5 minutes, oldest first: each packet the
+         *     radio received, what the hub made of it, what the press did, and
+         *     anything that went wrong on the way. Read it right after a press
+         *     seems to go missing. It's kept in memory only: a restart empties
+         *     it. Reading it changes nothing.
+         *
+         *     Dev builds only: a release build has no remote log and answers
+         *     `404 not_found`, as for a path the API doesn't have.
+         */
+        get: operations["getRemoteLog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/setup": {
         parameters: {
             query?: never;
@@ -1329,10 +1356,13 @@ export interface paths {
         get: operations["getHub"];
         /**
          * Rename the hub, or change its settings
-         * @description Send `name`, `check_updates` or both. Spaces at either end of the
-         *     name are dropped, then the rest must be a `HubName`; otherwise `422
-         *     validation_failed` at `/name` (`required`, `too_long` or
-         *     `invalid_name`). `hostname` follows the name (see `Hub`).
+         * @description Send any of `name`, `check_updates` and `radio_power`. Spaces at
+         *     either end of the name are dropped, then the rest must be a
+         *     `HubName`; otherwise `422 validation_failed` at `/name`
+         *     (`required`, `too_long` or `invalid_name`). A `radio_power` that
+         *     isn't one of `RadioPower` is `422 validation_failed` at
+         *     `/radio_power` (`invalid_enum_value`), and nothing is saved.
+         *     `hostname` follows the name (see `Hub`).
          */
         put: operations["updateHub"];
         post?: never;
@@ -1582,8 +1612,9 @@ export interface components {
              * @description Why it failed or timed out, as an error code (`adapter_timeout`,
              *     `entity_not_found`, ...). A cancelled step carries the run's
              *     reason (`cancelled`, or `queue_full` for a rejected run). A
-             *     skipped step has `already_set`. Null when ok, no_reply or
-             *     pending.
+             *     skipped step has `already_set`. An ok step can have
+             *     `adapter_unavailable`: the wait for the device gave up and the
+             *     sequence went on. Otherwise null when ok, no_reply or pending.
              */
             error: string | null;
             /** @description Null if it never started. */
@@ -1647,6 +1678,117 @@ export interface components {
                 bad_checksum?: number;
                 unknown_code?: number;
             };
+        };
+        RemoteLog: {
+            /**
+             * @description How far back the log is complete: 300000 (5 minutes), or less
+             *     right after a boot, or when a burst of entries pushed out ones
+             *     younger than 5 minutes.
+             */
+            span_ms: number;
+            /**
+             * @description Entries pushed out early by a burst since boot. Entries older
+             *     than 5 minutes go without being counted.
+             */
+            dropped: number;
+            /** @description Oldest first. */
+            entries: components["schemas"]["RemoteLogEntry"][];
+        };
+        RemoteLogEntry: components["schemas"]["RemoteLogPacket"] | components["schemas"]["RemoteLogEvent"] | components["schemas"]["RemoteLogAction"] | components["schemas"]["RemoteLogAnomaly"];
+        /** @description A packet the radio received. */
+        RemoteLogPacket: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "packet";
+            age_ms: number;
+            /** @description Null when it pressed or released nothing. */
+            button: components["schemas"]["Button"] | null;
+            /**
+             * @description What the remote sent; it repeats while a button is held.
+             * @enum {string}
+             */
+            kind: "down" | "hold" | "repeat" | "up";
+            /**
+             * @description `weak` when the packet arrived near the edge of the radio's range
+             *     (or through too much in the way). `unknown` on a radio module
+             *     that can't tell.
+             * @enum {string}
+             */
+            signal: "strong" | "weak" | "unknown";
+        };
+        /** @description What the hub made of the packets. */
+        RemoteLogEvent: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "event";
+            age_ms: number;
+            button: components["schemas"]["Button"] | null;
+            kind: components["schemas"]["EventKind"];
+            /**
+             * @description An `up` or `tap` the hub had to assume, because the remote's
+             *     release never arrived.
+             */
+            timed_out: boolean;
+        };
+        /** @description What a press did, and how it went. */
+        RemoteLogAction: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "action";
+            age_ms: number;
+            /** @description Null when it wasn't a press (an API call ran it). */
+            trigger: components["schemas"]["Trigger"] | null;
+            /**
+             * @description A command, a macro, or an activity starting or turning off.
+             * @enum {string}
+             */
+            binding: "command" | "macro" | "activity";
+            /** @description Where the step went (`system` for a system step, like a wait). */
+            integration_id: components["schemas"]["IntegrationId"] | null;
+            /**
+             * @description The step's device, the activity a `system.activate` step starts,
+             *     or null for a system step without one (a wait).
+             */
+            device_id: components["schemas"]["DeviceId"] | components["schemas"]["ActivityId"] | null;
+            /** @description The step's command (`wait` for a wait). */
+            command_id: components["schemas"]["CommandId"] | null;
+            /**
+             * @description As in an activity run's step (`ActivityRunStep`).
+             * @enum {string}
+             */
+            result: "ok" | "skipped" | "no_reply" | "failed" | "timed_out";
+            /**
+             * @description Why it failed or timed out, as an error code (`adapter_timeout`,
+             *     ...); `already_set` when skipped. An ok step can have
+             *     `adapter_unavailable`: the wait for the device gave up and the
+             *     sequence went on. Otherwise null when ok or no_reply.
+             */
+            error: string | null;
+            duration_ms: number;
+        };
+        /** @description Something that went wrong on the way in. */
+        RemoteLogAnomaly: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "anomaly";
+            age_ms: number;
+            /**
+             * @description `bad_checksum`: a damaged packet. `unknown_code`: a packet with a
+             *     button this hub doesn't know. `rf_stall`: the radio went unread
+             *     for longer than 5 ms, so packets may have been missed.
+             * @enum {string}
+             */
+            anomaly: "bad_checksum" | "unknown_code" | "rf_stall";
+            /** @description How long the radio went unread (`rf_stall` only). */
+            stall_ms?: number;
         };
         RemoteButtons: {
             buttons: {
@@ -2678,6 +2820,7 @@ export interface components {
         HubName: string;
         Hub: {
             name: components["schemas"]["HubName"];
+            radio_power: components["schemas"]["RadioPower"];
             /**
              * @description Check for firmware releases at boot and every 24 hours (on by
              *     default). Off, only `POST /admin/firmware/check` checks. Nothing
@@ -2707,7 +2850,16 @@ export interface components {
             /** @example Living Room */
             name?: string;
             check_updates?: boolean;
+            radio_power?: components["schemas"]["RadioPower"];
         };
+        /**
+         * @description How strongly the hub's remote radio transmits (`max` by default).
+         *     Leave it at `max` unless the radio module has its own amplifier and
+         *     an external antenna: those can work worse at full power, and a
+         *     lower setting suits them better.
+         * @enum {string}
+         */
+        RadioPower: "low" | "medium" | "high" | "max";
         FirmwareInstall: {
             version: components["schemas"]["ReleaseVersion"];
         };
@@ -3042,6 +3194,28 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             503: components["responses"]["Unavailable"];
+        };
+    };
+    getRemoteLog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The log */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemoteLog"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
         };
     };
     setupAdmin: {

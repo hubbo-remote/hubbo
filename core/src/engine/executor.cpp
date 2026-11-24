@@ -238,7 +238,7 @@ void Executor::runLane(LaneQueue &lane, uint32_t nowMs) {
         // A command that stays Pending longer (a timed press, a wait for a
         // connection) says so; the adapter finishes it first.
         const uint32_t timeoutMs = action.command->timeoutMs != 0 ? action.command->timeoutMs : actionTimeoutMs_;
-        const PendingAction pending{adapter, action.command, node.target};
+        const PendingAction pending{adapter, action.command, node.target, nowMs};
         if (last) {
             if (InFlight *f = freeInFlight()) {
                 f->used = true;
@@ -290,7 +290,8 @@ void Executor::reportCompletion(const SequenceInfo &info, uint8_t index, const P
                                 const ExecResult &result, uint32_t nowMs) {
     if (observer_ == nullptr) return;
     observer_->onActionCompleted(
-        {info, index, pending.adapter->integrationId(), pending.command, pending.target.c_str(), result, nowMs});
+        {info, index, pending.adapter->integrationId(), pending.command, pending.target.c_str(), result, nowMs,
+         pending.startedMs});
 }
 
 void Executor::cancelPending(const PendingAction &pending, Ticket ticket, uint32_t nowMs) {

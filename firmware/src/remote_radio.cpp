@@ -108,7 +108,7 @@ uint8_t RemoteRadio::scanChannel() const {
     return kHubChannels[channelIndex_];
 }
 
-bool RemoteRadio::begin() {
+bool RemoteRadio::begin(config::RadioPower power) {
     if (state_ != State::NotReady) {
         return true;
     }
@@ -121,8 +121,11 @@ bool RemoteRadio::begin() {
     radio.enableDynamicPayloads();
     radio.enableAckPayload();
     radio.setCRCLength(RF24_CRC_16);
+    applyPower(power);
+    hasRpd_ = radio.isPVariant();
     state_ = State::Idle;
-    con.printf("radio: nRF24L01+ ready (%s)\n", radio.isPVariant() ? "+ variant" : "non-+");
+    con.printf("radio: nRF24L01+ ready (%s, power %s)\n", hasRpd_ ? "+ variant" : "non-+",
+               config::radioPowerName(power));
 
     RadioEndpoint saved;
     if (loadEndpoint(&saved)) {
@@ -147,6 +150,28 @@ void RemoteRadio::loop(uint32_t nowMs) {
     }
 }
 
+void RemoteRadio::applyPower(config::RadioPower power) {
+    static constexpr uint8_t kLevels[] = {RF24_PA_MIN, RF24_PA_LOW, RF24_PA_HIGH, RF24_PA_MAX};
+    radio.setPALevel(kLevels[static_cast<uint8_t>(power)], true);
+    power_ = power;
+}
+
+void RemoteRadio::setPower(config::RadioPower power) {
+    if (state_ == State::NotReady || power == power_) {
+        return;
+    }
+    // W_REGISTER is for standby only (datasheet): drop out of RX around it.
+    const bool listening = state_ == State::Listening;
+    if (listening) {
+        radio.ce(LOW);
+    }
+    applyPower(power);
+    if (listening) {
+        radio.ce(HIGH);
+    }
+    con.printf("radio: power %s\n", config::radioPowerName(power));
+}
+
 // --- Listening -----------------------------------------------------------
 
 void RemoteRadio::listen(const RadioEndpoint &endpoint) {
@@ -169,8 +194,21 @@ void RemoteRadio::stopListening() {
     sink_.onListeningStopped();
 }
 
+remote::Signal RemoteRadio::readSignal() const {
+#ifdef HUBBO_REMOTE_LOG
+    if (!hasRpd_) {
+        return remote::Signal::Unknown;
+    }
+    return radio.testRPD() ? remote::Signal::Strong : remote::Signal::Weak;  // one register read
+#else
+    return remote::Signal::Unknown;  // only the remote log uses it
+#endif
+}
+
 void RemoteRadio::drain() {
     uint8_t pipe = 0;
+    bool signalRead = false;  // RPD latches on the newest packet: one read per pass serves them all
+    remote::Signal signal = remote::Signal::Unknown;
     while (radio.available(&pipe)) {
         uint8_t bytes[32];
         const uint8_t length = radio.getDynamicPayloadSize();
@@ -181,9 +219,13 @@ void RemoteRadio::drain() {
         }
         radio.read(bytes, length);
         const uint32_t readUs = micros();
+        if (!signalRead) {
+            signal = readSignal();
+            signalRead = true;
+        }
         payloadCount_++;
         lastPayloadMs_ = millis();
-        sink_.onRadioPayload(bytes, length, pipe, readUs);
+        sink_.onRadioPayload(bytes, length, pipe, readUs, signal);
     }
 }
 

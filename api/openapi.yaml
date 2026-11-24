@@ -214,6 +214,30 @@ paths:
               schema: {$ref: '#/components/schemas/RemoteButtons'}
         '401': {$ref: '#/components/responses/Unauthenticated'}
 
+  /remote/log:
+    get:
+      tags: [remote]
+      operationId: getRemoteLog
+      x-hubbo-role: token
+      summary: What happened to the remote's presses in the last 5 minutes
+      description: |
+        A rolling log of the last 5 minutes, oldest first: each packet the
+        radio received, what the hub made of it, what the press did, and
+        anything that went wrong on the way. Read it right after a press
+        seems to go missing. It's kept in memory only: a restart empties
+        it. Reading it changes nothing.
+
+        Dev builds only: a release build has no remote log and answers
+        `404 not_found`, as for a path the API doesn't have.
+      responses:
+        '404': {$ref: '#/components/responses/NotFound'}
+        '200':
+          description: The log
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RemoteLog'}
+        '401': {$ref: '#/components/responses/Unauthenticated'}
+
   /auth/setup:
     post:
       tags: [auth]
@@ -1838,10 +1862,13 @@ paths:
       x-hubbo-max-body: 1024
       summary: Rename the hub, or change its settings
       description: |
-        Send `name`, `check_updates` or both. Spaces at either end of the
-        name are dropped, then the rest must be a `HubName`; otherwise `422
-        validation_failed` at `/name` (`required`, `too_long` or
-        `invalid_name`). `hostname` follows the name (see `Hub`).
+        Send any of `name`, `check_updates` and `radio_power`. Spaces at
+        either end of the name are dropped, then the rest must be a
+        `HubName`; otherwise `422 validation_failed` at `/name`
+        (`required`, `too_long` or `invalid_name`). A `radio_power` that
+        isn't one of `RadioPower` is `422 validation_failed` at
+        `/radio_power` (`invalid_enum_value`), and nothing is saved.
+        `hostname` follows the name (see `Hub`).
       requestBody:
         required: true
         content:
@@ -2320,8 +2347,9 @@ components:
             Why it failed or timed out, as an error code (`adapter_timeout`,
             `entity_not_found`, ...). A cancelled step carries the run's
             reason (`cancelled`, or `queue_full` for a rejected run). A
-            skipped step has `already_set`. Null when ok, no_reply or
-            pending.
+            skipped step has `already_set`. An ok step can have
+            `adapter_unavailable`: the wait for the device gave up and the
+            sequence went on. Otherwise null when ok, no_reply or pending.
           type: [string, 'null']
           maxLength: 48
         duration_ms:
@@ -2434,6 +2462,151 @@ components:
           properties:
             bad_checksum: {type: integer, minimum: 0}
             unknown_code: {type: integer, minimum: 0}
+    RemoteLog:
+      type: object
+      additionalProperties: false
+      required: [span_ms, dropped, entries]
+      properties:
+        span_ms:
+          description: |
+            How far back the log is complete: 300000 (5 minutes), or less
+            right after a boot, or when a burst of entries pushed out ones
+            younger than 5 minutes.
+          type: integer
+          minimum: 0
+          maximum: 300000
+        dropped:
+          description: |
+            Entries pushed out early by a burst since boot. Entries older
+            than 5 minutes go without being counted.
+          type: integer
+          minimum: 0
+        entries:
+          description: Oldest first.
+          type: array
+          items: {$ref: '#/components/schemas/RemoteLogEntry'}
+    RemoteLogEntry:
+      oneOf:
+        - $ref: '#/components/schemas/RemoteLogPacket'
+        - $ref: '#/components/schemas/RemoteLogEvent'
+        - $ref: '#/components/schemas/RemoteLogAction'
+        - $ref: '#/components/schemas/RemoteLogAnomaly'
+      discriminator:
+        propertyName: type
+        mapping:
+          packet: '#/components/schemas/RemoteLogPacket'
+          event: '#/components/schemas/RemoteLogEvent'
+          action: '#/components/schemas/RemoteLogAction'
+          anomaly: '#/components/schemas/RemoteLogAnomaly'
+    RemoteLogPacket:
+      description: A packet the radio received.
+      type: object
+      additionalProperties: false
+      required: [type, age_ms, button, kind, signal]
+      properties:
+        type: {const: packet}
+        age_ms: {type: integer, minimum: 0}
+        button:
+          description: Null when it pressed or released nothing.
+          oneOf:
+            - $ref: '#/components/schemas/Button'
+            - {type: 'null'}
+        kind:
+          description: What the remote sent; it repeats while a button is held.
+          type: string
+          enum: [down, hold, repeat, up]
+        signal:
+          description: |
+            `weak` when the packet arrived near the edge of the radio's range
+            (or through too much in the way). `unknown` on a radio module
+            that can't tell.
+          type: string
+          enum: [strong, weak, unknown]
+    RemoteLogEvent:
+      description: What the hub made of the packets.
+      type: object
+      additionalProperties: false
+      required: [type, age_ms, button, kind, timed_out]
+      properties:
+        type: {const: event}
+        age_ms: {type: integer, minimum: 0}
+        button:
+          oneOf:
+            - $ref: '#/components/schemas/Button'
+            - {type: 'null'}
+        kind: {$ref: '#/components/schemas/EventKind'}
+        timed_out:
+          description: |
+            An `up` or `tap` the hub had to assume, because the remote's
+            release never arrived.
+          type: boolean
+    RemoteLogAction:
+      description: What a press did, and how it went.
+      type: object
+      additionalProperties: false
+      required: [type, age_ms, trigger, binding, integration_id, device_id, command_id, result, error, duration_ms]
+      properties:
+        type: {const: action}
+        age_ms: {type: integer, minimum: 0}
+        trigger:
+          description: Null when it wasn't a press (an API call ran it).
+          oneOf:
+            - $ref: '#/components/schemas/Trigger'
+            - {type: 'null'}
+        binding:
+          description: A command, a macro, or an activity starting or turning off.
+          type: string
+          enum: [command, macro, activity]
+        integration_id:
+          description: Where the step went (`system` for a system step, like a wait).
+          oneOf:
+            - $ref: '#/components/schemas/IntegrationId'
+            - {type: 'null'}
+        device_id:
+          description: |
+            The step's device, the activity a `system.activate` step starts,
+            or null for a system step without one (a wait).
+          oneOf:
+            - $ref: '#/components/schemas/DeviceId'
+            - $ref: '#/components/schemas/ActivityId'
+            - {type: 'null'}
+        command_id:
+          description: The step's command (`wait` for a wait).
+          oneOf:
+            - $ref: '#/components/schemas/CommandId'
+            - {type: 'null'}
+        result:
+          description: As in an activity run's step (`ActivityRunStep`).
+          type: string
+          enum: [ok, skipped, no_reply, failed, timed_out]
+        error:
+          description: |
+            Why it failed or timed out, as an error code (`adapter_timeout`,
+            ...); `already_set` when skipped. An ok step can have
+            `adapter_unavailable`: the wait for the device gave up and the
+            sequence went on. Otherwise null when ok or no_reply.
+          type: [string, 'null']
+          maxLength: 48
+        duration_ms: {type: integer, minimum: 0}
+    RemoteLogAnomaly:
+      description: Something that went wrong on the way in.
+      type: object
+      additionalProperties: false
+      required: [type, age_ms, anomaly]
+      properties:
+        type: {const: anomaly}
+        age_ms: {type: integer, minimum: 0}
+        anomaly:
+          description: |
+            `bad_checksum`: a damaged packet. `unknown_code`: a packet with a
+            button this hub doesn't know. `rf_stall`: the radio went unread
+            for longer than 5 ms, so packets may have been missed.
+          type: string
+          enum: [bad_checksum, unknown_code, rf_stall]
+        stall_ms:
+          description: How long the radio went unread (`rf_stall` only).
+          type: integer
+          minimum: 0
     RemoteButtons:
       type: object
       additionalProperties: false
@@ -3985,9 +4158,10 @@ components:
     Hub:
       type: object
       additionalProperties: false
-      required: [name, hostname, hostname_conflict, check_updates]
+      required: [name, hostname, hostname_conflict, check_updates, radio_power]
       properties:
         name: {$ref: '#/components/schemas/HubName'}
+        radio_power: {$ref: '#/components/schemas/RadioPower'}
         check_updates:
           description: |
             Check for firmware releases at boot and every 24 hours (on by
@@ -4022,6 +4196,15 @@ components:
       properties:
         name: {type: string, examples: [Living Room]}
         check_updates: {type: boolean}
+        radio_power: {$ref: '#/components/schemas/RadioPower'}
+    RadioPower:
+      description: |
+        How strongly the hub's remote radio transmits (`max` by default).
+        Leave it at `max` unless the radio module has its own amplifier and
+        an external antenna: those can work worse at full power, and a
+        lower setting suits them better.
+      type: string
+      enum: [low, medium, high, max]
     FirmwareInstall:
       type: object
       additionalProperties: false

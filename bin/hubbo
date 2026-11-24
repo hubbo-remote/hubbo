@@ -299,7 +299,8 @@ case "$cmd" in
             [ $rc -eq 0 ] && : >"$failed_list"
             return $rc
         }
-        gate_fw() { "$self" fw run && "$self" fw run -e waveshare_esp32_s3_eth_ota; }
+        # The plain env builds as a release does (no dev-only code), _ota as a dev board.
+        gate_fw() { HUBBO_FW_VERSION=gate "$self" fw run && "$self" fw run -e waveshare_esp32_s3_eth_ota; }
         case "${1:-}" in
             web) if [ "${2:-}" = --failed ]; then gate_web_failed; else gate_web; fi ;;
             core | api | fw) "gate_$1" ;;

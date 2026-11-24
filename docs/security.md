@@ -81,6 +81,7 @@ One admin account and any number of API tokens (max 16). No other roles.
 | | Admin (session) | API token |
 |---|---|---|
 | Status, remote status, buttons | yes | yes |
+| The remote log (dev builds only) | yes | yes |
 | List devices, capabilities | yes | yes |
 | Execute a registered command | yes | yes |
 | Create/edit/delete/validate/activate activities, Off, global bindings | yes | yes |

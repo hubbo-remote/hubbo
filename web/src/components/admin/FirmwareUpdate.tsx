@@ -4,7 +4,7 @@ import { api, ApiError, errorMessage, toApiError } from '@/api/client'
 import { getQueryData, invalidate, setQueryData, useQuery } from '@/api/hooks'
 import type { FirmwareRelease, FirmwareStatus } from '@/api/types'
 import { ErrorState, Section } from '@/components/common'
-import { useHub } from '@/hooks/data'
+import { useHub, useSaveHub } from '@/hooks/data'
 import { Alert } from '@/components/ui/alert'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -385,21 +385,11 @@ function Outcome({ fw, phase }: { fw: FirmwareStatus; phase: Phase }) {
 /** "Check for updates": the hub checks once a day; off, only Check now does. */
 function CheckSetting() {
   const hub = useHub()
-  const [saving, setSaving] = useState(false)
+  const { save, saving } = useSaveHub()
   if (!hub.data) return null
-  const toggle = async (on: boolean) => {
-    setSaving(true)
-    try {
-      setQueryData('hub', await api.setCheckUpdates(on))
-    } catch (e) {
-      toastError('Couldn’t save the setting', e)
-    } finally {
-      setSaving(false)
-    }
-  }
   return (
     <label className="flex items-center gap-3 text-sm">
-      <Switch checked={hub.data.check_updates} onCheckedChange={(on) => void toggle(on)} disabled={saving} aria-label="Check for updates daily" />
+      <Switch checked={hub.data.check_updates} onCheckedChange={(on) => void save({ check_updates: on })} disabled={saving} aria-label="Check for updates daily" />
       Check for updates daily
     </label>
   )

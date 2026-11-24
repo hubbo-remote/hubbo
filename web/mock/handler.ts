@@ -34,6 +34,7 @@ import type {
   ActivityRunStep,
   SmartButtonsInput,
   Hub,
+  RadioPower,
   IntegrationConfig,
   IntegrationConfigUpdate,
   IntegrationState,
@@ -52,7 +53,7 @@ import type {
   FirmwareRelease,
   FirmwareStatus,
 } from '../src/api/types.ts'
-import { BLE_MAX_DEVICES, BLE_PAIR_WINDOW_MAX_S, BLE_PAIR_WINDOW_MIN_S, BLE_PAIR_WINDOW_S, REMOTE_CHANNEL_MAX, REMOTE_SCAN_TIMEOUT_S } from '../src/api/constants.ts'
+import { BLE_MAX_DEVICES, BLE_PAIR_WINDOW_MAX_S, BLE_PAIR_WINDOW_MIN_S, BLE_PAIR_WINDOW_S, RADIO_POWERS, REMOTE_CHANNEL_MAX, REMOTE_SCAN_TIMEOUT_S } from '../src/api/constants.ts'
 import { bindsButton, forEachAction, parseTrigger, triggerKey, validateActivity, validateBindings, type Catalog } from '../src/lib/activity.ts'
 import { CALL_DATA_MAX_DEPTH, CALL_SERVICE, depth } from '../src/lib/haCall.ts'
 import { addressProblem } from '../src/lib/remote.ts'
@@ -177,7 +178,11 @@ type HaDomain = NonNullable<NonNullable<operations['getDiscovery']['parameters']
 // Every domain of the spec's list, once (the compiler says when they drift).
 const DOMAINS: Record<HaDomain, true> = { media_player: true, light: true, switch: true, fan: true, scene: true, script: true, cover: true, button: true, input_boolean: true, humidifier: true, select: true, remote: true }
 const HA_DOMAINS: readonly string[] = Object.keys(DOMAINS)
-const DOMAIN_LIST = `${HA_DOMAINS.slice(0, -1).join(', ')} or ${HA_DOMAINS.at(-1)}`
+/** "a, b or c", as the hub's messages list choices. */
+const orList = (xs: readonly string[]) => `${xs.slice(0, -1).join(', ')} or ${xs.at(-1)}`
+const DOMAIN_LIST = orList(HA_DOMAINS)
+/** What PUT /admin/hub takes (hostname is read-only). */
+const HUB_FIELDS = ['name', 'check_updates', 'radio_power']
 /** Entity → platform, the integration services Hubbo would offer, and the ones it skips. */
 type Skipped = NonNullable<EntityDetailsStatus['skipped_services']>[number]
 const skip = (reason: Skipped['reason'], ...services: string[]): Skipped[] => services.map((service) => ({ service, reason }))
@@ -263,6 +268,8 @@ export function createMock(opts: MockOptions = {}) {
   let check: { available: FirmwareRelease | null; error: CheckError | null; checkedAt: number | null; running: { startedAt: number; advancedMs: number } | null }
   /** Hub setting "Check for updates" (`check_updates`). */
   let checkUpdates: boolean
+  /** Hub setting "Radio transmit power" (`radio_power`). */
+  let radioPower: RadioPower
   /** The version a rolled-back update tried to run, until the next update starts. */
   let rolledBackFrom: string | null
   /** Like hub-sim's POST /sim/firmware: writes fail; the hub can't take an update. Mock-only: the new image doesn't take (the old one boots again). */
@@ -344,6 +351,7 @@ export function createMock(opts: MockOptions = {}) {
     check = { available: null, error: null, checkedAt: null, running: null }
     if (!mode.firstRun) finishCheck(Date.now() - 3 * 3600_000)
     checkUpdates = true
+    radioPower = 'max'
     rolledBackFrom = null
     fwFail = false
     fwReady = true
@@ -729,7 +737,7 @@ export function createMock(opts: MockOptions = {}) {
   const hub = (): Hub => {
     const own = hostnameOf(db.status.hubbo.name)
     const hostname = db.status.network.hostname ?? own
-    return { name: db.status.hubbo.name, hostname, hostname_conflict: hostname !== own, check_updates: checkUpdates }
+    return { name: db.status.hubbo.name, hostname, hostname_conflict: hostname !== own, check_updates: checkUpdates, radio_power: radioPower }
   }
   /** A rename (or a fresh hub) advertises the name's own hostname. */
   function setHubName(name: string) {
@@ -976,6 +984,8 @@ export function createMock(opts: MockOptions = {}) {
 
     ['GET', /^\/status$/, 'token', () => ok(status())],
     ['GET', /^\/remote\/status$/, 'token', () => ok(status().remote)],
+    // The radio's log (dev builds): the mock has no radio, so it's always empty.
+    ['GET', /^\/remote\/log$/, 'token', () => ok({ span_ms: 0, dropped: 0, entries: [] })],
     ['GET', /^\/remote\/buttons$/, 'token', () => ok(db.buttons)],
 
     // profiles
@@ -1494,10 +1504,14 @@ export function createMock(opts: MockOptions = {}) {
     ['GET', /^\/admin\/hub$/, 'admin', () => ok(hub())],
     ['PUT', /^\/admin\/hub$/, 'admin', (req) => {
       const body = (req.body ?? {}) as Record<string, unknown>
-      const extra = Object.keys(body).filter((k) => k !== 'name' && k !== 'check_updates')
-      if (extra.length) return invalid(unknownFields(extra)) // hostname is read-only
-      if (body.name === undefined && body.check_updates === undefined) return invalid([{ path: '', code: 'required', message: 'Send a name or check_updates' }])
+      const extra = Object.keys(body).filter((k) => !HUB_FIELDS.includes(k))
+      if (extra.length) return invalid(unknownFields(extra))
+      if (HUB_FIELDS.every((k) => body[k] === undefined)) return invalid([{ path: '', code: 'required', message: `Send a ${orList(HUB_FIELDS)}` }])
       if (body.check_updates !== undefined && typeof body.check_updates !== 'boolean') return invalid([{ path: '/check_updates', code: 'wrong_type', message: 'check_updates must be true or false' }])
+      if (body.radio_power !== undefined) {
+        if (typeof body.radio_power !== 'string') return invalid([{ path: '/radio_power', code: 'wrong_type', message: 'Radio power must be text' }])
+        if (!RADIO_POWERS.includes(body.radio_power as RadioPower)) return invalid([{ path: '/radio_power', code: 'invalid_enum_value', message: `Radio power must be ${orList(RADIO_POWERS)}` }])
+      }
       // Check every field that's there, then apply them.
       let name: string | undefined
       if (body.name !== undefined) {
@@ -1510,6 +1524,7 @@ export function createMock(opts: MockOptions = {}) {
       }
       if (name !== undefined) setHubName(name)
       if (body.check_updates !== undefined) checkUpdates = body.check_updates as boolean
+      if (body.radio_power !== undefined) radioPower = body.radio_power as RadioPower
       return ok(hub())
     }],
     ['POST', /^\/admin\/restart$/, 'admin', () => {

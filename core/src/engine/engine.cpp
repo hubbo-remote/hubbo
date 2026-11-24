@@ -32,12 +32,14 @@ void Engine::setObserver(EngineObserver *observer) { observer_ = observer; }
 
 void Engine::Relay::onActionDispatched(const DispatchRecord &record) {
     if (engine->history_ != nullptr) engine->history_->onDispatched(record);
+    remote::logDispatched(engine->log_, record);
     if (engine->observer_ != nullptr) engine->observer_->onActionDispatched(record);
     engine->trackHolds(record);
 }
 
 void Engine::Relay::onActionCompleted(const CompletionRecord &record) {
     if (engine->history_ != nullptr) engine->history_->onCompleted(record);
+    remote::logCompleted(engine->log_, record);
     engine->resolveRelease(record);
     if (engine->observer_ != nullptr) engine->observer_->onActionCompleted(record);
 }

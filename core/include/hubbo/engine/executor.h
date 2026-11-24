@@ -114,6 +114,7 @@ struct CompletionRecord {
     const char *target;          // device id
     ExecResult result;
     uint32_t atMs;
+    uint32_t startedMs;          // when it was dispatched
 };
 
 class ExecutionObserver {
@@ -222,6 +223,7 @@ private:
         IntegrationAdapter *adapter = nullptr;
         const CommandSpec *command = nullptr;
         IdString target;
+        uint32_t startedMs = 0;  // dispatched at
     };
 
     // A sequence's first failed step, for its report.

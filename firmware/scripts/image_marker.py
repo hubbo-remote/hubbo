@@ -4,8 +4,9 @@
 #
 #   HUBBO-IMAGE/1 board=<board::kName> layout=<board::kLayout> version=<git describe>
 #
-# HUBBO_FW_VERSION in the build environment, if set, replaces git describe
-# (gate builds: two images that differ only in version).
+# HUBBO_FW_VERSION, if set, replaces git describe: the release workflow and
+# `gate fw`'s plain-env build. Unset (a dev build), the build also defines
+# HUBBO_REMOTE_LOG for our sources and core (docs/design/remote-log.md).
 #
 # Generated into the build directory as image_marker.cpp, compiled with the
 # sources, and rewritten only when the version changes (no full rebuild per
@@ -21,15 +22,14 @@ Import("env")  # noqa: F821 (SCons)
 
 PROJECT = env.subst("$PROJECT_DIR")  # noqa: F821
 GEN_DIR = os.path.join(env.subst("$BUILD_DIR"), "image_gen")  # noqa: F821
+FW_VERSION = os.environ.get("HUBBO_FW_VERSION", "")
 MARKER = re.compile(rb"HUBBO-IMAGE/1 board=[!-~]+ layout=[0-9]{1,4} version=[!-~]{1,64}\0")
 
 
 def build_version():
-    # HUBBO_FW_VERSION (gate builds) overrides git describe; unset or empty
-    # means git describe.
-    override = os.environ.get("HUBBO_FW_VERSION", "")
-    if override:
-        return sanitize(override)
+    # HUBBO_FW_VERSION overrides git describe; unset or empty means git describe.
+    if FW_VERSION:
+        return sanitize(FW_VERSION)
     try:
         out = subprocess.run(["git", "-C", PROJECT, "describe", "--tags", "--always", "--dirty"],
                              capture_output=True, text=True, timeout=10)
@@ -88,6 +88,9 @@ def check_bin(target, source, env):  # noqa: ARG001 (SCons signature)
     print("image marker: %s" % found[0][:-1].decode())
 
 
+if not FW_VERSION:
+    env.Append(CPPDEFINES=[("HUBBO_REMOTE_LOG", 1)])  # noqa: F821
+    print("remote log: on (dev build)")
 generate(build_version())
 env.BuildSources(os.path.join("$BUILD_DIR", "image_obj"), GEN_DIR)  # noqa: F821
 env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", check_bin)  # noqa: F821

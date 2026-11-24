@@ -33,6 +33,8 @@ SimHub::SimHub(storage::Storage *storage, storage::StateStore *state, bool realH
       mqtt_(mqttTransport_, integrations::mqttNodeId(kSimMac), mqttHooks()) {
     engine_.setObserver(this);
     engine_.setRunHistory(&runs_);
+    engine_.setRemoteLog(remoteLog_.get());
+    input_.setLog(remoteLog_.get());
     ha_.server.clock = [this] { return static_cast<uint64_t>(nowMs_); };  // slow answers wait in hub time
     service_.setListener(&configListeners_);
     resetBle();
@@ -113,6 +115,8 @@ ValidationReport SimHub::factoryReset(const ConfigSpec &config) {
     mqtt_.setHubName(hubSettings_.identity().name);
     const ValidationReport report = load(config);
     runs_.clear();  // RAM only on the board: a reset starts with none
+    remoteLog_->clear(nowMs_);
+    signal_ = remote::Signal::Strong;
     return report;
 }
 
@@ -129,6 +133,7 @@ void SimHub::wipe(auth::Credentials *credentials) {
     boot(factoryDefaultConfig(), credentials);  // the firmware's first boot and defaults
     engine_.poll(nowMs_);
     runs_.clear();  // the board restarts after an erase
+    remoteLog_->clear(nowMs_);
 }
 
 void SimHub::advanceFirmware(uint32_t ms) {
@@ -166,7 +171,7 @@ void SimHub::tap(remote::Button button, uint32_t holdMs) {
 void SimHub::sendGroup(uint8_t group) {
     uint8_t packet[remote::kButtonPacketLength];
     remote::encodePacket(group, held_ & remote::groupMask(group), packet);
-    input_.onPayload(packet, sizeof(packet), nowMs_);
+    input_.onPayload(packet, sizeof(packet), nowMs_, signal_);
     lastPacketMs_ = nowMs_;
     anyPacket_ = true;
     engine_.poll(nowMs_);
@@ -182,7 +187,7 @@ void SimHub::advance(uint32_t ms, bool silent) {
     for (uint32_t i = 0; i < ms; i++) {
         nowMs_++;
         if (!silent && held_ != 0 && nowMs_ - lastPacketMs_ >= kKeepaliveMs) {
-            input_.onPayload(kKeepalive, sizeof(kKeepalive), nowMs_);
+            input_.onPayload(kKeepalive, sizeof(kKeepalive), nowMs_, signal_);
             lastPacketMs_ = nowMs_;
         }
         input_.poll(nowMs_);

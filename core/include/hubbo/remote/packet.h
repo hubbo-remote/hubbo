@@ -34,6 +34,10 @@ struct DecodedPacket {
 
 constexpr size_t kButtonPacketLength = 10;
 
+// The nRF24's received power detector for a packet (the board reads it per
+// packet); Unknown where there's no radio to ask.
+enum class Signal : uint8_t { Unknown, Strong, Weak };
+
 DecodeResult decodePacket(const uint8_t *bytes, size_t length, DecodedPacket *out);
 
 // Builds the button payload the remote would send for `held` in `group`

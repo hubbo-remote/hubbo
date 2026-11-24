@@ -46,6 +46,19 @@ The W5500 is on SPI3 (ESP-IDF driver); the nRF24 is on the Arduino `SPI` (FSPI/S
 its own pins. They never share a bus. The nRF24's IRQ isn't wired, so the radio is polled
 every loop iteration.
 
+### nRF24 with an amplifier (PA+LNA)
+
+An nRF24L01+PA+LNA module (SMA antenna) draws too much for the board's 3.3 V rail. Fit it on a
+socket adapter with its own 3.3 V regulator (AMS1117-3.3):
+
+- Adapter VCC to VSYS (pin 39). VBUS is live only on USB power. Never wire 3V3 or 5V straight
+  to the module.
+- GND to GND.
+- The same 5 signal pins: SCK 15, MISO 16, MOSI 17, CSN 18, CE 38. IRQ stays unconnected.
+
+The hub's radio power setting (low, medium, high or max, the default) applies live; `status`
+shows it.
+
 Code ported from [Harmonizer](https://github.com/soaresbrun0/harmonizer) (AGPL-3.0) is marked
 at the top of each file.
 

@@ -187,6 +187,23 @@ TEST(ActivityRuns, ASpanThatDoesntFitRecordsNoSteps) {
     EXPECT_EQ(out->runs[0].outcome, RunOutcome::Rejected);
 }
 
+TEST(StepOutcome, MapsEachAdapterResult) {
+    auto is = [](ExecResult r, StepResult result, ErrorCode error) {
+        const StepOutcome out = stepOutcome(r);
+        EXPECT_EQ(out.result, result) << execStatusName(r.status);
+        EXPECT_EQ(out.error, error) << execStatusName(r.status);
+    };
+    is(ExecResult::pending(), StepResult::Pending, ErrorCode::Ok);
+    is(ExecResult::accepted(), StepResult::Ok, ErrorCode::Ok);
+    // A wait_connected that gave up while its sequence goes on: ok, with why.
+    is({ExecStatus::Accepted, ErrorCode::AdapterUnavailable}, StepResult::Ok, ErrorCode::AdapterUnavailable);
+    is(ExecResult::failed(ErrorCode::AdapterUnavailable), StepResult::Failed, ErrorCode::AdapterUnavailable);
+    is(ExecResult::failed(ErrorCode::Ok), StepResult::Failed, ErrorCode::AdapterFailed);  // failureCode()
+    is(ExecResult::timeout(), StepResult::TimedOut, ErrorCode::AdapterTimeout);
+    is(ExecResult::skipped(), StepResult::Skipped, ErrorCode::AlreadySet);
+    is(ExecResult::noReply(), StepResult::NoReply, ErrorCode::Ok);
+}
+
 // ---- state checks and the 1 s reply limit, through the real HA client ------
 
 namespace {
