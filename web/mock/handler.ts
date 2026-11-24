@@ -976,6 +976,8 @@ export function createMock(opts: MockOptions = {}) {
 
     ['GET', /^\/status$/, 'token', () => ok(status())],
     ['GET', /^\/remote\/status$/, 'token', () => ok(status().remote)],
+    // The radio's log (dev builds): the mock has no radio, so it's always empty.
+    ['GET', /^\/remote\/log$/, 'token', () => ok({ span_ms: 0, dropped: 0, entries: [] })],
     ['GET', /^\/remote\/buttons$/, 'token', () => ok(db.buttons)],
 
     // profiles
