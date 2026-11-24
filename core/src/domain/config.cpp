@@ -9,7 +9,7 @@ namespace hubbo {
 
 std::string providerRef(const DeviceSpec &device) {
     if (device.provider.type == kHomeAssistantType) return device.provider.entityId;
-    if (device.provider.type == kBleHidType) return device.id;  // its own host, bonded by device id
+    if (hasProfile(device.provider.type)) return device.id;  // Bluetooth: its own host, bonded by device id
     return device.provider.entityId;
 }
 
@@ -33,6 +33,7 @@ struct Builtin {
 constexpr Builtin kBuiltins[] = {
     {kSystemIntegrationId, kSystemType, "System", "", true},
     {kBleIntegrationId, kBleHidType, "Bluetooth", "Hubbo", true},
+    {kIrIntegrationId, kIrType, "IR", "", true},
     {kHomeAssistantIntegrationId, kHomeAssistantType, "Home Assistant", "", true},
     {kMqttIntegrationId, kMqttType, "MQTT", "", false},
 };

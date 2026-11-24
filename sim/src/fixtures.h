@@ -34,6 +34,11 @@ DeviceSpec device(std::string id, std::string name, std::string integration, std
 DeviceSpec haDevice(std::string id, std::string name, std::string kind, std::string entityId);
 // A Bluetooth device added from a built-in profile (default: the Apple TV).
 DeviceSpec bleDevice(std::string id, std::string name, std::string kind, const char *profileId = "hubbo:apple-tv");
+// An IR test profile from sim/fixtures/ir/ (nec-tv.json, rc5-tv.json,
+// sony-receiver.json, harmony-apple-tv.json): its text, and a device added
+// from it (sha256 computed, as an import's). Aborts on a bad file.
+std::string irProfileText(const char *file);
+DeviceSpec irDevice(std::string id, std::string name, const char *file);
 IntegrationSpec integration(std::string id, std::string type, std::string name);
 
 // Devices: dev_apple_tv (ble), dev_lg_tv, dev_denon, dev_xbox, dev_lights

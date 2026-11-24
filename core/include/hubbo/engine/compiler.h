@@ -38,6 +38,11 @@ public:
     // True if an issue has this code and path (handy in tests).
     bool has(ErrorCode code, const std::string &path) const;
 
+    // The same issues (and dropped count) with paths under `from` moved
+    // under `to`; an empty `from` prefixes every path with `to`
+    // (re-rooting issues at a request body).
+    ValidationReport rerooted(const std::string &from, const std::string &to) const;
+
 private:
     std::vector<ValidationIssue> issues_;
     size_t dropped_ = 0;

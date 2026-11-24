@@ -222,6 +222,7 @@ private:
     struct PendingAction {
         IntegrationAdapter *adapter = nullptr;
         const CommandSpec *command = nullptr;
+        std::shared_ptr<const void> catalog;  // keeps `command` (kept until the slot is reused)
         IdString target;
         uint32_t startedMs = 0;  // dispatched at
     };

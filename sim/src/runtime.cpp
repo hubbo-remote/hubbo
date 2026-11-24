@@ -6,6 +6,7 @@
 #include <random>
 
 #include "hubbo/integrations/ble_hosts.h"
+#include "hubbo/integrations/ir.h"
 
 namespace hubbo::sim {
 
@@ -64,6 +65,7 @@ const char *SimRuntime::integrationState(std::string_view integrationId) const {
         return integrations::bleRadioState(*integration, hub_.bleHosts().radioReady());
     }
     if (integration->type == kMqttType) return hub_.mqtt().state();
+    if (integration->type == kIrType) return integrations::irIntegrationState(*integration, hub_.irTransmitter().ready());
     if (!integration->enabled) return "disabled";
     if (integration->type == kHomeAssistantType && !hub_.homeAssistant().available()) return "disconnected";
     return "connected";
@@ -72,6 +74,9 @@ const char *SimRuntime::integrationState(std::string_view integrationId) const {
 std::string SimRuntime::integrationDetail(std::string_view integrationId) const {
     const IntegrationSpec *integration = hub_.configService().findIntegration(integrationId);
     if (integration != nullptr && integration->type == kMqttType) return hub_.mqtt().detail();
+    if (integration != nullptr && integration->type == kIrType) {
+        return integrations::irIntegrationDetail(hub_.irTransmitter().ready());
+    }
     if (integration == nullptr || integration->type != kBleHidType) return {};
     return integrations::bleRadioDetail(hub_.bleHosts().radioReady());
 }

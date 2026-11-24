@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 
 #include "hubbo/config/profile.h"
 #include "hubbo/domain/limits.h"
@@ -76,6 +78,34 @@ DeviceSpec bleDevice(std::string id, std::string name, std::string kind, const c
         std::abort();
     }
     DeviceSpec d = config::deviceFromProfile(*profile, std::move(name), std::move(kind));
+    d.id = std::move(id);
+    d.revision = 1;
+    return d;
+}
+
+std::string irProfileText(const char *file) {
+    const std::string path = std::string(HUBBO_SIM_FIXTURES_DIR) + "/ir/" + file;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        std::fprintf(stderr, "sim::irProfileText: can't read %s\n", path.c_str());
+        std::abort();
+    }
+    std::ostringstream text;
+    text << in.rdbuf();
+    return text.str();
+}
+
+DeviceSpec irDevice(std::string id, std::string name, const char *file) {
+    JsonDocument json;
+    config::ProfileDocument doc;
+    ValidationReport report;
+    if (deserializeJson(json, irProfileText(file)) ||
+        config::parseProfile(json.as<JsonVariantConst>(), &doc, &report) != ErrorCode::Ok ||
+        !config::profileSha256(json.as<JsonVariantConst>(), &doc.profile.sha256)) {
+        std::fprintf(stderr, "sim::irDevice: %s isn't a valid profile\n", file);
+        std::abort();
+    }
+    DeviceSpec d = config::deviceFromProfile(std::move(doc), std::move(name));
     d.id = std::move(id);
     d.revision = 1;
     return d;

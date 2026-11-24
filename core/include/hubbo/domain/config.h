@@ -86,9 +86,30 @@ constexpr const char *kSystemType = "system";
 constexpr const char *kBleHidType = "ble_hid";
 constexpr const char *kHomeAssistantType = "home_assistant";
 constexpr const char *kMqttType = "mqtt";
+constexpr const char *kIrType = "ir";
 
 // The built-in BLE HID integration's id (always present, like "system").
 constexpr const char *kBleIntegrationId = "ble";
+// The built-in IR integration's id (always present: the hub's one emitter;
+// docs/design/ir.md).
+constexpr const char *kIrIntegrationId = "ir";
+// The platforms a profile may have, each a provider type with its built-in
+// integration. Devices of these types are a profile that's been added
+// (DeviceSpec::profile, required); no other device has one.
+struct ProfilePlatform {
+    const char *type;           // the profile's platform and the device's provider type
+    const char *integrationId;  // its built-in integration
+};
+constexpr ProfilePlatform kProfilePlatforms[] = {{kBleHidType, kBleIntegrationId}, {kIrType, kIrIntegrationId}};
+// The built-in integration for a profile platform, or nullptr: not one.
+inline const char *profileIntegrationId(std::string_view providerType) {
+    for (const ProfilePlatform &p : kProfilePlatforms) {
+        if (providerType == p.type) return p.integrationId;
+    }
+    return nullptr;
+}
+inline bool hasProfile(std::string_view providerType) { return profileIntegrationId(providerType) != nullptr; }
+
 // The built-in Home Assistant integration's id (always present; no URL, so
 // not_configured, until its settings are set).
 constexpr const char *kHomeAssistantIntegrationId = "ha_main";
@@ -106,19 +127,30 @@ int indexOfId(const std::vector<T> &items, std::string_view id, size_t end = sta
     return -1;
 }
 
-// ---- device profiles (~/src/hubbo-devices/docs/spec.md) -------------------
-// A Bluetooth device carries the profile it was added from (everything but
-// `meta`), so any of its commands can be bound without the profile. Field
-// names mirror the spec; optional fields stay optional so they round-trip.
+// ---- device profiles (~/src/hubbo-profiles/docs/spec.md) ------------------
+// A Bluetooth or IR device carries the profile it was added from (everything
+// but `meta`), so any of its commands can be bound without the profile.
+// Field names mirror the spec; optional fields stay optional so they
+// round-trip.
 
 enum class HidPage : uint8_t { Keyboard, Consumer };  // HID pages 0x07, 0x0C
 
-// One command: a page and usage (limits::kHid*), optionally held.
+// An IR command's Pronto code: its words (domain/pronto.h, header included)
+// at [offset, offset + count) of DeviceProfile::irWords. count 0: none.
+struct ProntoRef {
+    uint32_t offset = 0;
+    uint32_t count = 0;
+    bool empty() const { return count == 0; }
+};
+
+// One command. ble_hid: a page and usage (limits::kHid*). ir: a Pronto code,
+// and optionally its toggled twin.
 struct ProfileCommand {
     std::string name;   // 1-32 letters and digits, unique ignoring case
     std::string label;  // "" when absent
     HidPage page = HidPage::Consumer;
     uint16_t usage = 0;
+    ProntoRef pronto, prontoToggle;
     std::optional<uint32_t> holdMs;  // hold_ms: a tap is a press this long
 };
 
@@ -144,6 +176,7 @@ struct ProfilePower {
 struct ProfileTiming {
     std::optional<uint32_t> keyDelayMs;
     std::optional<uint32_t> inputDelayMs;
+    std::optional<uint32_t> irRepeats;  // ir only: frames per tap (0-20)
 };
 
 struct ProfileInput {
@@ -165,6 +198,11 @@ struct DeviceProfile {
     std::string manufacturer;
     std::string model;
     std::vector<ProfileCommand> commands;
+    // ir: every command's Pronto words, in one allocation (an IR profile's
+    // codes are most of its size: one block lands in PSRAM on the board,
+    // where thousands of small strings would fill internal RAM). Shared, so
+    // config copies don't copy the codes. Null for ble_hid.
+    std::shared_ptr<const std::vector<uint16_t>> irWords;
     std::vector<ProfileButton> buttons;
     std::optional<ProfilePower> power;
     std::optional<ProfileTiming> timing;
@@ -172,11 +210,16 @@ struct DeviceProfile {
     std::optional<ProfileChannels> channels;
 
     const ProfileCommand *findCommand(std::string_view name) const;  // exact name
+    // An IR command's words (ProntoRef into irWords); nullptr when empty.
+    const uint16_t *words(const ProntoRef &ref) const {
+        return ref.empty() || !irWords ? nullptr : irWords->data() + ref.offset;
+    }
 };
 
 // Where a device lives in its integration. `type` matches the integration
-// type: "home_assistant" (entityId, optional uniqueId) or "ble_hid"
-// (nothing else: the device is its own host, bonded by the radio).
+// type: "home_assistant" (entityId, optional uniqueId), "ble_hid"
+// (nothing else: the device is its own host, bonded by the radio) or "ir"
+// (nothing else: the hub's emitter reaches every IR device).
 struct ProviderSpec {
     std::string type;
     std::string entityId;
@@ -193,8 +236,8 @@ struct DeviceSpec {
     // the device's commands come from it (works while HA is offline).
     // Stored as `ha_capabilities`. Absent: the device has no commands.
     std::optional<ha::CapabilitySnapshot> haCapabilities;
-    // ble_hid devices: the profile it was added from (required). Other
-    // integrations: none.
+    // ble_hid and ir devices: the profile it was added from (required).
+    // Other integrations: none.
     std::optional<DeviceProfile> profile;
     uint32_t revision = 0;
 };
@@ -207,7 +250,7 @@ std::string providerRef(const DeviceSpec &device);
 // storage, not here.
 struct IntegrationSpec {
     std::string id;
-    std::string type;  // "system", "ble_hid", "home_assistant", "mqtt"
+    std::string type;  // "system", "ble_hid", "ir", "home_assistant", "mqtt"
     std::string name;
     bool enabled = true;
     std::string url;          // home_assistant
@@ -220,12 +263,12 @@ struct IntegrationSpec {
 };
 
 // The integrations' count once ensureBuiltinIntegrations() has added the
-// missing built-ins (system, ble, ha_main, mqtt_main). Checked against
+// missing built-ins (system, ble, ir, ha_main, mqtt_main). Checked against
 // limits::kMaxIntegrations, so a stored list can never grow past the cap.
 size_t integrationCountWithBuiltins(const std::vector<IntegrationSpec> &integrations);
 
 struct ConfigSpec;
-// Adds the built-in integrations ("system", "ble", "ha_main", "mqtt_main") if they're missing, so
+// Adds the built-in integrations ("system", "ble", "ir", "ha_main", "mqtt_main") if they're missing, so
 // config.integrations is always complete. Idempotent.
 void ensureBuiltinIntegrations(ConfigSpec *config);
 

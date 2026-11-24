@@ -56,7 +56,8 @@ bool HoldLedger::takeReleasing(uint32_t sequenceId, int index, OpenHold *out) {
     for (size_t i = 0; i < kCapacity; i++) {
         if (used_[i] && holds_[i].releasingSequence == sequenceId &&
             (index < 0 || holds_[i].releasingIndex == index)) {
-            *out = holds_[i];
+            *out = std::move(holds_[i]);
+            holds_[i] = OpenHold{};
             used_[i] = false;
             return true;
         }
@@ -67,7 +68,8 @@ bool HoldLedger::takeReleasing(uint32_t sequenceId, int index, OpenHold *out) {
 bool HoldLedger::take(remote::Button button, OpenHold *out) {
     for (size_t i = 0; i < kCapacity; i++) {
         if (used_[i] && holds_[i].button == button && holds_[i].releasingSequence == 0) {
-            *out = holds_[i];
+            *out = std::move(holds_[i]);
+            holds_[i] = OpenHold{};
             used_[i] = false;
             return true;
         }
@@ -78,7 +80,8 @@ bool HoldLedger::take(remote::Button button, OpenHold *out) {
 bool HoldLedger::takeAny(OpenHold *out) {
     for (size_t i = 0; i < kCapacity; i++) {
         if (used_[i]) {
-            *out = holds_[i];
+            *out = std::move(holds_[i]);
+            holds_[i] = OpenHold{};
             used_[i] = false;
             return true;
         }

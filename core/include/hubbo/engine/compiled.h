@@ -46,6 +46,9 @@ struct CompiledAction {
     // of this action (executor nodes, the adapter's hand-over), so work that
     // outlives a config publish still has it. Empty for every other command.
     HaServiceCallRef call;
+    // Its catalog's owner (CommandCatalog::owner), so `command` and
+    // `release` stay valid in every copy (executor nodes, held keys).
+    std::shared_ptr<const void> catalog;
     // A smart +/- tap's int `step` param (light.brightness_step,
     // cover.position_step), which merged taps scale; -1 everywhere else.
     int8_t stepParam = -1;
@@ -85,6 +88,7 @@ struct TriggerTable {
 struct CompiledDevice {
     IdString id;
     FixedString<limits::kMaxProviderRefLength> providerRef;
+    std::shared_ptr<const void> catalog;  // keeps its adapter's catalog while this config lives
 };
 
 struct CompiledActivity {

@@ -24,6 +24,7 @@ struct OpenHold {
     uint8_t adapterIndex = 0;
     const CommandSpec *release = nullptr;  // the hold's releasedBy command
     uint16_t releaseIndex = 0;
+    std::shared_ptr<const void> catalog;   // keeps `release` valid
     ParamValue params[limits::kMaxParams];
     uint8_t paramsPresent = 0;
     IdString deviceId;

@@ -20,6 +20,17 @@ void ValidationReport::add(ErrorCode code, std::string path) {
     issues_.push_back({code, std::move(path)});
 }
 
+ValidationReport ValidationReport::rerooted(const std::string &from, const std::string &to) const {
+    ValidationReport out;
+    out.dropped_ = dropped_;
+    for (const auto &issue : issues_) {
+        const bool inside = issue.path.compare(0, from.size(), from) == 0 &&
+                            (issue.path.size() == from.size() || issue.path[from.size()] == '/');
+        out.issues_.push_back({issue.code, inside ? to + issue.path.substr(from.size()) : issue.path});
+    }
+    return out;
+}
+
 bool ValidationReport::has(ErrorCode code, const std::string &path) const {
     for (const auto &issue : issues_) {
         if (issue.code == code && issue.path == path) return true;
@@ -102,6 +113,7 @@ bool resolveCommand(const CommandCatalog &catalog, std::string_view commandId, c
     }
     out->command = &spec;
     out->commandIndex = static_cast<uint16_t>(command);
+    out->catalog = catalog.owner;
     return true;
 }
 
@@ -200,6 +212,7 @@ public:
             for (size_t i = 0; i < devices.size(); i++) {
                 out_->devices[i].id.assign(devices[i].id);
                 out_->devices[i].providerRef.assign(providerRef(devices[i]));
+                out_->devices[i].catalog = info_[i].catalog.owner;
             }
         }
     }

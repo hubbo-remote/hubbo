@@ -769,6 +769,46 @@ TEST(SimApi, BluetoothHostsAreDrivenFromSimRoutes) {
     EXPECT_TRUE(hosts.radioReady());
     EXPECT_EQ(line("dev_apple_tv"), "connected");
 }
+// GET /sim/ir: what the emitter sent; POST ?ready=0|1 and the ir
+// integration's state follow it; /sim/reset clears both.
+TEST(SimApi, TheIrEmitterIsDrivenFromSimRoutes) {
+    SimAuth a;
+    ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);
+    SimApi api(runner, false, a.credentials);
+    SimRuntime runtime(runner.hub());
+    SimHub &hub = runner.hub();
+    ConfigSpec c = fixtureConfig();
+    c.devices.push_back(irDevice("dev_tv", "TV", "nec-tv.json"));
+    c.globalBindings.push_back(bind("mute:tap", {action("ir", "dev_tv", "press", {param("command", "Mute")})}));
+    ASSERT_TRUE(hub.load(c).ok());
+    EXPECT_STREQ(runtime.integrationState("ir"), "ready");
+
+    hub.tap(remote::Button::Mute);
+    hub.advance(500);
+    JsonDocument doc;
+    ASSERT_FALSE(deserializeJson(doc, call(api, http::Method::Get, "/sim/ir").body));
+    EXPECT_TRUE(doc["ready"].as<bool>());
+    EXPECT_FALSE(doc["busy"].as<bool>());
+    ASSERT_EQ(doc["sends"].size(), 1u);
+    JsonVariantConst send = doc["sends"][0];
+    EXPECT_EQ(send["device_id"], "dev_tv");
+    EXPECT_EQ(send["command"], "Mute");
+    EXPECT_EQ(send["carrier_hz"], 38029);
+    EXPECT_EQ(send["frames"], 1);
+    EXPECT_EQ(send["hold"], false);
+    EXPECT_TRUE(send["stopped_at_ms"].isNull());
+    EXPECT_FALSE(send["ended_at_ms"].isNull());
+
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/ir", "ready=2").status, 400);
+    ASSERT_EQ(call(api, http::Method::Post, "/sim/ir", "ready=0").status, 200);
+    EXPECT_STREQ(runtime.integrationState("ir"), "not_ready");
+    EXPECT_EQ(runtime.integrationDetail("ir"), "The IR emitter isn't working");
+
+    EXPECT_EQ(call(api, http::Method::Post, "/sim/reset").status, 200);
+    EXPECT_TRUE(hub.irTransmitter().ready());
+    EXPECT_TRUE(hub.irTransmitter().sends().empty());
+}
+
 TEST(SimApi, FirmwareFaultsAreDrivenFromSimRoutes) {
     SimAuth a;
     ScenarioRunner runner(nullptr, nullptr, /*pinned=*/true, nullptr, nullptr, &a.credentials);

@@ -283,6 +283,20 @@ SimApi::SimApi(ScenarioRunner &runner, bool authEnabled, auth::Credentials &cred
         out.json(200, std::string("{\"ready\":") + (ready == "1" ? "true" : "false") + "}");
     });
 
+    // The IR emitter: GET lists the recent sends (oldest first: device,
+    // command, carrier, frames, hold start and stop); POST ?ready=0|1 (0:
+    // "The IR emitter isn't working", IR commands fail).
+    host(Method::Get, "/sim/ir", [this](auto &, auto &, auto &out) { out.json(200, irJson()); });
+    host(Method::Post, "/sim/ir", [this](auto &r, auto &, auto &out) {
+        const std::string ready = http::queryValue(r.query, "ready");
+        if (ready != "0" && ready != "1") {
+            http::jsonError(out, 400, "bad_request", "ready must be 0 or 1");
+            return;
+        }
+        runner_.hub().irTransmitter().setReady(ready == "1");
+        out.json(200, irJson());
+    });
+
     // Firmware update faults: ?fail=1|0 (writes end in Failed) and/or
     // ?ready=0|1 (install answers Unavailable). /sim/reset restores both.
     host(Method::Post, "/sim/firmware", [this](auto &r, auto &, auto &out) {
@@ -513,6 +527,35 @@ std::string SimApi::mqttJson() const {
     }
     JsonArray subscriptions = doc["subscriptions"].to<JsonArray>();
     for (const std::string &filter : broker.subscriptions()) subscriptions.add(filter);
+    std::string out;
+    serializeJson(doc, out);
+    return out;
+}
+
+std::string SimApi::irJson() const {
+    const FakeIrTransmitter &ir = runner_.hub().irTransmitter();
+    JsonDocument doc;
+    doc["ready"] = ir.ready();
+    doc["busy"] = ir.busy();
+    JsonArray sends = doc["sends"].to<JsonArray>();
+    for (const IrSend &s : ir.sends()) {
+        JsonObject o = sends.add<JsonObject>();
+        o["at_ms"] = s.atMs;
+        o["device_id"] = s.deviceId;
+        o["command"] = s.command;
+        o["carrier_hz"] = s.carrierHz;
+        o["frames"] = s.frames;
+        o["hold"] = s.hold;
+        const auto orNull = [&](const char *key, const std::optional<uint32_t> &v) {
+            if (v) {
+                o[key] = *v;
+            } else {
+                o[key] = nullptr;
+            }
+        };
+        orNull("stopped_at_ms", s.stoppedAtMs);
+        orNull("ended_at_ms", s.endedAtMs);
+    }
     std::string out;
     serializeJson(doc, out);
     return out;

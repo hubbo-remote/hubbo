@@ -2,8 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "hubbo/domain/error.h"
@@ -136,9 +138,17 @@ struct CommandSpec {
 
 // The commands offered for one device. Storage belongs to the adapter and
 // must stay valid (and stable in order) while compiled configs reference it.
+// An adapter that frees catalogs no one uses (IR) hands out `owner`: whatever
+// keeps `items` pointing at it (a compiled config's device and actions, work
+// in the executor and the hold ledger) holds a copy. Null: never freed.
 struct CommandCatalog {
+    CommandCatalog() = default;
+    CommandCatalog(const CommandSpec *items, uint16_t count, std::shared_ptr<const void> owner = nullptr)
+        : items(items), count(count), owner(std::move(owner)) {}
+
     const CommandSpec *items = nullptr;
     uint16_t count = 0;
+    std::shared_ptr<const void> owner;
 
     // Index of the command with this id, or -1.
     int find(std::string_view id) const;

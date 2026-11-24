@@ -12,13 +12,6 @@ namespace hubbo::sim {
 
 namespace {
 
-constexpr ParamSpec kIrCode[] = {ParamSpec::integer("code", 0, 0xFFFF)};
-constexpr CommandSpec kIr[] = {
-    {"power_on", nullptr, 0},
-    {"power_off", nullptr, 0},
-    {"send", kIrCode, 1},
-};
-
 }  // namespace
 
 std::string formatNumber(double v) {
@@ -295,14 +288,88 @@ void FakeHomeAssistant::poll(uint32_t nowMs, CompletionSink &sink) {
     }
 }
 
-CommandCatalog FakeIr::commandsFor(const DeviceSpec &device) const {
-    (void)device;
-    return {kIr, static_cast<uint16_t>(std::size(kIr))};
+namespace {
+
+uint64_t sumUs(const uint32_t *durations, uint16_t count) {
+    uint64_t total = 0;
+    for (uint16_t i = 0; i < count; i++) total += durations[i];
+    return total;
 }
 
-ExecResult FakeIr::execute(const ExecRequest &request) {
-    (void)request;
-    return ExecResult::failed(ErrorCode::NotImplemented);
+uint32_t msCeil(uint64_t us) { return static_cast<uint32_t>((us + 999) / 1000); }
+
+}  // namespace
+
+uint32_t FakeIrTransmitter::framesBy(const Record &r, uint64_t atUs) {
+    if (!r.send.hold) return r.send.minFrames;
+    const uint64_t elapsed = (r.stopUs ? *r.stopUs : atUs) - r.startUs;
+    // A frame in flight at the stop always finishes, and the next one too
+    // once it's queued.
+    uint64_t started = elapsed < r.firstUs ? 1 : 2 + (elapsed - r.firstUs) / r.repeatUs;
+    if (r.stopUs && r.startUs + r.firstUs + (started - 1) * r.repeatUs - *r.stopUs <= kQueuedAheadUs) started++;
+    return std::max<uint32_t>(r.send.minFrames, static_cast<uint32_t>(started));
+}
+
+std::optional<uint64_t> FakeIrTransmitter::endUs(const Record &r) {
+    if (r.send.hold && !r.stopUs) return std::nullopt;
+    return r.startUs + r.firstUs + (framesBy(r, 0) - 1) * r.repeatUs;
+}
+
+bool FakeIrTransmitter::sending(const Record &r) const {
+    const std::optional<uint64_t> end = endUs(r);
+    return !end || nowUs() < *end;
+}
+
+bool FakeIrTransmitter::busy() const { return !records_.empty() && sending(records_.back()); }
+
+bool FakeIrTransmitter::send(const integrations::IrSignal &signal, uint16_t frames, bool hold) {
+    if (!ready_ || busy() || frames == 0 || signal.firstCount == 0 || signal.repeatCount == 0) return false;
+    Record r;
+    r.send.atMs = clock();
+    r.send.deviceId = signal.deviceId;
+    r.send.command = signal.command;
+    r.send.carrierHz = signal.carrierHz;
+    r.send.minFrames = frames;
+    r.send.hold = hold;
+    r.startUs = nowUs();
+    r.firstUs = sumUs(signal.first, signal.firstCount);
+    r.repeatUs = sumUs(signal.repeat, signal.repeatCount);
+    r.failed = failNext_;
+    failNext_ = false;
+    records_.push_back(std::move(r));
+    if (records_.size() > kKept) records_.pop_front();
+    return true;
+}
+
+void FakeIrTransmitter::stop() {
+    if (!busy()) return;
+    Record &r = records_.back();
+    if (!r.send.hold || r.stopUs) return;
+    r.stopUs = nowUs();
+    r.send.stoppedAtMs = clock();
+}
+
+bool FakeIrTransmitter::takeFailed() {
+    if (records_.empty() || sending(records_.back()) || !records_.back().failed) return false;
+    records_.back().failed = false;
+    return true;
+}
+
+std::vector<IrSend> FakeIrTransmitter::sends() const {
+    std::vector<IrSend> out;
+    for (const Record &r : records_) {
+        IrSend s = r.send;
+        s.frames = framesBy(r, nowUs());
+        if (!sending(r)) s.endedAtMs = msCeil(*endUs(r));
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
+void FakeIrTransmitter::reset() {
+    ready_ = true;
+    failNext_ = false;
+    records_.clear();
 }
 
 FakeAdapters::FakeAdapters(IntegrationAdapter *realHomeAssistant) {

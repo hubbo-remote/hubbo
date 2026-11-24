@@ -30,8 +30,8 @@ constexpr size_t kMaxActivities = 16;
 constexpr size_t kMaxDevices = 64;
 constexpr size_t kMaxBleDevices = 4;         // Bluetooth hosts (bonds and connections at once)
 constexpr size_t kMaxAdapters = 8;           // integration instances (excl. system)
-// The integrations list, built-ins included: the adapters (ble and ha_main
-// are two of them) plus system and mqtt_main, which have none. Decode and
+// The integrations list, built-ins included: the adapters (ble, ir and
+// ha_main are three of them) plus system and mqtt_main, which have none. Decode and
 // compile both check it, counting built-ins not yet added.
 constexpr size_t kMaxIntegrations = kMaxAdapters + 2;
 constexpr size_t kMaxCompiledActions = 2048; // whole compiled config
@@ -54,7 +54,7 @@ constexpr size_t kMaxHaServiceCalls = 16;
 constexpr uint32_t kMaxWaitMs = 60000;
 
 // Device profiles (~/src/hubbo-devices/docs/spec.md), as a device carries them.
-constexpr size_t kMaxProfileCommands = 128;     // the spec allows 512; the hub keeps Bluetooth small
+constexpr size_t kMaxProfileCommands = 512;     // the spec's; IR profiles are bounded by the config's size
 constexpr size_t kMaxProfileCommandNameLength = 32;
 constexpr size_t kMaxProfileLabelLength = 32;
 constexpr size_t kMaxProfileSteps = 16;         // per power/input step list
@@ -63,6 +63,7 @@ constexpr size_t kMaxProfileIdLength = 56;      // "<source>:<slug>", slug 1-48
 constexpr uint32_t kMaxHoldMs = 10000;          // a command's or step's hold_ms
 constexpr uint32_t kMaxStepDelayMs = 60000;     // delay_ms, on_delay_ms, input_delay_ms
 constexpr uint32_t kMaxKeyDelayMs = 5000;       // timing.key_delay_ms
+constexpr uint32_t kMaxIrRepeats = 20;          // timing.ir_repeats (frames per tap)
 
 // What Hubbo's HID report map can carry. A usage outside these needs a new
 // descriptor (every host pairs again). The firmware static_asserts its

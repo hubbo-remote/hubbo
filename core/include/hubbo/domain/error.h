@@ -93,6 +93,9 @@ enum class ErrorCode : uint8_t {
     MacroRequired,
     // A "macros" entry whose trigger has no binding (or an empty one).
     UnboundMacro,
+    // An IR command's code that isn't raw Pronto as the profile spec writes
+    // it (domain/pronto.h).
+    InvalidPronto,
 
     Count
 };

@@ -70,6 +70,7 @@ private:
               auth::Requirement access = auth::Requirement::AdminOnly);
     std::string simTime() const;
     std::string mqttJson() const;  // GET /sim/mqtt
+    std::string irJson() const;    // GET /sim/ir
     void eraseEverything();
 
     ScenarioRunner &runner_;

@@ -10,15 +10,16 @@
 //                          registered fake entities; records the HA service
 //                          call each command would make. Immediate or delayed
 //                          (Pending) results, injectable failures.
-//   FakeIr                 IR placeholder. IR is post-MVP, so it reports
-//                          NotImplemented (no fake success), but its catalog
-//                          lets configs reference IR devices.
+//   FakeIrTransmitter      the IR emitter for the real core IrAdapter: keeps
+//                          each transmission busy for as long as its frames
+//                          take on hub time, and records what was sent.
 //   FakeAdapters           all of the above, registered in one AdapterSet.
 
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,8 @@
 #include "hubbo/integrations/ble_hid.h"
 #include "hubbo/integrations/ble_hosts.h"
 #include "hubbo/integrations/ha_catalogs.h"
+#include "hubbo/integrations/ir.h"
+#include "hubbo/integrations/ir_transmitter.h"
 
 namespace hubbo::sim {
 
@@ -161,12 +164,59 @@ private:
     std::map<std::string, std::map<std::string, ha::ServiceValue>> state_;  // entity -> key -> value
 };
 
-class FakeIr : public IntegrationAdapter {
+// One transmission, as the emitter saw it.
+struct IrSend {
+    uint32_t atMs = 0;
+    std::string deviceId, command;
+    uint32_t carrierHz = 0;
+    uint16_t minFrames = 0;  // what send() asked for
+    bool hold = false;
+    std::optional<uint32_t> stoppedAtMs;  // stop() during a hold
+    // Frames sent: all of them once ended, else those started so far.
+    uint32_t frames = 0;
+    std::optional<uint32_t> endedAtMs;  // after the last frame's gap
+};
+
+// Single task (the engine's). Time is `clock` (hub time in SimHub; a test
+// sets its own).
+class FakeIrTransmitter : public integrations::IrTransmitter {
 public:
-    const char *integrationId() const override { return "ir"; }
-    const char *integrationType() const override { return "ir"; }
-    CommandCatalog commandsFor(const DeviceSpec &device) const override;
-    ExecResult execute(const ExecRequest &request) override;
+    static constexpr size_t kKept = 32;  // recent sends, oldest dropped
+
+    bool ready() const override { return ready_; }
+    bool busy() const override;
+    bool send(const integrations::IrSignal &signal, uint16_t frames, bool hold) override;
+    void stop() override;
+    bool takeFailed() override;
+
+    // As the board does: the next repeat frame is queued this long before
+    // the one in flight ends, so a stop() then sends one more frame.
+    static constexpr uint64_t kQueuedAheadUs = 5000;
+
+    void setReady(bool ready) { ready_ = ready; }
+    // The next send() is accepted, then fails (takeFailed() once it ends).
+    void failNextSend() { failNext_ = true; }
+    std::function<uint32_t()> clock = [] { return 0u; };
+    // Oldest first; the last may still be sending (see IrSend).
+    std::vector<IrSend> sends() const;
+    void reset();  // ready, nothing sent
+
+private:
+    // A send and its timing; what it has sent is worked out when read.
+    struct Record {
+        IrSend send;  // frames and endedAtMs left unset
+        uint64_t startUs = 0, firstUs = 0, repeatUs = 0;
+        std::optional<uint64_t> stopUs;
+        bool failed = false;  // reported by takeFailed() (then cleared)
+    };
+    uint64_t nowUs() const { return static_cast<uint64_t>(clock()) * 1000; }
+    static uint32_t framesBy(const Record &r, uint64_t atUs);  // frames started by then
+    static std::optional<uint64_t> endUs(const Record &r);     // none: a hold still running
+    bool sending(const Record &r) const;
+
+    bool ready_ = true;
+    bool failNext_ = false;
+    std::deque<Record> records_;  // the last one may be sending
 };
 
 // "ble", "ha_main" (with the fixture entities) and "ir", registered in that
@@ -180,7 +230,8 @@ struct FakeAdapters {
     SimulatedBleHosts bleHosts;
     integrations::BleHidAdapter ble{"ble", bleHosts};
     FakeHomeAssistant homeAssistant{"ha_main"};
-    FakeIr ir;
+    FakeIrTransmitter irTransmitter;
+    integrations::IrAdapter ir{"ir", irTransmitter};
     AdapterSet set;
 };
 

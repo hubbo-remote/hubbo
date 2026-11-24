@@ -213,7 +213,11 @@ TEST(ParseProfile, RefusesWhatTheSpecDoesnt) {
     }
     std::string ir = profileJson();
     ir.replace(ir.find("\"ble_hid\""), 9, "\"ir\"");
-    EXPECT_TRUE(parse(ir).has(ErrorCode::UnsupportedSchema, "/platform"));
+    EXPECT_TRUE(parse(ir).has(ErrorCode::UnknownField, "/commands/Home/page"));  // an IR command is a code
+    EXPECT_TRUE(parse(ir).has(ErrorCode::Required, "/commands/Home/pronto"));
+    std::string network = profileJson();
+    network.replace(network.find("\"ble_hid\""), 9, "\"network\"");
+    EXPECT_TRUE(parse(network).has(ErrorCode::WrongType, "/platform"));
     std::string v2 = profileJson();
     v2.replace(v2.find("\"schema_version\":1"), 18, "\"schema_version\":2");
     EXPECT_TRUE(parse(v2).has(ErrorCode::UnsupportedSchema, "/schema_version"));

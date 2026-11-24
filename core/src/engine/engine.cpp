@@ -538,6 +538,7 @@ void Engine::trackHolds(const DispatchRecord &record) {
     hold.adapterIndex = action.adapterIndex;
     hold.release = action.release;
     hold.releaseIndex = action.releaseIndex;
+    hold.catalog = action.catalog;
     for (size_t i = 0; i < limits::kMaxParams; i++) hold.params[i] = action.params[i];
     hold.paramsPresent = action.paramsPresent;
     hold.deviceId.assign(record.target);
