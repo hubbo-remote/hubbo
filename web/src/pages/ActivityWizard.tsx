@@ -5,7 +5,7 @@ import { api, errorMessage } from '@/api/client'
 import { invalidate, setQueryData } from '@/api/hooks'
 import type { Action } from '@/api/types'
 import { commandLabel, deviceName, paramSummary } from '@/components/actions/describe'
-import { ErrorState, PageHeader } from '@/components/common'
+import { DeviceModel, ErrorState, PageHeader } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Select } from '@/components/ui/input'
@@ -165,7 +165,10 @@ function StartStep({ answers, set, catalog }: { answers: WizardAnswers; set: (p:
         {all.map((d) => (
           <label key={d.id} className={OPTION_ROW}>
             <input type="checkbox" className="size-4 accent-[var(--color-primary)]" checked={answers.devices.includes(d.id)} onChange={() => toggle(d.id)} />
-            <span className="font-medium">{d.name}</span>
+            <span className="min-w-0">
+              <span className="block font-medium">{d.name}</span>
+              <DeviceModel device={d} /> {/* not an HA entity id: noise here */}
+            </span>
           </label>
         ))}
       </div>

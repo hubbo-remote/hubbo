@@ -39,6 +39,16 @@ export const INTEGRATION_ICON: Record<IntegrationType, LucideIcon> = {
   ir: Rss,
 }
 
+/**
+ * What a device added from a profile is ("Microsoft Xbox Series X"), since its name is the user's label;
+ * empty for others. The manufacturer is left out when the model already says it, or is "Other".
+ */
+export function deviceModel(d: { manufacturer?: string; model?: string }): string {
+  const { manufacturer: m, model } = d
+  if (!model) return ''
+  return !m || m === 'Other' || model.toLowerCase().startsWith(m.toLowerCase()) ? model : `${m} ${model}`
+}
+
 /** What a device points at, if anything worth showing: an HA entity id. */
 export const providerRef = (p: { type: string; entity_id?: string }) => (p.type === 'home_assistant' ? (p.entity_id ?? '') : '')
 

@@ -47,9 +47,12 @@ test('import an infrared profile, bind its commands, and a startup sends one', a
   const tv = devices.find((d) => d.name === 'Den TV')!
   expect(tv.integration_id).toBe('ir')
   await expect(page.locator(`a[href="#/devices/${tv.id}"]`).getByRole('img', { name: 'IR', exact: true })).toBeVisible()
+  await expect(page.locator(`a[href="#/devices/${tv.id}"]`)).toContainText('Test NEC TV') // what it is, under the user's name
 
   // Its page: the profile's commands, nothing to pair.
   await open(page, `/devices/${tv.id}`)
+  await expect(page.getByRole('heading', { name: 'Den TV' })).toBeVisible()
+  await expect(page.locator('header').filter({ has: page.getByRole('heading', { name: 'Den TV' }) })).toContainText('Test NEC TV')
   await expect(page.getByRole('group', { name: 'Volume up', exact: true })).toBeVisible()
   await expect(page.getByTestId('bluetooth-state')).toHaveCount(0)
 

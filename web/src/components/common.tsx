@@ -2,7 +2,7 @@ import { ArrowLeft, Construction, type LucideIcon } from 'lucide-react'
 import { Link } from 'wouter'
 import type { ReactNode } from 'react'
 import type { IntegrationState } from '@/api/types'
-import { HEALTH, providerRef } from '@/lib/health'
+import { deviceModel, HEALTH, providerRef } from '@/lib/health'
 import { ApiError, errorMessage, isNotImplemented } from '@/api/client'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,19 @@ import { cn } from '@/lib/utils'
 export function EntityId({ provider }: { provider: { type: string; entity_id?: string } }) {
   const ref = providerRef(provider)
   return ref ? <span className="block truncate font-mono text-xs text-muted-foreground">{ref}</span> : null
+}
+
+type DeviceLike = { name: string; provider: { type: string; entity_id?: string }; manufacturer?: string; model?: string }
+
+/** A profile device's make and model under its name; nothing for others, or when that's its name already. */
+export function DeviceModel({ device: d }: { device: DeviceLike }) {
+  const model = deviceModel(d)
+  return model && model !== d.name ? <span className="block truncate text-xs text-muted-foreground">{model}</span> : null
+}
+
+/** Under a device's name, what it is: its make and model (a profile device), or its HA entity id. */
+export function DeviceWhat({ device: d }: { device: DeviceLike }) {
+  return deviceModel(d) ? <DeviceModel device={d} /> : <EntityId provider={d.provider} />
 }
 
 export function PageHeader({ title, description, actions, back }: { title: ReactNode; description?: ReactNode; actions?: ReactNode; back?: { href: string; label: string } }) {

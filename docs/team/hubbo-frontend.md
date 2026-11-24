@@ -33,6 +33,11 @@ Current state, not a log. Update when a piece of work lands.
   pronto::parse (uppercase, single spaces, ≤512 pairs a section); a bad platform is `wrong_type`; an `ir` provider without a profile is `required` at /profile; limit_reached says "There's no
   room on the hub for another device" (`noRoom(subject)`, activities too); a Bluetooth or IR provider without
   a profile is `required` at /profile; PUT /admin/integrations/ir takes settings `{type: ir}` only.
+- **Make and model** (user, after the board test): a profile device's name is the user's label, so
+  `deviceModel` (lib/health: "Microsoft Xbox Series X"; the maker dropped when the model starts with it or it's
+  "Other") shows under it: `DeviceWhat` (common.tsx; HA devices keep their entity id) in the device list and
+  the device page header, and the wizard's Included Devices (model only, no entity ids). Not in the `<select>`
+  device pickers (no room; e2e picks by label).
 - `/simplify` done: `d.profile` instead of platform checks; mock `adapterDown`, `DOWN_DETAIL`, `readyFlag`,
   `ROUTE_MAX_BODY`; `isPronto` boolean. Skipped: one Pick shape for profile/file/HA in AddDeviceDialog (a
   bigger rewrite), connectFirst from capabilities, `useDeviceDetails` fetching only uncached ids.
