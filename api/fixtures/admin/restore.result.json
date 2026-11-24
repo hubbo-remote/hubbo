@@ -1,8 +1,8 @@
 {
   "dry_run": false,
-  "devices": 6,
+  "devices": 7,
   "activities": 2,
-  "integrations": 4,
+  "integrations": 5,
   "migrated_from": null,
   "requires": [
     "home_assistant_token",

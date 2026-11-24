@@ -375,8 +375,8 @@ def devices_and_profiles(c, devices):
         expect(not any(k in d for k in PROFILE_CONTENT), f"{d['id']}: the list carries profile content")
         _, got, _ = c.call("getDevice", "GET", f"/devices/{d['id']}", expect=200, label="device detail")
         got = got or {}
-        if d["provider"]["type"] == "ble_hid":
-            expect("profile" in d and "commands" in got, f"{d['id']}: a Bluetooth device without its profile")
+        if d["provider"]["type"] in ("ble_hid", "ir"):
+            expect("profile" in d and "commands" in got, f"{d['id']}: a profile device without its profile")
         else:
             expect(not any(k in got for k in PROFILE_CONTENT + ("profile", "manufacturer", "model")),
                    f"{d['id']}: an HA device with profile fields: {got}")
@@ -1908,6 +1908,71 @@ def remote_log_flow(c):
     expect([e["signal"] for e in press if e["type"] == "packet"][:1] == ["weak"], f"the press's signal: {press}")
 
 
+def integration(c, integration_id, label):
+    """An integration's summary as GET /integrations lists it ({} if missing)."""
+    _, ints, _ = c.call("listIntegrations", "GET", "/integrations", expect=200, label=label)
+    return next((i for i in (ints or {}).get("integrations", []) if i["id"] == integration_id), {})
+
+
+def ir_flow(c):
+    """IR (docs/design/ir.md): the seeded IR device equals the fixture; a
+    profile file imports (and its problems point into it under /profile);
+    a press goes out the emitter; the `ir` integration reports the emitter."""
+    ir = integration(c, "ir", "integrations with ir")
+    expect((ir.get("type"), ir.get("state")) == ("ir", "ready"), f"the ir integration: {ir}")
+    _, cfg, _ = c.call("getIntegrationConfig", "GET", "/admin/integrations/ir", expect=200)
+    expect(cfg and cfg["settings"] == {"type": "ir"}, f"ir settings: {cfg}")
+    _, tv, _ = c.call("getDevice", "GET", "/devices/dev_bedroom_tv", expect=200, label="the IR device")
+    expect(tv == fixture("devices/dev_bedroom_tv.json"), "dev_bedroom_tv differs from api/fixtures")
+
+    press_body = fixture("devices/execute.ir_press.request.json")
+    press = lambda label: c.call("executeCommand", "POST", "/devices/dev_bedroom_tv/commands/press/execute",
+                                 press_body, expect=200, label=label)[1] or {}
+    res = press("IR press")
+    expect(res.get("status") == "accepted", f"IR press: {res}")
+    if MOCK:
+        skip("the IR emitter's sends and readiness", "the mock has no emitter")
+    else:
+        c.control("advance?ms=500")  # hub-sim records what the emitter sent
+        _, sent = c.host_call("GET", "/sim/ir")
+        last = ((sent or {}).get("sends") or [{}])[-1]
+        expect((last.get("device_id"), last.get("command")) == ("dev_bedroom_tv", "VolumeUp"),
+               f"the emitter's last send: {last}")
+        c.control("ir?ready=0")
+        ir = integration(c, "ir", "ir not ready")
+        expect(ir.get("state") == "not_ready" and ir.get("detail"), f"ir without its emitter: {ir}")
+        res = press("IR press, no emitter")
+        expect((res.get("status"), res.get("message")) == ("failed", "adapter_unavailable"),
+               f"IR press without an emitter: {res}")
+        c.control("ir?ready=1")
+
+    # Import a profile file.
+    request = fixture("admin/register_ir.request.json")
+    _, dev, _ = c.call("registerDevice", "POST", "/admin/devices", request, expect=201, label="import an IR profile")
+    if dev:
+        same = lambda d: {k: x for k, x in d.items() if k not in ("id", "revision")}
+        expect(same(dev) == same(fixture("admin/register_ir.json")), f"imported device differs from api/fixtures: {dev}")
+        c.call("deleteDevice", "DELETE", f"/admin/devices/{dev['id']}?revision={dev['revision']}", expect=204,
+               label="delete the imported device")
+    bad = copy.deepcopy(request)
+    code = bad["profile"]["commands"]["VolumeUp"]["pronto"]
+    bad["profile"]["commands"]["VolumeUp"]["pronto"] = "0100" + code[4:]
+    _, e, _ = c.call("registerDevice", "POST", "/admin/devices", bad, expect=422, label="import a bad Pronto code")
+    got = [(d["code"], d["path"]) for d in error_details(e)]
+    expect(got == [("invalid_pronto", "/profile/commands/VolumeUp/pronto")], f"bad Pronto code: {got}")
+    refused_at(c, "import a partial profile", {"profile": {"schema_version": 1}}, "required", "/profile/id",
+               "/admin/devices", op="registerDevice")
+    # The profile spec's 256 KiB (minified, without meta) inside the body's 384 KiB; many
+    # strings, as the hub's JSON parser caps a single one at 64 KB.
+    oversized = dict(copy.deepcopy(request["profile"]), padding=["x" * 1000] * 300)
+    refused_at(c, "import a profile over 256 KiB", {"profile": oversized}, "too_long", "/profile",
+               "/admin/devices", op="registerDevice")
+    big = json.dumps(request).encode()
+    big = big[:-1] + b" " * (384 * 1024 - len(big) + 1) + b"}"  # valid JSON, one byte over
+    c.call("registerDevice", "POST", "/admin/devices", raw=big, expect=413, label="import over 384 KiB",
+           headers={"Content-Type": "application/json"})
+
+
 def ble_pairing_flow(c):
     """Bluetooth hosts, one per device: pairing a device's own host (the
     `ble/bond` control bonds one in the open window), one window at a time,
@@ -1930,9 +1995,12 @@ def ble_pairing_flow(c):
         ({"profile_id": "hubbo:fire-tv", "commands": {}}, "a profile with commands", "unknown_field", "/commands"),
         ({"profile_id": "hubbo:fire-tv", "integration_id": "ble"}, "a profile with an integration",
          "unknown_field", "/integration_id"),
-        ({"profile": fixture("profiles/fire-tv.json")}, "a whole profile", "unknown_field", "/profile"),
+        ({"profile_id": "hubbo:fire-tv", "profile": fixture("profiles/fire-tv.json")},
+         "a profile id and a profile file", "unknown_field", "/profile"),
         ({"name": "Shield", "integration_id": "ble", "kind": "streamer", "provider": {"type": "ble_hid"}},
          "a Bluetooth device without a profile", None, None),
+        ({"name": "Den TV", "integration_id": "ir", "kind": "tv", "provider": {"type": "ir"}},
+         "an IR device without a profile", "required", "/profile"),
     ]:
         _, body, _ = c.call("registerDevice", "POST", "/admin/devices", body, expect=422, label=label)
         details = [(d["code"], d["path"]) for d in error_details(body)]
@@ -2018,8 +2086,7 @@ def ble_pairing_flow(c):
         _, body, _ = c.call("startDevicePairing", "POST", "/admin/devices/dev_apple_tv/pair", expect=503,
                             label="pair with the radio down")
         expect(error_code(body) == "integration_unavailable", f"radio down: {body}")
-        _, ints, _ = c.call("listIntegrations", "GET", "/integrations", expect=200, label="radio down")
-        radio = next((i for i in (ints or {}).get("integrations", []) if i["id"] == "ble"), {})
+        radio = integration(c, "ble", "radio down")
         expect(radio.get("state") == "error" and radio.get("detail") == "Bluetooth isn't working",
                f"radio down: {radio}")
         c.control("ble/radio?ready=1")
@@ -2037,6 +2104,7 @@ def noauth(c, checker):
     remote_flow(c)
     remote_log_flow(c)
     ble_pairing_flow(c)
+    ir_flow(c)
     candidate = ha_flow(c)
     admin_flow(c, checker, candidate)
     hub_flow(c)

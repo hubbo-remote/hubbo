@@ -24,6 +24,26 @@
       "revision": 1
     },
     {
+      "id": "dev_bedroom_tv",
+      "name": "Bedroom TV",
+      "integration_id": "ir",
+      "kind": "tv",
+      "provider": {
+        "type": "ir"
+      },
+      "platform": "ir",
+      "manufacturer": "Test",
+      "model": "NEC TV",
+      "profile": {
+        "id": "user:test-nec-tv",
+        "revision": 1,
+        "sha256": "8f33885e9786d2c986493a8ba455284bfac5e4c4b9c4a7b9d1bd80c789737468"
+      },
+      "availability": "unknown",
+      "schema_version": 1,
+      "revision": 1
+    },
+    {
       "id": "dev_denon",
       "name": "Family Room Denon",
       "integration_id": "ha_main",

@@ -97,6 +97,16 @@
       "kind": "200"
     },
     {
+      "file": "devices/dev_bedroom_tv.json",
+      "operation": "getDevice",
+      "kind": "200"
+    },
+    {
+      "file": "devices/dev_bedroom_tv.capabilities.json",
+      "operation": "getDeviceCapabilities",
+      "kind": "200"
+    },
+    {
       "file": "devices/dev_denon.json",
       "operation": "getDevice",
       "kind": "200"
@@ -463,6 +473,31 @@
     },
     {
       "file": "errors/unknown_profile.json",
+      "operation": "registerDevice",
+      "kind": "422"
+    },
+    {
+      "file": "admin/register_ir.request.json",
+      "operation": "registerDevice",
+      "kind": "request"
+    },
+    {
+      "file": "admin/register_ir.json",
+      "operation": "registerDevice",
+      "kind": "201"
+    },
+    {
+      "file": "devices/execute.ir_press.request.json",
+      "operation": "executeCommand",
+      "kind": "request"
+    },
+    {
+      "file": "integrations/ir.config.json",
+      "operation": "getIntegrationConfig",
+      "kind": "200"
+    },
+    {
+      "file": "errors/invalid_pronto.json",
       "operation": "registerDevice",
       "kind": "422"
     },

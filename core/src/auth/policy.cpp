@@ -20,6 +20,12 @@ constexpr uint32_t kMaxRestoreBodyBytes = config::kMaxConfigFileBytes + 128 * 10
 // port checks the real slot size again; this only bounds the upload.
 constexpr uint32_t kMaxFirmwareImageBytes = 6400 * 1024;
 
+// Adding a device from an imported profile ({profile, name?, kind?}). The
+// profile spec's 256 KiB is the profile minified without `meta` (core's
+// parseProfile checks it); the file as sent also carries `meta` and
+// whitespace, so the body gets half again as much room.
+constexpr uint32_t kMaxProfileImportBodyBytes = 384 * 1024;
+
 // Keep in operation-enum order. api/lint.sh parses the table rows below
 // (operation, id, method, requirement, max body bytes, optional body type)
 // and compares them with api/openapi.yaml (x-hubbo-role, x-hubbo-max-body;
@@ -68,7 +74,7 @@ constexpr OperationInfo kOperations[] = {
     {Operation::GetDevicePairing, "getDevicePairing", Method::Get, Requirement::AdminOnly, 0},
     {Operation::CancelDevicePairing, "cancelDevicePairing", Method::Delete, Requirement::AdminOnly, 0},
     {Operation::ForgetDevicePairing, "forgetDevicePairing", Method::Delete, Requirement::AdminOnly, 0},
-    {Operation::RegisterDevice, "registerDevice", Method::Post, Requirement::AdminOnly, 4096},
+    {Operation::RegisterDevice, "registerDevice", Method::Post, Requirement::AdminOnly, kMaxProfileImportBodyBytes},
     {Operation::UpdateDevice, "updateDevice", Method::Put, Requirement::AdminOnly, 4096},
     {Operation::DeleteDevice, "deleteDevice", Method::Delete, Requirement::AdminOnly, 0},
     {Operation::GetRemoteConfig, "getRemoteConfig", Method::Get, Requirement::AdminOnly, 0},

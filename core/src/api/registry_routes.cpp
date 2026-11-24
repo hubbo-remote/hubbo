@@ -202,17 +202,45 @@ std::unique_ptr<DeviceSpec> deviceFromBody(JsonVariantConst body, http::Response
         new DeviceSpec(config::deviceFromProfile(*profile, std::move(name), std::move(kind))));
 }
 
-// POST /admin/devices: the new device from the body (a profile, or an
-// HA entity with its loaded details), or null after sending the error.
+// {profile, name?, kind?}: a device from an imported profile document (any
+// platform the hub drives), or null after sending the error. The profile's
+// issues are reported under /profile.
+std::unique_ptr<DeviceSpec> deviceFromImport(JsonVariantConst body, http::Response &out) {
+    ValidationReport report;
+    if (!checkObject(body,
+                     {{"profile", Field::Kind::Object, true},
+                      {"name", Field::Kind::String, false, limits::kMaxNameLength},
+                      {"kind", Field::Kind::String, false, limits::kMaxTypeLength}},
+                     &report)) {
+        sendIssues(out, report, "Send {profile, name?, kind?}");
+        return nullptr;
+    }
+    auto profile = std::make_unique<config::ProfileDocument>();
+    if (config::parseProfile(body["profile"], profile.get(), &report) != ErrorCode::Ok) {
+        sendIssues(out, report.rerooted("", "/profile"), "The profile is invalid");
+        return nullptr;
+    }
+    if (!config::profileSha256(body["profile"], &profile->profile.sha256)) {  // a fractional number (in meta)
+        sendDetail(out, "/profile", "wrong_type", "A profile holds only whole numbers");
+        return nullptr;
+    }
+    return std::unique_ptr<DeviceSpec>(new DeviceSpec(config::deviceFromProfile(
+        std::move(*profile), body["name"] | std::string(), body["kind"] | std::string())));
+}
+
+// POST /admin/devices: the new device from the body (a built-in or
+// imported profile, or an HA entity with its loaded details), or null after
+// sending the error.
 std::unique_ptr<DeviceSpec> newDevice(ApiContext &ctx, const http::Request &request, http::Response &out) {
     JsonDocument doc;
     if (!readJson(request, out, doc)) return nullptr;
     if (!doc["profile_id"].isNull()) return deviceFromBody(doc.as<JsonVariantConst>(), out);
-    // Bluetooth devices come from a profile; a client never sends one
-    // (checked first: the decoder would ask for the profile's fields).
+    if (!doc["profile"].isNull()) return deviceFromImport(doc.as<JsonVariantConst>(), out);
+    // Bluetooth and IR devices come from a profile; a client never sends
+    // one (checked first: the decoder would ask for the profile's fields).
     // Any other device's decoder reports profile fields as unknown_field.
-    if (doc["provider"]["type"] == kBleHidType) {
-        sendDetail(out, "/profile_id", "required", "Add a Bluetooth device from a profile");
+    if (hasProfile(doc["provider"]["type"] | "")) {
+        sendDetail(out, "/profile", "required", "Add this device from a profile");
         return nullptr;
     }
     auto device = std::make_unique<DeviceSpec>();

@@ -1,0 +1,10 @@
+{
+  "id": "ir",
+  "type": "ir",
+  "name": "IR",
+  "enabled": true,
+  "settings": {
+    "type": "ir"
+  },
+  "revision": 1
+}

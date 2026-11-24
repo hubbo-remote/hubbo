@@ -12,6 +12,8 @@ them (core/tests/ha_capabilities_test.cpp checks the same inputs, and
 api/contract.sh checks every capability fixture equals what hub-sim serves).
 """
 import copy
+import functools
+import hashlib
 import json
 import os
 import re
@@ -52,17 +54,56 @@ def profile_summary(pid):
                 platform=d["platform"])
 
 
-def profile_device(dev_id, pid, name, kind=None, revision=1):
-    """A device added from a built-in profile (the detail form, GET /devices/{id})."""
-    d = PROFILES[pid]
-    out = {"id": dev_id, "name": name, "integration_id": "ble", "kind": kind or d["kind"],
-           "provider": {"type": "ble_hid"}, "platform": "ble_hid",
-           "manufacturer": d["manufacturer"], "model": d["model"],
-           "profile": profile_ref(pid),
-           "availability": "available", "bluetooth": {"state": "connected"},
-           "schema_version": 1, "revision": revision}
+# Per platform: its integration and a new device's runtime fields.
+PLATFORMS = {
+    "ble_hid": ("ble", {"availability": "available", "bluetooth": {"state": "connected"}}),
+    "ir": ("ir", {"availability": "unknown"}),  # nothing tells whether a device saw a code
+}
+
+
+def device_from_profile(dev_id, d, ref, name, kind=None, revision=1):
+    """A device added from profile document `d` (the detail form, GET /devices/{id})."""
+    integration, runtime = PLATFORMS[d["platform"]]
+    out = {"id": dev_id, "name": name, "integration_id": integration, "kind": kind or d["kind"],
+           "provider": {"type": d["platform"]}, "platform": d["platform"],
+           "manufacturer": d["manufacturer"], "model": d["model"], "profile": ref,
+           **copy.deepcopy(runtime), "schema_version": 1, "revision": revision}
     out.update({k: copy.deepcopy(d[k]) for k in PROFILE_CONTENT if k in d})
     return out
+
+
+def profile_device(dev_id, pid, name, kind=None, revision=1):
+    """A device added from a built-in profile."""
+    return device_from_profile(dev_id, PROFILES[pid], profile_ref(pid), name, kind, revision)
+
+
+# IR test profiles (sim/fixtures/ir/, from hubbo-profiles): imported, not
+# built in. An imported device's sha256 is the spec's hash of the file.
+IR_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "sim", "fixtures", "ir")
+
+
+@functools.lru_cache(maxsize=None)
+def _ir_profile(name):
+    with open(os.path.join(IR_DIR, name), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def ir_profile(name):
+    """An IR profile file, as an import sends it (meta included)."""
+    return copy.deepcopy(_ir_profile(name))
+
+
+def profile_sha256(doc):
+    """The profile spec's hash: canonical JSON (sorted keys, compact, UTF-8)."""
+    text = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def ir_device(dev_id, name, file, kind=None, revision=1):
+    """A device added from an IR profile file."""
+    d = ir_profile(file)
+    ref = {"id": d["id"], "revision": d["revision"], "sha256": profile_sha256(d)}
+    return device_from_profile(dev_id, d, ref, name, kind, revision)
 
 
 def light(d):
@@ -113,17 +154,24 @@ def hid_keys():
 HID_KEYS = hid_keys()
 
 
-def ble_commands(pid):
-    """A Bluetooth device's catalog: its profile's commands (remote), every
-    named key (keys) and a raw consumer usage (custom)."""
-    command = lambda: dict(p_enum("command", list(PROFILES[pid]["commands"])), label="Remote command")
-    key = lambda: p_enum("key", HID_KEYS)
-    usage = lambda: p_num("usage", "int", 1, 1023)
-    return [  # core's BleHidCommand order
+def remote_commands(profile):
+    """The `remote` group (Bluetooth and IR): press, press_down and press_up
+    with a profile command name."""
+    command = lambda: dict(p_enum("command", list(profile["commands"])), label="Remote command")
+    return [
         cmd("press", "Press", [command(), dict(p_num("hold_ms", "int", 1, 10000, required=False), unit="ms")],
             group="remote"),
         cmd("press_down", "Press down", [command()], effect="hold", group="remote"),
         cmd("press_up", "Press up", [command()], group="remote"),
+    ]
+
+
+def ble_commands(pid):
+    """A Bluetooth device's catalog: its profile's commands (remote), every
+    named key (keys) and a raw consumer usage (custom)."""
+    key = lambda: p_enum("key", HID_KEYS)
+    usage = lambda: p_num("usage", "int", 1, 1023)
+    return remote_commands(PROFILES[pid]) + [  # core's BleHidCommand order
         cmd("key_tap", "Key tap", [key()], group="keys"),
         cmd("key_down", "Key down", [key()], effect="hold", group="keys"),
         cmd("key_up", "Key up", [key()], group="keys"),
@@ -489,10 +537,13 @@ def device_commands(e):
 # Detail form (GET /devices/{id}); `light()` gives the list form.
 DEVICES = [
     profile_device("dev_apple_tv", "hubbo:apple-tv", "Family Room Apple TV"),
+    ir_device("dev_bedroom_tv", "Bedroom TV", "nec-tv.json"),
 ] + [ha_device(k, v) for k, v in HA_ENTITIES.items()]
 
 CAPABILITIES = {"dev_apple_tv": {"device_id": "dev_apple_tv", "integration_id": "ble",
-                                 "commands": ble_commands("hubbo:apple-tv")}}
+                                 "commands": ble_commands("hubbo:apple-tv")},
+                "dev_bedroom_tv": {"device_id": "dev_bedroom_tv", "integration_id": "ir",
+                                   "commands": remote_commands(ir_profile("nec-tv.json"))}}  # IR: remote only
 for k, v in HA_ENTITIES.items():
     CAPABILITIES[k] = {"device_id": k, "integration_id": "ha_main", "commands": device_commands(v)}
 
@@ -688,6 +739,7 @@ INTEGRATIONS = [
      "device_count": 0, "commands": SYSTEM_COMMANDS},
     {"id": "ble", "type": "ble_hid", "name": "Bluetooth", "enabled": True, "state": "connected",
      "device_count": 1},
+    {"id": "ir", "type": "ir", "name": "IR", "enabled": True, "state": "ready", "device_count": 1},
     {"id": "ha_main", "type": "home_assistant", "name": "Home Assistant", "enabled": True,
      "state": "connected", "detail": "Home Assistant 2026.11.1", "device_count": 5},
     {"id": "mqtt_main", "type": "mqtt", "name": "MQTT", "enabled": True, "state": "connected", "device_count": 0},
@@ -1000,6 +1052,18 @@ fx("errors/unknown_profile.json", "registerDevice", "422", err(
     "validation_failed", "There's no profile hubbo:roku", [
         ("/profile_id", "unknown_profile", "There's no profile hubbo:roku"),
     ]))
+# Import a profile file (an IR one here; any platform works the same way).
+fx("admin/register_ir.request.json", "registerDevice", "request",
+   {"profile": ir_profile("sony-receiver.json"), "name": "Living Room Receiver"})
+fx("admin/register_ir.json", "registerDevice", "201",
+   ir_device("dev_living_room_receiver", "Living Room Receiver", "sony-receiver.json"))
+fx("devices/execute.ir_press.request.json", "executeCommand", "request", {"params": {"command": "VolumeUp"}})
+fx("integrations/ir.config.json", "getIntegrationConfig", "200", {
+    "id": "ir", "type": "ir", "name": "IR", "enabled": True, "settings": {"type": "ir"}, "revision": 1})
+fx("errors/invalid_pronto.json", "registerDevice", "422", err(
+    "validation_failed", "The profile is invalid", [
+        ("/profile/commands/VolumeUp/pronto", "invalid_pronto", "Not a raw Pronto code"),
+    ]))
 fx("admin/register_device.request.json", "registerDevice", "request", {
     "name": "TV Backlight", "integration_id": "ha_main", "kind": "switch",
     "provider": ha_provider("switch.tv_backlight", "0x00158d0001a2b3c4-switch")})
@@ -1035,6 +1099,7 @@ BACKUP = {
         {"id": "system", "type": "system", "name": "System", "enabled": True},
         {"id": "ble", "type": "ble_hid", "name": "Bluetooth", "enabled": True,
          "settings": {"device_name": "Family Room Hubbo"}},
+        {"id": "ir", "type": "ir", "name": "IR", "enabled": True},
         {"id": "ha_main", "type": "home_assistant", "name": "Home Assistant", "enabled": True,
          "settings": {"url": "https://homeassistant.local:8123", "verify_tls": True}},
         {"id": "mqtt_main", "type": "mqtt", "name": "MQTT", "enabled": True,

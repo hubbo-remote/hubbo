@@ -236,8 +236,8 @@ bool readText(JsonVariantConst v, size_t max, bool (*valid)(std::string_view), s
     return true;
 }
 
-// HomeAssistantSettingsUpdate / BleHidSettingsUpdate / MqttSettingsUpdate
-// for `type`.
+// The settings update for `type` (its stored integration's): every type but
+// system has one (IR's is only its type).
 bool decodeSettings(JsonVariantConst v, const std::string &type, SettingsUpdate *out, ValidationReport *report) {
     const JsonObjectConst settings = v.as<JsonObjectConst>();
     const char *given = settings["type"] | "";
@@ -245,7 +245,7 @@ bool decodeSettings(JsonVariantConst v, const std::string &type, SettingsUpdate 
         report->add(ErrorCode::Required, "/settings/type");
         return false;
     }
-    if (type != given || (type != kHomeAssistantType && type != kBleHidType && type != kMqttType)) {
+    if (type != given || type == kSystemType) {
         report->add(ErrorCode::IntegrationMismatch, "/settings/type");
         return false;
     }

@@ -52,6 +52,14 @@
       "device_count": 1
     },
     {
+      "id": "ir",
+      "type": "ir",
+      "name": "IR",
+      "enabled": true,
+      "state": "ready",
+      "device_count": 1
+    },
+    {
       "id": "ha_main",
       "type": "home_assistant",
       "name": "Home Assistant",

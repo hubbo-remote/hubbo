@@ -50,6 +50,11 @@
       "state": "connected"
     },
     {
+      "id": "ir",
+      "type": "ir",
+      "state": "ready"
+    },
+    {
       "id": "ha_main",
       "type": "home_assistant",
       "state": "connected",
