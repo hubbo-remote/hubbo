@@ -1,9 +1,10 @@
-# Using the Hubbo API from an agent
+# Hubbo API
 
 Hubbo is a universal-remote hub. A handheld remote's buttons start activities ("Watch Apple
 TV"), which turn on and switch the TV, receiver, Bluetooth streamers and Home Assistant devices.
 While an activity runs, each button sends a command to one of its devices. This guide is for
-agents and scripts with the hub's address and an API token.
+anything that drives the hub with an API token: scripts, Home Assistant, LLM agents. The web
+admin uses the same API, signed in as the admin.
 
 **This guide is enough for everyday tasks; the spec is for exact schemas.** The spec,
 `GET /api/v1/openapi.json` (OpenAPI 3.1), is large: look up only the piece you need, by the
@@ -379,8 +380,8 @@ curl -s -X POST -H "$H" -H 'Content-Type: application/json' -d @b.json $HUBBO/ac
 
 Fix and repeat until `"valid": true`. Then:
 
-- **Create:** `POST /activities` with exactly `{name, startup, shutdown, bindings}` → `201`, the
-  stored activity with its `id` and `revision`.
+- **Create:** `POST /activities` with exactly `{name, startup, shutdown, bindings}` and
+  optionally `macros` → `201`, the stored activity with its `id` and `revision`.
 - **Replace:** `PUT /activities/{id}` with the activity as you read it, changed. `revision` is
   required (the one you read); `id` and `schema_version` may be echoed back and are ignored. It
   replaces the whole activity at once. `validate` takes the same body and ignores `id` and

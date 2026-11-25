@@ -5,7 +5,7 @@
 #include "hubbo/http/route.h"
 
 // The docs an LLM agent reads from the hub: the OpenAPI spec as JSON, the
-// agent guide (docs/agent-api.md) and llms.txt (docs/llms.txt). Generated at build time from the repo
+// agent guide (docs/api.md) and llms.txt (docs/llms.txt). Generated at build time from the repo
 // copies by core/tools/embed_docs.py (core's CMake and the firmware's
 // PlatformIO build both run it), so the hub serves what the repo says. In
 // flash on the board, no heap.
@@ -20,7 +20,7 @@ struct Doc {
 };
 
 extern const Doc kOpenApiJson;  // api/openapi.yaml as compact JSON
-extern const Doc kAgentGuide;   // docs/agent-api.md, byte for byte
+extern const Doc kAgentGuide;   // docs/api.md, byte for byte
 
 constexpr char kOpenApiPath[] = "/api/v1/openapi.json";
 constexpr char kAgentGuidePath[] = "/api/v1/agent.md";  // where errors point (Router::pointErrorsTo)

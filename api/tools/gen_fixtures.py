@@ -563,7 +563,7 @@ def wait(ms):
     return a(None, "wait", duration_ms=ms)
 
 
-# Buttons as the web admin writes them (docs/agent-api.md "Buttons"): a Press passes through
+# Buttons as the web admin writes them (docs/api.md "Buttons"): a Press passes through
 # (Bluetooth as a down/up pair, an HA command on down); with a Long press, Press is the tap;
 # Hubbo's own (activate, off) on tap.
 def passthrough(button, family, device="dev_apple_tv", **params):

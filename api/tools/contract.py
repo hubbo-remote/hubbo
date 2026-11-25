@@ -51,7 +51,7 @@ HA_TOKEN = "fake-ha-token"
 # hub-sim's fake broker takes any login (sim/src/fake_mqtt.h); the same
 # no-echo rule applies.
 MQTT_PASSWORD = "fake-broker-password"
-GUIDE_PATH = os.path.join(v.ROOT, "docs", "agent-api.md")  # served as GET /api/v1/agent.md
+GUIDE_PATH = os.path.join(v.ROOT, "docs", "api.md")  # served as GET /api/v1/agent.md
 LLMS_PATH = os.path.join(v.ROOT, "docs", "llms.txt")  # served as GET /llms.txt
 GUIDE = SPEC_LINK = None  # the guide's and the spec's paths, read from the spec in main()
 TRANSPORT_ERRORS = (405,)  # any request may get these (api/openapi.yaml conventions)
@@ -878,7 +878,7 @@ def error_docs(body):
 
 def discovery_flow(c):
     """With no credentials: the index, the served spec (equal to api/openapi.yaml)
-    and guide (equal to docs/agent-api.md), plain and gzipped, /llms.txt, and the
+    and guide (equal to docs/api.md), plain and gzipped, /llms.txt, and the
     docs hint on an unknown path but not on a missing id."""
     with c.acting_as():
         _, index, _ = c.call("getApiIndex", "GET", "/", expect=200, label="API index")
@@ -889,7 +889,7 @@ def discovery_flow(c):
                "GET /openapi.json differs from api/openapi.yaml")
         _, guide, _ = c.call("getAgentGuide", "GET", "/agent.md", expect=200, label="served guide")
         with open(GUIDE_PATH, encoding="utf-8") as f:
-            expect(guide == f.read(), "GET /agent.md differs from docs/agent-api.md")
+            expect(guide == f.read(), "GET /agent.md differs from docs/api.md")
         # The index's links (the spec fixes them) resolve, plain and gzipped alike.
         for link in (GUIDE, SPEC_LINK):
             status, _, _, identity = c.fetch(link)
