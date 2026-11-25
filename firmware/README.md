@@ -136,8 +136,9 @@ internal RAM they grew with the user's config until lwIP couldn't send frames ov
 
 ## Network
 
-DHCP on the W5500. Once the hub has an address it starts mDNS as `hubbo-<efuse MAC>.local`
-(advertising `_http._tcp`). Requests are plain HTTP (`secure` = false); HTTPS is out of scope.
+DHCP on the W5500. Once the hub has an address it starts mDNS under the hostname that follows the
+hub name: `hubbo-xxxx.local` for the default "Hubbo XXXX" (the Ethernet MAC's last two bytes;
+docs/design/hub-name.md), advertising `_http._tcp`. Requests are plain HTTP (`secure` = false); HTTPS is out of scope.
 
 ## OTA
 
@@ -147,7 +148,7 @@ OTA out entirely. Only its SHA-256 is compiled in (`scripts/ota_password_hash.py
 `ArduinoOTA.setPasswordHash`), never the password, and neither is ever printed. ArduinoOTA's
 challenge uses that hash as the key, so an OTA-enabled image grants OTA access to boards running
 it: treat images and flash dumps as sensitive.
-Hostname is `hubbo-<efuse MAC>`.
+Its hostname is the hub's boot hostname (`hubbo-xxxx` by default, see "Network").
 OTA starts once Ethernet has an address.
 
 ArduinoOTA receives and writes the image inside `handle()` on the main loop. The loop's task
