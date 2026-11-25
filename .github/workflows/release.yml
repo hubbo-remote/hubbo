@@ -39,6 +39,8 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           mkdir -p dist
           cp firmware/.pio/build/waveshare_esp32_s3_eth/firmware.bin "dist/hubbo-$version.bin"
+          # The checkout holds the tag as a lightweight ref; fetch the annotated tag to read its notes.
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > dist/notes.txt
           python3 - "$version" "dist/hubbo-$version.bin" > dist/manifest.json <<'EOF'
           import hashlib, json, re, sys
