@@ -18,7 +18,7 @@ export function readMarker(bytes: Uint8Array): ImageMarker | null {
 }
 
 /** Where Hubbo's releases are published. */
-const RELEASES_URL = 'https://github.com/maddox/hubbo/releases'
+const RELEASES_URL = 'https://github.com/hubbo-remote/hubbo/releases'
 
 /** A release's notes on GitHub (its tag is `v<version>`). */
 export const releaseNotesUrl = (version: string) => `${RELEASES_URL}/tag/v${version}`
