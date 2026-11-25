@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { brands, CATALOG_URL, CatalogError, models, normalize, profilePath, profileText, search } from './catalog'
+import { brands, CATALOG_URL, CatalogError, modelKeys, models, normalize, profilePath, profileText, search, searchModels } from './catalog'
 
 /** fetch, served from the fixture catalog (web/mock/catalog/); `override` answers some paths itself. */
 function serveFixtures(override: Record<string, Response | 'offline'> = {}) {
@@ -35,6 +35,21 @@ describe('the catalog', () => {
     expect(search(items, 'S A').map((i) => i.n)).toEqual(['Samsung'])
     expect(search(items, 'ar').map((i) => i.n)).toEqual(['Harman Kardon'])
     expect(search(items, ' ')).toBe(items)
+  })
+
+  it('matches models only from the start of the model or of one of its words', () => {
+    expect(modelKeys('KD-85X85J')).toEqual(['kd85x85j'])
+    expect(modelKeys('KDF60 XBR600')).toEqual(['kdf60xbr600', 'xbr600'])
+    const items = ['KD-85X85J', 'XBR-55X850', 'KDF60 XBR600', 'Bravia KD-85'].map((m) => ({ m, keys: modelKeys(m) }))
+    const find = (q: string) => searchModels(items, q).map((i) => i.m)
+    expect(find('kd85')).toEqual(['KD-85X85J', 'Bravia KD-85'])
+    expect(find('KD-85')).toEqual(['KD-85X85J', 'Bravia KD-85'])
+    expect(find('85')).toEqual([]) // words split on spaces only: never after a dash, never mid-token
+    expect(find('850')).toEqual([])
+    expect(find('xbr')).toEqual(['XBR-55X850', 'KDF60 XBR600'])
+    expect(find('bravia kd')).toEqual(['Bravia KD-85'])
+    expect(find('kd58')).toEqual([]) // no typo tolerance
+    expect(searchModels(items, ' - ')).toBe(items)
   })
 
   it('lists manufacturers alphabetically, and a manufacturer’s models in order', async () => {

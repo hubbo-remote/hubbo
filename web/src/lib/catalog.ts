@@ -19,7 +19,8 @@ export interface CatalogModel {
   model: string
   kind: string
   platform: string
-  key: string
+  /** What a search matches from the start of: see `modelKeys`. */
+  keys: string[]
 }
 
 /** Why the catalog couldn't give a profile: it can't be reached, doesn't have it, or it's in a newer format. */
@@ -69,7 +70,7 @@ export async function brands(): Promise<Brand[]> {
 export async function models(slug: string): Promise<CatalogModel[]> {
   const rows = parse<{ id: string; m: string; k: string; p: string }[]>(await getText(`index/m/${encodeURIComponent(slug)}.json`), Array.isArray)
   const order = new Intl.Collator(undefined, { numeric: true })
-  return rows.map((r) => ({ id: r.id, model: r.m, kind: r.k, platform: r.p, key: normalize(r.m) })).sort((a, b) => order.compare(a.model, b.model))
+  return rows.map((r) => ({ id: r.id, model: r.m, kind: r.k, platform: r.p, keys: modelKeys(r.m) })).sort((a, b) => order.compare(a.model, b.model))
 }
 
 /**
@@ -128,4 +129,20 @@ export function search<T extends { key: string }>(items: T[], query: string): T[
     else if (at > 0) contains.push(i)
   }
   return [...starts, ...contains]
+}
+
+/**
+ * A model's search keys: the normalized model from the start of each of its words (split on spaces
+ * only, like the site's match.js): "Bravia KD-85X85J" gives "braviakd85x85j" and "kd85x85j". Model
+ * numbers are specific, so a query matches only from one of these starts: "kd85" matches, "85" doesn't.
+ */
+export function modelKeys(model: string): string[] {
+  const words = model.trim().split(/\s+/).map(normalize)
+  return words.map((_, i) => words.slice(i).join('')).filter(Boolean)
+}
+
+/** The models one of whose keys starts with the query, in their own order. No typo tolerance. */
+export function searchModels<T extends { keys: string[] }>(items: T[], query: string): T[] {
+  const q = normalize(query)
+  return q ? items.filter((i) => i.keys.some((k) => k.startsWith(q))) : items
 }

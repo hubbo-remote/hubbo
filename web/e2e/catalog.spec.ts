@@ -40,8 +40,13 @@ test('install an infrared device from the catalog, its commands in the profile�
   await dialog.getByLabel('Type').selectOption('home_theater')
   await expect(models).toHaveText([/^HW-Q90R/])
   await dialog.getByLabel('Type').selectOption('')
-  await dialog.getByRole('searchbox', { name: 'Search models' }).fill('series')
+  await dialog.getByRole('searchbox', { name: 'Search models' }).fill('q-s')
   await expect(models).toHaveText([/^Q-Series/])
+  await dialog.getByRole('searchbox', { name: 'Search models' }).fill('qn')
+  await expect(models).toHaveText([/^QN55/, /^QN100/])
+  await dialog.getByRole('searchbox', { name: 'Search models' }).fill('55') // model numbers match from their start, never mid-token
+  await expect(models).toHaveCount(0)
+  await expect(dialog.getByText('No Samsung models start with “55”.')).toBeVisible()
 
   // Back to the start, and a device whose codeset has a digit command after the named ones.
   await dialog.getByRole('button', { name: 'Back' }).click()
