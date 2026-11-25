@@ -17,13 +17,14 @@ Follows `catalog-site.md` ("Hosting and publishing") and `ir.md` (profile import
 
 ## Publishing (hubbo-site)
 
-- **`bin/site publish`** builds, then uploads, in Docker:
-  - **Catalog → R2 bucket `hubbo`, at the bucket's root:** `index/` (hubbo-profiles'
-    `build/index/`, so `tools/bin/index` must have run), `profiles/`, `codesets/`, and the spec
-    files the pages read (kinds.json). Same tree the local `serve.py` serves under `/catalog/`.
-  - **Site → Pages project `hubbo-site`:** the pages, static files and spec pages, without the
-    catalog data. Its `data_base` is `https://catalog.hubbo.tv/` in a published build and stays
-    `/catalog/` locally.
+- **`bin/site publish`** deploys only the **site → Pages project `hubbo-site`**: the pages,
+  static files and spec pages, without the catalog data. Its `data_base` is
+  `https://catalog.hubbo.tv/` in a published build and stays `/catalog/` locally. The quick one
+  for site changes (user, 2026-11-25).
+- **`bin/site publish-catalog`** syncs only the **catalog → R2 bucket `hubbo`, at the bucket's
+  root**: `index/` (hubbo-profiles' `build/index/`, so `tools/bin/index` must have run),
+  `profiles/`, `codesets/`, and the spec files the pages read (kinds.json). Same tree the local
+  `serve.py` serves under `/catalog/`.
   - Only changed files upload (the first upload is ~310k files, ~2 GB). Objects no longer in the
     build are deleted.
   - JSON gets `Content-Type: application/json` and a `Cache-Control` (short for `index/`, longer
