@@ -5,8 +5,9 @@ How Hubbo turns a Home Assistant entity into a short list of safe, typed command
 
 ## Sources
 
-Every feature bit and service rule below was checked against Home Assistant's own source, at
-`home-assistant/core` commit `5a20e53de5a135b3d246a18b8794dace65a8d593` (dev, 2026-11-08):
+Every feature bit and service rule below was checked against Home Assistant's own source
+(`home-assistant/core`, dev branch; the media player and light rules at commit
+`5a20e53de5a135b3d246a18b8794dace65a8d593`):
 
 - `homeassistant/components/media_player/const.py`: `MediaPlayerEntityFeature`, `RepeatMode`.
 - `homeassistant/components/media_player/services.py`: which feature each service requires.
@@ -14,16 +15,16 @@ Every feature bit and service rule below was checked against Home Assistant's ow
 - `homeassistant/components/light/const.py`: `LightEntityFeature`, `ColorMode`,
   `COLOR_MODES_BRIGHTNESS`, `VALID_BRIGHTNESS` (0–255), `VALID_BRIGHTNESS_STEP` (−255–255),
   `VALID_TRANSITION`, `DEFAULT_MIN_KELVIN`/`DEFAULT_MAX_KELVIN` (2000/6535).
-- `homeassistant/components/fan/const.py`, `services.py`, `services.yaml` and `entity.py`
-  (checked 2026-11-12): `FanEntityFeature`, each service's required features and schema
+- `homeassistant/components/fan/const.py`, `services.py`, `services.yaml` and `entity.py`:
+  `FanEntityFeature`, each service's required features and schema
   (percentages are `Coerce(int)` 0–100), `percentage_step` = 100 / speeds.
 - `homeassistant/components/{scene,script,cover,button,input_boolean,humidifier,select}/const.py`
-  and `services.py` (dev, checked 2026-11-13): `CoverEntityFeature`, `HumidifierEntityFeature`,
+  and `services.py`: `CoverEntityFeature`, `HumidifierEntityFeature`,
   each service's required features and schema (cover positions and humidity are `Coerce(int)` +
   `Percentage()`; humidifier `min_humidity`/`max_humidity` default 0/100; select
   `select_next`/`select_previous` take an optional `cycle`, default true).
-- `homeassistant/components/remote/const.py`, `services.yaml` and `strings.json` (dev, checked
-  2026-11-14): `RemoteEntityFeature`, the six services, their fields and English strings.
+- `homeassistant/components/remote/const.py`, `services.yaml` and `strings.json`:
+  `RemoteEntityFeature`, the six services, their fields and English strings.
 - `homeassistant/helpers/service.py`: how `required_features` is applied.
 - The fixture masks come from the integrations themselves: `denonavr/media_player.py`
   (`SUPPORT_DENON`), `sonos/media_player.py`, `webostv/media_player.py` (`SUPPORT_WEBOSTV`,
@@ -240,7 +241,9 @@ function.
   the other input_*, group, automation and everything else: no commands until added here with
   tests.
 - **Typed `remote.send_command`**: its `command` is free text or a list, so it's a Home Assistant
-  action (docs/design/ha-remote.md, 2026-11-14), not a typed command.
+  action, not a typed command.
+- **Repeat on hold**: an HA command fires once per trigger; holding Volume up sends one
+  `volume_up`.
 - **Integration services for the newer domains** (scene through select): only media players,
   lights, switches, fans and remotes get them (`offersIntegrationServices()`).
 
@@ -277,7 +280,7 @@ that token's HA user can do (see docs/security.md).
 - Omitted optional params: core `resolveParams()` reports which params were supplied as a bit
   mask, carried to the adapter as `ExecRequest.paramsPresent`. The adapter passes it to
   `buildServiceCall()`, which leaves unsupplied optional params out of the HA call.
-- WebSocket message shape (when the transport lands):
+- WebSocket message shape:
   `{"type":"call_service","domain":<domain>,"service":<service>,"target":{"entity_id":<entity_id>},"service_data":{<data>}}`.
   Format floats with about 6 significant digits; `level` is stored as a float, so 0.35 is
   0.3499999940395355 as a double.
@@ -286,15 +289,10 @@ that token's HA user can do (see docs/security.md).
   state seen at registration/discovery, refresh on reconnect, and report a command that later
   fails with `ServiceNotSupported` as `failed`, not as a crash.
 
-## Open questions
-
-- **Volume repeat on hold:** decided, not for now (2026-11-08). An HA command fires once per
-  trigger.
-
 ## Integration-specific services
 
-Built in Phase 3 (`core/include/hubbo/ha/services.h`, `snapshot.h`). Resolved from Home
-Assistant rather than curated per integration. What Hubbo can't type is still callable as a
+Resolved from Home Assistant rather than curated per integration
+(`core/include/hubbo/ha/services.h`, `snapshot.h`). What Hubbo can't type is still callable as a
 Home Assistant action (below).
 
 - `get_services` (WebSocket) returns every service with its `target` filter and its `fields`
@@ -313,7 +311,7 @@ Home Assistant action (below).
   supported. Only P's own services are considered (never the entity domain's, which are the
   allowlist above), and never when P is the entity's domain. Services with no entity target
   (domain-wide, device-only) are never offered.
-- **The remote exception** (docs/design/ha-remote.md): a `remote.*` entity also gets HA's
+- **The remote exception**: a `remote.*` entity also gets HA's
   `remote` services whose target matches it; of the allowlisted ones only turn_on, and only
   when it has fields left for the entity (`activity`, with ACTIVITY 4). They're always custom
   services (never typed, never in `skipped_services`), ahead of P's with `remote.send_command`
@@ -329,7 +327,7 @@ Home Assistant action (below).
     or fractional)
   - `select` (single, string or `{value}` options) → `enum` (options over the length limit, or
     past the count limit, are dropped and counted in `dropped_options`)
-  - anything else (`text` is deferred, decided 2026-11-08; `entity`, `object`, `template`,
+  - anything else (`text`, `entity`, `object`, `template`,
     `target`, `time`, multiple selects, ...) → the whole service is skipped, as it is for more
     than 4 fields, a field name that isn't a valid param name or names a target (`entity_id`,
     `area_id`, `device_id`, ...), or a service/platform name outside `^[a-z][a-z0-9_]{0,31}$`.
@@ -337,7 +335,7 @@ Home Assistant action (below).
   it only returns data, which Hubbo can't use.
 - Skipped services are listed in the entity details' `skipped_services` as `{service, reason}`:
   `unsupported_field`, `too_many_fields`, `response_only` or `too_many_services`.
-- **Names come from HA's translations** (2026-11-12). Real HA's `get_services` carries no
+- **Names come from HA's translations.** HA's `get_services` carries no
   `name`; the English strings come from WS `frontend/get_translations` `{language: en,
   category: services, integration: [P]}`, fetched with the details: `component.P.services.S.name`
   is the command's label and `....fields.F.name` the param's (48 chars at most). Without one, the
@@ -347,8 +345,7 @@ Home Assistant action (below).
 - **Field descriptions** become the param's `description`, shown as a tooltip:
   `....fields.F.description` from the translations, else the field's own `description`.
   Whitespace is collapsed, and anything over 160 bytes is cut at a word boundary and ends in "…".
-  Absent when HA has none. Stored in the snapshot and re-checked on load (about 4.6 KB across the
-  29-device showcase).
+  Absent when HA has none. Stored in the snapshot and re-checked on load.
 - **Defaults and units.** A field's `default` is kept when it fits its type and range (a bool for
   `bool`, a number in range for `int`/`number`, integral for `int`, one of the options for
   `enum`), and shown as the param's `default`. A number's `unit_of_measurement` becomes its
@@ -358,14 +355,13 @@ Home Assistant action (below).
 - Same safety rules as the allowlist: the target is always the registered entity, only declared
   fields can be sent, and nothing can override `entity_id`, `area_id` or `device_id`. (A Home
   Assistant action sends data the user wrote, but keeps the target rule.)
-- **Discovery is lean** (Phase 4, decided 2026-11-09): `POST`/`GET
-  /admin/integrations/ha_main/discover` reads the compact entity registry and all current states
-  (about 0.8 MB, ~7 s on the board), never `get_services` (about 230 KB) or the full registry.
+- **Discovery is lean**: `POST`/`GET /admin/integrations/ha_main/discover` reads the compact
+  entity registry and all current states, never `get_services` or the full registry.
   Each candidate's `command_ids` is a preview from its domain alone. `GET` filters by `q`,
   `domain` and `available=true` (supported and not registered) before paging, so every page is
   full until the last.
 - **The capabilities snapshot comes from the entity's details.** Picking an entity loads its
-  details (`POST`/`GET /admin/integrations/ha_main/entities/{entity_id}/details`, about 2 s):
+  details (`POST`/`GET /admin/integrations/ha_main/entities/{entity_id}/details`):
   fresh attributes (supported features, source and sound mode lists, colour modes, kelvin
   range, preset modes, available modes, options, humidity range), platform, `unique_id` and `get_services`, normalized into the snapshot with the offered
   services (at most 32). Registering (`POST /admin/devices`) or re-linking/refreshing (`PUT
@@ -375,8 +371,7 @@ Home Assistant action (below).
   never asked on the hot path. The API never accepts a snapshot from a client and never returns
   one; a stored snapshot is re-validated when it's loaded (`ha/snapshot_json.h`), so a
   hand-edited backup can't smuggle in a service of another integration or a target param.
-- **Home Assistant action** (`call_service`, docs/design/ha-custom-action.md; the user's
-  decision 2026-11-13, reversing "never free-text service calls"). The integration's services
+- **Home Assistant action** (`call_service`). The integration's services
   that match the entity but can't be typed (`unsupported_field` or `too_many_fields`, never
   `response_only`) are kept in the snapshot as `custom_services`, with HA's field hints (name,
   required, example as JSON of at most 64 bytes, translated description). A device with any gets
@@ -398,8 +393,8 @@ Home Assistant action (below).
   - hints: up to 16 services and 8 fields, 2048 bytes per device and 16384 per config
     (`ha::kMaxCustomHintBytes`, `kMaxConfigHintBytes`); registration and re-link keep what fits.
   An action can reach anything HA allows for a service of the device's own integration (and, on
-  a remote, of the `remote` domain), so it's the one place the "only allowlisted calls" rule doesn't hold; security.md says so.
+  a remote, of the `remote` domain), so it's the one place the "only allowlisted calls" rule doesn't hold (see docs/security.md).
 - **Hue rate.** Hue handles about one command per second. Quick taps on a smart button's + or −
   whose action has a `step` (Change brightness, Change position) merge in the engine into one call
-  with `step` × the count, clamped to the param's range (docs/design/smart-buttons.md). Every other
+  with `step` × the count, clamped to the param's range (docs/api.md, "Smart buttons"). Every other
   press is sent at once: there is no queue in the adapter.

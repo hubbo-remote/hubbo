@@ -8,12 +8,13 @@
 
 #include "hubbo/auth/crypto.h"
 
-// Firmware updates as the admin API sees them (docs/design/phase5-appliance.md,
-// section 2): GET /admin/firmware and POST /admin/firmware/update.
+// Firmware updates as the admin API sees them (docs/security.md, "Firmware
+// updates"): GET /admin/firmware and POST /admin/firmware/update.
 //
 // The transport buffers the whole image (the board: PSRAM, through the normal
 // body path), the route calls install(), and nothing is erased until the
-// whole image has passed validateFirmwareImage(). There's no rollback.
+// whole image has passed validateFirmwareImage(). The new image boots on
+// trial; the bootloader rolls back one that isn't healthy (rolled_back_from).
 //
 // The firmware implements the port over esp_ota (a one-shot writer task,
 // then requestReboot()); hub-sim uses SimulatedFirmwareUpdate below. Like

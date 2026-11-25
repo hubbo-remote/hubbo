@@ -1,4 +1,4 @@
-// Firmware image validation (docs/design/phase5-appliance.md, section 2) and
+// Firmware image validation (docs/security.md, "Firmware updates") and
 // SimulatedFirmwareUpdate's states.
 #include <gtest/gtest.h>
 

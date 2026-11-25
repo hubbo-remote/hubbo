@@ -4,8 +4,7 @@
 #include <string>
 #include <string_view>
 
-// The remote radio as the admin API sees it (docs/design/phase3-home-
-// assistant.md, section 5): GET /admin/remote, PUT /admin/remote/endpoint and
+// The remote radio as the admin API sees it: GET /admin/remote, PUT /admin/remote/endpoint and
 // POST/GET/DELETE /admin/remote/pair.
 //
 // The firmware implements it over RemoteRadio; hub-sim uses SimulatedRemote

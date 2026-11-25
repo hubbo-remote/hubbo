@@ -3,8 +3,8 @@
 #include <cstdint>
 #include <functional>
 
-// The real factory reset, POST /admin/factory-reset
-// (docs/design/phase5-appliance.md, end of section 3). Not POST /admin/reset,
+// The real factory reset, POST /admin/factory-reset (docs/security.md,
+// "Factory reset"). Not POST /admin/reset,
 // which resets only the configuration.
 //
 // The route answers 202, then the platform erases everything and restarts

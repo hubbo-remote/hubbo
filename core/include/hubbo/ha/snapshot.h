@@ -11,8 +11,8 @@ struct DeviceSpec;  // domain/config.h
 }
 
 // What Home Assistant reported about one entity when it was registered or
-// re-linked: the device's stored capabilities (docs/design/phase3-home-
-// assistant.md, section 3). Plain data, no HA connection needed: the device's
+// re-linked: the device's stored capabilities (docs/ha-capabilities.md).
+// Plain data, no HA connection needed: the device's
 // commands are derived from it (EntityCapabilities::fromSnapshot) when the
 // config compiles, so they work while HA is offline.
 //

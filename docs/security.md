@@ -1,8 +1,7 @@
 # Security
 
 Hubbo is a LAN appliance that controls real devices and holds a Home Assistant credential. It's
-sized for one home on a trusted LAN with one admin (Phase 5 trimmed the auth to match). This
-document covers the threat model, how access control works, and the transport and storage
+sized for one home on a trusted LAN with one admin. This document covers the threat model, how access control works, and the transport and storage
 choices. The code lives in `core/include/hubbo/auth/` and `core/include/hubbo/ha/`; the API
 contract is `api/openapi.yaml`.
 
@@ -37,14 +36,13 @@ contract is `api/openapi.yaml`.
   scalar params only), target-like names refused, typed HA calls built only from the static
   allowlist and HA's own service metadata (docs/ha-capabilities.md). The target is always a
   registered entity.
-- **The Home Assistant action** (`call_service`, the user's decision 2026-11-13) is a deliberate
+- **The Home Assistant action** (`call_service`) is a deliberate
   escape hatch: anyone who can edit bindings or execute commands (the admin or an API token, no
   new role) can send any service of a registered HA device's own integration (its snapshot's
   platform: `webostv.*` on a webOS TV) with free JSON data to that device's entity, and on a
   remote also HA's `remote` services (`remote.send_command`, `remote.learn_command`,
   `remote.delete_command`). Only media player, light, switch, fan and remote devices have such
-  services. That reaches whatever HA
-  allows for the integration's services, as far as the HA token's user may: for an MQTT light,
+  services. That reaches whatever HA allows for the integration's services, as far as the HA token's user may: for an MQTT light,
   `mqtt.publish` to any topic. Lock and alarm entities never get the action. What still holds: no other
   domain (`homeassistant.stop`, `hassio.*`, `script.*`: `forbidden_param`), the target is only
   the registered entity (no target keys in `data`), the data is at most 1024 bytes and 4 levels, templates are
@@ -59,9 +57,9 @@ contract is `api/openapi.yaml`.
   (Harmony protocol), so anyone nearby with an nRF24 can inject button presses. That is accepted:
   it gives the same power as holding the remote.
 - Internet exposure. Hubbo must not be port-forwarded. Remote access belongs to a VPN or HA.
-- Sniffing on the LAN. HTTPS, secure boot and flash encryption are out of scope (user decision,
-  2026-11-09): the LAN is trusted.
-- DNS rebinding. The Host allowlist was removed in Phase 5. A rebinding page can't send the
+- Sniffing on the LAN. HTTPS, secure boot and flash encryption are out of scope: the LAN is
+  trusted.
+- DNS rebinding. There's no Host allowlist. A rebinding page can't send the
   SameSite=Strict cookie, so it gets only what an anonymous caller gets.
 - Online password guessing. There's no rate limit; each guess costs a PBKDF2 hash (about 0.5 s
   on the board), and the admin picks the password.
@@ -84,7 +82,8 @@ One admin account and any number of API tokens (max 16). No other roles.
 | The remote log (dev builds only) | yes | yes |
 | List devices, capabilities | yes | yes |
 | Execute a registered command | yes | yes |
-| Create/edit/delete/validate/activate activities, Off, global bindings | yes | yes |
+| Create/edit/delete/validate/activate activities, Off, global bindings, smart buttons | yes | yes |
+| Run a macro, activity runs | yes | yes |
 | Integration summaries | yes | yes |
 | Integration settings, discovery, Bluetooth device pairing and forget | yes | **no** |
 | Register/edit/delete devices | yes | **no** |
@@ -117,28 +116,24 @@ it runs prevalidated compiled actions.
 
 - Created by the first-run wizard (`POST /auth/setup`), which only works while the credentials
   are `fresh`. The user picks the username (`^[A-Za-z0-9_.-]{1,32}$`); there's no default. Whoever
-  reaches a fresh hub first creates the admin. No physical confirmation step (user decision,
-  2026-11-08): the hub lives on a trusted home LAN and is set up right after flashing.
+  reaches a fresh hub first creates the admin. There's no physical confirmation step: the hub
+  lives on a trusted home LAN and is set up right after flashing.
 - 10–128 bytes, no composition rules.
 - Stored as `pbkdf2-sha256$<iterations>$<salt>$<key>` (16-byte random salt, 32-byte key) in NVS.
-  Default 10,000 iterations (the minimum accepted). Measured on the dev ESP32-S3 with the
-  firmware built at -O2: about 550 ms per setup or login. The earlier default of 60,000 would
-  take over 3 s there (and about 4.6 s in the -O0 build that was measured first, at the 5 s
-  task watchdog: setup rebooted the board). The hash's cost is also what slows online guessing,
-  since there's no rate limit. The iteration
-  count is in the string, so existing hashes (including 60,000 ones) still verify and the
-  default can change without a migration.
+  Default 10,000 iterations (the minimum accepted): about 550 ms per setup or login on the
+  ESP32-S3, well inside the task watchdog. The hash's cost is also what slows online guessing,
+  since there's no rate limit. The iteration count is in the string, so the default can change
+  without invalidating stored hashes.
 - Verification compares in constant time. An unknown username is verified against
   `dummyPasswordHash()` so it takes as long as a wrong password.
 - PBKDF2 is the choice because mbedTLS has it (`mbedtls_pkcs5_pbkdf2_hmac_ext`) and it needs no
   big RAM buffers. A memory-hard KDF (Argon2, scrypt) would be stronger against offline cracking,
   but it would need a few MB of PSRAM per login. Revisit if the password hash ever leaves the
-  device. Today it never does: it's not in backups, and NVS can be encrypted.
+  device. It never does: it's not in backups, and NVS can be encrypted.
 
 ### Unreadable or damaged credentials
 
-"Can't read" is never "doesn't exist" (`docs/design/persistence-and-contracts.md`, parts 1 and
-6). `auth::Credentials` reads the store once, at boot, into one of three states, and only `fresh`
+"Can't read" is never "doesn't exist". `auth::Credentials` reads the store once, at boot, into one of three states, and only `fresh`
 allows `POST /auth/setup`. Anything else would let whoever asks first take over a hub whose real
 admin just can't be read:
 
@@ -148,7 +143,7 @@ admin just can't be read:
 - `unavailable`: the store couldn't be read, or holds damaged credentials (an intact record that
   doesn't decode, tokens without an admin, slots that exist but none is intact). Nothing can be
   authenticated: protected requests, login and setup get `503 storage_unavailable`. Recovery is
-  a reboot, or the wipe (`bin/hubbo ota <ip> --wipe`) when the damage is real.
+  a reboot, or erasing the flash and reflashing when the damage is real.
 
 ### Sessions
 
@@ -163,7 +158,7 @@ admin just can't be read:
 
 ### Cross-site requests
 
-There's no CSRF token (removed in Phase 5). These stop forged browser requests:
+There's no CSRF token. These stop forged browser requests:
 
 1. `SameSite=Strict`: browsers don't send the cookie on cross-site requests at all.
 2. `Content-Type: application/json` is required for request bodies (the firmware image:
@@ -205,8 +200,7 @@ session/token after BLE init. If the source fails, the auth code fails closed.
 
 ## Transport (TLS)
 
-The admin web UI and API are plain HTTP on the LAN. HTTPS is out of scope (user decision,
-2026-11-09): the LAN is trusted, and anyone who can sniff it can see the admin password, the
+The admin web UI and API are plain HTTP on the LAN. HTTPS is out of scope: the LAN is trusted, and anyone who can sniff it can see the admin password, the
 session cookie and API tokens. The `Secure` cookie attribute is set only if a TLS transport ever
 sets `Request::secure`.
 
@@ -214,11 +208,11 @@ Outbound to Home Assistant: an `https://` URL connects over `wss://`, verified a
 public CA bundle in the firmware (`verify_tls: true`, the default). `verify_tls: false` keeps
 the connection encrypted but doesn't verify the server, so anyone on the network path could pose
 as HA and get the token: only for a self-signed HA on a trusted LAN. There's no custom CA
-setting. `http://` HA URLs work but send the HA token in plaintext. The UI should warn.
+setting. `http://` HA URLs work but send the HA token in plaintext.
 Changing the HA URL clears the stored token unless a new one is sent, so a token can't be
 redirected to another host by editing the URL.
 
-Outbound to the MQTT broker: plain MQTT on the LAN, no TLS (user decision, 2026-11-13). The
+Outbound to the MQTT broker: plain MQTT on the LAN, no TLS. The
 broker username and password cross the LAN in plaintext, like the admin password does. Changing
 the broker `host` clears the stored password unless a new one is sent, for the same reason as
 the HA URL.
@@ -253,36 +247,14 @@ has a host.
 | HA access token | NVS | no | never (`has_access_token: true/false`) |
 | MQTT broker password | NVS | no | never (`has_password: true/false`) |
 | BLE bond keys (and each host's identity address) | NimBLE's NVS store | no | never |
-| TLS private key | NVS | no | never |
 | Sessions | RAM | no | never (the cookie only, at login) |
 
-NVS options on the ESP32-S3:
-
-- **NVS encryption** (`CONFIG_NVS_ENCRYPTION`): encrypts NVS with keys held in a separate
-  `nvs_keys` partition. Without flash encryption, the key partition is readable too, so on its
-  own it only stops casual dumps.
-- **Flash encryption** (release mode): AES-XTS on flash contents with an eFuse key the CPU can't
-  read out. With NVS encryption on top, this protects every secret above from someone who
-  desolders or dumps the flash. It's one-way: in release mode the board can't be reflashed over
-  USB with plaintext images anymore, only OTA or encrypted images. Development mode allows a
-  limited number of reflashes.
-- **Secure Boot v2**: only images signed with the user's key boot. It pairs with signed OTA (the
-  architecture requires authenticated updates), but it's also one-way, and losing the key bricks
-  OTA.
-- **HMAC-based NVS key protection** (ESP-IDF 5.x, eFuse HMAC key): derives the NVS key from an
-  eFuse key without a key partition. Check whether arduino-esp32 3.3.12's prebuilt IDF config
-  allows it.
-
-Flash encryption and secure boot are out of scope (user decision, 2026-11-09). The notes below
-stay for reference.
-
-Recommendation: MVP ships with NVS encryption off but the code written so it can be turned on
-(all secrets in NVS through one storage interface, nothing secret in LittleFS). Document an
-opt-in "hardened" build: flash encryption (release) + NVS encryption + Secure Boot v2, with key
-management written up before anyone enables it. These are permanent eFuse changes, so they need
-the user's explicit decision and a spare board to test on. Arduino's prebuilt sdkconfig may
-need a custom build (PlatformIO `custom_sdkconfig`) to enable them. Verify that before promising
-it.
+Flash encryption, NVS encryption and Secure Boot v2 are off. All secrets go through the one
+`SecretStore` port on NVS and nothing secret is in LittleFS, so they can be turned on later.
+Each is a permanent eFuse change (flash encryption in release mode stops plain USB reflashing;
+secure boot needs a signing key whose loss ends OTA updates), so try them on a spare board
+first. Arduino's prebuilt sdkconfig may need a custom build (PlatformIO `custom_sdkconfig`) to
+enable them.
 
 ## Logs, diagnostics and errors
 
@@ -322,12 +294,11 @@ its own compiled-in password hash, and shares the one-update-at-a-time owner fla
 
 ### Online updates
 
-The hub can also fetch a release from the project's GitHub releases
-(`docs/design/firmware-updates.md`). Each release carries a `manifest.json` (version, board,
+The hub can also fetch a release from the project's GitHub releases. Each release carries a `manifest.json` (version, board,
 layout, minimum version, image size and SHA-256) and an ECDSA P-256 signature over the
-manifest's exact bytes. The public key is built into the firmware. The private key lives only in
-a GitHub Actions secret and in `~/.config/hubbo/release-key.pem` (mode 600), which only the lead
-provisions. It never appears in the repo, in logs or in argv.
+manifest's exact bytes. The public key is built into the firmware
+(`firmware/release-key.pub.pem`). The private key is held by the project's release signing (a
+CI secret) and never appears in the repo or in logs.
 
 A check fetches the manifest and its signature, and ignores any manifest the key didn't sign
 (`check_error: bad_signature`). It offers the release only when it's newer than the running
@@ -359,8 +330,8 @@ accept, so it stays out of the repo and off the hub.
 firmware update. It answers `202`, then the hub erases every secret (the login, tokens, the HA
 token, the MQTT password), the BLE bonds, the remote endpoint and the config filesystem, and restarts into
 first-run setup (`fresh`). Like the first boot, whoever reaches the hub first can then set it
-up, which is fine on a trusted LAN. The Apple TV keeps its side of the pairing until it forgets
-"Hubbo". `POST /admin/reset` (reset configuration) keeps all secrets and pairings, except an HA token
+up, which is fine on a trusted LAN. A paired Bluetooth device keeps its side of the pairing
+until it's removed there. `POST /admin/reset` (reset configuration) keeps all secrets and pairings, except an HA token
 or MQTT password whose URL or host the reset changes. With
 `unavailable` credentials nobody can authenticate, so recovery stays the wipe.
 
@@ -371,7 +342,7 @@ secret (it's in `/status` and on the network as the hostname); only the admin ch
 
 ## Security test checklist
 
-Covered by unit tests today (`core/tests/auth_*_test.cpp`, `route_test.cpp`,
+Covered by unit tests (`core/tests/auth_*_test.cpp`, `route_test.cpp`,
 `firmware_update_test.cpp`, `ha_capabilities_test.cpp`):
 
 - [x] Role matrix: every operation × anonymous/token/admin.
@@ -387,8 +358,8 @@ Covered by unit tests today (`core/tests/auth_*_test.cpp`, `route_test.cpp`,
 - [x] Password hashing: RFC test vectors, salts differ, malformed stored hashes rejected.
 - [x] Firmware images: every validation step refuses its mistake, in order; the body type and
       limit come from the policy table.
-- [x] HA: `entity_id`/`target`/`area_id`/… params refused; ranges, types, enums; no toggle,
-      play_media or join; broadcast and malformed entity IDs refused; only allowlisted data keys.
+- [x] HA: `entity_id`/`target`/`area_id`/… params refused; ranges, types, enums; commands
+      outside the catalog (play_media, join) refused; broadcast and malformed entity IDs refused; only allowlisted data keys.
 - [x] OpenAPI: nested objects/arrays in params, raw service fields and HA entity IDs as
       `device_id` are refused by the schema (`api/fixtures/malicious/`, checked by
       `api/lint.sh`).
@@ -416,7 +387,7 @@ Covered over HTTP against hub-sim by `api/contract.sh` (both modes):
 - [x] The HA token, once sent, appears in no response of any operation or status, the backup
       included; a new URL clears it; the token is write-only (`has_access_token` only).
 
-Still to do:
+Not yet covered:
 
 - [ ] No secret in any log line (grep the simulator's output for the test secrets). Backups are
       covered for the HA token (above).
