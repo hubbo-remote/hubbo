@@ -1,6 +1,6 @@
 // What an agent finds on the hub with no prior knowledge, like core's docs routes: the API index,
 // the spec as JSON, the agent guide, and /llms.txt. Read from the repo (once), so they can't drift
-// from api/openapi.yaml, docs/agent-api.md and docs/llms.txt.
+// from api/openapi.yaml, docs/api.md and docs/llms.txt.
 import { createHash } from 'node:crypto'
 import { gzipSync } from 'node:zlib'
 import { CORE_SCHEMA, load } from 'js-yaml'
@@ -35,7 +35,7 @@ let docs: { openapi: Doc; guide: Doc; llms: Uint8Array } | undefined
 export function loadDocs() {
   return (docs ??= {
     openapi: doc(new TextEncoder().encode(JSON.stringify(load(new TextDecoder().decode(fixtureBytes('../openapi.yaml')), { schema: CORE_SCHEMA }))), 'application/json'),
-    guide: doc(fixtureBytes('../../docs/agent-api.md'), MARKDOWN),
+    guide: doc(fixtureBytes('../../docs/api.md'), MARKDOWN),
     llms: fixtureBytes('../../docs/llms.txt'),
   })
 }

@@ -181,7 +181,7 @@ describe('agent docs, like core', () => {
     expect(JSON.parse(new TextDecoder().decode(spec.body as Uint8Array))).toMatchObject({ openapi: expect.any(String), paths: expect.any(Object) })
     const guide = await m.handle(req('GET', '/agent.md'))
     expect(guide.headers).toMatchObject({ 'content-type': 'text/markdown; charset=utf-8', vary: 'Accept-Encoding' })
-    expect(Buffer.from(guide.body as Uint8Array).equals(Buffer.from(fixtureBytes('../../docs/agent-api.md')))).toBe(true)
+    expect(Buffer.from(guide.body as Uint8Array).equals(Buffer.from(fixtureBytes('../../docs/api.md')))).toBe(true)
     expect(guide.headers?.['content-encoding']).toBeUndefined()
     const zipped = await m.handle(req('GET', '/agent.md', undefined, { 'accept-encoding': 'gzip, deflate' }))
     expect(zipped.headers).toMatchObject({ 'content-encoding': 'gzip', vary: 'Accept-Encoding' })
