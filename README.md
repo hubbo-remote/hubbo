@@ -21,6 +21,9 @@ already love, and use it to control your TV, receiver, streaming boxes and light
   are picked, and every button on the remote does the right thing.
 - **Managed in a browser.** Add devices, build activities and map your remote from any browser on
   your network. Nothing to install, no account, no cloud.
+- **Built for agents.** Give an AI agent a token and your hub's address, then ask in plain words:
+  "Make a Watch TV activity with the TV and the Apple TV, and put the volume on the receiver." It
+  builds the activity and your remote's buttons, and they show up in Hubbo like anything you made.
 - **Hubbo shows up in Home Assistant.** Start and stop activities from your automations and
   dashboards.
 - **Thousands of devices.** Search the [device catalog](https://hubbo.tv/devices/) for your
