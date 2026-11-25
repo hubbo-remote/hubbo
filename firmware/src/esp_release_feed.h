@@ -27,7 +27,7 @@ public:
 
     // Where the releases are: <base>/latest/download/manifest.json and .sig,
     // <base>/download/v<version>/hubbo-<version>.bin.
-    static constexpr const char *kReleasesUrl = "https://github.com/maddox/hubbo/releases";
+    static constexpr const char *kReleasesUrl = "https://github.com/hubbo-remote/hubbo/releases";
     static constexpr uint32_t kTimeoutMs = 10000;          // connect, and each read
     static constexpr uint32_t kManifestDeadlineMs = 30000;  // manifest.json and .sig together
     static constexpr uint32_t kImageDeadlineMs = 180000;    // the image (about 10 s at 250 KB/s)
