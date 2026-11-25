@@ -45,8 +45,10 @@ Follows `catalog-site.md` ("Hosting and publishing") and `ir.md` (profile import
      kind and an optional kind filter. Pick one.
   3. **Confirm:** manufacturer, model and kind; name it; Install. It then goes the import's way
      (an IR device is ready; a Bluetooth one pairs).
-- Plain matching: normalized (lowercase, no accents, letters and digits), prefix then substring.
-  No typo tolerance; the two-step picker doesn't need it.
+- Plain matching: normalized (lowercase, no accents, letters and digits). Manufacturers match
+  prefix then substring. Models match only from the start of the whole model or of one of its
+  space-separated words, never mid-token, no typo tolerance ("kd85" and "KD-85" match "KD-85X85J";
+  "85" matches neither it nor "XBR-55X850"). Same rule as the site (user, 2026-11-25).
 - **The join is done on text,** exactly as the site does it (`catalog.js` `profile()`): the
   stored `"codeset": "<id>"` line becomes `"commands": ` plus the codeset file's commands text.
   Parsing to an object reorders digit command names. The request body embeds that text.
