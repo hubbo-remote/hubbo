@@ -1,6 +1,5 @@
 # PlatformIO pre-build script: the Hubbo image marker, a string every Hubbo
-# image carries so a firmware update can tell it from any other app image
-# (docs/design/phase5-appliance.md, section 2):
+# image carries so a firmware update can tell it from any other app image:
 #
 #   HUBBO-IMAGE/1 board=<board::kName> layout=<board::kLayout> version=<git describe>
 #

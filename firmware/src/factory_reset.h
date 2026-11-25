@@ -1,8 +1,8 @@
 #pragma once
 
-// The factory reset (POST /admin/factory-reset; docs/design/phase5-appliance.md,
-// end of section 3) and the gate wipe share one wipe: erase all of NVS (the
-// login, API tokens, the HA token, BLE bonds, the Hub endpoint), then request
+// The factory reset (POST /admin/factory-reset) and the gate wipe share one
+// wipe: erase all of NVS (the login, API tokens, the HA token, BLE bonds, the
+// Hub endpoint), then request
 // flash_fs's format at boot, which mountFilesystem() runs next. OTA keeps
 // working: its password hash is compiled in.
 //

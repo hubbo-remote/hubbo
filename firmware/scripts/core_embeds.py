@@ -4,7 +4,7 @@
 # so nothing recompiles. Nothing generated lands in git.
 #   - the built-in device profiles (profiles/*.json, core/tools/embed_profiles.py):
 #     hubbo::config::kBuiltinProfileFiles, read by core's builtinProfiles();
-#   - the agent docs (api/openapi.yaml as JSON, docs/agent-api.md, docs/llms.txt;
+#   - the agent docs (api/openapi.yaml as JSON, docs/api.md, docs/llms.txt;
 #     core/tools/embed_docs.py, needs PyYAML): hubbo::api::docs::kOpenApiJson
 #     kAgentGuide and kLlmsTxt (hubbo/api/agent_docs.h), raw and gzipped.
 import os
@@ -35,4 +35,4 @@ def embed(name, tool, inputs, output):
 
 
 embed("profiles", "embed_profiles.py", ["profiles"], "builtin_profiles.cpp")
-embed("docs", "embed_docs.py", ["api/openapi.yaml", "docs/agent-api.md", "docs/llms.txt"], "agent_docs.cpp")
+embed("docs", "embed_docs.py", ["api/openapi.yaml", "docs/api.md", "docs/llms.txt"], "agent_docs.cpp")

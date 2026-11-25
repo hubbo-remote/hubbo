@@ -1,7 +1,7 @@
 #pragma once
 
-// api::FirmwareUpdatePort over esp_ota: updates from the web admin
-// (docs/design/phase5-appliance.md, section 2), uploads and release installs
+// api::FirmwareUpdatePort over esp_ota: updates from the web admin:
+// uploads, and release installs
 // (docs/design/firmware-updates.md: FirmwareReleases downloads, then hands the
 // buffer over with installDownloaded()). A new image boots on trial
 // (firmware_releases.h); while a trial runs, every update is Busy.
