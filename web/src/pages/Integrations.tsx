@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { api } from '@/api/client'
 import { getQueryData, invalidate, setQueryData } from '@/api/hooks'
 import type { Integration, IntegrationConfig } from '@/api/types'
@@ -22,7 +22,7 @@ export default function Integrations() {
       ) : !integrations.data ? (
         <div className="grid gap-4 md:grid-cols-2">{[0, 1].map((i) => <Skeleton key={i} className="h-60" />)}</div>
       ) : (
-        <div className="grid items-start gap-4 md:grid-cols-2">
+        <div className="grid items-stretch gap-4 md:grid-cols-2">
           {integrations.data
             .filter(isUserIntegration)
             .sort((a, b) => order(a) - order(b))
@@ -35,8 +35,10 @@ export default function Integrations() {
   )
 }
 
-const ORDER: Partial<Record<Integration['type'], number>> = { home_assistant: 0, mqtt: 1 }
-const order = (i: Integration) => ORDER[i.type] ?? 2
+/** The integrations with settings, in their order. They come first, so the cards in each row are alike and line up. */
+const SETTINGS: Partial<Record<Integration['type'], (p: { id: string }) => ReactNode>> = { home_assistant: HomeAssistantSettings, mqtt: MqttSettings }
+const WITH_SETTINGS = Object.keys(SETTINGS)
+const order = (i: Integration) => (WITH_SETTINGS.includes(i.type) ? WITH_SETTINGS.indexOf(i.type) : WITH_SETTINGS.length)
 
 /**
  * The card's one state line. Off shows only that; Bluetooth's detail says it all ("Connected to
@@ -55,6 +57,7 @@ function stateLine(i: Integration) {
 
 function IntegrationCard({ integration: i }: { integration: Integration }) {
   const Icon = INTEGRATION_ICON[i.type]
+  const Settings = SETTINGS[i.type]
   const [toggling, setToggling] = useState(false)
   const toggle = async (enabled: boolean) => {
     setToggling(true)
@@ -70,7 +73,7 @@ function IntegrationCard({ integration: i }: { integration: Integration }) {
     }
   }
   return (
-    <Card className={i.type === 'home_assistant' ? 'md:row-span-2' : undefined}>
+    <Card>
       <CardHeader>
         <div className="flex items-start gap-3">
           <div className="rounded-lg bg-muted p-2">
@@ -86,10 +89,7 @@ function IntegrationCard({ integration: i }: { integration: Integration }) {
         </div>
         <Switch checked={i.enabled} onCheckedChange={toggle} disabled={toggling} aria-label={`Enable ${i.name}`} />
       </CardHeader>
-      <CardContent className="grid gap-4">
-        {i.type === 'home_assistant' && <HomeAssistantSettings id={i.id} />}
-        {i.type === 'mqtt' && <MqttSettings id={i.id} />}
-      </CardContent>
+      <CardContent className="grid gap-4">{Settings && <Settings id={i.id} />}</CardContent>
     </Card>
   )
 }
