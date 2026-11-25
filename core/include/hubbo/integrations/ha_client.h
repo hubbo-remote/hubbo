@@ -17,10 +17,9 @@
 #include "hubbo/integrations/json_scan.h"
 #include "hubbo/integrations/websocket_transport.h"
 
-// Home Assistant WebSocket API client (docs/design/phase3-home-assistant.md,
-// section 1; phase4-web-admin.md 3b): the auth handshake, numbered commands
-// (call_service, discovery, entity details), liveness pings and reconnects
-// with backoff.
+// Home Assistant WebSocket API client (ARCHITECTURE.md, Integrations): the
+// auth handshake, numbered commands (call_service, discovery, entity
+// details), liveness pings and reconnects with backoff.
 //
 // Threading: poll(), callService() and discover() run on the integration
 // task, as do the transport callbacks and every `done` callback. state(),

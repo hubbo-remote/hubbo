@@ -123,7 +123,7 @@ IntegrationSpec integration(std::string id, std::string type, std::string name) 
 namespace {
 
 // Held remote button = held HID key, exactly as long as the button. The
-// seeds bind the way the web admin writes a Press (docs/agent-api.md): a
+// seeds bind the way the web admin writes a Press (docs/api.md): a
 // device's command passes straight through (a key held while the button is,
 // an HA command once on down); Hubbo's own (Off, an activity) on tap.
 void holdKey(std::vector<BindingSpec> &out, const char *button, const char *key) {

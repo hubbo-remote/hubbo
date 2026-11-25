@@ -16,10 +16,10 @@ add_custom_command(
     COMMENT "Embedding the built-in profiles")
 list(APPEND HUBBO_CORE_SOURCES ${HUBBO_BUILTIN_PROFILES})
 
-# The agent docs (api/openapi.yaml as JSON, docs/agent-api.md, docs/llms.txt), embedded by
+# The agent docs (api/openapi.yaml as JSON, docs/api.md, docs/llms.txt), embedded by
 # the same script the firmware's build runs.
 set(HUBBO_OPENAPI_YAML ${PROJECT_SOURCE_DIR}/api/openapi.yaml)
-set(HUBBO_AGENT_GUIDE ${PROJECT_SOURCE_DIR}/docs/agent-api.md)
+set(HUBBO_AGENT_GUIDE ${PROJECT_SOURCE_DIR}/docs/api.md)
 set(HUBBO_LLMS_TXT ${PROJECT_SOURCE_DIR}/docs/llms.txt)
 set(HUBBO_AGENT_DOCS ${CMAKE_CURRENT_BINARY_DIR}/agent_docs.cpp)
 add_custom_command(

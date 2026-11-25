@@ -42,8 +42,8 @@ TEST(AuthPolicy, TableIsConsistent) {
     EXPECT_FALSE(operationFromId("", &unused));
 }
 
-// The full allow/deny matrix, written out by hand from ARCHITECTURE.md
-// "Security" rather than derived from the table, so a table edit that
+// The full allow/deny matrix, written out by hand from docs/security.md
+// rather than derived from the table, so a table edit that
 // widens access fails here.
 TEST(AuthPolicy, RoleMatrix) {
     const char *tokenAllowed[] = {

@@ -140,7 +140,7 @@ int32_t fanSpeedStep(double percentageStep);
 
 // The HA service domains whose services an entity can be offered beyond the
 // allowlist, in offer (and hint budget) order: "remote" first for a remote
-// (docs/design/ha-remote.md: the one exception), then its platform unless
+// (docs/design/ha-custom-action.md: the one exception), then its platform unless
 // that's empty or the entity's own domain. Also the get_services domains
 // ServiceDirectory::parse() must keep.
 std::vector<std::string> serviceDomains(std::string_view entityId, std::string_view platform);

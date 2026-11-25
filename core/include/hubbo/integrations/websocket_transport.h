@@ -4,7 +4,7 @@
 #include <string>
 #include <string_view>
 
-// The WebSocket port (docs/design/phase3-home-assistant.md, section 1). One
+// The WebSocket port (ARCHITECTURE.md, Integrations). One
 // text-frame WebSocket client connection, provided by each platform:
 //   firmware  esp_transport_ws, driven from the HA task's poll();
 //   hub-sim   an in-process fake Home Assistant (sim/src/fake_ha.h).
