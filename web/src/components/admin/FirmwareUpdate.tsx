@@ -400,7 +400,7 @@ function ChooseFile({ input, disabled, onChoose }: { input: RefObject<HTMLInputE
   return (
     <>
       <input ref={input} id="firmware-file" type="file" accept=".bin,application/octet-stream" aria-label="Firmware file" className="peer sr-only" disabled={disabled} onChange={(e) => onChoose(e.target.files?.[0])} />
-      <label htmlFor="firmware-file" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'cursor-pointer peer-focus-visible:ring-[3px] peer-focus-visible:ring-ring/50', disabled && 'pointer-events-none opacity-50')}>
+      <label htmlFor="firmware-file" className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'cursor-pointer peer-focus-visible:ring-[3px] peer-focus-visible:ring-ring', disabled && 'pointer-events-none opacity-50')}>
         <FileUp /> Choose file…
       </label>
     </>
