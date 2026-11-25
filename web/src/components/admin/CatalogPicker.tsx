@@ -6,7 +6,7 @@ import { ErrorState } from '@/components/common'
 import { SearchInput, Select } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import { useIntegrations, useKinds } from '@/hooks/data'
-import { brands, models, normalize, search, type Brand, type CatalogModel } from '@/lib/catalog'
+import { brands, models, normalize, search, searchModels, type Brand, type CatalogModel } from '@/lib/catalog'
 import { INTEGRATION_ICON } from '@/lib/health'
 import { humanize } from '@/lib/utils'
 
@@ -41,7 +41,7 @@ export function CatalogModels({ brand, search: [q, setQ], onPick }: { brand: Bra
   const kindLabel = (id: string) => hubKinds?.find((k) => k.id === id)?.label ?? humanize(id)
   const [kind, setKind] = useState('')
   const kinds = Object.entries(brand.kinds).sort((a, b) => b[1] - a[1])
-  const shown = useMemo(() => search((list.data ?? []).filter((m) => !kind || m.kind === kind), q), [list.data, kind, q])
+  const shown = useMemo(() => searchModels((list.data ?? []).filter((m) => !kind || m.kind === kind), q), [list.data, kind, q])
   return (
     <div className="grid gap-2">
       <p className="font-medium">{brand.name}</p>
@@ -58,7 +58,7 @@ export function CatalogModels({ brand, search: [q, setQ], onPick }: { brand: Bra
           </Select>
         )}
       </div>
-      <Results list={list} shown={shown} limit={MODELS_SHOWN}>
+      <Results list={list} shown={shown} limit={MODELS_SHOWN} empty={`No ${brand.name} models start with “${q.trim()}”.`}>
         {(m) => {
           const named = integrations?.filter((i) => i.type === m.platform)
           const name = named?.[0]?.name
@@ -80,11 +80,17 @@ export function CatalogModels({ brand, search: [q, setQ], onPick }: { brand: Bra
   )
 }
 
-/** A catalog list: loading, its failure (with Retry), or the first `limit` matches. */
-function Results<T>({ list, shown, limit, children }: { list: { data?: T[]; error?: unknown; refetch: () => void }; shown: T[]; limit: number; children: (item: T) => ReactNode }) {
+/** A catalog list: loading, its failure (with Retry), the first `limit` matches, or `empty` when none match. */
+function Results<T>({ list, shown, limit, empty = 'Nothing matches.', children }: {
+  list: { data?: T[]; error?: unknown; refetch: () => void }
+  shown: T[]
+  limit: number
+  empty?: string
+  children: (item: T) => ReactNode
+}) {
   if (list.error) return <ErrorState error={list.error} retry={list.refetch} title="Couldn’t load the catalog" />
   if (!list.data) return <Skeleton className="h-24" />
-  if (!shown.length) return <p className="px-1 text-sm text-muted-foreground">Nothing matches.</p>
+  if (!shown.length) return <p className="px-1 text-sm text-muted-foreground">{empty}</p>
   return (
     <>
       <div className="grid gap-2">{shown.slice(0, limit).map(children)}</div>

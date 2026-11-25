@@ -150,7 +150,7 @@ export function Backups() {
       </Section>
       <Section title="Restore" description="Replaces your devices, activities and settings.">
         <div className="grid gap-4">
-          <label className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center text-sm hover:bg-accent/40 focus-within:ring-[3px] focus-within:ring-ring/50">
+          <label className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center text-sm hover:bg-accent/40 focus-within:ring-[3px] focus-within:ring-ring">
             <Upload className="size-5 text-muted-foreground" aria-hidden />
             <span>{file ? file.name : 'Choose a backup file'}</span>
             <input type="file" accept="application/json,.json" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />

@@ -2,6 +2,16 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## Brand colour (branch `web-orange`; tokens only, screenshots checked on mock + hub-sim, not gated)
+
+- hubbo.tv's orange replaced the teal in `index.css`: light primary/ring `#a84808` (the site's text orange:
+  primary is also link and small text, and `#e8650a` is 3.2:1 on the background), white text on it 5.8:1;
+  accent `#fcebdc` / `#6b2f07`. Dark primary/ring `#f07a22` (6.9:1 on the background), ink `#2a1a10` on it
+  6.0:1; accent `#3a2217` / `#f3e6cc`. Favicon `#e8650a` with `#2a1a10` marks. No sidebar/chart tokens exist.
+- Left as is: status colours; `--remote-bound` (teal, the activity's binding colour on the remote, kept
+  apart from Global's amber); the native search clear button (browser blue).
+- Focus rings are full strength (`ring-ring`, user 2026-11-25): 5.6:1 light, 6.9:1 dark.
+
 ## Catalog search (branch `catalog-search`; docs/design/catalog-hosting.md; feature specs green on both, not gated)
 
 - **Add device** opens on the catalog's manufacturer search (just the box until something's typed, user
@@ -10,6 +20,11 @@ Current state, not a log. Update when a piece of work lands.
   whose integration is off is greyed "<name> is off"); then Name and Type; Add device. Import a profile
   file and From Home Assistant stay below. Built-in profile rows are gone from the dialog (GET /profiles,
   `ProfileSummary` and the mock's `profile_id` path stay: a later call).
+- **Models match start-only** (user 2026-11-25; the site's match.js rule, words split on spaces only):
+  `modelKeys` = the normalized model from each word's start ("Bravia KD-85" → braviakd85, kd85; "85" no match),
+  `searchModels` = some key starts with the query; never mid-token, no typo tolerance. No match says "No
+  <brand> models start with “<q>”." (the site's wording; no how-to). Manufacturers keep
+  prefix-then-substring `search`.
 - **The profile loads at pick time** (like an HA pick's details): `ProfilePick = Omit<ProfileFile,'text'> &
   {text: Loaded<string>, fromCatalog?}`; a file's is `done` at once. Catalog failures (unreachable, missing,
   newer format) show then, with Retry; Add waits for `done`. Submit is one hub call, one error path
