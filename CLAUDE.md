@@ -7,7 +7,7 @@ compaction. Nobody needs to ask for it or explain it.
 
 - **The lead** (the main session) plans, writes the design docs, relays interfaces between agents,
   works the board through `bin/hubbo ota`, and talks to me. It owns `docs/design/`,
-  `ARCHITECTURE.md`, `IMPLEMENTATION_PLAN.md`, this file, `.claude/`, `bin/`, `docker/` and
+  `ARCHITECTURE.md`, `local/IMPLEMENTATION_PLAN.md`, `local/home.md`, this file, `.claude/`, `bin/`, `docker/` and
   `docker-compose.yml`. The lead delegates implementation to the agents and doesn't write their
   code.
 - **The agents** are defined in `.claude/agents/`. Spawn each one by its type, and give it the same
@@ -16,7 +16,7 @@ compaction. Nobody needs to ask for it or explain it.
   | Agent | Owns |
   |---|---|
   | `hubbo-core` | the engine, domain, config, storage, remote input and integrations (HA client/adapter, transport port), `sim/`, the CMake build |
-  | `hubbo-api` | the HTTP API, auth, `ha/` capabilities, `api/` (spec, fixtures, contract), `docs/security.md`, `docs/agent-api.md`, `docs/ha-capabilities.md` |
+  | `hubbo-api` | the HTTP API, auth, `ha/` capabilities, `api/` (spec, fixtures, contract), `docs/security.md`, `docs/api.md`, `docs/ha-capabilities.md` |
   | `hubbo-firmware` | `firmware/`, `docs/hardware/`, the dev board |
   | `hubbo-frontend` | `web/` (the web admin, its mock and e2e) |
   | `hubbo-spec` | the open profile spec, its schema, the profile data and its tools, in `~/src/hubbo-profiles` |
@@ -24,7 +24,8 @@ compaction. Nobody needs to ask for it or explain it.
 
 - At the start of a session, or when work begins, the lead spawns the agents the work needs. If an
   agent from this session is still alive, the lead messages it instead.
-- Each agent keeps `docs/team/<agent>.md` current. That file holds its working notes: the state of
+- Each agent keeps `local/team/<agent>.md` current (hubbo-site and hubbo-spec keep theirs in their
+  own repos). That file holds its working notes: the state of
   its area, decisions, gotchas and open items. A fresh agent reads it first, so nothing is lost
   between sessions.
 - Agents only edit their own files. A change needed in another area goes through the lead, who
@@ -63,7 +64,8 @@ compaction. Nobody needs to ask for it or explain it.
   password and the HA token, kept in `~/.config/hubbo/` (mode 600). Only the lead provisions
   them.
 - Board:
-  - The dev board is 192.168.1.196. Update it only through `bin/hubbo ota`.
+  - `local/home.md` (not published) names the dev board and the boards in daily use. Update the
+    dev board only through `bin/hubbo ota`.
   - Any other board on the network is in daily use. Never change or update it unless I ask.
   - Never weaken the watchdog.
   - Every board test runs `bin/hubbo board-check` against the dev board. Its limits live in

@@ -11,7 +11,7 @@ Report to the lead with SendMessage to "main".
 
 **Start of every task:** follow `~/src/hubbo/CLAUDE.md` (the team rules and commit rules). Then read
 `~/src/hubbo-site/docs/team/hubbo-site.md` (your notes, if it exists),
-`~/src/hubbo/docs/design/catalog-site.md`, the spec in `~/src/hubbo-profiles` and the current
+`~/src/hubbo/docs/design/catalog-hosting.md`, the spec in `~/src/hubbo-profiles` and the current
 task's brief.
 
 **You own `~/src/hubbo-site`:** its sources, templates, styles, the browser search, the build

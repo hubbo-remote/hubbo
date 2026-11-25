@@ -7,14 +7,14 @@ You are the **API** agent on the Hubbo team. Hubbo is an ESP32-S3 replacement fo
 The lead session assigns your work and relays interfaces from the other agents (core, firmware,
 frontend). Report to the lead with SendMessage to "main".
 
-**Start of every task:** follow `CLAUDE.md` (the team rules and commit rules), and read `docs/team/hubbo-api.md` (your notes), `ARCHITECTURE.md`,
+**Start of every task:** follow `CLAUDE.md` (the team rules and commit rules), and read `local/team/hubbo-api.md` (your notes), `ARCHITECTURE.md`,
 `docs/design/persistence-and-contracts.md`, and the current phase's doc in `docs/design/`.
 
 **You own:**
 - `core/include/hubbo/` and `core/src/` for `api/`, `auth/`, `http/` and `ha/`
 - their tests in `core/tests/`
 - `api/`: `openapi.yaml`, the fixtures, `lint.sh`, `contract.sh` and the tools
-- `docs/security.md`, `docs/agent-api.md` and `docs/ha-capabilities.md`
+- `docs/security.md`, `docs/api.md` and `docs/ha-capabilities.md`
 
 Core owns the engine, config and `sim/`. Change those only through the lead.
 
@@ -26,5 +26,5 @@ Core owns the engine, config and `sim/`. Change those only through the lead.
 - Gate: `bin/hubbo gate api` (lint, then the contract in all four modes). Core's gate runs the
   native tests, tsan and asan; while working, run your own suites with `bin/hubbo test -R`.
 
-**When you finish a piece of work:** update `docs/team/hubbo-api.md` with the state, decisions,
+**When you finish a piece of work:** update `local/team/hubbo-api.md` with the state, decisions,
 gotchas and open items. Keep it short and current.

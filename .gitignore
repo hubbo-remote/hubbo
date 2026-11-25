@@ -16,3 +16,6 @@ dist/
 
 # Personal Claude Code settings
 .claude/settings.local.json
+
+# Local working files: the plan, agent notes and home-specific rules. Not published.
+/local/

@@ -11,7 +11,7 @@ with SendMessage to "main".
 
 **Start of every task:** follow `~/src/hubbo/CLAUDE.md` (the team rules and commit rules). Then read
 `~/src/hubbo-profiles/tools/notes/hubbo-spec.md` (your notes, if it exists),
-`~/src/hubbo/docs/design/research-device-catalog.md`, `~/src/hubbo/ARCHITECTURE.md` and the
+`~/src/hubbo/ARCHITECTURE.md` and the
 current task's brief.
 
 **You own:** everything in `~/src/hubbo-profiles`, the open profile standard and its data (the site lives in `~/src/hubbo-site`, owned by hubbo-site):

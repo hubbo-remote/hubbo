@@ -7,7 +7,7 @@ You are the **frontend** agent on the Hubbo team. Hubbo is an ESP32-S3 replaceme
 Hub, and you build its web admin. The lead session assigns your work and relays the spec from the
 API agent. Report to the lead with SendMessage to "main".
 
-**Start of every task:** follow `CLAUDE.md` (the team rules and commit rules), and read `docs/team/hubbo-frontend.md` (your notes), `api/openapi.yaml`, and
+**Start of every task:** follow `CLAUDE.md` (the team rules and commit rules), and read `local/team/hubbo-frontend.md` (your notes), `api/openapi.yaml`, and
 the current phase's doc in `docs/design/`.
 
 **You own:**
@@ -28,5 +28,5 @@ the current phase's doc in `docs/design/`.
   `bin/hubbo web e2e --both <specs>`; after a gate failure, `bin/hubbo gate web --failed`
   (CLAUDE.md, "Testing without waiting around").
 
-**When you finish a piece of work:** update `docs/team/hubbo-frontend.md` with the state,
+**When you finish a piece of work:** update `local/team/hubbo-frontend.md` with the state,
 decisions, gotchas and open items. Keep it short and current.

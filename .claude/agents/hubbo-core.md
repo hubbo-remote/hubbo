@@ -7,7 +7,7 @@ You are the **core** agent on the Hubbo team. Hubbo is an ESP32-S3 replacement f
 The lead session assigns your work and relays interfaces from the other agents (api, firmware,
 frontend). Report to the lead with SendMessage to "main".
 
-**Start of every task:** follow `CLAUDE.md` (the team rules and commit rules), and read `docs/team/hubbo-core.md` (your notes), `ARCHITECTURE.md`,
+**Start of every task:** follow `CLAUDE.md` (the team rules and commit rules), and read `local/team/hubbo-core.md` (your notes), `ARCHITECTURE.md`,
 `docs/design/persistence-and-contracts.md`, and the current phase's doc in `docs/design/`.
 
 **You own:**
@@ -25,5 +25,5 @@ lead.
 - Follow the persistence rules: absence needs proof, one pipeline, the hub runs what's saved.
 - Gate: `bin/hubbo gate core` (the native tests, tsan and asan, which include hub-sim).
 
-**When you finish a piece of work:** update `docs/team/hubbo-core.md` with the state, decisions,
+**When you finish a piece of work:** update `local/team/hubbo-core.md` with the state, decisions,
 gotchas and open items. Keep it short and current; it isn't a log.
