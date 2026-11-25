@@ -1,15 +1,13 @@
 # Remote log: what happened to the last few minutes of presses
 
-Approved by the user on 2026-11-23. When a press seems to go missing, the user says so right away
-and the lead reads the log. It answers one question: did the press reach the hub, and if it did,
-what happened to it?
+When a press seems to go missing, the log answers one question: did the press reach the hub, and if
+it did, what happened to it?
 
-## Dev builds only (user, 2026-11-23)
+## Dev builds only
 
 The log is compiled into dev builds only: any build not made by the release workflow
-(`HUBBO_FW_VERSION` unset), which includes the dev board and test builds handed to the user. A
-release build has no log, no memory for it, and `GET /remote/log` answers 404. hub-sim always has
-it.
+(`HUBBO_FW_VERSION` unset). A release build has no log, no memory for it, and `GET /remote/log`
+answers 404. hub-sim always has it.
 
 ## What it keeps
 
@@ -22,8 +20,8 @@ first). Each entry has the hub's uptime in ms and one of:
   received power detector. Payloads queued together share the newest packet's flag.
 - **event:** what the remote input turned it into: tap, hold, release, and a release the hub had
   to time out because the up packet never came (`timed_out`).
-- **action:** what the press did. The binding (command, macro or activity), the target (Bluetooth
-  or Home Assistant), the result (ok or the error), and how long it took.
+- **action:** what the press did. The binding (command, macro or activity), the integration and
+  device it went to, the result (ok or the error), and how long it took.
 - **anomaly:** a bad checksum, an unknown code, or the RF loop stalling past 5 ms around that
   time.
 
@@ -35,16 +33,6 @@ loop: a short spin-locked append into a preallocated ring (PSRAM is fine), nothi
 - `GET /remote/log`: `{span_ms, dropped, entries}`, entries oldest first, each with `type` and
   `age_ms` (the hub has no wall clock). `span_ms` is how far back the log is complete; `dropped`
   counts entries pushed out by the count bound.
-- **Readable with an API token** (like `/remote/status`), so the lead can read a hub in daily use
-  without admin access.
-- There's no web admin page for now. The user tells the lead, and the lead reads it.
-
-## Owners
-
-- **core:** the log (types, ring, 5-minute and count bounds), the hooks in remote input, the
-  engine's action results (HA and Bluetooth results arrive through the engine's completion, once
-  per step); hub-sim fills it from simulated presses.
-- **api:** the route, its role (API tokens may read it), spec, fixtures, contract,
-  docs/agent-api.md.
-- **firmware:** the signal flag per packet, the RF loop stall anomaly, the Bluetooth send
-  results, and checking that the loop gap is unchanged on .196.
+- **Readable with an API token** (like `/remote/status`), so a hub can be diagnosed without admin
+  access.
+- There's no web admin page.

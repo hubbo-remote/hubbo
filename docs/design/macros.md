@@ -1,14 +1,10 @@
 # Macros: a button runs a list of commands
 
-Approved by the user on 2026-11-15 as a working first pass, then shaped on hub-sim and the dev board.
-
-## The idea
-
 A button's Press or Long press can be a macro: a list of commands, edited like a startup or shutdown
 list and run by the same sequence executor. A binding has always been stored as a list; a macro is
 marked as one, so it stays a macro from its first step.
 
-## What the user decided
+## Rules
 
 - **Command and macro are two different things.** Every macro starts with one command, so a macro
   is marked, never inferred from its length. An empty Press or Long press offers Command or Macro.
@@ -20,8 +16,7 @@ marked as one, so it stays a macro from its first step.
 - **The log shows them** as macros, with the button and what each step did.
 - **Advanced triggers** (down, up, tap) stay single commands. A button with a macro can't switch to
   Advanced.
-- **Clearing a macro asks first.** Clearing a single command doesn't.
-- **Run from the editor:** a Play button runs the macro as it is on screen, saved or not.
+- **Run from the editor:** Run plays the macro as it is on screen, saved or not.
 
 ## How it works
 
@@ -37,10 +32,11 @@ marked as one, so it stays a macro from its first step.
   It shares the 64-node action pool, but macros together hold at most 32 nodes, so presses always
   have room. No new task, no allocation on the RF path.
 - **Activity switches** cancel running and queued macros (the generation guard).
-- **No state checks** in macros. The 1 s HA reply limit applies.
+- **No state checks** in macros. The 1 s HA reply limit applies ([state-checks.md](state-checks.md)).
 - **Run history** records macro runs alongside startups and shutdowns (8 in all; macros take at
-  most 5, and a running run is never replaced): kind `macro`, the
-  `button`, the `trigger` (`press` or `long_press`) and the activity (null for a global macro).
+  most 5, and a running run is never replaced): kind `macro`, the `button`, the `trigger` (`press`
+  or `long_press`) and the activity (null for a global macro). See
+  [activity-runs.md](activity-runs.md).
 - **Run from the editor:** `POST /macros/run` with `{actions, trigger, activity_id}` validates the
   list exactly as a saved macro, queues it on the Macro lane and answers `202 {run_id}`; a full lane
   is `503 busy`. The activity needn't be active and isn't switched to.
@@ -48,14 +44,7 @@ marked as one, so it stays a macro from its first step.
 ## In the web admin
 
 - Command or Macro on an empty Press or Long press row. A macro row has the startup editor's list
-  (add, add wait, drag, duplicate, remove), Run and Clear.
-- The remote picture marks a macro button. Errors use the admin's own wording.
+  (add, add wait, drag, duplicate, remove), Run and Clear. Clearing a macro asks first; clearing a
+  single command doesn't.
+- The remote picture marks a macro button.
 - The Activity Log shows "<Button> · macro" or "<Button> · long press macro" with its steps.
-
-## Owners
-
-- **core:** the Macro lane, the mark in config and compile, run history, `runMacro`, hub-sim, tests.
-- **api:** the run fields, `macros`, `POST /macros/run`, spec, fixtures, contract, docs/agent-api.md.
-- **frontend:** the editor, Run, the remote marker, the log, the mock, e2e.
-- **firmware:** nothing; RAM checked on the board (31% used).
-- **lead:** this doc, ARCHITECTURE.md, IMPLEMENTATION_PLAN.md.

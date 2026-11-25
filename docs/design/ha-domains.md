@@ -1,65 +1,64 @@
-# More Home Assistant domains
+# Home Assistant domains
 
-Today Hubbo offers four HA domains: `media_player`, `light`, `switch` and `fan`. The user wants seven
-more (2026-11-13): `scene`, `script`, `cover`, `button`, `input_boolean`, `humidifier`
-and `select`. Locks, remotes and climate are dropped (decided 2026-11-13). Once they're built, the showcase hub-sim gets fake versions of
-them, based on a fresh local capture of the user's HA, so the user can review how the editors
-handle them.
+Hubbo offers these HA entity domains as devices: `media_player`, `light`, `switch`, `fan`, `scene`,
+`script`, `cover`, `button`, `input_boolean`, `humidifier`, `select` and `remote`. Each domain's
+commands, feature bits and params are listed in [ha-capabilities.md](../ha-capabilities.md); this
+doc is the why.
 
-## Rules that stay
+## Rules
 
 - **Every domain is a curated allowlist** in `core/src/ha/capabilities.cpp`. Each command has a
-  Hubbo id, a label and the HA service it calls. Hubbo never sends a raw service call. Params are
-  typed and checked, and an entity target is never a param.
-- **HA's feature bits gate commands.** Feature constants are copied from HA's own source
-  (`homeassistant/components/<domain>/const.py`) and verified against it, the way the fan pass
-  did. Enum params (modes, options, activities) come from the entity's attributes at
-  registration time, stored in the device's capability snapshot.
-- **Integration services** (e.g. `sonos.*`) stay as they are: for media players only. None of
-  the new domains gets them in this pass.
-- **The snapshot limits hold.** This must stay small on the board; no new per-entity data beyond
-  the attributes a command needs.
+  Hubbo id, a label and the HA service it calls. Params are typed and checked, and an entity target
+  is never a param. Anything past the allowlist goes through the Home Assistant action
+  ([ha-custom-action.md](ha-custom-action.md)), which is still scoped to the device.
+- **Only what HA provides.** Feature constants are copied from HA's own source
+  (`homeassistant/components/<domain>/const.py`) and verified against it. HA's feature bits gate
+  commands; where a domain has no feature bits, every command is offered. Enum params (modes,
+  options, sources) come from the entity's attributes at registration time, stored in the device's
+  capability snapshot. Nothing is invented: no preset lists, no per-brand tables.
+- **Built for any HA, not one setup.** A domain works the same whatever integration is behind it.
+- **The snapshot stays small** on the board: no per-entity data beyond the attributes a command
+  needs.
+- **Commands map to buttons** like any other: a momentary command is a Press; a Hold pairs
+  on/off-style commands where that makes sense. Nothing new in the bindings model.
 
 ## Commands per domain
 
-Each feature bit and attribute name below is to be verified against HA's source. Where HA has no
-feature bits for a domain, every command is always offered.
-
 | Domain | Commands (Hubbo label → HA service) | Gated by / params from |
 |---|---|---|
+| `media_player` | Power, volume, mute, playback, Select source, Sound mode, shuffle, repeat | `MediaPlayerEntityFeature`; `source_list`, `sound_mode_list` |
+| `light` | Turn on / Turn off; Change brightness (`brightness_step`) | `supported_color_modes` |
+| `switch` | Turn on / Turn off | always |
+| `fan` | Turn on / Turn off, Set speed, Speed up / Slow down, Oscillate, Set direction, Preset mode | `FanEntityFeature`; `preset_modes` |
 | `scene` | Activate → `scene.turn_on` | always |
 | `script` | Run → `script.turn_on`; Stop → `script.turn_off` | always |
-| `cover` | Open → `open_cover`, Close → `close_cover`, Stop → `stop_cover`, Toggle → `toggle`, Set position → `set_cover_position` (0–100 %), Open tilt / Close tilt / Stop tilt, Set tilt → `set_cover_tilt_position` | `CoverEntityFeature`: OPEN 1, CLOSE 2, SET_POSITION 4, STOP 8, OPEN_TILT 16, CLOSE_TILT 32, STOP_TILT 64, SET_TILT_POSITION 128 |
+| `cover` | Open, Close, Stop, Toggle, Set position, Change position (`cover.position_step`, see [smart-buttons.md](smart-buttons.md)), Open / Close / Stop tilt, Set tilt | `CoverEntityFeature` |
 | `button` | Press → `button.press` | always |
 | `input_boolean` | Turn on / Turn off / Toggle | always |
-| `humidifier` | Turn on / Turn off / Toggle; Set humidity → `set_humidity` (min_humidity..max_humidity); Set mode → `set_mode` (available_modes) | `HumidifierEntityFeature.MODES` 1 gates Set mode |
-| `select` | Choose → `select_option` (options); Next → `select_next`; Previous → `select_previous` | always; `options` attribute is the enum |
+| `humidifier` | Turn on / Turn off / Toggle; Set humidity (min_humidity..max_humidity); Set mode (available_modes) | `HumidifierEntityFeature.MODES` gates Set mode |
+| `select` | Choose → `select_option` (options); Next; Previous | always; `options` is the enum |
+| `remote` | Turn on / Turn off / Toggle; everything else (`send_command`, `turn_on` with an activity, ...) through the Home Assistant action | always |
 
-Remote buttons map to these like any other command: a momentary command is a Press; a Hold
-pairs on/off-style commands where that already makes sense. Nothing new in the bindings model.
+A remote's `turn_on` takes an `activity` as free text, which Hubbo doesn't type, so it isn't a
+param of the typed command; it's offered through the Home Assistant action instead.
 
 ## Device types
 
-New HA devices need a sensible default type. Three new kinds in `kinds.json` (hubbo-spec):
-`cover` (blinds, shades, garage doors, gates: every HA cover, as HA groups them), `scene` and `script`. Humidifiers use `climate`. Buttons, input booleans and selects use `other`.
+**The hub suggests the type.** Discovery candidates carry a `suggested_kind`, picked by one core
+function from the domain plus the platform and device class (e.g. an `apple_tv` media player →
+streamer). The web admin uses it as the default, and hub-sim's showcase calls the same function, so
+the two can't drift. Covers get `cover`, scenes `scene`, scripts `script`, humidifiers `climate`;
+buttons, input booleans, selects and remotes `other`. The admin can change it.
 
-**The hub suggests the type.** Instead of the web admin guessing from names and hub-sim keeping
-its own mapping (they had drifted), discovery candidates get a `suggested_kind`. One core
-function picks it from the domain plus the platform and device class, using what hub-sim's
-`kindFor` already does well (e.g. `apple_tv` → streamer). The web admin uses it as the default,
-and hub-sim's showcase calls the same function.
+## Testing against real data
 
-## The showcase
+hub-sim's showcase can register every entity of a supported domain from a capture of an HA
+instance (states, `/api/services`, translations) kept under `sim/fixtures/local/`, which is
+gitignored. Nothing from a real capture goes into a tracked file; tracked tests and fixtures use
+made-up entities for each domain.
 
-- The lead takes a fresh capture of the user's HA (states, `/api/services`, translations) that
-  includes the new domains, into `sim/fixtures/local/` (gitignored). No entity id, name or value
-  from it goes into any tracked file, tests included.
-- The showcase registers every captured entity of a supported domain, the way it does today.
-- Tracked tests and fixtures use made-up entities for each new domain.
+## Not offered
 
-## Out of scope
-
-- Script fields as params (a script's own inputs). Run/Stop only for now.
-- Locks, remotes, climate, alarm panels, cameras, vacuums, valves, water heaters.
-- Integration services for the new domains.
+- Script fields as params (a script's own inputs). Run/Stop only.
+- Locks, climate, alarm panels, cameras, vacuums, valves, water heaters.
 - State display (e.g. a cover's current position) in the web admin.

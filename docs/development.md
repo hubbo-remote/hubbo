@@ -58,8 +58,41 @@ fails with `#error`.
 See `firmware/README.md` for the serial console (`status`, `scan`, `pair`, `lat`, `raw`, ...), the
 latency method and the hardware checklist. Network flashing: `bin/hubbo ota <board ip>` builds the
 dev firmware and uploads it, reading the OTA password from `~/.config/hubbo/ota-password` (mode 600;
-it is never printed). The dev board is at 192.168.1.196. Never point it at the family room
-Harmonizer board. Firmware builds (`fw`, `ota`) hold a lock, so only one runs at a time.
+it is never printed). Point it only at your own dev board, never at a hub in daily use. Firmware builds (`fw`, `ota`) hold a lock, so only one runs at a time.
+
+## First install (USB)
+
+A new board gets Hubbo over USB once. After that it updates itself from releases, or from an image
+uploaded in Hubbo. An update over the network can't write the bootloader or the partition table, so
+the first install is always a full flash.
+
+1. **Build a release image.** Check out the release tag and build it with that version, so the hub
+   is offered later releases:
+   ```sh
+   git checkout vX.Y.Z
+   HUBBO_FW_VERSION=X.Y.Z bin/hubbo fw run -e waveshare_esp32_s3_eth
+   ```
+2. **Merge it into one file** in the toolchain:
+   ```sh
+   bin/hubbo run bash -c 'B=firmware/.pio/build/waveshare_esp32_s3_eth; mkdir -p build;
+     /platformio/packages/tool-esptool/esptool --chip esp32s3 merge-bin -o build/hubbo-full.bin \
+     --flash-mode dio --flash-freq 80m --flash-size 16MB \
+     0x0 $B/bootloader.bin 0x8000 $B/partitions.bin \
+     0xe000 /platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
+     0x10000 $B/firmware.bin'
+   ```
+3. **Flash it** from a machine with the board on USB (`bin/hubbo` can't reach USB from its
+   container yet). Unplug PoE first: never connect USB and PoE together. Then either:
+   - Chrome with <https://espressif.github.io/esptool-js/>: connect, Erase Flash, then program
+     `hubbo-full.bin` at 0x0.
+   - esptool: `esptool --chip esp32s3 erase-flash`, then
+     `esptool --chip esp32s3 write-flash 0x0 hubbo-full.bin`.
+
+   Erase first: Hubbo formats its storage only when the storage partition is blank. If the board
+   won't connect, hold BOOT, tap RESET, release BOOT, and try again.
+4. **First boot.** Press RESET, unplug USB, and connect Ethernet (or PoE). The hub is named
+   "Hubbo XXXX" from the end of its Ethernet MAC. Open `http://hubbo-xxxx.local/` or its IP, create
+   your username and password, then pair your remote.
 
 ## Releasing
 
@@ -104,8 +137,7 @@ The container runs as your host uid/gid, so build output in the repo stays yours
 - The container uses host networking. Network (OTA) flashing needs this because espota makes the
   board connect back to the uploading machine.
 - USB flashing from the container needs the board's serial device passed through. It's not set up
-  yet. The first flash may be easier from a machine with the board attached, or later with the
-  browser installer (Phase 6.2).
+  yet; see First install for flashing from a machine with the board attached.
 
 ## Layout
 
@@ -118,19 +150,18 @@ The container runs as your host uid/gid, so build output in the repo stays yours
 | `api/` | `openapi.yaml` (source of truth for `/api/v1`), generated `fixtures/`, `lint.sh`. |
 | `web/` | React + TypeScript admin. The mock API in `web/mock` is seeded from `api/fixtures`. |
 | `docker/` | Toolchain image and web image (`web.Dockerfile`). |
-| `docs/` | Developer, security, agent-API and HA-capability docs. |
+| `docs/` | Developer, API, security and HA-capability docs; `docs/design/` holds the design notes. |
 
 Watch for Arduino's macros: `bit`, `min`, `max`, `abs` and friends are `#define`s in `Arduino.h`.
 Core code must not use those names. The ESP32 cross-build catches it; the native build doesn't.
 
-## Reference material (local only, not committed)
+## Reference material
 
-- `Harmonizer/`: the working spike (RF, Ethernet, BLE HID to Apple TV, HA over MQTT). Read
-  `Harmonizer/HANDOFF.md`. Its git repo is separate; don't commit it here.
-- `logitech-harmony-ir-archive-main/`: the full Harmony device database (1.6 GB, CC0). `index.json`
-  lists brands, `devices/<Brand>/<Model>.json` holds power on/off sequences, inputs and timing, and
-  `codesets/xx/<id>.json` holds the commands (IR and BLE HID). Use it as ground truth for codes.
-  Hubbo will eventually query a hosted service built from it.
+- [soaresbrun0/Harmonizer](https://github.com/soaresbrun0/harmonizer): the RF protocol work Hubbo
+  builds on.
+- The Logitech Harmony device archive (CC0): the source of the IR and Bluetooth codes in the
+  [device catalog](https://hubbo.tv/devices/), converted in
+  [hubbo-profiles](https://github.com/hubbo-remote/hubbo-profiles).
 
 ## Remote input semantics
 

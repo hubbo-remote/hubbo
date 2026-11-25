@@ -43,7 +43,7 @@ part, and every step.
 1. **Build your hub.** Wire the radio (and the IR emitter, if you're adding one) to the ESP32
    board, following the [build guide](https://hubbo.tv/build/).
 2. **Install Hubbo.** A browser installer is on the way. Until then, the first install is done
-   from source: see [docs/development.md](docs/development.md). After that, updates install from
+   from source: see [First install](docs/development.md#first-install-usb). After that, updates install from
    Hubbo itself.
 3. **Open Hubbo.** Plug the hub into your network and open `http://hubbo-xxxx.local/` in a browser,
    where `xxxx` matches your hub's name (for example `hubbo-7f8d.local`), or use the address your
@@ -62,7 +62,7 @@ builds and tests in Docker.
 
 - [docs/development.md](docs/development.md): the toolchain, commands, repo layout and releases.
 - [ARCHITECTURE.md](ARCHITECTURE.md): how Hubbo is put together.
-- [docs/agent-api.md](docs/agent-api.md): the API.
+- [docs/api.md](docs/api.md): the API.
 - [hubbo-remote/hubbo-profiles](https://hubbo.tv/spec/): the open device profile format.
 
 Hubbo builds on the RF protocol work in

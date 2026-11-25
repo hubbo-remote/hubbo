@@ -1,31 +1,28 @@
 # Smart buttons
 
-Approved by the user on 2026-11-14 and simplified on 2026-11-15, after the board test. The remote's
-Light 1, Light 2, Switch 1 and Switch 2 buttons can each be given a device. The hub decides what the
-button and +/- do from that device's type. +/- control whichever of the four was pressed last. This is
-how the Harmony remote's Home Control buttons worked.
+The remote's Light 1, Light 2, Switch 1 and Switch 2 buttons can each be given a device. The hub
+decides what the button and +/- do from that device's type. +/- control whichever of the four was
+pressed last. This is how the Harmony remote's Home Control buttons worked.
 
-## What the user decided
+## Rules
 
 - **Four slots:** `light_1`, `light_2`, `switch_1`, `switch_2`. Each takes a light, fan, cover or
   switch, or no device.
 - **Pick a device, and that's all.** Nothing else is configurable: the actions come from the table
   below, built only from commands the device offers (what HA provides).
-- **On the Global page.** There's no separate Smart buttons page. Clicking Light 1 on the Global
-  remote shows a device picker. With a device, the panel shows what the button and +/- will do,
-  read-only. With no device, Light 1 is an ordinary button, bound like any other. Picking a device
-  clears that button's global bindings when you save (a second request after the slots), so None
-  starts empty.
+- **On the Global page.** Clicking Light 1 on the Global remote shows a device picker. With a
+  device, the panel shows what the button and +/- will do, read-only. With no device, Light 1 is an
+  ordinary button, bound like any other. Picking a device clears that button's global bindings when
+  you save, so None starts empty.
 - **Activities show them as inherited.** A slot button with a device, and + / − when any slot has
   one, show what the smart button does, tagged like an inherited Global binding, with the usual rows
   below to override it in that activity.
 - **+ and − on Global belong to the smart buttons** once any slot has a device: they can't be bound
-  there, and the panel explains what they do instead. Picking the first device clears Global's + and −
-  bindings, as picking a device clears that button's own. With no devices, + and − are ordinary
-  buttons. A slot with no +/- actions (empty, or a switch) leaves + and − doing nothing.
+  there. Picking the first device clears Global's + and − bindings. With no devices, + and − are
+  ordinary buttons. A slot with no +/- actions (empty, or a switch) leaves + and − doing nothing.
 - **Activities override, like any button.** People without smart devices can use these buttons for
   anything: leave the slot empty and bind it.
-- **Quick +/- taps merge.** Taps on a + or − whose action has a `step` merge into one call (below).
+- **Quick +/- taps merge** into one call (below).
 - **After a reboot, Light 1 is selected.**
 
 ## The config
@@ -36,14 +33,15 @@ how the Harmony remote's Home Control buttons worked.
 ```
 
 - All four slots are always present. A fresh hub has four nulls.
-- A saved config or backup without `smart_buttons` loads with four empty slots (the one approved
-  exception to the no-compat rule, for hubs in daily use).
+- A saved config or backup without `smart_buttons` loads with four empty slots. It's the one
+  tolerance for an older record, since configs from before smart buttons exist.
 - A slot's device must exist. Deleting a device a slot uses is refused (409 `device_in_use`, path
   `/smart_buttons/slots/<slot>`), like other references.
 - `PUT /smart-buttons` takes the same object; `revision` is the base, and a stale one is 409.
 - `GET /smart-buttons` returns it, plus each slot's derived actions, read-only, for the web to show:
   `"actions": {"light_1": {"button": {"tap": [...], "hold": [...], "release": [...]}, "plus": {...},
-  "minus": {...}}, ...}`.
+  "minus": {...}}, ...}`. `GET /smart-buttons/actions` shows what a slot would do with a given
+  device, before saving.
 
 ## The actions, by type
 
@@ -80,6 +78,9 @@ Per button, the first of these wins:
 
 ## Merging quick +/- taps
 
+Hubbo doesn't queue HA commands or track state. This is the one narrow exception, because a run of
+quick taps on + otherwise sends a burst of calls that HA and the device work through one by one.
+
 A Tap on + or − merges when the selected slot's tap action has an int `step` param. It isn't sent; it
 adds one to a pending count and starts a 300 ms timer. A Down of the same button stops the timer until
 its Up. When the timer runs out, one call goes out with `step` × count, clamped to the param's range.
@@ -94,15 +95,3 @@ its Up. When the timer runs out, one call goes out with `step` × count, clamped
 `SET_POSITION`. The adapter reads `current_position`, adds `step`, clamps to 0..100, and sends
 `cover.set_cover_position` with `{position}`. With no `current_position` it fails with
 `state_unavailable`.
-
-## Owners
-
-- **core:** the config (`slots` as device ids, decode, encode, backup and restore); deriving each
-  slot's actions at compile, from the table (moved from the API's defaults route); the engine
-  (selection, resolution, release, the tap merge) with repeat removed; the sim showcase.
-- **api:** `GET`/`PUT /smart-buttons` in the new shape, with the derived actions on GET;
-  `GET /smart-buttons/defaults` removed; the spec, fixtures and contract; docs/agent-api.md.
-- **frontend:** the Global page's panel for Light 1/2 and Switch 1/2 (a device picker, and the
-  read-only actions); + and − noting that they follow the selected smart button; the Smart buttons
-  choice and editor removed; the mock and e2e.
-- **lead:** this doc, and moving .196's config to the new shape.

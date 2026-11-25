@@ -1,150 +1,227 @@
-# Harmony Hub Replacement — Architecture Specification
-Version 0.1 • 2026-11-04 • Implementation handoff
+# Hubbo architecture
 
-## Product and hard requirements
-Build a standalone Harmony Companion RF hub replacement on the Waveshare ESP32-S3-ETH. The ESP32 owns activities, button mappings, device registry and execution. Home Assistant is an outbound device-control integration, not the brain of the remote. The system must operate locally without Home Assistant for Bluetooth and IR.
+Hubbo is open-source software for a hub you build: an ESP32-S3 board with an nRF24 radio that
+replaces the Logitech Harmony Hub for a Harmony Companion remote. The hub owns the devices,
+activities and button maps, and runs them itself: infrared and Bluetooth work with nothing else on
+the network, and Home Assistant devices sit next to them as peers. It's managed from a browser over
+one HTTP API, which scripts, Home Assistant and LLM agents use too.
 
-Non-negotiable: low RF-to-command latency; minimal external state; registered-device-only actions; one action abstraction for all triggers/sequences; API-first web/LLM access; one admin account plus restricted API tokens; responsive React/TypeScript web UI; OTA; backup/restore; release binaries and USB web flashing.
+This is the map. The design docs in [docs/design/](docs/design/) hold the detail and the reasons;
+[docs/development.md](docs/development.md) has the commands and the repo layout.
 
-**MVP activity semantics:** Switching from A to B runs only B's startup sequence, never A's shutdown. Off runs only the active activity's shutdown sequence. The hub remembers the active activity but does not maintain guessed power/input states or a session-wide list of previously used devices. Xbox can remain powered after switching to Apple TV and self-sleep. Favor explicit power on/off and direct input commands over toggles.
+## Principles
 
-**MVP scope:** one Harmony Companion remote; one Waveshare ESP32-S3-ETH board; Ethernet; RF; BLE HID Apple TV; Home Assistant outbound integration; registered devices; activities; web UI; security; OTA; backups; release automation. **Since added:** IR sending from imported device profiles (`docs/design/ir.md`). **Later:** searching the hosted catalog from the web admin, IR learning, other boards, other remotes, gesture recognition beyond down/up, inbound Home Assistant integration.
+- **The hub is the brain.** Activities, bindings and devices live on the hub and run without
+  Home Assistant or any cloud. HA is an integration, not a dependency.
+- **The remote comes first.** The radio-to-command path is precompiled, allocation-free and never
+  waits on the network, flash or another task. Everything else (HTTP, HA, MQTT, updates) runs
+  below it.
+- **Registered devices only.** Every action names a registered device and a command from that
+  device's catalog, with typed, checked params. No raw HA service calls, entity ids or payloads.
+- **Read state, don't track it.** Hubbo keeps the active activity and nothing else about the
+  room. When it needs a device's state it asks HA at that moment.
+- **Simulator first.** The real core runs natively in `hub-sim`, so most work and every test
+  happens without hardware.
+- **Hobby scale.** One hub, one home, a trusted LAN, one admin. Simple over hardened.
 
-## Hardware and build
-Primary board: Waveshare ESP32-S3-ETH with W5500 SPI Ethernet and optional PoE. Planning specifications: ESP32-S3 dual core, 512 KB SRAM, 8 MB PSRAM, 16 MB flash; verify exact installed variant and flash partition scheme before implementation. ESP32-S3 supports BLE but not Bluetooth Classic. Verify experimental Apple TV HID implementation uses BLE. nRF24 and W5500 may share SPI resources: inspect actual wiring, chip selects, IRQs, bus locking, signal integrity, and radio power.
+## The parts
 
-Base repository: https://github.com/soaresbrun0/harmonizer . Its `platformio.ini` specifies Arduino framework under PlatformIO; `src/portal.cpp` uses Arduino WebServer; `scripts/embed_portal.py` embeds HTML. Preserve existing RF protocol knowledge, pairing, button IDs and release semantics. The Ethernet/BLE spike is now available locally in `Harmonizer/` (see amendment 2026-11-08). Harmonizer is AGPL-3.0: retain notices and review redistribution/network obligations.
+| Part | Where | What |
+|---|---|---|
+| Core | `core/` | Portable C++17: engine, domain, config, storage, remote input, integrations, auth and the API routes. No Arduino, ESP-IDF or FreeRTOS headers; platforms inject clocks, storage, transports and adapters. |
+| Firmware | `firmware/` | PlatformIO (Arduino on ESP-IDF) for the Waveshare ESP32-S3-ETH: the radio, Bluetooth HID (NimBLE), the IR transmitter, Ethernet, LittleFS and NVS, the HTTP server, MQTT, updates. Wiring only; behaviour lives in core. |
+| hub-sim | `sim/` | The real core with fake adapters (Bluetooth hosts, HA, IR, MQTT broker) and deterministic time. Serves the real `/api/v1` on loopback, runs scenario scripts, and has `/sim/*` controls for tests. |
+| Web app | `web/` | React + TypeScript + Vite + Tailwind. Built into the firmware and served by the hub; the browser does the rendering. A TypeScript mock API, seeded from the same fixtures, serves fast UI work. |
+| API | `api/` | `openapi.yaml` is the source of truth for `/api/v1`. Fixtures and a contract suite run against hub-sim (with and without auth) and the mock. |
+| Profiles | `profiles/` | The built-in device profiles and the spec's `kinds.json` and `buttons.json`, synced from [hubbo-profiles](https://github.com/hubbo-remote/hubbo-profiles). |
 
-Use PlatformIO + Arduino framework initially for compatibility, with ESP-IDF components where version-compatible. Prefer Espressif's `esp_http_server` rather than Arduino WebServer, but verify against pinned Arduino-ESP32/ESP-IDF versions and test memory/task interactions before committing. Board-specific code belongs behind HAL and a board profile. Do not build other boards during MVP.
+### Core modules
 
-## Components and boundaries
-1. **HAL/board profile:** W5500, SPI, nRF24, GPIO, BLE adapter, storage, timers, crypto/random, the IR emitter (RMT on GPIO 1).
-2. **RF receiver:** emits `RemoteEvent(button_id, event_kind, timestamp)`; down/up required; future long/double/triple presses are trigger concerns, not integration concerns.
-3. **Activity engine:** active activity ID, startup/shutdown sequences, precompiled trigger lookup tables and transition coordinator.
-4. **Action executor:** normalized typed commands, ordered sequence scheduler, bounded per-integration queues.
-5. **Integration adapters:** BLE HID, Home Assistant, IR, built-in system actions.
-6. **Device registry:** curated list of registered targets with stable hub IDs, provider references and display names. It is not a duplicate Home Assistant database and does not track device power state.
-7. **Configuration service:** JSON schemas, versioning, validation, atomic persistence, compilation and hot swap.
-8. **HTTP/API/auth:** serves compiled React assets and versioned API; lower priority than RF.
-9. **Diagnostics:** connection status, errors, queue overflow, latency histograms, memory high-water, watchdog/recovery.
+| Module | What |
+|---|---|
+| `remote/` | Decodes the remote's packets. The remote sends "everything held" per button group with keepalives about every 40 ms; `RemoteInput` diffs those sets into `down`, `up`, `tap` and `hold` per button and releases everything after 500 ms of silence. |
+| `domain/` | Config types (integrations, devices, activities, bindings, smart buttons), triggers, ids, limits and error codes. |
+| `config/` | JSON encode/decode, validation, profiles, and `ConfigService`: the commit pipeline and its states. |
+| `engine/` | The compiler, the engine (active activity, trigger lookup, transitions), the executor and its lanes, the hold ledger, run history and the active-activity persister. |
+| `integrations/` | The adapters: Bluetooth HID and hosts, IR, the HA client (WebSocket) and adapter, state checks, the MQTT bridge, the firmware release feed. |
+| `ha/` | HA capabilities: domain allowlists, feature bits, service discovery and the device snapshot. |
+| `storage/`, `auth/`, `api/`, `http/` | The record store, credentials and sessions, the route handlers, and the router. |
 
 ## Data model
-**Integration instance:** stable `integration_id`, type, enabled state, protected connection settings, discovery and capability interface. Each integration manages its own pairing/discovery/storage requirements.
 
-**Device:** `id`, `name`, `integration_id`, internal provider target, metadata, schema version. Example: `dev_72`, `Family Room Denon`, `ha_main`, internally linked to `media_player.denon`. HA references should record stable registry identifiers where available; entity IDs may change. Bluetooth stores pairing reference. IR devices, like Bluetooth ones, are profiles that have been added: they keep the profile's Pronto codes. Only admin may register/edit/remove devices.
+**Integration.** `system`, `ble`, `ir`, `ha_main` and `mqtt_main` are built in and always present;
+each has an enabled flag and its own settings. A disabled integration's devices compile to
+unavailable.
 
-**Action instance:** `{integration_id, device_id, command_id, params}`. For built-in `system.wait`, device_id is null and params include bounded `duration_ms`. The integration must match the device's owner. Commands and parameter schemas are discovered from registered device capabilities; arbitrary HA service payloads, target overrides, URLs and scripts are prohibited. Human names are not execution identifiers.
+**Device.** A registered target with a stable id (`dev_…`), a name, a kind and its integration.
+- Bluetooth and IR devices are profiles that have been added: manufacturer, model, commands, power
+  steps, timing and inputs, copied from the profile ([device-profiles.md](docs/design/device-profiles.md)).
+- Home Assistant devices are one HA entity each, with a capability snapshot taken at registration:
+  the domain's allowlisted commands gated by HA's feature bits, enum options from the entity's
+  attributes, and the integration's own services ([ha-domains.md](docs/design/ha-domains.md)).
+- Only the admin adds, edits and removes devices.
 
-Examples:
+**Action.** `{integration_id, device_id, command_id, params}`, plus `call` for the Home Assistant
+action ([ha-custom-action.md](docs/design/ha-custom-action.md)). The built-in `system.wait` takes
+a bounded `duration_ms`; a Bluetooth device's `wait_connected` waits for its host. Commands declare
+an effect: `momentary`, or `hold` (needs its release).
+
 ```json
-{"integration_id":"ha_main","device_id":"dev_72","command_id":"media_player.volume_up","params":{}}
-{"integration_id":"ble","device_id":"dev_apple","command_id":"key_down","params":{"key":"ARROW_UP"}}
-{"integration_id":"ble","device_id":"dev_apple","command_id":"key_up","params":{"key":"ARROW_UP"}}
-{"integration_id":"system","device_id":null,"command_id":"wait","params":{"duration_ms":1000}}
+{"integration_id": "ha_main", "device_id": "dev_receiver", "command_id": "media_player.volume_up", "params": {}}
+{"integration_id": "ble", "device_id": "dev_streamer", "command_id": "press_down", "params": {"command": "DirectionUp"}}
+{"integration_id": "ir", "device_id": "dev_tv", "command_id": "press", "params": {"command": "PowerOn"}}
+{"integration_id": "system", "device_id": null, "command_id": "wait", "params": {"duration_ms": 1000}}
 ```
 
-**Activity:** `{id,name,startup:Action[],shutdown:Action[],bindings:Record<Trigger,Action[]>,macros:Trigger[],schema_version,revision}`. A trigger is button ID plus event kind. Every binding is an array. A binding is a single command unless its trigger is listed in `macros` (down, tap or hold only; absent means none); a macro is a list of 1 to 32 actions, run on the executor's Macro lane (one running, at most four waiting), cancelled by an activity switch and recorded in the run history. The same ordered-action sequence executor runs startup, shutdown and macros. Global bindings carry `macros` the same way. Unbound triggers are no-ops. See docs/design/macros.md.
+**Activity.** `{id, name, startup[], shutdown[], bindings, macros}`. A trigger is a button plus an
+event kind (`down`, `up`, `tap`, `hold`); a binding maps a trigger to actions. Global bindings
+apply under every activity unless the activity binds that button. Unbound triggers do nothing.
 
-**Activity switching:** Select B → validate/ensure compiled B → atomically select B's mapping → enqueue B startup sequence. Never run A shutdown. Press Off → enqueue current activity shutdown and clear active mapping per documented policy. Sequences must not block RF. Serialise transition requests; cancel or generation-guard stale delayed actions so startup A cannot resume after switching to B. On action error, report it and go on to the next step (docs/design/activity-runs.md); no retries. In startup and shutdown, an HA step whose state HA already reports is skipped. An HA step waits at most 1 s for HA's reply, then moves on (docs/design/state-checks.md). Hubbo reads state at the moment it needs it; it never tracks it.
+**Activity switching** (Harmony's rules, kept):
+- Switching from A to B runs only B's startup, never A's shutdown, so power-on steps must be safe
+  to repeat. Off runs the active activity's shutdown.
+- Re-activating the active activity re-runs its startup ("fix it").
+- Deleting the active activity switches to the one that takes its place in the list and runs its
+  startup; with none left, the hub is off.
+- The active activity survives a reboot: it's saved a few seconds after a switch (never from the
+  RF path), and on boot its button map comes back without running its startup.
 
-## Performance architecture
-**Compile configuration, don't interpret it on button press.** At config save, validate device registration, command ownership, parameter bounds, and schema; resolve adapter indices and bounded parameters into compact runtime structs. Precompute `button_id × event_type → Action[]` lookup. Stage and atomically swap compiled configuration, keeping old storage alive until readers finish.
+**Smart buttons.** Light 1/2 and Switch 1/2 each take an HA light, fan, cover or switch; the hub
+derives what the button and +/- do from the device's kind, and +/- follow the last one pressed
+([smart-buttons.md](docs/design/smart-buttons.md)).
 
-Hot RF path: RF decode → index active table → dispatch/enqueue typed action. No JSON, flash I/O, heap allocation, HTTP, TLS, provider discovery, name lookup or network wait. Prefer internal SRAM for hot lookup tables; PSRAM for cold configuration, HTTP buffers and catalogs. Preallocate bounded queues and define overflow behavior; missed release must not leave a held HID key stuck.
+**Macros.** A Press or Long press can be marked as a macro: a list of up to 32 actions run on its
+own executor lane, so a macro's waits never hold up other buttons ([macros.md](docs/design/macros.md)).
 
-BLE HID: key-down/key-up semantics, reconnect and release-all safeguards, timeout for missing key-up. Home Assistant: asynchronous worker/queue, persistent transport if useful, explicit timeout and error reporting; HA response latency is not the same as RF dispatch latency. System wait uses sequence scheduler, not sleep in RF callback.
+**Runs.** One executor runs startups, shutdowns, macros and presses. A failed step is reported and
+the sequence keeps going; a switch cancels the old run. The last 8 runs are kept in RAM for the
+Activity Log ([activity-runs.md](docs/design/activity-runs.md)). In startups and shutdowns, an HA
+step whose state HA already reports is skipped, and an HA step waits at most 1 s for HA's reply
+([state-checks.md](docs/design/state-checks.md)).
 
-Instrument RF receive-to-dispatch and adapter handoff independently from remote-to-device response. Internal dispatch targets: **p95 <2 ms and p99 <5 ms** under idle and web/API load. They're set from the measured baseline on boards in daily use (2026-11-15: p50 ~0.5 ms, p95 ~0.65 ms, p99 ~0.8 ms), with headroom; the first placeholders were 10 ms and 25 ms. Test RF under Ethernet SPI traffic, BLE reconnect, web load and OTA.
+## The hot path
+
+**Compile the config; don't interpret it on a press.** At commit the config is validated
+(registered devices, command ownership, param bounds, hold/release pairs) and compiled into compact
+runtime tables: adapter indices, bounded params, and a `button × event → actions` lookup per
+activity. The compiled config is swapped in atomically.
+
+A press is: radio read → `RemoteInput` → index the active table → hand typed actions to the
+executor and adapters. No JSON, flash, heap allocation, HTTP, name lookup or network wait. Network
+work (HA, MQTT, update checks) runs on its own tasks through bounded queues; a full queue refuses,
+it never blocks.
+
+- **Holds:** the engine keeps a ledger of open holds per button and releases them on the button's
+  up, a radio timeout, a failed or cancelled sequence, a disconnect or a transition, so a key is
+  never left stuck.
+- **Transitions** are serialized and generation-guarded, so a delayed step of an old startup can't
+  run after a switch.
+- **Latency:** radio read to Bluetooth send is about 0.5 ms median. The board budget below holds
+  p95 under 2 ms and p99 under 5 ms while loaded.
 
 ## Integrations
-**BLE HID:** Apple TV paired as keyboard; integration is generic HID, with `key_down`, `key_up`, `key_tap` and typed key parameter. UI may offer friendly presets. Held remote button sends down and release sends up. Prevent stuck keys after disconnect, activity switch, timeout.
 
-**Home Assistant outbound:** Admin configures URL and token. Discovery can browse all entities, but only explicitly registered entities become hub devices. Normalize capabilities from HA entity metadata, supported features, service definitions and parameter selectors; not every service applies to every entity. Example `volume_set` takes a normalized 0–1 value; `select_source` may offer available source options. Permit a curated set of entity-specific actions; disallow area/all-entity targets, arbitrary service payloads, nested target overrides and indirect broad operations. Device registry restriction is application security, **not** a HA token sandbox. A stolen HA credential may still grant broad access.
+| Integration | How |
+|---|---|
+| Bluetooth HID | The hub is a BLE keyboard and consumer-control device. Up to 4 hosts, each a device, all connected at once; keys go to the named device's host, never a "current" one ([multi-bluetooth.md](docs/design/multi-bluetooth.md)). |
+| IR | One emitter on a fixed GPIO, sending Pronto codes from the device's profile via the RMT peripheral: taps, holds that repeat until release, toggle codes. Send only ([ir.md](docs/design/ir.md)). |
+| Home Assistant (outbound) | A WebSocket client with a long-lived token. Discovery browses entities; only registered ones become devices. Commands are allowlisted per domain, plus the device-scoped Home Assistant action for services past the allowlist. The registry limits what Hubbo sends; it doesn't sandbox the HA token. |
+| Home Assistant (inbound, MQTT) | Optional. With a broker set up, Hubbo publishes itself through MQTT discovery as one HA device: an activity select, a power switch, a restart button and diagnostics ([mqtt-discovery.md](docs/design/mqtt-discovery.md)). |
+| Home Assistant (API) | Automations and scripts can also call the HTTP API with a token. |
 
-**IR:** a device's codes come from its profile (Pronto, `~/src/hubbo-profiles` spec), imported as a file today and later fetched from the hosted catalog; only that device's codes are stored, and they work offline. Commands are ordinary actions (`press`, `press_down`, `press_up`). One emitter, one code at a time. Send only; learning is later. Design: `docs/design/ir.md`.
+## Profiles and the catalog
 
-**System:** `wait(duration_ms)` first; future conditional/repeat actions require explicit design and bounded execution.
+A device profile describes a device in an open format: its commands with normalized names, how
+each is sent (Bluetooth HID usage or Pronto IR code), power and input steps, and timing. The spec,
+the schema and all profile data live in [hubbo-profiles](https://github.com/hubbo-remote/hubbo-profiles)
+(CC0), including the whole Harmony device archive converted into the format. The catalog is
+published at [hubbo.tv/devices](https://hubbo.tv/devices/).
 
-## API and contract
-Use `/api/v1`, strict JSON schemas, bounded payload sizes, meaningful validation errors, revision/optimistic concurrency for edits, atomic activity replacement, and OpenAPI as source of truth. Generate TypeScript client/types and mock fixtures. A command execution endpoint accepts **hub device ID + allowed command ID + typed params**, never raw HA entity IDs/service calls.
+The web admin's Add device searches the catalog from the browser and installs the profile through
+the ordinary import, so the hub makes no outbound request for it. A profile file can also be
+imported directly ([catalog-hosting.md](docs/design/catalog-hosting.md)).
 
-Proposed groups:
-- `GET /status` and `/remote/status`, `/remote/buttons`, and `/remote/log` (dev builds only: the
-  last 5 minutes of packets, presses and their results; `docs/design/remote-log.md`).
-- `POST /auth/login`, `/auth/logout`, `GET /auth/session`.
-- `GET /devices`, `/devices/{id}`, `/devices/{id}/capabilities`.
-- `POST /devices/{id}/commands/{command}/execute` for registered commands.
-- `GET/POST /activities`, `GET/PUT/DELETE /activities/{id}`, `POST /activities/validate`, `POST /activities/{id}/activate`, `POST /activities/off`.
-- `GET /integrations` (safe summaries).
-- Admin-only: `/admin/integrations/{id}` configure/discover, `/admin/devices` register/update/delete, `/admin/remote/pair`, `/admin/tokens`, `/admin/backup`, `/admin/restore`, `/admin/firmware/update`.
-All paths above are under `/api/v1`; final paths and response models must be specified in OpenAPI before implementation.
+## The API
 
-**Agent instructions:** publish `AGENTS.md` or `docs/agent-api.md` documenting auth, discovery of registered devices, capabilities, dry-run validation, one-request activity creation, activation, troubleshooting, and explicit prohibition on arbitrary HA calls. A future MCP server or inbound HA integration may use the same API, but is not MVP.
+`/api/v1`, specified in `api/openapi.yaml`: strict JSON, bounded bodies, field-level errors, and
+revisions with 409 on a stale edit. The web app, scripts, Home Assistant and LLM agents all use it.
+[docs/api.md](docs/api.md) is the guide for token users and agents, also served by the hub at
+`/api/v1/agent.md` with `/llms.txt`.
+
+- **Execute** takes a device id, a command id and typed params, and reports `accepted`, `failed`
+  or `timeout`, never a claim about the device's physical state.
+
+## Persistence
+
+- **Config** (integrations, devices, activities, bindings, smart buttons) is one JSON record; the
+  active activity is another. Each record is two CRC'd slots on LittleFS; a save writes the older
+  slot and verifies it before it's acknowledged, and a load takes the newest intact slot.
+- **Secrets** (the password hash, API token hashes, the HA token, the MQTT password) are in NVS
+  and never appear in responses, logs or backups. Bluetooth bonds are in NimBLE's NVS store.
+- **The hub runs what's saved:** every commit serializes, parses back, compiles and saves before
+  it goes live, and every object's revision is the config's generation.
+- **Unreadable is never absent:** a config that can't be read or used blocks edits rather than
+  being replaced with defaults.
+- **Backup and restore:** one JSON file of the config, without secrets or bonds; a restore
+  validates and commits atomically, and integrations and Bluetooth hosts may need setting up again.
+  A reset clears the config and keeps credentials and pairings; a factory reset erases
+  everything and returns to first-run setup.
+
+Details: [persistence-and-contracts.md](docs/design/persistence-and-contracts.md).
+
+## Firmware updates
+
+A tag `vX.Y.Z` on `main` is a release: CI builds the image and publishes it on GitHub with a
+manifest signed with ECDSA P-256, whose public key is built into the firmware. Each hub checks the
+latest release daily or on demand and installs it only when the admin chooses. Every new image
+boots on trial and rolls back unless it's healthy within 2 minutes. A `.bin` can also be uploaded
+by hand, through the same install path ([firmware-updates.md](docs/design/firmware-updates.md)).
+
+## The board
+
+- **Waveshare ESP32-S3-ETH:** dual core, 16 MB flash, 8 MB PSRAM, W5500 Ethernet with optional
+  PoE. ESP32-S3 Bluetooth is BLE only.
+- **Radio:** an nRF24L01+ (or a PA+LNA module) on its own SPI bus. Hubbo listens on the address
+  of an existing Harmony Hub, learned once at setup while the Hub's pair button is pressed. Pairing
+  a remote with no Hub at all isn't supported.
+- **IR emitter** on GPIO 1. Wiring for all parts: `firmware/README.md` and the
+  [build guide](https://hubbo.tv/build/).
+- **Tasks:** core 1 runs only the radio and engine loop. HTTP, network, Bluetooth, HA, MQTT, IR
+  and updates run on core 0, below the loop. Flash writes happen only on the HTTP task.
+- **Partitions:** two app slots for updates and rollback, LittleFS for the config, NVS for
+  secrets and bonds.
+- **Board budget:** `firmware/budget.json` sets the limits a build must meet on real hardware
+  (loop gap, latency, heap, stacks, image size), checked with `bin/hubbo board-check`.
+- **Network:** DHCP and mDNS (`hubbo-xxxx.local`, following the hub name; see
+  [hub-name.md](docs/design/hub-name.md)). Plain HTTP.
 
 ## Security
-One admin, with a username and password chosen at setup, and browser sessions kept only in RAM (a reboot logs everyone out). Secrets (the password hash, the HA token, API token hashes) stay in NVS and never appear in responses, logs or backups. HTTPS, secure boot and flash encryption are out of scope for this one-home LAN device; no public internet port forwarding. Details, including what was trimmed in Phase 5: `docs/security.md`.
 
-API tokens: created/revoked by admin, displayed once, stored hashed, supplied as Bearer tokens. They may read status and the remote log (dev builds), list registered devices/capabilities, create/edit/delete activities and mappings, test registered commands and activate activities. They **cannot** register/edit/remove devices, configure integrations, pair remotes, manage tokens/credentials, restore backups or update firmware. Tokens may still control sensitive **registered** devices, so protect them. Every config/action API must enforce this, including nested action validation; only trusted RF path bypasses HTTP auth, using prevalidated compiled actions.
+Hubbo is for one home, on a trusted LAN, with one admin. It isn't exposed to the internet and
+isn't multi-user. Effort goes to what matters there: never losing or corrupting config, a remote
+that keeps working, and devices doing the right thing.
 
-For test execution, return accepted/failed/timeout and avoid claiming physical device response. No secrets in diagnostics, browser storage or backup by default.
+- One admin with a username and password created at first run (the first person to reach a fresh
+  hub creates it); sessions are in RAM, so a reboot signs everyone out. API tokens are shown once
+  and stored hashed.
+- **Roles:** the admin (a browser session) can do everything. API tokens can read status, devices
+  and capabilities, run registered commands, edit activities, bindings and smart buttons, and
+  activate them. They can't register devices, configure integrations, pair, manage credentials,
+  back up, restore or update firmware. The table is data in core and is checked against the spec.
+- No HTTPS, secure boot or flash encryption. Someone with the flash can read hashes, not passwords.
+- hub-sim runs without auth by default, for development. That bypass is compile-time and
+  host-only; a firmware build that enables it fails.
 
-## Web admin
-React + TypeScript + Vite + Tailwind CSS + shadcn/ui. Static assets prebuilt and served from ESP32 flash; browser performs UI rendering, ESP32 performs API/network work. Light/dark mode, responsive desktop/phone, visual Harmony Companion button map.
+Threat model, roles and details: [docs/security.md](docs/security.md).
 
-Pages: **Dashboard** (active activity, connectivity, diagnostics), **Devices** (curated list, add by integration, per-device capability/test screen), **Activities** (startup ordered sequence, clickable remote for mappings, shutdown ordered sequence), **Integrations** (connection health/settings), **Settings** (admin credentials, tokens, network, OTA, backup/restore, logs). First-run wizard: admin creation, networking, RF pairing, optional Home Assistant connection and initial devices. No MQTT setup in the wizard. The outbound HA client calls HA services; separately, an optional MQTT integration (Integrations page) publishes the hub to HA as a device: activity select, power switch, restart and diagnostics (docs/design/mqtt-discovery.md).
+## Diagnostics
 
-Web and agents use identical API service functions. Dev modes: Vite hot reload + TypeScript mock server seeded with realistic devices/activities; Vite proxy to real ESP32 API; production static build. Generate types from OpenAPI; contract-test mock and firmware against same fixtures. Avoid needing firmware flash for visual edits.
+`/status` reports connectivity, integration states, the config state and the last run. Dev builds
+add the remote log (the last 5 minutes of packets, presses and their results;
+[remote-log.md](docs/design/remote-log.md)) and a debug console with loop timing, latency
+histograms, heap and task stats.
 
-## Persistence, OTA and distribution
-LittleFS JSON for nonsecret device/activity/config files; versioned schemas and migrations. Atomic update via temp/write/validate/rename plus recovery strategy; validate full configuration before swapping runtime table. No flash writes on RF events or activity switches. Secrets in protected NVS/secure storage, not ordinary exported JSON.
+## Lineage
 
-Backup downloads one versioned JSON archive of user-facing config; restore uploads, validates, migrates and commits atomically. Exclude admin password, API tokens, Home Assistant secrets and BLE bonding secrets by default; document that restored systems require reauthorization/repairing where necessary. Do not leak secrets through backups.
-
-OTA over Ethernet with signed/authenticated update validation, compatible board ID and partition checks, rollback on failed boot, no interruption of critical RF processing during normal operation (temporary degradation during flash must be measured). 16 MB flash requires deliberate partition plan for two app slots, static web assets and config. Browser-based USB installer via ESP Web Tools or equivalent; GitHub Actions build reproducible PlatformIO firmware for the single MVP board and publish bootloader/partition/app or merged binary plus manifest, checksums and release notes. Additional boards become build-matrix entries later.
-
-As built (2026-11-16, docs/design/firmware-updates.md): a tag `vX.Y.Z` on main is built by GitHub Actions into a Release with the app image and a manifest signed with ECDSA P-256; the public key is in the firmware. The hub checks it daily or on demand, and installs only when the admin chooses. Every new image boots on trial and rolls back unless it's healthy within 2 minutes.
-
-## Decisions requiring verification, not new product design
-- Exact Waveshare module flash/PSRAM, PoE and SPI pin map; actual RF wiring.
-- Arduino/ESP-IDF version compatibility for `esp_http_server`, BLE and W5500.
-- Home Assistant service metadata and safe command allowlist by supported entity type.
-- OTA partition sizing with web assets and rollback.
-- TLS certificate provisioning and ESP32 memory budget.
-- Existing experimental BLE code and RF performance baseline.
-These are implementation investigations with tests, not reasons to reopen the agreed architecture.
-
-## Amendment 2026-11-08 — kickoff decisions
-- **Name:** the project is **Hubbo**. License: AGPL-3.0, continuing Harmonizer's.
-- **Hold triggers are MVP.** Trigger event kinds are `down`, `up`, `tap` (released before the hold threshold) and `hold` (held past the threshold, fires once). The deployed family-room setup already depends on click-vs-hold (Info held). Double/triple press stays post-MVP.
-- **RF semantics (verified in the spike):** button payloads carry the full held set per group (`0xC1` keypad, `0xC3` media/home), not edge events. Keepalives arrive about every 40 ms while held. The RF receiver derives events by diffing per-group sets and releases everything after 500 ms of silence.
-- **Remote pairing:** Hubbo listens on the address of an existing Harmony Hub, learned by scanning while the Hub's pair button is pressed. A Hub is needed once per remote at setup. Pairing a remote with no Hub at all is unsolved and is not MVP.
-- **Hardware verified by the spike:** W5500 SCLK 13, MISO 12, MOSI 11, CS 14, INT 10, RST 9. nRF24 on its own SPI pins: SCK 15, MISO 16, MOSI 17, CSN 18, CE 38. The nRF24 needs a 10 µF capacitor across VCC/GND on PoE. BLE HID to Apple TV works on NimBLE-Arduino 2.5.1. Never connect USB and PoE at once.
-- **Toolchain:** all builds run in Docker (`bin/hubbo`). Firmware is pinned to PlatformIO `espressif32@8.0.0` (arduino-esp32 3.3.12). See `docs/development.md`.
-- **Dev hardware:** the former guest room Harmonizer board (reflashed with Hubbo; its remote is on channel 5, address `0xFC5C97550E`). The family room Harmonizer board stays untouched.
-- **Re-activating the active activity** re-runs its startup (Harmony's "fix it" behaviour).
-- **Deleting the active activity** switches to the next activity (the one that takes its list position, wrapping to the first) and runs its startup; no shutdown runs. Inactive only when none remain.
-- **Active activity survives reboot:** the active id is saved to NVS a few seconds after the last switch (only if changed, Off = none), from the config side, never the RF path. On boot the hub restores that activity's button map without running its startup. If the activity no longer exists, it boots with nothing active.
-- **First-run setup:** the first person to reach a fresh hub creates the admin. No physical confirmation step.
-- **HA integration-specific services** (e.g. `webostv.button`) are resolved from HA's `get_services` target filters and field selectors, never entered as free text. See `docs/ha-capabilities.md`.
-- **No held-button repeat** for HA actions in the MVP.
-- **Flash encryption / Secure Boot:** not in the MVP. Revisit before any public release.
-- **ThreadSanitizer:** `bin/hubbo tsan` runs the native tests under TSan in a one-off container with seccomp unconfined.
-
-## Scope and threat model (2026-11-09)
-Hubbo is a hobbyist's device: one board in one home, on a trusted home LAN, with one user. It isn't sold, isn't multi-user and isn't exposed to the internet. Engineering effort goes to what affects that user: never losing or corrupting config, a remote that keeps working, and correct device behaviour. The auth (admin password, sessions, API tokens) is kept small, as sensible LAN hygiene. Hardening against hostile LAN clients, DoS and scale is out of scope unless explicitly requested.
-
-## Native desktop simulator — required architecture (amendment)
-The **actual C++ domain and application code** must build and run on a developer computer without ESP32 hardware. Separate `core` (activity engine, action models, compilation, registry, configuration validation, authorization policy, action scheduling) from `platform` adapters (RF, BLE, W5500, LittleFS, NVS, ESP-IDF HTTP). Core must not include Arduino headers or depend on FreeRTOS primitives directly; inject clocks, storage, task scheduling, transport, and integration interfaces.
-
-Build a native executable `hub-sim` with deterministic simulated RF events, BLE HID, Home Assistant service calls, a fake IR emitter (`/sim/ir`), and time advancement. Prefer the same HTTP **route handlers and business logic** as firmware, behind a host HTTP adapter; the host listener may differ from ESP-IDF's HTTP server. This is a real-core simulator, not just a TypeScript mock. The TypeScript mock API remains useful for fast frontend fixture work, but **must not be the primary source of behavioral truth**.
-
-Provide a command to launch the simulator and Vite frontend together, seed fixtures, reset state, run automated scenario scripts, and capture logs. Run C++ unit tests, API contract tests, integration/transition tests, and web end-to-end tests against the simulator in CI. Test token/admin boundaries, corrupted JSON, action cancellation, held-key releases, and config swaps. CI must also cross-compile the ESP32 firmware to catch platform divergence.
-
-Hardware testing is still mandatory before release: SPI contention, BLE pairing/hold behavior, actual RF decode, Ethernet and Home Assistant timing, RAM/flash pressure, TLS, OTA and real-device latency cannot be validated by simulation. Aim to complete the **majority of feature development** on the simulator; do not promise 90% of physical behavior is simulated.
-
-## Local simulator authentication bypass (explicit development-only requirement)
-The **native desktop simulator** must start in a clearly labeled `SIMULATOR_NO_AUTH` mode by default, so a coding agent can call every local API endpoint without logging in, managing cookies, or generating tokens. This includes admin endpoints for adding devices/integrations, resetting fixtures, creating activities, and exercising actions against **simulated adapters only**. Requests are treated as a simulated administrator for convenience.
-
-This bypass must be **impossible in ESP32 production firmware**: implement it behind a host-native compile-time flag and platform-specific dependency injection, not a runtime flag or HTTP parameter that a deployed hub can enable. Production authentication and role checks remain mandatory. The simulator HTTP listener must bind to `127.0.0.1` by default, reject non-loopback exposure unless explicitly configured for a trusted development environment, display an obvious `AUTH DISABLED — SIMULATOR` indicator, and never load real Home Assistant credentials or issue live hardware/network control commands while bypass is active.
-
-Maintain separate automated test modes: **no-auth simulator** for rapid development, and **auth-enabled simulator** using the same production authorization policy for security tests. CI must prove that ESP32 builds cannot enable the bypass, that token restrictions work in auth-enabled mode, and that no-auth simulator commands only reach fake adapters.
+Hubbo builds on the RF protocol work in [soaresbrun0/Harmonizer](https://github.com/soaresbrun0/harmonizer)
+and continues its AGPL-3.0 license. Ported code is marked at the top of each file.
