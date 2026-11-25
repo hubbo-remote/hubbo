@@ -77,6 +77,18 @@ test('import an infrared profile, bind its commands, and a startup sends one', a
   }
 })
 
+test('cancelling the file picker leaves the dialog open', async ({ page }) => {
+  await open(page, '/devices')
+  await page.getByRole('button', { name: 'Add device' }).first().click()
+  const dialog = page.getByRole('dialog')
+  // Playwright can't dismiss the OS picker; dismissing it fires this (bubbling) cancel on the input.
+  await dialog.getByLabel('Profile file').dispatchEvent('cancel', { bubbles: true })
+  await expect(dialog.getByRole('searchbox', { name: 'Search manufacturers' })).toBeVisible()
+  // Esc still closes it.
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+})
+
 test('a file with a bad code, or one that isn’t a profile, says what’s wrong', async ({ page }) => {
   const doc = JSON.parse(readFileSync(NEC_TV, 'utf8'))
   doc.commands.VolumeUp.pronto = '0000 006D 0001 0000 0000 0010' // a zero duration
