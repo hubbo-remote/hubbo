@@ -2,16 +2,13 @@
 // (hub-sim: /sim/ble/bond; the mock: /__mock/ble/bond), and sim time runs a window down.
 import type { Page } from '@playwright/test'
 import { deviceIdFromUrl } from './editor.ts'
-import { addBle, advance, api, bondHost, expect, open, setBleRadio, setHostLink, test } from './hub.ts'
+import { addBle, advance, api, bondHost, expect, open, openAddDevice, pickModel, setBleRadio, setHostLink, test } from './hub.ts'
 
-/** Add a device from a built-in profile through the Devices page's dialog; returns the dialog. */
-const addInDialog = async (page: Page, name: string | null, model = 'Android TV / Google TV') => {
-  await open(page, '/devices')
-  await page.getByRole('button', { name: 'Add device' }).first().click()
-  const dialog = page.getByRole('dialog')
-  await dialog.getByRole('searchbox', { name: 'Search devices' }).fill(model.split(' ')[0]!)
-  await dialog.getByRole('button', { name: new RegExp(`^${model.replace(/[/()]/g, '\\$&')}`) }).click()
-  await expect(dialog.getByLabel('Name')).toHaveValue(model) // the model is the default name
+/** Add Android TV from the (fixture) catalog through the Devices page's dialog; returns the dialog. */
+const addInDialog = async (page: Page, name: string | null) => {
+  const dialog = await openAddDevice(page)
+  await pickModel(page, 'Google', 'Android TV / Google TV')
+  await expect(dialog.getByLabel('Name')).toHaveValue('Android TV / Google TV') // the model is the default name
   if (name) await dialog.getByLabel('Name').fill(name)
   await dialog.getByRole('button', { name: 'Add device', exact: true }).click()
   return dialog
@@ -96,16 +93,10 @@ test('the Bluetooth card shows only the radio: a working radio reads Ready', asy
   await expect(card).toHaveText('Ready')
 })
 
-test('each built-in profile adds a device named after its model', async ({ page }) => {
-  const { profiles } = (await api(page).get('/profiles')) as { profiles: { id: string; model: string; manufacturer: string }[] }
-  for (const p of profiles) {
-    await expect(await addInDialog(page, null, p.model)).toBeHidden()
-    await expect(page.getByRole('heading', { name: p.model })).toBeVisible()
-    await expect(state(page)).toHaveText('Not paired')
-    const id = deviceIdFromUrl(page)
-    const d = await api(page).get(`/devices/${id}`)
-    expect(d).toMatchObject({ profile: { id: p.id }, manufacturer: p.manufacturer, model: p.model })
-    // Make room for the next one (at most four Bluetooth devices).
-    expect((await api(page).del(`/admin/devices/${id}?revision=${d.revision}`)).ok()).toBeTruthy()
-  }
+test('a Bluetooth profile from the catalog adds a device named after its model, ready to pair', async ({ page }) => {
+  await expect(await addInDialog(page, null)).toBeHidden()
+  await expect(page.getByRole('heading', { name: 'Android TV / Google TV' })).toBeVisible()
+  await expect(state(page)).toHaveText('Not paired')
+  const d = await api(page).get(`/devices/${deviceIdFromUrl(page)}`)
+  expect(d).toMatchObject({ profile: { id: 'hubbo:android-tv' }, manufacturer: 'Google', model: 'Android TV / Google TV' })
 })

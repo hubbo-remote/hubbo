@@ -220,6 +220,23 @@ export async function open(page: Page, hash: string) {
   await expect(page.getByRole('navigation', { name: 'Main' }).first()).toBeVisible()
 }
 
+/** The Devices page's Add device dialog, opened. */
+export async function openAddDevice(page: Page) {
+  await open(page, '/devices')
+  await page.getByRole('button', { name: 'Add device' }).first().click()
+  return page.getByRole('dialog')
+}
+
+/** In the open Add device dialog: search the (fixture) catalog for the manufacturer, pick it, then the model. */
+export async function pickModel(page: Page, brand: string, model: string) {
+  const dialog = page.getByRole('dialog')
+  const startsWith = (s: string) => new RegExp(`^${s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}`)
+  await dialog.getByRole('searchbox', { name: 'Search manufacturers' }).fill(brand.slice(0, 3))
+  await dialog.getByRole('button', { name: startsWith(brand) }).click()
+  await dialog.getByRole('searchbox', { name: 'Search models' }).fill(model.slice(0, 4))
+  await dialog.getByRole('button', { name: startsWith(model) }).click()
+}
+
 export const loginHeading = (page: Page) => page.getByRole('heading', { name: 'Sign in to Hubbo' })
 export async function signIn(page: Page, password = ADMIN.password) {
   await page.getByLabel('Username').fill(ADMIN.username)

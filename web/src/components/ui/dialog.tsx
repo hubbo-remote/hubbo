@@ -19,6 +19,8 @@ export function Dialog({ open, onClose, title, description, children, footer, cl
     <dialog
       ref={ref}
       onCancel={(e) => {
+        // Only the dialog's own (Esc): a file input's cancel (its picker dismissed) bubbles up here too.
+        if (e.target !== e.currentTarget) return
         e.preventDefault()
         onClose()
       }}

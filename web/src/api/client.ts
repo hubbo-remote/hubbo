@@ -33,7 +33,6 @@ import type {
   IntegrationConfig,
   IntegrationConfigUpdate,
   Kind,
-  ProfileSummary,
   RemoteConfig,
   RemoteEndpointUpdate,
   RemotePairStatus,
@@ -207,7 +206,9 @@ export const api = {
   capabilities: (id: string) => get<Capabilities>(`/devices/${enc(id)}/capabilities`),
   execute: (id: string, command: string, params: ActionParams, call?: HaServiceCall) => post<ExecuteResult>(`/devices/${enc(id)}/commands/${enc(command)}/execute`, { params, ...(call ? { call } : {}) }),
   registerDevice: (b: DeviceRegister) => post<DeviceDetail>('/admin/devices', b),
-  profiles: async () => (await get<{ profiles: ProfileSummary[] }>('/profiles')).profiles,
+  /** POST /admin/devices {profile, name, kind} with the profile's text embedded as is: parsing it would move digit commands ("0".."9") first. */
+  importProfile: (profile: string, name: string, kind: string) =>
+    request<DeviceDetail>('POST', '/admin/devices', undefined, { raw: `{"profile":${profile},"name":${JSON.stringify(name)},"kind":${JSON.stringify(kind)}}`, headers: { 'content-type': 'application/json' } }),
   kinds: async () => (await get<{ kinds: Kind[] }>('/kinds')).kinds,
   updateDevice: (id: string, b: DeviceUpdate) => put<Device>(`/admin/devices/${enc(id)}`, b),
   deleteDevice: (id: string, revision: number) => del(`/admin/devices/${enc(id)}?revision=${revision}`),

@@ -2,6 +2,40 @@
 
 Current state, not a log. Update when a piece of work lands.
 
+## Catalog search (branch `catalog-search`; docs/design/catalog-hosting.md; feature specs green on both, not gated)
+
+- **Add device** opens on the catalog's manufacturer search (just the box until something's typed, user
+  2026-11-24): matches alphabetical (index order), prefix then substring, 8 rows + "N more"; the count under
+  each. Then the brand's models (`CatalogModels`: search, Type filter from the brand's `k`, 50 rows; a model
+  whose integration is off is greyed "<name> is off"); then Name and Type; Add device. Import a profile
+  file and From Home Assistant stay below. Built-in profile rows are gone from the dialog (GET /profiles,
+  `ProfileSummary` and the mock's `profile_id` path stay: a later call).
+- **The profile loads at pick time** (like an HA pick's details): `ProfilePick = Omit<ProfileFile,'text'> &
+  {text: Loaded<string>, fromCatalog?}`; a file's is `done` at once. Catalog failures (unreachable, missing,
+  newer format) show then, with Retry; Add waits for `done`. Submit is one hub call, one error path
+  (`profileFileError(e, 'This device’s profile')` for the catalog). `back()` pops one level.
+- `lib/catalog.ts`: `CATALOG_URL` = `VITE_HUBBO_CATALOG_URL` ?? `https://catalog.hubbo.tv/` (the firmware CSP
+  must list it); `web/.env.development` sets `/mock/catalog/` for dev and e2e. No module cache: index files
+  go through `useQuery` with `staleMs: Infinity` (new option; a failed query refetches on mount; Retry is
+  `refetch`). `brands()` keeps the index's order; `models()` numeric collation. Paths and the codeset join
+  are the site's (`catalog.js`), on text. A body that isn't the expected JSON (portal HTML, null) is
+  `unreachable`.
+- **Profiles are sent as text** (catalog and file): `api.importProfile(text, name, kind)` embeds it, so digit
+  commands keep their order.
+- Shared: `components/admin/Choice.tsx` (dialog rows), `ui/input.tsx` `SearchInput` (also HaCandidates;
+  lists say "Nothing matches."), `ErrorState` takes an optional `title`. e2e `openAddDevice` / `pickModel` in
+  `hub.ts`.
+- Fixture catalog `web/mock/catalog/` (Vite serves it from the web root): six brands; Pure Digital Evoke D4
+  `harmony:275862` + codeset `9aa0916c…` (real files; "5" after the named commands), Google
+  `hubbo:android-tv`. Other index rows have no profile file. e2e failures via `page.route`.
+- Tests: `lib/catalog.test.ts`, `api/hooks.test.ts` (staleMs, Retry), `e2e/catalog.spec.ts` (install IR: POST
+  body order on both, stored order on hub-sim; integration off; unreachable + Retry, newer format at pick,
+  hub refusal), `ble.spec` via the catalog, `ir.spec` picker cancel.
+- `Dialog` ignores a `cancel` that isn't its own: a file input's cancel (picker dismissed) bubbles to the
+  `<dialog>` and closed Add device (since the IR branch's file import, also on main).
+- Gotchas: hub-sim seeds a "Bedroom TV"; hub-sim's home_theater label is "Home theater system"; the dialog's
+  search can't be asserted focused on hub-sim (native showModal focus).
+
 ## IR devices (branch `ir`; docs/design/ir.md; feature specs green on both, not gated)
 
 - **Add device → Import a profile file** (`AddDeviceDialog`, always offered): a hidden file input; the file is

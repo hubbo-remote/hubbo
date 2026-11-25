@@ -66,8 +66,10 @@ def csp(index_html):
     for script in re.findall(rb"<script>(.*?)</script>", index_html, re.S):
         digest = base64.b64encode(hashlib.sha256(script).digest()).decode()
         hashes.append("'sha256-%s'" % digest)
+    # The catalog origin in connect-src must match the web admin's catalog URL
+    # (web/src/lib/catalog.ts).
     return ("default-src 'self'; script-src 'self' %s; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; "
+            "img-src 'self' data:; connect-src 'self' https://catalog.hubbo.tv; object-src 'none'; base-uri 'none'; "
             "form-action 'self'; frame-ancestors 'none'" % " ".join(hashes))
 
 

@@ -52,7 +52,6 @@ export function useSmartActions(ids: string[]) {
   )
 }
 export const useIntegrations = (pollMs?: number) => useQuery('integrations', () => api.integrations(), { pollMs })
-export const useProfiles = (enabled = true) => useQuery(enabled ? 'profiles' : null, () => api.profiles())
 export const useKinds = (enabled = true) => useQuery(enabled ? 'kinds' : null, () => api.kinds())
 export const useIntegrationConfig = (id: string) => useQuery(`integration-config/${id}`, () => api.integrationConfig(id))
 

@@ -7,9 +7,9 @@ const refusal = (details: { path: string; code: string; message: string }[]) =>
   new ApiError(422, { error: { code: 'validation_failed', message: 'Invalid profile', details } } as ApiErrorBody, 'x')
 
 describe('profile files', () => {
-  it('reads a profile: what the dialog shows, and the document as is', () => {
-    const doc = { manufacturer: 'Test', model: 'NEC TV', platform: 'ir', kind: 'tv', commands: {} }
-    expect(readProfileFile('tv.json', JSON.stringify(doc))).toEqual({ profile: doc, manufacturer: 'Test', model: 'NEC TV', platform: 'ir', kind: 'tv' })
+  it('reads a profile: what the dialog shows, and the text as is', () => {
+    const text = JSON.stringify({ manufacturer: 'Test', model: 'NEC TV', platform: 'ir', kind: 'tv', commands: {} })
+    expect(readProfileFile('tv.json', text)).toEqual({ text, manufacturer: 'Test', model: 'NEC TV', platform: 'ir', kind: 'tv' })
   })
 
   it('says so for a file that isn’t JSON, or isn’t a profile', () => {

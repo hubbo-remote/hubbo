@@ -1,9 +1,9 @@
 import { toApiError, errorMessage } from '@/api/client'
 import { humanize } from '@/lib/utils'
 
-/** A profile file the user picked: the parsed document (sent as is) and what the dialog shows of it. */
+/** A profile file the user picked: its text (sent as is, so the commands keep their order) and what the dialog shows of it. */
 export interface ProfileFile {
-  profile: Record<string, unknown>
+  text: string
   manufacturer: string
   model: string
   platform: string
@@ -27,7 +27,7 @@ export function readProfileFile(name: string, text: string): ProfileFile | { err
   const manufacturer = str(o?.manufacturer)
   const model = str(o?.model)
   if (!o || !manufacturer || !model) return { error: `${name} isn’t a device profile.` }
-  return { profile: o, manufacturer, model, platform: str(o.platform) ?? '', kind: str(o.kind) }
+  return { text, manufacturer, model, platform: str(o.platform) ?? '', kind: str(o.kind) }
 }
 
 /** One problem the hub found in the file, in plain words: where (by its JSON Pointer under `/profile`) and what. */
@@ -38,12 +38,12 @@ function problem(path: string, code: string, message: string): string {
   return `${field ? humanize(field) : 'The file'}: ${message}`
 }
 
-/** The hub's refusal of an imported profile: what's wrong with the file, or the hub's own reason. */
-export function profileFileError(e: unknown): string {
+/** The hub's refusal of an imported profile: what's wrong with it (`what`: the file, or a catalog profile), or the hub's own reason. */
+export function profileFileError(e: unknown, what = 'This profile file'): string {
   const err = toApiError(e)
   const inFile = err.details.filter((d) => d.path === '/profile' || d.path.startsWith('/profile/'))
   if (!inFile.length) return errorMessage(e, { details: true })
   const lines = inFile.slice(0, 5).map((d) => `· ${problem(d.path, d.code, d.message)}`)
   if (inFile.length > 5) lines.push(`· and ${inFile.length - 5} more`)
-  return ['This profile file has a problem, so it wasn’t added.', ...lines].join('\n')
+  return [`${what} has a problem, so it wasn’t added.`, ...lines].join('\n')
 }

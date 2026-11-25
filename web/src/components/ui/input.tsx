@@ -1,4 +1,4 @@
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Search } from 'lucide-react'
 import { createContext, useContext, type ComponentProps } from 'react'
 import { cn } from '@/lib/utils'
 import { InfoTip } from './info-tip'
@@ -23,6 +23,16 @@ export function Input({ className, 'aria-invalid': invalid, ...props }: Componen
   const show = useShowErrors()
   const login = CREDENTIALS.has(props.autoComplete ?? '')
   return <input className={cn(field, 'file:border-0 file:bg-transparent file:text-sm file:font-medium', className)} aria-invalid={show ? invalid : undefined} {...(login ? {} : NOT_A_LOGIN)} {...props} />
+}
+
+/** A search box: a magnifier in front, `type="search"`. Lists that filter by it say "Nothing matches." when nothing does. */
+export function SearchInput({ className, ...props }: Omit<ComponentProps<'input'>, 'type'>) {
+  return (
+    <div className={cn('relative', className)}>
+      <Search aria-hidden className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+      <Input type="search" className="pl-9" {...props} />
+    </div>
+  )
 }
 
 /** A multi-line field, in monospace (for JSON and the like). */

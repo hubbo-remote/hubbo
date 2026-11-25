@@ -274,6 +274,10 @@ downloaded over HTTPS, checked against the signed manifest, and written by the s
 Each new image boots on trial and rolls back unless healthy within 2 minutes. Stable channel only; the dev
 board keeps `bin/hubbo ota`. Needs the repo public. Design: `docs/design/firmware-updates.md`.
 
+## Catalog hosting and Add device search (user, 2026-11-24)
+
+The catalog goes online (site at hubbo.tv on Cloudflare Pages, data at catalog.hubbo.tv on R2), and Add device searches it in the browser, then installs through the existing profile import. Design: `docs/design/catalog-hosting.md`.
+
 ## IR (user, 2026-11-24)
 The hub sends IR through an emitter on GPIO 1 (header pin 25). An IR device is a profile that's been added, imported as a
 file from the catalog for now; its commands bind like a Bluetooth device's. Send only. Board-tested on a Denon AVR-S740H.
@@ -293,7 +297,7 @@ running (remote, Bluetooth) but never came back on the network.
 - **Parallel e2e:** one hub per Playwright worker (a mock per worker, or a hub-sim port per worker), so e2e can run with several workers or shards. Today it's `workers: 1` against one shared hub.
 - **Discover an unknown remote's address without a Hub:** nRF24 promiscuous sniffing (research).
 - **HA `text` selector params:** a bounded string parameter type, so HA services with free-text fields can be bound. These services are skipped in Phase 3.
-- IR: searching the hosted catalog from Add device (needs the catalog hosted), and optional IR learning (needs a receiver).
+- IR: optional IR learning (needs a receiver).
 - More board profiles/build-matrix variants and Wi-Fi.
 - Multiple remotes and remote profiles.
 - Long press, double/triple click trigger recognition; multi-action button editor.
