@@ -72,13 +72,13 @@ export function NotAvailable() {
 }
 
 /** A failed load or action: "not available yet" for 501s, otherwise an error alert (with Retry for loads). */
-export function ErrorState({ error, retry }: { error: unknown; retry?: () => void }) {
+export function ErrorState({ error, retry, title }: { error: unknown; retry?: () => void; title?: string }) {
   if (isNotImplemented(error)) return <NotAvailable />
   const msg = errorMessage(error, { details: true })
   return (
     <Alert
       variant="error"
-      title={error instanceof ApiError && error.status === 0 ? 'Can’t reach Hubbo' : 'Something went wrong'}
+      title={title ?? (error instanceof ApiError && error.status === 0 ? 'Can’t reach Hubbo' : 'Something went wrong')}
       action={retry && (
         <Button size="sm" variant="outline" onClick={retry}>
           Retry

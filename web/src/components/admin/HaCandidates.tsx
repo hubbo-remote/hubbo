@@ -6,7 +6,7 @@ import type { DiscoverCandidate, DiscoverStatus } from '@/api/types'
 import { EntityId, ErrorState } from '@/components/common'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { SearchInput } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/misc'
 import type { EntityDetails } from '@/lib/ha'
 
@@ -108,10 +108,7 @@ export function HaCandidates({ integration, onPick, emptyText = 'Nothing matches
     <div className="grid gap-3">
       {truncated > 0 && <Alert variant="warning">{truncated} more weren’t loaded.</Alert>}
       <div className="flex gap-2">
-        <div className="relative flex-1">
-          <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input placeholder="Search" aria-label="Search devices" value={q} onChange={(e) => setQ(e.target.value)} className="pl-9" maxLength={48} autoFocus />
-        </div>
+        <SearchInput placeholder="Search" aria-label="Search devices" value={q} onChange={(e) => setQ(e.target.value)} className="flex-1" maxLength={48} autoFocus />
         <Button variant="outline" size="icon" onClick={start} disabled={busy} aria-label="Refresh" title="Refresh">
           <RefreshCw className={busy ? 'animate-spin' : undefined} />
         </Button>

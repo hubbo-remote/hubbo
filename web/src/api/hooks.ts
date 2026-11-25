@@ -84,9 +84,10 @@ function schedule(key: string) {
 
 /**
  * `keepPrevious`: while a new key (e.g. a search) loads, return the last key's data instead of
- * nothing, so the UI around it (the search box) stays put.
+ * nothing, so the UI around it (the search box) stays put. `staleMs`: how long data counts as
+ * fresh (a failure never does).
  */
-export function useQuery<T>(key: string | null, fn: () => Promise<T>, opts: { pollMs?: number; keepPrevious?: boolean } = {}) {
+export function useQuery<T>(key: string | null, fn: () => Promise<T>, opts: { pollMs?: number; keepPrevious?: boolean; staleMs?: number } = {}) {
   const k = key ?? '__none__'
   if (key) entry(k).fn = fn
   const subscribe = useCallback(
@@ -103,10 +104,11 @@ export function useQuery<T>(key: string | null, fn: () => Promise<T>, opts: { po
   )
   const state = useSyncExternalStore(subscribe, () => entry(k).snapshot) as QueryState<T>
 
-  const { pollMs } = opts
+  const { pollMs, staleMs = STALE_MS } = opts
   useEffect(() => {
     if (!key) return
-    if (Date.now() - entry(key).fetchedAt > STALE_MS) void run(key)
+    const e = entry(key)
+    if (!e.fetchedAt || e.error || Date.now() - e.fetchedAt > staleMs) void run(key)
     if (!pollMs) return
     const id = Symbol()
     entry(key).polls.set(id, pollMs)
@@ -115,7 +117,7 @@ export function useQuery<T>(key: string | null, fn: () => Promise<T>, opts: { po
       entry(key).polls.delete(id)
       schedule(key)
     }
-  }, [key, pollMs])
+  }, [key, pollMs, staleMs])
 
   const [previous, setPrevious] = useState<T | undefined>(undefined)
   if (opts.keepPrevious && key && state.data !== undefined && state.data !== previous) setPrevious(state.data)

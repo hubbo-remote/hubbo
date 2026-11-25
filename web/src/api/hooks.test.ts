@@ -23,3 +23,21 @@ test('an invalidation during a fetch fetches again: the fetch in flight may pred
   await act(async () => pending.shift()!())
   expect(result.current.data).toBe(3)
 })
+
+test('staleMs Infinity: fetched once, even across remounts; a failure is fetched again', async () => {
+  let calls = 0
+  const fn = async () => {
+    if (++calls === 1) throw new Error('offline')
+    return calls
+  }
+  const opts = { staleMs: Infinity }
+  const first = renderHook(() => useQuery('fixed', fn, opts))
+  await waitFor(() => expect(first.result.current.error?.message).toBe('offline'))
+  await act(() => first.result.current.refetch()) // Retry
+  expect(first.result.current.data).toBe(2)
+  first.unmount()
+  const again = renderHook(() => useQuery('fixed', fn, opts))
+  expect(again.result.current.data).toBe(2)
+  await act(async () => {})
+  expect(calls).toBe(2)
+})
