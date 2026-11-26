@@ -34,6 +34,19 @@ jobs:
           bin/hubbo web build
           HUBBO_FW_VERSION="${GITHUB_REF_NAME#v}" bin/hubbo fw run -e waveshare_esp32_s3_eth
 
+      - name: Merge the install image
+        # One file for a new board, written at 0x0 over USB (docs/development.md, First install):
+        # bootloader, partition table, boot_app0 and this release's app. Same name every release.
+        run: |
+          mkdir -p dist
+          bin/hubbo run bash -c 'B=firmware/.pio/build/waveshare_esp32_s3_eth
+            /platformio/packages/tool-esptool/esptool --chip esp32s3 merge-bin -o dist/hubbo-install.bin \
+              --flash-mode dio --flash-freq 80m --flash-size 16MB \
+              0x0 $B/bootloader.bin 0x8000 $B/partitions.bin \
+              0xe000 /platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
+              0x10000 $B/firmware.bin'
+          ls -l dist/hubbo-install.bin
+
       - name: Write the manifest
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -75,5 +88,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#v}"
+          printf '\n%s\n' "New board? Download hubbo-install.bin and follow the install steps at https://hubbo.tv/build/. Hubs already running Hubbo update themselves." >> dist/notes.txt
           gh release create "$GITHUB_REF_NAME" --title "Hubbo $version" --notes-file dist/notes.txt \
-            "dist/hubbo-$version.bin" dist/manifest.json dist/manifest.sig
+            "dist/hubbo-$version.bin" dist/manifest.json dist/manifest.sig dist/hubbo-install.bin
