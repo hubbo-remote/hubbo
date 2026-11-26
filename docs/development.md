@@ -66,33 +66,38 @@ A new board gets Hubbo over USB once. After that it updates itself from releases
 uploaded in Hubbo. An update over the network can't write the bootloader or the partition table, so
 the first install is always a full flash.
 
-1. **Build a release image.** Check out the release tag and build it with that version, so the hub
-   is offered later releases:
-   ```sh
-   git checkout vX.Y.Z
-   HUBBO_FW_VERSION=X.Y.Z bin/hubbo fw run -e waveshare_esp32_s3_eth
-   ```
-2. **Merge it into one file** in the toolchain:
-   ```sh
-   bin/hubbo run bash -c 'B=firmware/.pio/build/waveshare_esp32_s3_eth; mkdir -p build;
-     /platformio/packages/tool-esptool/esptool --chip esp32s3 merge-bin -o build/hubbo-full.bin \
-     --flash-mode dio --flash-freq 80m --flash-size 16MB \
-     0x0 $B/bootloader.bin 0x8000 $B/partitions.bin \
-     0xe000 /platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
-     0x10000 $B/firmware.bin'
-   ```
-3. **Flash it** from a machine with the board on USB (`bin/hubbo` can't reach USB from its
+1. **Get the install image.** Download `hubbo-install.bin` from the
+   [latest release](https://github.com/hubbo-remote/hubbo/releases/latest). It's one file for
+   address 0x0: the bootloader, the partition table and that release's firmware.
+2. **Flash it** from a machine with the board on USB (`bin/hubbo` can't reach USB from its
    container yet). Unplug PoE first: never connect USB and PoE together. Then either:
    - Chrome with <https://espressif.github.io/esptool-js/>: connect, Erase Flash, then program
-     `hubbo-full.bin` at 0x0.
+     `hubbo-install.bin` at 0x0.
    - esptool: `esptool --chip esp32s3 erase-flash`, then
-     `esptool --chip esp32s3 write-flash 0x0 hubbo-full.bin`.
+     `esptool --chip esp32s3 write-flash 0x0 hubbo-install.bin`.
 
    Erase first: Hubbo formats its storage only when the storage partition is blank. If the board
    won't connect, hold BOOT, tap RESET, release BOOT, and try again.
-4. **First boot.** Press RESET, unplug USB, and connect Ethernet (or PoE). The hub is named
+3. **First boot.** Press RESET, unplug USB, and connect Ethernet (or PoE). The hub is named
    "Hubbo XXXX" from the end of its Ethernet MAC. Open `http://hubbo-xxxx.local/` or its IP, create
    your username and password, then pair your remote.
+
+**Building the install image from source.** Check out the release tag, build it with that version
+(a build with any other version is never offered updates), then merge it into one file the way the
+release workflow does:
+
+```sh
+git checkout vX.Y.Z
+HUBBO_FW_VERSION=X.Y.Z bin/hubbo fw run -e waveshare_esp32_s3_eth
+bin/hubbo run bash -c 'B=firmware/.pio/build/waveshare_esp32_s3_eth; mkdir -p build;
+  /platformio/packages/tool-esptool/esptool --chip esp32s3 merge-bin -o build/hubbo-install.bin \
+  --flash-mode dio --flash-freq 80m --flash-size 16MB \
+  0x0 $B/bootloader.bin 0x8000 $B/partitions.bin \
+  0xe000 /platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
+  0x10000 $B/firmware.bin'
+```
+
+Then flash `build/hubbo-install.bin` as in step 2.
 
 ## Releasing
 
